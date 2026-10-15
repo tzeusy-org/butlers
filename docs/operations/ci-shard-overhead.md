@@ -212,6 +212,18 @@ normal/nonself/protected gates and elapsed observations have separate receipts.
 
 ## Hosted image preparation
 
+All ordinary, nightly and migration uv installers call
+`python3 scripts/install_ci_uv.py`. Each attempt owns a fresh process session;
+the supervisor keeps its leader PID reserved until it has killed that group,
+including after a successful or failed early shell exit. The 120-second attempt
+envelope reserves its final second for forced cleanup and reaping, leaving at
+most 119 seconds for installation. Five attempts and four ten-second backoffs
+retain the 640-second setup envelope. Cleanup failure aborts immediately without
+another retry. This removes dependence on the runner's `timeout` implementation;
+the subsequent frozen environment repair and real-environment checks remain
+mandatory. These are execution bounds, not a diagnosis of a particular hosted
+network stall or a claim of healthy setup latency.
+
 The existing Migration Chain Integrity workflow has an optional boolean
 `image-size-diagnostic` dispatch input, default false. Push and ordinary manual
 migration checks retain their original job/command. An explicit true dispatch
