@@ -35,6 +35,7 @@ Scope: v1-mandatory
 - **WHEN** WebSocket or REST-fallback state changes contain a recognized bearer in an old/new state or any nested attribute value
 - **THEN** the connector SHALL scrub a copied event before normalization, filtering/discretion, and all downstream content consumers
 - **AND** every outgoing ordinary or wellness envelope SHALL withhold the bearer in normalized text and all raw copies
+- **AND** the existing detector SHALL also evaluate the assembled HA label/state normalization context before discretion can retain it; its recognized redactions SHALL protect matching state/attribute copies, including duplicate raw states, without enabling bare-number detection on unrelated numeric sensors
 - **AND** the input event, source/event/sender identity, timestamps, idempotency keys, and per-channel dedup semantics SHALL remain unchanged
 
 #### Scenario: Filtered and replayed HA content remains withheld

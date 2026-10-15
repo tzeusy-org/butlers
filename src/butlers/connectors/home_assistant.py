@@ -80,6 +80,7 @@ from butlers.connectors.home_assistant_scrub import (
     HABearerScrubError,
     scrub_ha_envelope,
     scrub_ha_event,
+    scrub_ha_normalized_text,
     scrub_ha_state,
 )
 from butlers.connectors.home_assistant_wellness import (
@@ -2372,6 +2373,13 @@ def _make_event_dispatcher(
             new_state=new_state_str,
             unit_of_measurement=unit_of_measurement,
         )
+
+        try:
+            normalized_text = scrub_ha_normalized_text(normalized_text)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            connector.on_event_received(passed_all_filters=False)
+            return
 
         # Run three-layer filter pipeline
         from butlers.connectors.home_assistant_pipeline import PipelineResult

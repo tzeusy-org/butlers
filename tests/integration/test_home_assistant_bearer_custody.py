@@ -91,6 +91,31 @@ async def test_ha_bearer_custody_real_jsonb_role_history_and_replay(ha_custody_d
         assert isinstance(row["full_payload"], dict)
         assert "482913" not in json.dumps(row["full_payload"])
         assert "auth-code withheld" in row["full_payload"]["payload"]["raw"]["new_state"]["state"]
+        # R1: assembled friendly-name context must protect every durable copy,
+        # not only the final normalized field. Keep the original inline case.
+        contextual_event = copy.deepcopy(event)
+        contextual_event["data"]["new_state"] = {
+            "state": "482913",
+            "attributes": {"friendly_name": "Your verification code", "echo": "482913"},
+        }
+        contextual_endpoint = endpoint + ":context"
+        contextual = HAFilterPersistence(contextual_endpoint, pool, submit)
+        contextual.record_discretion_ignore(
+            entity_id=event["data"]["entity_id"],
+            ha_event=contextual_event,
+            time_fired=at.isoformat(),
+            friendly_name="Your verification code",
+            new_state=contextual_event["data"]["new_state"],
+        )
+        await contextual.flush()
+        async with pool.acquire() as conn:
+            contextual_payload = await conn.fetchval(
+                "SELECT full_payload FROM connectors.filtered_events WHERE endpoint_identity=$1",
+                contextual_endpoint,
+            )
+        assert isinstance(contextual_payload, dict)
+        assert "482913" not in json.dumps(contextual_payload)
+        assert "auth-code withheld" in contextual_payload["payload"]["raw"]["new_state"]["state"]
         assert await persist_ha_history(
             pool,
             entity_id="person.synthetic_custody",

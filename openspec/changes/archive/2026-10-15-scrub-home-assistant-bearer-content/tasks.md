@@ -16,3 +16,9 @@
 - [ ] 3.3 Obtain independent exact-source review and hosted normal/protected gates before any delivery or closure claim; ROOT owns later publication allocation.
 
 Original expected test delta remains Tests: +3 ~0 -0. Actual added delta is Tests: +4 ~0 -0: three ordinary unit tests plus one distinct real-Postgres durability species. No old assertion, fixture, decorator, parameter or test is removed. PostgreSQL and hosted delivery limitations above are not completion claims.
+
+## R1 correction checkpoint
+- [x] R1.1 Extend the existing three unit owners and demonstrate causal eb61 source failures for real discretion retention, complete filtered payload and assembled-context refusal.
+- [x] R1.2 Protect detector-recognized contextual material in raw state/attribute copies and assembled discretion text; retain ordinary numeric/enum controls and all old cases.
+- [x] R1.3 Record correction-source owning, collection, inventory, strict and applicable guard receipts for the normal private checkpoint; retain default refusal and local PG limitation.
+- [ ] R1.4 Obtain fresh independent high-risk review and actual normal/protected hosted canonical PostgreSQL proof before merge readiness.

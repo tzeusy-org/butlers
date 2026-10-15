@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers import ingestion_bearer_scrub
+from butlers.connectors.discretion import DiscretionEvaluator
 from butlers.connectors.home_assistant import (
     HAConnector,
     HAConnectorConfig,
@@ -61,7 +62,7 @@ def _event(entity="sensor.phone_last_notification", state="Your code is 482913")
     }
 
 
-def _wire(*, db_pool=None):
+def _wire(*, db_pool=None, evaluator=None):
     connector = HAConnector(HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"))
     connector._set_endpoint_identity("http://homeassistant.test:8123")
     connector._mcp_client = MagicMock(call_tool=AsyncMock(return_value={"status": "accepted"}))
@@ -73,7 +74,7 @@ def _wire(*, db_pool=None):
         db_pool=db_pool,
         pipeline=HAFilterPipeline(
             config=HAFilterPipelineConfig(domain_allowlist=connector._config.domain_allowlist),
-            evaluator=None,
+            evaluator=evaluator,
             metrics=connector._ha_metrics,
         ),
         wellness_classifier=WellnessClassifier(),
@@ -160,6 +161,69 @@ async def _ordinary_consumer_outputs():
 @pytest.mark.asyncio
 async def test_ha_content_is_withheld_at_submission_and_history_consumers():
     """Both dispatch transports, recorder wellness, person history, numeric control."""
+    # Neither the friendly name nor bare state is independently recognized.
+    # The actual normalization context supplies the existing detector's keyword.
+    for old_value, new_value in (
+        ("unknown", "482913"),
+        ("771122", "482913"),
+        ("unknown", "ABC-482913"),
+        ("unknown", "482 913"),
+    ):
+        llm = AsyncMock()
+        evaluator = DiscretionEvaluator(_ENDPOINT, llm)
+        connector, _, dispatch = _wire(evaluator=evaluator)
+        split = _event(state=new_value)
+        split["time_fired"] = datetime.now(UTC).isoformat()
+        split["data"]["old_state"] = {"state": old_value, "attributes": {}}
+        split["data"]["new_state"]["attributes"] = {
+            "friendly_name": "Your verification code",
+            "echo": new_value,
+        }
+        original = copy.deepcopy(split)
+        await dispatch("state_changed", split)
+        assert len(evaluator.window.entries) == 1
+        _no_bearer([entry.text for entry in evaluator.window.entries])
+        llm.assert_not_awaited()  # Real HA weight bypass still retains safe context.
+        assert connector._mcp_client.call_tool.await_count == 1
+        _no_bearer(connector._mcp_client.call_tool.call_args.args[1])
+        assert new_value not in json.dumps(connector._mcp_client.call_tool.call_args.args[1])
+        assert split == original
+
+        queued = []
+
+        async def capture_split(event_type, event, transport):
+            queued.append(event)
+
+        reorder = HAEventReorderBuffer(submit=capture_split, window_s=0, max_size=100)
+        await reorder.add("state_changed", split)
+        await reorder.flush_all()
+        assert len(queued) == 1
+        _no_bearer(queued)
+
+        pool = MagicMock(execute=AsyncMock())
+        assert await persist_ha_history(
+            pool,
+            entity_id="person.synthetic",
+            state="482913",
+            attributes=split["data"]["new_state"]["attributes"],
+            recorded_at=datetime(2026, 10, 15, 9, tzinfo=UTC),
+        )
+        _no_bearer(pool.execute.call_args.args)
+
+    # An unrelated bare numeric sensor still reaches the real context/MCP unchanged.
+    evaluator = DiscretionEvaluator(_ENDPOINT, AsyncMock())
+    connector, _, dispatch = _wire(evaluator=evaluator)
+    numeric = _event("sensor.synthetic_count", "482913")
+    numeric["time_fired"] = datetime.now(UTC).isoformat()
+    numeric["data"]["old_state"] = {"state": "482912", "attributes": {}}
+    numeric["data"]["new_state"]["attributes"] = {"friendly_name": "Ordinary count"}
+    await dispatch("state_changed", numeric)
+    assert evaluator.window.entries[0].text == "Ordinary count: 482912 -> 482913"
+    assert (
+        connector._mcp_client.call_tool.call_args.args[1]["payload"]["raw"]["new_state"]["state"]
+        == "482913"
+    )
+
     for transport in (None, "rest_fallback"):
         connector, _, dispatch = _wire()
         original = _event()
@@ -291,6 +355,26 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
 @pytest.mark.asyncio
 async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
     """Drive the real HA adapter and shared buffer; do not mock the sanitizer."""
+    split = _event(state="482913")
+    split["data"]["old_state"] = {"state": "unknown", "attributes": {}}
+    split["data"]["new_state"]["attributes"] = {"friendly_name": "Your verification code"}
+    split_persistence = HAFilterPersistence(_ENDPOINT, None, AsyncMock())
+    args = dict(
+        entity_id=split["data"]["entity_id"],
+        ha_event=split,
+        time_fired=_TIME,
+        friendly_name="Your verification code",
+        old_state=split["data"]["old_state"],
+        new_state=split["data"]["new_state"],
+    )
+    split_persistence.record_domain_excluded(**args, domain="sensor")
+    split_persistence.record_insignificant_delta(**args, device_class="temperature", delta=0.1)
+    split_persistence.record_discretion_ignore(**args)
+    split_persistence.record_global_skip(**args, rule_type="source_channel")
+    assert len(split_persistence) == 4
+    for row in split_persistence._buffer._rows:
+        _no_bearer(row)
+
     submit = AsyncMock()
     persistence = HAFilterPersistence(_ENDPOINT, None, submit)
     event = _event()
@@ -327,6 +411,35 @@ async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
 @pytest.mark.asyncio
 async def test_ha_scrubber_failure_withholds_raw_content_and_logs_no_exception(monkeypatch, caplog):
     """A raising real shared dependency must fail closed at every direct seam."""
+    original_text_scrubber = ingestion_bearer_scrub.scrub_text
+    evaluator = DiscretionEvaluator(_ENDPOINT, AsyncMock())
+    context_pool = MagicMock(execute=AsyncMock())
+    context_connector, context_persistence, context_dispatch = _wire(
+        db_pool=context_pool, evaluator=evaluator
+    )
+    split = _event(state="482913")
+    split["time_fired"] = datetime.now(UTC).isoformat()
+    split["data"]["old_state"] = {"state": "unknown", "attributes": {}}
+    split["data"]["new_state"]["attributes"] = {"friendly_name": "Your verification code"}
+
+    def fail_assembled_text(text, **kwargs):
+        if " -> " in text:
+            raise RuntimeError("Your code is 482913; " + _URL)
+        return original_text_scrubber(text, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ingestion_bearer_scrub, "scrub_text", fail_assembled_text)
+        await context_dispatch("state_changed", split)
+        assert evaluator.window.entries == []
+        context_connector._mcp_client.call_tool.assert_not_awaited()
+        context_pool.execute.assert_not_awaited()
+        assert not context_persistence
+        delivered = AsyncMock()
+        reorder = HAEventReorderBuffer(submit=delivered, window_s=0, max_size=100)
+        await reorder.add("state_changed", split)
+        assert len(reorder) == 0
+        delivered.assert_not_awaited()
+
     checkpoint_pool = MagicMock(execute=AsyncMock())
     connector, persistence, dispatch = _wire(db_pool=checkpoint_pool)
     pool = MagicMock(execute=AsyncMock())
