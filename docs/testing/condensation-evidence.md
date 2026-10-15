@@ -19,6 +19,13 @@ invoke these same producers and consumers. `make check-condensation-ledger`
 and the required CI guard invoke the same complete source scan. No second
 scanner or selector is introduced.
 
+Within one admission, the consumer reuses current test shapes only after a
+fresh read returns exactly the same path and source text. The reuse is local
+to that invocation; it does not cache filesystem or Git identity. Changed and
+new files are still parsed, classification owns separate mode metadata, and
+the final body, mode, link, tracked-path, HEAD and tree checks still run. This
+removes repeated AST construction without changing which losses need evidence.
+
 A plan supplies `base`, production Python `scope`, complete static `removed`
 and `survivors` owners, `cluster`, `bead`, protected `contract:{class,cites}`, and
 `mapping:{removed-owner:{survivors,reason}}`. Static owners have no parameter

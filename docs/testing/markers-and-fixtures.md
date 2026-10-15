@@ -18,6 +18,10 @@ read them there. The semantics that matter:
 - **Quarantined tests are deselected by node, not by marker.** `addopts` also loads
   `-p tests.quarantine`, which deselects the flaky tests listed in `tests/quarantine.json`; see
   [Flaky-Test Quarantine](quarantine.md).
+- **Leaked butler DB log handlers are detached after every test.** `addopts` also loads
+  `-p tests.log_isolation`, whose autouse fixture removes any `ButlerDBLogHandler` a test
+  attached to the root logger (for example by running `run_startup` without shutting the daemon
+  down). Handlers that were already attached when the test started stay.
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.

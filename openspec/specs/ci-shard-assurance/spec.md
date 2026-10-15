@@ -200,6 +200,10 @@ Scope: v1-mandatory
 - **WHEN** a newly added or changed file declares different items under the actual shard config than its fresh unsharded full reference
 - **THEN** both producer and required frontend reconciliation fail despite matching file coverage or aggregate counts, while identical complete current declarations pass
 
+#### Scenario: Dependency prebundling preserves independent item authority
+- **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
+- **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
+
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conversion and frontend expansion SHALL account for actual expanded rows and a concurrent peak no greater than14. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.
 

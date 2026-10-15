@@ -44,6 +44,102 @@ def _repository(tmp_path):
     return root
 
 
+def test_current_shape_reuse_preserves_modes_and_new_source_validation(tmp_path, monkeypatch):
+    """REQ-testing-053: shared analysis cannot change admission or hide new invalid source."""
+    root = _repository(tmp_path)
+    owner = root / "tests/test_owner.py"
+    original = ledger.test_shapes
+    calls = []
+
+    def observe(path, text):
+        calls.append((path, text))
+        return original(path, text)
+
+    monkeypatch.setattr(ledger, "test_shapes", observe)
+    assert ledger.verify(root, "HEAD", []) == {
+        "status": "PASS",
+        "losses": 0,
+        "ledger_clusters": 0,
+        "test_definitions": 1,
+        "source_read_only": True,
+    }
+    assert calls.count(("tests/test_owner.py", owner.read_text())) == 1
+    cache = {}
+    owner.chmod(0o755)
+    expected = {"tests/test_owner.py::test_owner": "source-mode-change"}
+    assert ledger.destructive_changes(root, "HEAD", _current_shapes=cache) == expected
+    assert ledger.destructive_changes(root, "HEAD") == expected
+    assert all("mode" not in shape for shapes in cache.values() for shape in shapes.values())
+    owner.chmod(0o644)
+    added = root / "tests/test_added.py"
+    added.write_text("def test_added():\n    assert True\n")
+    subprocess.run(["git", "-C", str(root), "add", str(added)], check=True)
+    assert ledger.verify(root, "HEAD", [])["test_definitions"] == 2
+    added.write_text("def test_added(:\n")
+    with pytest.raises(ledger.EvidenceError, match="test-source-parse-failed"):
+        ledger.verify(root, "HEAD", [])
+
+
+def test_current_shape_reuse_keeps_rereads_and_source_race_refusals(tmp_path, monkeypatch):
+    """REQ-testing-053: a cached analysis never replaces current source or identity reads."""
+    for change in ("body", "invalid-body", "mode", "membership", "head", "link"):
+        root = _repository(tmp_path / change)
+        owner = root / "tests/test_owner.py"
+        original = ledger.tracked_paths
+        reads = 0
+
+        def race(repository, ref=None):
+            nonlocal reads
+            if ref is None:
+                reads += 1
+                if reads == 2:
+                    if change in {"body", "invalid-body"}:
+                        owner.write_text(
+                            owner.read_text()
+                            + ("    assert True\n" if change == "body" else "    (\n")
+                        )
+                    elif change == "mode":
+                        owner.chmod(0o755)
+                    elif change == "membership":
+                        added = root / "tests/test_new.py"
+                        added.write_text("def test_new():\n    assert True\n")
+                        subprocess.run(["git", "-C", str(root), "add", str(added)], check=True)
+                    elif change == "head":
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(root),
+                                "-c",
+                                "user.name=Proof",
+                                "-c",
+                                "user.email=proof@example.invalid",
+                                "-c",
+                                "core.hooksPath=/dev/null",
+                                "commit",
+                                "--allow-empty",
+                                "-qm",
+                                "changed head",
+                            ],
+                            check=True,
+                        )
+                    else:
+                        target = root / "owner-copy.py"
+                        owner.rename(target)
+                        owner.symlink_to("../owner-copy.py")
+            return original(repository, ref)
+
+        with monkeypatch.context() as context:
+            context.setattr(ledger, "tracked_paths", race)
+            reason = (
+                "test-source-parse-failed"
+                if change == "invalid-body"
+                else "source-changed-during-admission"
+            )
+            with pytest.raises(ledger.EvidenceError, match=reason):
+                ledger.verify(root, "HEAD", [])
+
+
 @pytest.mark.parametrize(
     "change",
     [
