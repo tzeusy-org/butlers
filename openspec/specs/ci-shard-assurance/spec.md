@@ -201,6 +201,12 @@ ID: REQ-ci-shard-assurance-008
 Source: bu-ly3lv5.6 P11-P12; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
 Scope: v1-mandatory
 
+#### Scenario: uv setup owns finite attempts and surviving descendants
+- **WHEN** a uv installer hangs, fails, succeeds early with surviving children, or receives cancellation
+- **THEN** its supervisor kills its owned process group before reaping the reserved leader, including on early shell exits
+- **AND** each attempt reserves one second of its 120-second bound for cleanup, with at most five attempts and four ten-second backoffs; cleanup failure aborts without retry
+- **AND** only successful installation publishes the executable path, and subsequent frozen environment repair and validation remain mandatory
+
 #### Scenario: Concurrent capacity follows the actual DAG
 - **WHEN** guards, eleven backend children, two Vitest children, browser and post jobs become eligible
 - **THEN** dependencies bound peak14 and account for19 matrix-stage rows versus21 final rows without changing required contexts
