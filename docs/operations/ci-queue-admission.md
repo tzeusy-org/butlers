@@ -100,16 +100,20 @@ still executes the complete DAG; improved effective capacity is a hypothesis.
 
 The operator runs this finite collector from the reviewed checkout in the
 shared user-run handoff directory. `capture_dir` is an absolute path outside
-all checkouts; record `arm_start` and the applied setting separately. GNU
-`timeout` bounds the entire collector and its child process group to 24 hours.
-Each request has the tool's own shorter bounds. It launches no workflows:
+all checkouts; record `arm_start` and the applied setting separately. The explicitly verified GNU
+`/usr/bin/gnutimeout` bounds the entire collector and its child process group to 24 hours.
+Each request has the tool's own shorter bounds. This host's default `timeout`
+is uutils; the recipes require the separate GNU binary and refuse its absence
+or a different implementation. They launch no workflows:
 
 ```bash
+test -x /usr/bin/gnutimeout || exit 1
+/usr/bin/gnutimeout --version | rg '^timeout \(GNU coreutils\)' || exit 1
 export capture_dir=/home/orca/.tmp/ci-admission/arm-UNIQUE
 mkdir -p "$capture_dir"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$capture_dir/arm-start.txt"
 collector_status=0
-timeout --kill-after=10s 24h bash -c '
+/usr/bin/gnutimeout --kill-after=10s 24h bash -c '
   while :; do
     snapshot=$(date -u +%Y%m%dT%H%M%SZ)
     since=$(date -u -d "20 minutes ago" +%Y-%m-%dT%H:%M:%SZ)
@@ -138,10 +142,12 @@ refreshes the union; a timeout/error leaves that run UNKNOWN. Store its exit
 receipt. It does not claim that a captured attempt passed:
 
 ```bash
+test -x /usr/bin/gnutimeout || exit 1
+/usr/bin/gnutimeout --version | rg '^timeout \(GNU coreutils\)' || exit 1
 export refresh_dir=/home/orca/.tmp/ci-admission/refresh-UNIQUE
 mkdir -p "$refresh_dir"
 refresh_status=0
-timeout --kill-after=10s 20m .venv/bin/python - "$capture_dir" "$refresh_dir" <<'PY' || refresh_status=$?
+/usr/bin/gnutimeout --kill-after=10s 20m .venv/bin/python - "$capture_dir" "$refresh_dir" <<'PY' || refresh_status=$?
 import json, os, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, "scripts")
