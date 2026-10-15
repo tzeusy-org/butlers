@@ -45,6 +45,15 @@ _URL = "https://acct.example.com/reset-password?token=abc123def456"
 _ORDINARY_COPY_CONTROLS = {
     "amount_text": "482913.00",
     "amount_value": 482913.0,
+    "fraction": ".482913",
+    "fraction_prose": "Ratio .482913",
+    "fraction_quoted": '".482913"',
+    "fraction_bracketed": "(.482913)",
+    "fraction_signed": "-.482913",
+    "fraction_positive": "+.482913",
+    "fraction_comma": ",482913",
+    "ratio_component": ":482913",
+    "fraction_exponent": ".482913e2",
     "amount_percent": "482913%",
     "signed_value": "+482913",
     "threshold_value": "<482913",
@@ -174,6 +183,12 @@ async def _ordinary_consumer_outputs():
 @pytest.mark.asyncio
 async def test_ha_content_is_withheld_at_submission_and_history_consumers():
     """Both dispatch transports, recorder wellness, person history, numeric control."""
+    assert (
+        ingestion_bearer_scrub.scrub_json(
+            _ORDINARY_COPY_CONTROLS, provider_domain="home_assistant"
+        )[0]
+        == _ORDINARY_COPY_CONTROLS
+    )
     # Neither the friendly name nor bare state is independently recognized.
     # The actual normalization context supplies the existing detector's keyword.
     for old_value, new_value in (
@@ -181,6 +196,7 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
         ("771122", "482913"),
         ("unknown", "ABC-482913"),
         ("unknown", "482 913"),
+        ("unknown", "482-913"),
     ):
         llm = AsyncMock()
         evaluator = DiscretionEvaluator(_ENDPOINT, llm)
@@ -192,7 +208,10 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
             "friendly_name": "Your verification code",
             "echo": new_value,
             "quoted_echo": f'"{new_value}"',
+            "bracketed_echo": f"[{new_value}]",
+            "nested_echo": f"“({new_value})”",
             "prose_echo": f"Echo ({new_value}).",
+            "repeated_echo": f"{new_value} {new_value}",
         }
         original = copy.deepcopy(split)
         await dispatch("state_changed", split)

@@ -13,12 +13,14 @@ from typing import Any
 from butlers import ingestion_bearer_scrub as bearer_scrub
 from butlers.connectors.home_assistant_envelope import build_state_changed_normalized_text
 
-# Copy syntax, not bearer recognition: a value is a whitespace-delimited atom,
-# optionally surrounded by prose punctuation. Internal punctuation belongs to
-# the value (482913.00 and INV-482913-2026 are not copies of 482913). Signs and
-# unit symbols belong to the value too. Never normalize or rewrite punctuation.
+# Copy syntax, not bearer recognition: a value is a whitespace-delimited atom.
+# Quotes/opening brackets may precede it; quotes/closing brackets and sentence
+# punctuation may follow it. Other leading punctuation belongs to the value
+# (.482913, ,482913 and :482913 are not copies of 482913), as do internal
+# punctuation, signs and unit symbols. Never normalize or rewrite punctuation.
 _COPY_ATOM = re.compile(r"\S+")
-_PROSE_PUNCTUATION = "\"'()[]{}.,;:!?“”‘’"
+_COPY_OPENERS = "\"'([{“‘"
+_COPY_TRAILERS = "\"')]}.,;:!?”’"
 
 
 class HABearerScrubError(RuntimeError):
@@ -124,9 +126,9 @@ def _replace_copy(text: str, original: str, replacement: str) -> str:
     starts, ends = set(), set()
     for atom in _COPY_ATOM.finditer(text):
         start, end = atom.span()
-        while start < end and text[start] in _PROSE_PUNCTUATION:
+        while start < end and text[start] in _COPY_OPENERS:
             start += 1
-        while end > start and text[end - 1] in _PROSE_PUNCTUATION:
+        while end > start and text[end - 1] in _COPY_TRAILERS:
             end -= 1
         starts.add(start)
         ends.add(end)

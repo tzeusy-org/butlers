@@ -34,3 +34,9 @@ Original expected test delta remains Tests: +3 ~0 -0. Actual added delta is Test
 - [x] P.2 Project complete selected lexical copies and probe each state's own context plus the actual transition without changing shared detection or ordinary representations.
 - [x] P.3 Record final owning, source preservation, strict and applicable guard receipts for the private checkpoint.
 - [ ] P.4 Obtain a new independent exact-source review and actual hosted canonical PostgreSQL outcomes before any publication or readiness claim.
+
+## Directional copy-boundary correction
+- [x] F.1 Reproduce the reviewed fractional-decimal corruption on 856a at actual consumer seams and extend the same two unit owners without losing cases or assertions.
+- [x] F.2 Distinguish opening quote/bracket syntax from trailing sentence punctuation; preserve leading numeric punctuation and existing complete-copy withholding with bounded scans.
+- [x] F.3 Record final owning, preservation, strict and applicable source-guard evidence for this private successor; reuse unchanged collection topology and historical limitations explicitly.
+- [ ] F.4 Obtain a new independent exact-source review before ROOT authorizes publication, and actual hosted canonical PostgreSQL outcomes before readiness.
