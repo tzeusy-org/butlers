@@ -204,3 +204,142 @@ def test_repo_pytest_config_deselects_the_live_registry() -> None:
     collected = {line for line in result.stdout.splitlines() if "::" in line}
     assert collected, result.stdout
     assert not {node.split("[", 1)[0] for node in collected} & set(entries)
+
+
+def _nightly_project(tmp_path: Path, entries: list[dict[str, str]]) -> Path:
+    project = _sample_project(tmp_path, entries)
+    (project / "test_sample.py").rename(project / "tests" / "test_sample.py")
+    (project / "roster").mkdir()
+    (project / "pytest.ini").write_text(
+        "[pytest]\naddopts = -m 'not nightly and not bench and not perf'\n"
+        "markers =\n    nightly: opt-in\n    bench: opt-in\n    perf: opt-in\n"
+    )
+    return project
+
+
+def _run_nightly(
+    project: Path, *, addopts: str = "", forced_exit: int | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Execute the actual nightly shell command, forwarding uv to real pytest."""
+    workflow = (REPO_ROOT / ".github/workflows/nightly.yml").read_text()
+    step = workflow.split("      - name: Quarantined tests\n", 1)[1]
+    block = step.split("        run: |\n", 1)[1]
+    command = "\n".join(line[10:] for line in block.splitlines() if line.startswith("          "))
+    binary_dir = project / ".bin"
+    binary_dir.mkdir()
+    binary = binary_dir / "uv"
+    body = (
+        "import os, sys\n"
+        "os.execv(sys.executable, [sys.executable, '-m', 'pytest', '-p', "
+        "'tests.quarantine', '-p', 'no:cacheprovider', *sys.argv[3:]])\n"
+        if forced_exit is None
+        else f"raise SystemExit({forced_exit})\n"
+    )
+    binary.write_text(f"#!{sys.executable}\n" + body)
+    binary.chmod(0o755)
+    env = dict(os.environ)
+    env.update(
+        PYTHONPATH=str(REPO_ROOT),
+        PYTEST_ADDOPTS=addopts,
+        PATH=str(binary_dir) + os.pathsep + env.get("PATH", ""),
+    )
+    return subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", command],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "stale",
+        "partly-stale",
+        "marker-filtered",
+        "parameter-filtered",
+        "complete",
+        "empty",
+        "failing-owner",
+        "collection-error",
+        "missing-registry",
+    ],
+)
+def test_nightly_requires_complete_actual_quarantine_population(tmp_path: Path, case: str) -> None:
+    nodes = {
+        "stale": ["test_missing"],
+        "partly-stale": ["test_steady", "test_missing"],
+        "marker-filtered": ["test_steady"],
+        "parameter-filtered": ["test_param"],
+        "complete": ["test_steady", "test_param"],
+        "empty": [],
+        "failing-owner": ["test_flaky"],
+        "collection-error": [],
+        "missing-registry": [],
+    }[case]
+    project = _nightly_project(
+        tmp_path, [_entry(f"tests/test_sample.py::{name}") for name in nodes]
+    )
+    if case == "marker-filtered":
+        sample = project / "tests/test_sample.py"
+        sample.write_text(
+            sample.read_text().replace("def test_steady", "@pytest.mark.nightly\ndef test_steady")
+        )
+    elif case == "collection-error":
+        (project / "tests/test_broken.py").write_text("def test_broken(:\n")
+    elif case == "missing-registry":
+        (project / quarantine.REGISTRY).unlink()
+
+    result = _run_nightly(project, addopts="-k 'not b'" if case == "parameter-filtered" else "")
+
+    expected_status = {"complete": 0, "empty": 0, "failing-owner": 1, "collection-error": 2}
+    assert result.returncode == expected_status.get(case, 4), result.stdout + result.stderr
+    # Verbose pytest reports the actual call outcomes and complete parameter identities.
+    outcomes = {}
+    for line in result.stdout.splitlines():
+        words = line.split()
+        if (
+            len(words) >= 2
+            and words[0].startswith("tests/test_sample.py::")
+            and words[1] in {"PASSED", "FAILED"}
+        ):
+            outcomes[words[0]] = words[1]
+    expected = {
+        "complete": {
+            "tests/test_sample.py::test_steady": "PASSED",
+            "tests/test_sample.py::test_param[a]": "PASSED",
+            "tests/test_sample.py::test_param[b]": "PASSED",
+        },
+        "failing-owner": {"tests/test_sample.py::test_flaky": "FAILED"},
+    }
+    assert outcomes == expected.get(case, {}), result.stdout + result.stderr
+    if case == "empty":
+        assert "validated empty" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("quarantined", [False, True], ids=["default", "diagnostic"])
+def test_scoped_runs_allow_out_of_scope_registry_owners(tmp_path: Path, quarantined: bool) -> None:
+    listed = "test_param" if quarantined else "test_flaky"
+    project = _sample_project(
+        tmp_path, [_entry(f"test_sample.py::{listed}"), _entry("missing.py::test_missing")]
+    )
+    args = ["test_sample.py::test_param[a]"]
+    if quarantined:
+        args.append("--quarantined")
+
+    result = _run(project, *args)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _outcomes(result) == {"test_sample.py::test_param[a]": "PASSED"}
+    if quarantined:
+        full = _run(project, "test_sample.py::test_param[a]", "--quarantined-full")
+        assert full.returncode == pytest.ExitCode.USAGE_ERROR, full.stdout + full.stderr
+
+
+@pytest.mark.parametrize("status", [5, 42])
+def test_nightly_command_propagates_unqualified_nonzero(tmp_path: Path, status: int) -> None:
+    result = _run_nightly(tmp_path, forced_exit=status)
+
+    assert result.returncode == status, result.stdout + result.stderr
