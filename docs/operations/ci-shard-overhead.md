@@ -212,7 +212,7 @@ normal/nonself/protected gates and elapsed observations have separate receipts.
 
 ## Hosted image preparation
 
-All ordinary, nightly and migration uv installers call
+All ordinary, covered, nightly and migration uv installers call
 `python3 scripts/install_ci_uv.py`. Each attempt owns a fresh process session;
 the supervisor keeps its leader PID reserved until it has killed that group,
 including after a successful or failed early shell exit. The 120-second attempt

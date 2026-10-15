@@ -1607,6 +1607,7 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         "scripts/check_ci_test_shards.py",
         "scripts/ci_partition.py",
         "scripts/ci_weight_candidates.py",
+        "scripts/install_ci_uv.py",
         ".github/ci-test-weights.json",
         "tests/contracts/test_ci_test_targets.py",
         "pyproject.toml",

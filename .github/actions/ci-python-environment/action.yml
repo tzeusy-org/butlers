@@ -13,22 +13,7 @@ runs:
       with:
         python-version: 3.12.15
     - name: Install uv
-      run: |
-        set -euo pipefail
-        max_attempts=5
-        for attempt in $(seq 1 "${max_attempts}"); do
-          if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-            echo "uv installed on attempt ${attempt}"
-            break
-          fi
-          if [ "${attempt}" -eq "${max_attempts}" ]; then
-            echo "::error::uv install failed after ${max_attempts} attempts" >&2
-            exit 1
-          fi
-          echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-          sleep 10
-        done
-        echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      run: python3 scripts/install_ci_uv.py
       shell: bash
     - name: Compute exact environment cache key
       id: environment-key

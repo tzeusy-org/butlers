@@ -19,6 +19,7 @@ on:
       - scripts/ci_preflight_reconcile.py
       - scripts/ci_shard_observer.py
       - scripts/ci_environment.py
+      - scripts/install_ci_uv.py
       - scripts/summarize_junit_durations.py
       - src/butlers/testing/**
       - tests/contracts/test_ci_test_targets.py
