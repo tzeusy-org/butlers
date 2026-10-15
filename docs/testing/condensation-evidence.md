@@ -154,14 +154,23 @@ or higher, outside fenced code. Both hashes must differ. An existing citation or
 the policy requirement alone cannot authorize an unrelated expectation change.
 
 Every candidate change outside inherited public source must have an explicit
-account: exact approved inputs, reviewed requirement blocks with unchanged
-surrounding public text, or the finite named proof machinery/request paths that
-cannot be read as subject runtime inputs. There is no general Markdown, JSON,
-test-file or directory exemption. A request cannot select extra owners, rebind
-old evidence or extend the reviewed contract. Fresh passing suites establish
+account: exact approved input records, including proof machinery and request
+bytes, or reviewed requirement blocks with unchanged surrounding public text.
+There is no machinery, request, Markdown, JSON, test-file or directory exemption.
+A candidate authorization must equal the trusted public bytes; its own input
+list cannot authorize a replacement of itself. A request cannot select extra
+owners, rebind old evidence or extend the reviewed contract. Fresh passing suites establish
 actual execution; the independent amendment review establishes which semantic
 changes are intended. Neither replaces the other, or the ordinary final hosted
 and protected merge gates.
+
+This mode approves all candidate input changes instead of claiming that subjects
+cannot observe excluded tooling. Ordinary pytest discovery may inspect approved
+source metadata. That grants no unreviewed input or evidence reuse: the trusted
+manifest, exact source/tool records and fresh raw carriers remain mandatory.
+The execution supervisor must still establish bounded cleanup of every owned
+descendant, including nested sessions, on success, failure and interruption.
+The ordinary condensation protocol and its excluded-request observer are unchanged.
 
 ### CI speed authorization, 2026-10-15
 
@@ -176,7 +185,10 @@ The reviewed before source is
 `d276a32a1f6e5f44c11ef8e0b4eb1d2d8200f20c`; the approved subject is
 `2560ef2caf90ef95c2289498fafebfa9c63c7ddd`. These are review provenance, not a
 whole-head reuse exemption. The manifest contains five retained owners, nine
-changed requirement blocks and eighteen exact input records. It covers
+changed requirement blocks and twenty-four exact input records. The original
+eighteen subject inputs remain unchanged; six additional machinery, owning-test
+and request records bind the reviewed execution source
+`f13057ba9e3e66299f5ca5703dec9782605d8565`. The authorization covers
 REQ-ci-shard-assurance-001/002/004/006/007/008 and REQ-testing-034/049; the
 REQ-testing-034 amendment is bound in both its baseline and active change file.
 Independent review corrected the final DAG account to twenty expanded full-mode

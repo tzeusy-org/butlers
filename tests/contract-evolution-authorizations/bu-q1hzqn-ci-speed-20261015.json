@@ -230,6 +230,17 @@
       }
     },
     {
+      "path": "scripts/check_condensation_ledger.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a73162c23b53acfaedb5db9c81b01593dd4f5c2df23456607b22670902a85428"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "09f17033d9cc7a2de7263d3870899a9d544b5d27090faefbefff4ce89210574d"
+      }
+    },
+    {
       "path": "scripts/ci-job-timeouts.json",
       "before": {
         "mode": "100644",
@@ -274,6 +285,41 @@
       }
     },
     {
+      "path": "scripts/condense_evidence.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "ff763c828a4fc72177e94f883073c78c9822fc81bbc89ac5d253b816cca15641"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "af4c313ad7ee30bbb49ac5770eef56ea672474461e8b525da39f6d075cec52d7"
+      }
+    },
+    {
+      "path": "scripts/contract_evolution.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "4814ebcdbdca2fe0a98dab5cb3a86c0056b3142fc4864c3d9748148acccdc589"
+      }
+    },
+    {
+      "path": "scripts/contract_lifecycle.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "39f53378c50f0cc6cf04434eb65770fcd11859695e7d6d16e9875da902bc3f20"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-q1hzqn-ci-speed-20261015.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "586e102804d9e7121c1b97c42e5fd70d9124f44c7101f2618193f2d0c0dcc8ec"
+      }
+    },
+    {
       "path": "tests/contracts/test_ci_test_targets.py",
       "before": {
         "mode": "100644",
@@ -282,6 +328,17 @@
       "after": {
         "mode": "100644",
         "sha256": "a648444dc67e7fa3659cdd11254b58639875fc5e7a0a3ea0304e4976c85d78ba"
+      }
+    },
+    {
+      "path": "tests/scripts/test_check_condensation_ledger.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a665352edb5f2e2c8b47f46fff85e6214fc14c16ae50a50379f7735d3782748f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a63bec0dba6f0e3b4f4a4f7e5ad8ae3115b6181ea13bc7c3b7c20f9556d26326"
       }
     },
     {
