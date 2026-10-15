@@ -192,7 +192,7 @@ Real candidates held back as later slices, direct beads or next-run material. Ea
 
 ## Ledger feedback
 
-The lenses left 121 notes on existing beads. About 45 were applied as bead notes while the run was in flight, after the coordinator verified them; 49 more beads got notes at synthesis. No bead's scope, status or priority was changed. Read them with `jq '.synthesis.ledger_feedback[] | {bead, note}'`. The ones that change what to do:
+The lenses left 121 notes on existing beads. While the run was in flight the coordinator verified and applied 32 of them as notes on 23 beads; synthesis added 49 more, for 81 notes on 61 beads. No bead's scope, status or priority was changed. Read them with `jq '.synthesis.ledger_feedback[] | {bead, note}'`. The ones that change what to do:
 
 - `bu-kqme7f.6` now parks Gmail drafts from exposed or third-party goals (owner choice A); truncated previews drop Approve.
 - `bu-fg499t` must refuse caller url, login_url and web_app buttons; `validate_telegram_reply_markup` checks only callback_data today.
