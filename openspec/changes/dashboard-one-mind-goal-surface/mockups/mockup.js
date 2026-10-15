@@ -5,8 +5,13 @@ document.querySelector('[data-before]').onclick = () => {
   document.querySelector('[data-before]').setAttribute('aria-expanded', String(open));
   if (open) before.scrollIntoView({behavior: 'auto', block: 'start'});
 };
+const themeKey = 'd19-synthetic-theme-v1';
+const savedTheme = sessionStorage.getItem(themeKey);
+if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
 document.querySelector('button[data-theme]').onclick = () => {
-  document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  sessionStorage.setItem(themeKey, theme);
 };
 const palette = document.querySelector('dialog');
 document.querySelector('[data-command]').onclick = () => palette.showModal();
@@ -111,3 +116,21 @@ if (researchFixture) researchFixture.addEventListener('change', () => {
   document.querySelector('[data-research-record]').hidden = mode === 'empty' || mode === 'unavailable';
   document.querySelector('[data-research-coverage]').textContent = ({complete: '1 recorded call · Complete fixture population · Observed 09:15 UTC', empty: 'No recorded research calls · Complete ledger read · Observed 09:15 UTC', unavailable: 'Research ledger unavailable · Count unknown · Retry the owning read; no zero is inferred', partial: '1 recorded call on this page · More available · Cursor/total coverage partial', stale: 'Last-known call · Observed 09:15 UTC · Current source unavailable; not current freshness'})[mode];
 });
+const researchCall = document.querySelector('details#research-example-1');
+if (researchCall) {
+  const openResearchCall = hash => {
+    if (hash !== '#research-example-1' || researchCall.closest('[hidden]')) return;
+    researchCall.open = true;
+    researchCall.querySelector('summary').focus();
+  };
+  document.querySelectorAll('a[href="#research-example-1"]').forEach(link => {
+    link.addEventListener('click', event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (location.hash === link.hash) event.preventDefault();
+      openResearchCall(link.hash);
+    });
+  });
+  window.addEventListener('hashchange', () => openResearchCall(location.hash));
+  window.addEventListener('pageshow', () => requestAnimationFrame(() => openResearchCall(location.hash)));
+  openResearchCall(location.hash);
+}
