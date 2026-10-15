@@ -16,7 +16,6 @@ import platform
 import re
 import statistics
 import subprocess
-import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +23,7 @@ from pathlib import Path
 from ci_partition import (
     DIMENSIONS,
     HEX,
+    MAX_ADVISORY_FILE_SECONDS,
     ROOT,
     SELECTORS,
     body_digest,
@@ -391,7 +391,7 @@ def restore(*, repository: str, output: Path, root: Path = ROOT) -> None:
                 or any(
                     not isinstance(name, str)
                     or type(value) not in (int, float)
-                    or not 0 <= value <= sys.float_info.max
+                    or not 0 <= value <= MAX_ADVISORY_FILE_SECONDS
                     for name, value in costs.items()
                 )
             ):

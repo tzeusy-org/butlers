@@ -27,6 +27,8 @@ SELECTORS = {
     "integration": "integration and not nightly and not bench and not perf",
 }
 DIMENSIONS = {"unit": 5, "integration": 6}
+# Generous above every hosted shard cap; keeps advisory medians/sums finite.
+MAX_ADVISORY_FILE_SECONDS = 24 * 60 * 60
 HEX = re.compile(r"[0-9a-f]{64}")
 
 
@@ -332,7 +334,7 @@ def partition(data: dict, weights: dict, *, root: Path = ROOT) -> dict:
             for name, value in candidates.items()
             if name in files
             and type(value) in (int, float)
-            and 0 < value <= sys.float_info.max
+            and 0 < value <= MAX_ADVISORY_FILE_SECONDS
             and isinstance(profile["file_digests"].get(name), str)
             and HEX.fullmatch(profile["file_digests"][name])
             and profile["file_digests"][name] == data.get("file_digests", {}).get(name)

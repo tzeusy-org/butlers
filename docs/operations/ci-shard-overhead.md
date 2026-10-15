@@ -191,6 +191,9 @@ matching Python and pytest versions, dependency lock and lane selectors, with
 an age of at most fourteen days. The current fresh inventory includes each
 selected test file's digest. Only an unchanged file can reuse its measured cost;
 changed or new files use the valid lane median, or one when no valid costs exist.
+An advisory file cost cannot exceed one day, a generous ceiling above every
+finite hosted shard cap. This also keeps median and shard-sum arithmetic finite;
+positive but implausibly large numeric inputs receive the same fallback.
 Product-source changes do not discard all costs. A fixture or implementation
 change can still change an untouched test's runtime, so these are scheduling
 hints, not a wall-time guarantee. The original full source/config/run/attempt
