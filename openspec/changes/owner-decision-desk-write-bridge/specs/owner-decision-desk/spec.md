@@ -59,6 +59,12 @@ tracker's current state as evidence: a closed bead whose close reason carries th
 reason `bead_closed_elsewhere`; a still-open bead returns to `pending`. It SHALL NOT re-run a tracker
 operation for an intent before this reconciliation.
 
+When a bead cannot be described during reconciliation, an intent with a claim younger than
+24 hours, or with no recorded claim timestamp, SHALL remain `applying` while other intents
+continue. Once the claim is at least 24 hours old, the intent SHALL become terminal `failed`
+with reason `bead_unreadable_unsettled` and terminal timestamps. The applier SHALL NOT return
+that unreadable intent to `pending` or retry its close: the earlier close may have landed.
+
 The applier SHALL then claim pending intents oldest first, in a bounded batch, by atomically moving
 each from `pending` to `applying` and committing that claim before any tracker call. For each
 claimed intent it SHALL re-read the bead and SHALL fail the intent with a categorical reason when the
@@ -68,6 +74,13 @@ that `bd` answers for but cannot describe SHALL fail that intent alone (`bead_un
 SHALL NOT stop the batch. Otherwise
 it SHALL close the bead with a reason containing the chosen option, the intent marker, and the
 source, under a fixed audit actor, and mark the intent `applied`.
+
+Before classifying a failed `bd show` as an outage, except for a structured not-found answer,
+the applier SHALL make one bounded tracker statistics probe. Only a successful exit with a
+structured summary containing valid nonnegative integer issue counts SHALL establish tracker
+health. A healthy probe SHALL classify the failed show as `bead_unreadable`; an unsuccessful,
+empty, or malformed probe SHALL preserve `tracker_unavailable` behavior. A clean but unreadable
+show answer SHALL remain a per-bead fault without requiring a probe.
 
 A failed close SHALL be re-read before classification: our marker on a closed bead means `applied`.
 A transient tracker failure SHALL return the intent to `pending` with a categorical `last_error`;
@@ -106,6 +119,19 @@ Scope: v1-mandatory
 - **WHEN** the tracker is unreachable during a run
 - **THEN** claimed intents return to `pending` with `last_error=tracker_unavailable`
 - **AND** the export step still runs and the run reports failure
+
+#### Scenario: An aged unreadable claim settles without replay
+
+- **WHEN** reconciliation cannot describe a bead whose intent was claimed at least 24 hours ago
+- **THEN** the intent becomes `failed` with reason `bead_unreadable_unsettled` and terminal timestamps
+- **AND** its close is not retried and the remaining batch can proceed
+- **AND** a younger unreadable claim remains `applying`
+
+#### Scenario: A healthy tracker isolates a failed show
+
+- **WHEN** a bead's show command fails and one bounded statistics probe returns a valid healthy summary
+- **THEN** only that pending intent fails with reason `bead_unreadable` and remaining intents apply
+- **AND** an empty successful probe does not establish tracker health
 
 ### Requirement: Decision Prompts Route Through the Attention Policy
 
