@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import pytest
@@ -47,26 +44,4 @@ def mock_spawner() -> MockSpawner:
     return MockSpawner()
 
 
-@contextmanager
-def detach_leaked_db_log_handlers() -> Iterator[None]:
-    """On exit, detach every butler DB log handler attached to the root logger inside.
-
-    ``run_startup`` attaches a ``ButlerDBLogHandler`` to the root logger and only
-    the daemon's shutdown removes it. Tests that drive startup against mocks
-    rarely shut down, so the handler outlived them and forwarded later tests'
-    records to a dead pool, which warned into those tests' ``caplog``
-    (bu-sg5nia). Handlers attached before entry are left alone.
-    """
-    from butlers.core.butler_logging import ButlerDBLogHandler
-
-    root = logging.getLogger()
-    attached = set(root.handlers)
-    try:
-        yield
-    finally:
-        for handler in root.handlers[:]:
-            if isinstance(handler, ButlerDBLogHandler) and handler not in attached:
-                root.removeHandler(handler)
-
-
-__all__ = ["MockSpawner", "SpawnerResult", "detach_leaked_db_log_handlers", "mock_spawner"]
+__all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]

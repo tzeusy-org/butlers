@@ -1,7 +1,7 @@
-"""Contract tests for ``detach_leaked_db_log_handlers`` (bu-sg5nia).
+"""Contract tests for the log-isolation plugin (``tests/log_isolation.py``, bu-sg5nia).
 
-The root conftest wraps every test in this context manager so a daemon test
-that runs ``run_startup`` without shutting down cannot leave its
+The plugin wraps every test in ``detach_leaked_db_log_handlers`` so a daemon
+test that runs ``run_startup`` without shutting down cannot leave its
 ``ButlerDBLogHandler`` on the root logger for later tests to trip over.  It must
 detach exactly the butler DB handlers attached inside it, and nothing else.
 """
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from butlers.core.butler_logging import ButlerDBLogHandler
-from butlers.testing.shared_fixtures import detach_leaked_db_log_handlers
+from tests.log_isolation import detach_leaked_db_log_handlers
 
 pytestmark = pytest.mark.unit
 
@@ -50,3 +50,7 @@ def test_detaches_on_error_exit() -> None:
         root.addHandler(leaked)
         raise RuntimeError("startup failed after attaching the handler")
     assert leaked not in root.handlers
+
+
+def test_plugin_is_loaded_for_default_runs(pytestconfig: pytest.Config) -> None:
+    assert pytestconfig.pluginmanager.has_plugin("tests.log_isolation")
