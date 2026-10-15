@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from butlers.core.decision_callbacks import verify_decision_callback_token
 from butlers.jobs.decision_review import DecisionBead, DecisionDigest, compute_decision_digest
 
 IntentSource = Literal["dashboard", "telegram"]
@@ -311,13 +312,11 @@ async def latest_intents(
 
 
 async def get_prompt(
-    pool: asyncpg.Pool | asyncpg.Connection, prompt_id: uuid.UUID
+    pool: asyncpg.Pool | asyncpg.Connection, prompt_id: uuid.UUID, *, for_update: bool = False
 ) -> DecisionPrompt | None:
     row = await pool.fetchrow(
-        """
-        SELECT id, bead_id, options, default_option, created_at, delivery_outcome, delivered_at
-        FROM switchboard.decision_prompts WHERE id = $1
-        """,
+        "SELECT id, bead_id, options, default_option, created_at, delivery_outcome, delivered_at "
+        "FROM switchboard.decision_prompts WHERE id = $1" + (" FOR UPDATE" if for_update else ""),
         prompt_id,
     )
     if row is None:
@@ -359,17 +358,68 @@ async def record_prompt_choice(
         raise DecisionIntentError("option_not_offered", kind="invalid")
     digest = digest if digest is not None else compute_decision_digest()
     async with _intent_transaction(pool) as connection:
-        await _reconcile_reopened(connection, [prompt.bead_id], digest)
-        return await _record_locked(
-            connection,
-            bead_id=prompt.bead_id,
-            option=prompt.options[option_index],
-            source="telegram",
-            actor=actor,
-            prompt_id=prompt.id,
-            digest=digest,
-            expected_options=prompt.options,
+        return await _record_prompt_choice_locked(connection, prompt, option_index, actor, digest)
+
+
+class InvalidDecisionCallback(Exception):
+    """Authentication refused before any decision mutation."""
+
+
+class DecisionPromptNotFound(Exception):
+    """The requested prompt does not exist."""
+
+
+async def record_verified_prompt_choice(
+    pool: asyncpg.Pool,
+    *,
+    prompt_id: uuid.UUID,
+    option_index: int,
+    token: str,
+    secret: str | bytes,
+    actor: str,
+    digest: DecisionDigest,
+) -> RecordResult:
+    """Authenticate the current prompt generation and hold its lock through commit.
+
+    Authentication errors are deliberately distinct from named business refusals:
+    only an authenticated choice may reconcile reopening metadata.
+    """
+    async with _intent_transaction(pool) as connection:
+        prompt = await get_prompt(connection, prompt_id, for_update=True)
+        if prompt is None:
+            raise DecisionPromptNotFound()
+        verified = verify_decision_callback_token(
+            token, created_at=prompt.created_at, secret=secret
         )
+        if (
+            verified is None
+            or verified.prompt_id != prompt_id
+            or verified.option_index != option_index
+        ):
+            raise InvalidDecisionCallback()
+        return await _record_prompt_choice_locked(connection, prompt, option_index, actor, digest)
+
+
+async def _record_prompt_choice_locked(
+    connection: asyncpg.Connection,
+    prompt: DecisionPrompt,
+    option_index: int,
+    actor: str,
+    digest: DecisionDigest,
+) -> RecordResult:
+    if not 0 <= option_index < len(prompt.options):
+        raise DecisionIntentError("option_not_offered", kind="invalid")
+    await _reconcile_reopened(connection, [prompt.bead_id], digest)
+    return await _record_locked(
+        connection,
+        bead_id=prompt.bead_id,
+        option=prompt.options[option_index],
+        source="telegram",
+        actor=actor,
+        prompt_id=prompt.id,
+        digest=digest,
+        expected_options=prompt.options,
+    )
 
 
 __all__ = [
@@ -377,6 +427,8 @@ __all__ = [
     "DecisionIntent",
     "DecisionIntentError",
     "DecisionPrompt",
+    "DecisionPromptNotFound",
+    "InvalidDecisionCallback",
     "RecordResult",
     "find_open_decision",
     "get_prompt",
@@ -384,4 +436,5 @@ __all__ = [
     "live_intent",
     "record_decision_intent",
     "record_prompt_choice",
+    "record_verified_prompt_choice",
 ]
