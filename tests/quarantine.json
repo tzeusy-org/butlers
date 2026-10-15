@@ -2,11 +2,6 @@
   "note": "Flaky tests kept out of default pytest runs by tests/quarantine.py; the nightly quarantined job runs them with --quarantined. Each bead owns the root cause; the PR that removes the cause deletes the entry. See docs/testing/quarantine.md.",
   "tests": [
     {
-      "node": "tests/scripts/test_condense_evidence.py::test_actual_ctrace_arcs_and_removed_kills_are_retained",
-      "bead": "bu-oq6eiu",
-      "reason": "CPU-bound strace/ctrace condensation proofs exhaust their fixed 60 s proof deadline when sharing a 4-vCPU runner with two other xdist workers (proof-timeout receipts)."
-    },
-    {
       "node": "tests/scripts/test_condense_evidence.py::test_distinct_status_owner_loses_kill_and_arcs",
       "bead": "bu-uikmow",
       "reason": "CPU-bound strace/ctrace condensation proofs exhaust their fixed 60 s proof deadline under xdist co-tenancy, leaving a worker's request-access observation incomplete."
@@ -14,7 +9,7 @@
     {
       "node": "tests/scripts/test_condense_evidence.py::test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner",
       "bead": "bu-xle97o",
-      "reason": "Passing hosted runs already take about 243 s of the 300 s item timeout; xdist co-tenancy and merge-queue coverage push it past the bound."
+      "reason": "It runs five full condensation proofs in sequence. After the #4551 cost cuts, hosted unit-lane items still take 116-167 s, above the 150 s bar (2x headroom under the 300 s item timeout)."
     }
   ]
 }
