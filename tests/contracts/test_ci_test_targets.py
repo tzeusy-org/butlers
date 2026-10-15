@@ -1372,6 +1372,11 @@ else:
         source = yaml.safe_load(path.read_text())
         for name, job in source["jobs"].items():
             value = job.get("timeout-minutes")
+            if value == "${{ matrix.timeout }}":
+                assert set(job["strategy"]["matrix"]) == {"include"}
+                caps = [row["timeout"] for row in job["strategy"]["matrix"]["include"]]
+                assert caps and all(type(cap) is int and cap > 0 for cap in caps)
+                value = max(caps)
             assert isinstance(value, int) and not isinstance(value, bool) and value > 0
             declared[(str(path.relative_to(REPO_ROOT)), name)] = value
     assert set(declared) == {(r["workflow"], r["job"]) for r in register["jobs"]}
@@ -1535,6 +1540,164 @@ def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
         assert fixture[name]["git_sha"] in filename and fixture[name]["path"] in filename
         assert not Path(filename).is_relative_to(REPO_ROOT / "src/butlers")
     return {"source_count": len(measured), "historical_filenames": functions}
+
+
+def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> None:
+    """REQ-ci-shard-assurance-006: the real covered producer and publish gates."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    triggers = workflow[True]
+    assert set(triggers) == {"schedule", "workflow_dispatch", "pull_request"}
+    assert triggers["schedule"] == [{"cron": "37 19 * * *"}]
+    assert "pull_request_target" not in triggers
+    paths = triggers["pull_request"]["paths"]
+    for path in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/ci-coverage.yml",
+        "scripts/check_ci_coverage.py",
+        "scripts/check_ci_test_shards.py",
+        "scripts/ci_partition.py",
+        "tests/contracts/test_ci_test_targets.py",
+        "pyproject.toml",
+        "uv.lock",
+        "conftest.py",
+    ):
+        assert path in paths
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["env"]["CI_COVERAGE"] == "1"
+    jobs = workflow["jobs"]
+    assert set(jobs) == {
+        "coverage-inventory",
+        "coverage-shards",
+        "coverage-preflight",
+        "coverage-report",
+    }
+    assert "needs" not in jobs["coverage-inventory"]
+    shards = jobs["coverage-shards"]
+    assert shards["needs"] == ["coverage-inventory"]
+    assert shards["strategy"]["fail-fast"] is False
+    rows = shards["strategy"]["matrix"]["include"]
+    assert rows == [
+        {"lane": lane, "shard": index, "timeout": cap}
+        for lane, count, cap in (("unit", 5, 28), ("integration", 6, 36))
+        for index in range(1, count + 1)
+    ]
+    assert shards["timeout-minutes"] == "${{ matrix.timeout }}"
+    execute = _workflow_step(job=shards, name="Run the complete assigned covered shard")
+    assert execute["run"] == (
+        "uv run python scripts/check_ci_test_shards.py run "
+        "--lane ${{ matrix.lane }} --shard ${{ matrix.shard }} "
+        '--inventory-dir "${RUNNER_TEMP}/ci-inventory"'
+    )
+    assert execute["env"]["COVERAGE_FILE"].endswith(
+        "coverage-${{ matrix.lane }}-${{ matrix.shard }}.data"
+    )
+    assert (
+        _workflow_step(job=shards, name="Upload raw covered shard inputs")["with"][
+            "if-no-files-found"
+        ]
+        == "error"
+    )
+    inventory = _workflow_step(
+        job=jobs["coverage-inventory"], name="Collect full current inventory"
+    )
+    assert inventory["run"].endswith(
+        'scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"'
+    )
+    for name, prerequisites in (
+        ("coverage-preflight", ["coverage-inventory", "coverage-shards"]),
+        ("coverage-report", ["coverage-inventory", "coverage-shards", "coverage-preflight"]),
+    ):
+        job = jobs[name]
+        assert job["needs"] == prerequisites
+        assert job["if"] == "always()"
+        gate = _workflow_step(job=job, name="Require every coverage prerequisite")
+        assert job["steps"][0] == gate
+        for failed in (None, *prerequisites, "unknown-job"):
+            for outcome in ("failure", "skipped", "cancelled", "unknown", "success"):
+                needs = {key: {"result": "success"} for key in prerequisites}
+                if failed is not None:
+                    needs[failed] = {"result": outcome}
+                result = subprocess.run(
+                    ["bash", "-e", "-c", gate["run"]],
+                    env={**os.environ, "NEEDS_JSON": json.dumps(needs)},
+                    capture_output=True,
+                    timeout=10,
+                )
+                expected = failed is None or (failed != "unknown-job" and outcome == "success")
+                assert (result.returncode == 0) is expected, (name, failed, outcome)
+        missing = {key: {"result": "success"} for key in prerequisites[1:]}
+        result = subprocess.run(
+            ["bash", "-e", "-c", gate["run"]],
+            env={**os.environ, "NEEDS_JSON": json.dumps(missing)},
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode != 0
+    preflight = jobs["coverage-preflight"]
+    assert (
+        "ci_preflight_reconcile.py"
+        in _workflow_step(job=preflight, name="Reconcile all eleven covered execution populations")[
+            "run"
+        ]
+    )
+    assert (
+        _workflow_step(job=preflight, name="Smoke tests (fast gate + release evidence)")["if"]
+        == "steps.reconcile.outputs.smoke_covered != 'true'"
+    )
+    assert (
+        _workflow_step(job=preflight, name="Prepare smoke test duration evidence")["run"]
+        == (
+            _workflow_step(
+                job=yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
+                    "check-preflight"
+                ],
+                name="Prepare smoke test duration evidence",
+            )["run"]
+        )
+    )
+    assert (
+        _artifact_step(job=preflight, artifact_name="ci-coverage-execution-proof")["with"][
+            "if-no-files-found"
+        ]
+        == "error"
+    )
+    report = jobs["coverage-report"]
+    badge = _workflow_step(job=report, name="Update coverage badge")
+    assert badge["if"] == (
+        "${{ success() && github.ref == 'refs/heads/main' && "
+        "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}"
+    )
+    assert (
+        _artifact_step(job=report, artifact_name="ci-combined-coverage-report")["with"][
+            "if-no-files-found"
+        ]
+        == "error"
+    )
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+    )
+    assert action["runs"]["using"] == "composite"
+    assert action["inputs"]["request-observer"]["default"] == "false"
+    action_steps = {"steps": action["runs"]["steps"]}
+    original = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
+        "guards"
+    ]
+    for name in (
+        "Set up Python 3.12",
+        "Install uv",
+        "Compute exact environment cache key",
+        "Restore advisory environment cache",
+        "Install dependencies",
+        "Install request file-access observer",
+    ):
+        actual = _workflow_step(job=action_steps, name=name)
+        old = _workflow_step(job=original, name=name)
+        assert actual.get("run") == old.get("run")
+        assert actual.get("with") == old.get("with")
+    assert all(
+        any(step.get("uses") == "./.github/actions/ci-python-environment" for step in job["steps"])
+        for job in jobs.values()
+    )
 
 
 def test_ci_coverage_report_rejects_any_bad_input_before_publication(
@@ -1774,6 +1937,58 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             payload[field] = value
             metadata.write_text(json.dumps(payload))
         run("fixed-" + case, fixed, 2)
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    covered = _workflow_step(
+        job=covered_workflow["jobs"]["coverage-report"],
+        name="Combine coverage from all independent test shards",
+    )["run"]
+    # Each event gets a new actual fixture collection/assignment and eleven
+    # genuine traced inputs stamped by the production writer. No merge-group
+    # event is borrowed to certify the scheduled or PR assurance path.
+    for event in ("schedule", "workflow_dispatch", "pull_request", "push"):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+        environment["GITHUB_EVENT_NAME"] = event
+        inventory = collect_inventory(root=checkout)
+        assignment = partition(inventory, {}, root=checkout)
+        (inventory_dir / "inventory.json").write_text(json.dumps(inventory))
+        (inventory_dir / "assignment.json").write_text(json.dumps(assignment))
+        reset()
+        for lane, index in specs:
+            current_data = inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "coverage",
+                    "run",
+                    f"--data-file={current_data}",
+                    "trace.py",
+                ],
+                cwd=checkout,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            reporter.write_shard_metadata(
+                coverage_file=current_data,
+                repo_root=checkout,
+                lane=lane,
+                shard=index,
+                test_files=assigned_files(
+                    inventory, assignment, lane=lane, index=index, root=checkout
+                ),
+                assignment_digest=assignment["digest"],
+            )
+        run("covered-actual-" + event, covered, 2 if event == "push" else 0)
+        if event != "push":
+            payload = json.loads(metadata.read_text())
+            payload["event"] = "merge_group"
+            metadata.write_text(json.dumps(payload))
+            report.unlink(missing_ok=True)
+            output.write_text("")
+            combined.unlink(missing_ok=True)
+            run("covered-cross-event-" + event, covered, 2)
+    assert all("GITHUB_EVENT_NAME=merge_group" not in body for body in (fixed, covered))
     receipt = tmp_path / "coverage-report-controls.json"
     receipt.write_text(
         json.dumps(

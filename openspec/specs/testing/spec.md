@@ -1263,7 +1263,7 @@ Scope: v1-mandatory
 - **AND** credentials, env values, DSNs, provider content, shared worktree venvs and unrelated cache deletion remain excluded
 
 ### Requirement: Measured Worker and Coverage Core Selection
-Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all ten protected covered shards and fail-closed publisher identity checks SHALL remain mandatory.
+Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all eleven full-source covered assurance shards, the complete protected queue test population and fail-closed publisher identity checks SHALL remain mandatory. Owned scheduled/manual and coverage-pipeline PR validation SHALL retain actual event provenance, complete fresh inventory and eleven-input execution reconciliation before report publication; PR validation MUST NOT publish the main badge. Merge-group coverage SHALL remain enabled during replacement validation until a complete actual covered replacement run and independent source review authorize cadence cutover; local covered defaults and every actual worker/tracer comparison remain unchanged.
 
 ID: REQ-testing-049
 Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
@@ -1285,7 +1285,7 @@ Scope: v1-mandatory
 - **AND** a planted covered-line companion proves collection and a forced fallback or unsupported branch/context/concurrency candidate is rejected
 
 #### Scenario: Coverage mode stays exact
-- **WHEN** ordinary PR, standalone or merge_group covered consumers execute
+- **WHEN** ordinary PR, standalone, transitional merge_group or owned scheduled/manual/pipeline-validation covered consumers execute
 - **THEN** strict CI_COVERAGE 0/1 selection and governed coverage flags stay exact
 - **AND** a worker/core experiment does not enable partial coverage, append across jobs or skip any protected shard
 

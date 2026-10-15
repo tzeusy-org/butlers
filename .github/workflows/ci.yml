@@ -995,7 +995,7 @@ jobs:
           key: ${{ steps.timing-key.outputs.key }}
 
       - name: Integration tests (shard ${{ matrix.shard }})
-        # Guards produces the fresh assignment; this child independently verifies
+        # Inventory produces the fresh assignment; this child independently verifies
         # its actual items before Docker/testcontainers run. Preflight reconciles after all children.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-${{ matrix.shard }}.data

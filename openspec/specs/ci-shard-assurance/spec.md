@@ -121,23 +121,23 @@ Scope: v1-mandatory
 - **THEN** preflight and check are non-passing and healthy no-LLM/no-E2E companions still run
 
 ### Requirement: Complete eleven-input independent coverage reporting
-The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/report/badge. Required check MUST NOT install or await reporting, and PR executions SHALL retain identical selection without coverage instrumentation.
+The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/report/badge. An owned daily scheduled, manually invoked and coverage-pipeline-path-triggered PR workflow SHALL freshly collect both complete lane populations, execute all five unit and six integration covered shards, independently reconcile all eleven execution receipts and preserve real smoke fallback and release evidence before reporting. The reporter SHALL bind the actual admitted workflow event to inventory and every coverage input; a schedule, manual or PR run MUST NOT impersonate merge_group. Every prerequisite failure, skip, cancellation, missing input or malformed identity SHALL remain visibly non-passing before publication. PR validation SHALL upload the complete authentic report without updating the main badge; only successful scheduled/manual runs of main MAY update that badge. Required check MUST NOT install or await reporting, and ordinary PR executions SHALL retain identical selection without coverage instrumentation. During replacement validation merge-group coverage SHALL remain enabled until an actual complete covered replacement run and independent source review authorize the cadence cutover; standalone default covered behavior and strict CI_COVERAGE 0/1 admission SHALL remain.
 
 ID: REQ-ci-shard-assurance-006
 Source: bu-ly3lv5.6 P9; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
 Scope: v1-mandatory
 
 #### Scenario: Eleven real valid inputs pass the actual reader
-- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest
+- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest and the actual admitted merge-group, scheduled, manual or pipeline-validation PR event
 - **THEN** all pass the same installed CoverageData path before combination and report/badge publication
 
 #### Scenario: One bad input refuses publication
 - **WHEN** ten valid inputs accompany one corrupt, empty, missing, extra, stale or wrong-identity input
-- **THEN** reporting fails visibly before report/badge while test verdicts remain truthful
+- **THEN** reporting fails visibly before report/badge while test verdicts remain truthful, including when any prerequisite failed or skipped and when event metadata was borrowed from another trigger
 
 #### Scenario: PR opt-out and standalone compatibility survive
 - **WHEN** CI_COVERAGE is supplied0/1, malformed or absent in standalone execution
-- **THEN** PR0 has no cov arguments/uploads, MG1 retains unique raw files and standalone defaults1; malformed flags refuse execution
+- **THEN** ordinary PR0 has no cov arguments/uploads, owned assurance1 and transitional MG1 retain unique raw files and standalone defaults1; malformed flags refuse execution and pipeline-validation PRs cannot publish the main badge
 
 #### Scenario: Historical code is not current source coverage
 - **WHEN** a helper executes a historical module outside the present production source namespace

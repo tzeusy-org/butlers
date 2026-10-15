@@ -123,6 +123,14 @@ The non-required `coverage` job verifies all eleven actual CoverageData database
 population, tracing, digest and same-checkout/run/attempt/computed assignment before combine.
 PRs still run without coverage; merge-group and ordinary standalone shard calls retain it.
 Reporting integrity remains separate from required check/guards/frontend verdicts.
+The owned daily/manual coverage workflow also validates coverage-pipeline PR changes
+with actual event provenance, full fresh inventory, all eleven covered children,
+independent execution reconciliation and real smoke fallback before strict reporting.
+Its always-running preflight/report gates refuse every failed or skipped prerequisite.
+Pipeline PRs may upload authentic reports but only successful scheduled/manual main
+runs may update the badge. Queue coverage remains enabled during replacement
+validation until actual covered hosted evidence and independent review authorize
+cutover; no source addition proves that result or timing gain.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint

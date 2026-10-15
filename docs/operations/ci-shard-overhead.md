@@ -120,6 +120,42 @@ job metadata to measure job start to setup/first result. The job setup target is
 installation about 5 seconds and container absence/under 3 seconds remain
 unmet until genuine named hosted observations demonstrate them.
 
+## Owned full coverage assurance
+
+The `CI coverage assurance` workflow in `.github/workflows/ci-coverage.yml`
+executes daily at 19:37 UTC, supports manual invocation, and validates coverage
+pipeline changes through an explicit PR path filter. Its job names are distinct
+from the protected CI contexts. Each run records its actual schedule, manual or
+PR event throughout inventory, execution and coverage metadata. No merge-group
+identity is borrowed to authorize a different event.
+
+Four job stages preserve the complete proof: one fresh installed inventory and
+both budgets; an explicit five-unit/six-integration covered matrix; independent
+eleven-child execution reconciliation with the existing real smoke fallback;
+and strict eleven-input CoverageData validation before combination, report
+upload or badge output. Failed, skipped, cancelled, missing or unknown
+prerequisites fail the always-running preflight/report gates. Every input keeps
+its current checkout, assignment, run and attempt binding. A genuine pipeline
+PR produces a full report but cannot update the main badge. Only a successful
+scheduled or manual main run can publish the badge.
+
+The local `ci-python-environment` composite retains the existing exact Python
+identity, bounded UV installer, advisory cache key and mandatory frozen editable
+repair. Test consumers request the same file-access observer. Unit and
+integration rows retain their complete 28/36-minute watchdogs; inventory,
+preflight and report retain 35/27/16 minutes. New-workflow bounds are provisional
+until separately observed. The covered matrix has eleven concurrent children;
+its concurrency group does not cancel the protected CI run. The one validation
+PR may therefore consume extra runner capacity and is not a natural timing
+sample for the queue optimization.
+
+Replacement validation is staged. The queue and its existing reporter remain
+covered while the owned workflow obtains an actual successful eleven-input
+hosted result and independent source review. Only then may a subsequent change
+set the queue to untraced execution and retire its advisory reporter. Local
+standalone calls retain covered defaults throughout. No replacement hosted
+success, cadence cutover or wall-clock gain is claimed by this source addition.
+
 ## Independent experiments and coverage
 
 Ordinary/local unit defaults remain three workers, integration remains bounded

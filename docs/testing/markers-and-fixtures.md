@@ -259,3 +259,20 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
+
+### Owned coverage pipeline validation
+
+`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
+coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
+five unit and six integration commands, complete execution reconciliation and
+smoke fallback before the strict CoverageData reader. Inventory, execution and
+coverage metadata preserve the actual event, checkout, run and attempt. Both
+preflight and reporting fail visibly when any prerequisite fails, skips or is
+unknown. PR runs produce full report artifacts; only scheduled/manual main
+success can update the badge. Its exact Python/cache/frozen repair comes from
+the local setup composite, with existing finite job caps retained per row.
+
+During replacement validation the ordinary CI queue and reporter remain covered.
+An actual successful eleven-input hosted replacement and independent source
+review are required before any subsequent cadence cutover. Local standalone
+coverage still defaults on and malformed CI_COVERAGE flags still refuse.
