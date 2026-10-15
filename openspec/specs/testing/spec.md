@@ -1378,6 +1378,10 @@ complete owner and opaque case populations, successful setup/call/teardown,
 bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
 source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
 reviewer-name string, successful test result or current-branch approval file.
+Every candidate-only input change, including proof machinery and execution
+requests, SHALL have exact protected approval; an unobserved-tooling exemption
+SHALL NOT substitute for that approval. Owned cleanup SHALL include descendants
+that create nested sessions, on success, failure and interruption.
 The initial mode SHALL NOT admit deletions, renames, reduced case populations,
 environment waivers or migration/runtime substitutions. Every other loss SHALL
 retain ordinary survivor-evidence obligations.
@@ -1391,6 +1395,7 @@ Scope: v1-mandatory
 - **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
 - **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
 - **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
+- **AND** exact protected input approval includes proof machinery and requests, while bounded cleanup accounts for every owned descendant
 
 #### Scenario: Candidate declarations cannot grant their own exception
 - **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
