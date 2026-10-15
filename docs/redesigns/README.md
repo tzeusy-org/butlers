@@ -67,6 +67,7 @@ Harvest and state working files are gitignored. The cap and pruning rule live in
 
 | Run | Dossier |
 |---|---|
+| 20 (2026-10-15) | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) — Dots superset lens |
 | 19 (2026-10-14) | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) — scoped QA remediation direction |
 | 18 (2026-10-13) | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) — platform simplification lens |
 | 17 (2026-10-06) | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) — SDLC velocity lens |

@@ -30,6 +30,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
 | 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
+| 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
 
 ## Tier history
 
@@ -405,3 +406,23 @@ Scoped project-direction from the accepted monthly audit; no new ecosystem fan-o
 7. Reconcile QA remediation delivery and generate epic report (gen-1) (bu-6a9xxw.7)
 
 Canonical inbox source acceptance bu-ratgnb is a separate held prerequisite, not a competing inbox implementation. Tier movement is not comparable to the earlier broad ops cohort.
+
+### 20 (Dots superset) (2026-10-15) · epic bu-jv1moa
+
+Feature-first lens: what Butlers can do that ChatGPT Dots cannot. Gate bu-4ap4ap remains owner-held. Working files call it run 19.
+
+1. Cost governance across the RFC 0038 switch: a fail-closed monthly fleet pool with an owner reserve, plus origin-aware starting rungs (bu-jv1moa.1)
+2. Exact-call approval card: the phone card shows the stored recipients and content, labels model text as claims, binds the args digest, and offers Approve only when the whole call fits (bu-jv1moa.2)
+3. Owner link references: every live link or button on an owner surface comes from a server-held provenance row (a dashboard route, a page the goal's research opened, or an owner-confirmed vendor door) (bu-jv1moa.3)
+4. Read every document the owner receives: paged PDF text, page images for scans, the lazy Gmail attachment fetch, and prompt-free document deadlines classed as record (bu-jv1moa.4)
+5. Finished files: Drive export to PDF, XLSX and DOCX, native Sheet charts, report homes updated in place, research deliverables recorded on the goal, and Butlers-made files attached to owner Gmail drafts (bu-jv1moa.5)
+6. Home safety: a deterministic leak, smoke, CO, freezer and open-door sentinel with an immediate owner alert and an honest 'house is blind' signal, plus owner-marked critical entities that always park (bu-jv1moa.6)
+7. Owner places and confirmed presence edges: one owner-edited place registry, a fused leave and enter log, coordinate-free travel legs, and place-keyed reminders (bu-jv1moa.7)
+8. Timed and immediate delivery lanes, with the departure sweep as first consumer: one Telegram card when the owner leaves home, each open item fixable by one tap (bu-jv1moa.8)
+9. Pre-event cards on Telegram: a just-in-time meeting card from the prep envelope now, then leave-by timing learned from the owner's own trips (bu-jv1moa.9)
+10. Standing replies: owner-authored, recipient-pinned message templates with typed slots, the only standing rule an exposed goal can use (bu-jv1moa.10)
+11. Promise radar: two-way commitments from the owner's own messages and counterparties' promises, confirmed with one Telegram tap (bu-jv1moa.11)
+12. Owner Projects: an owner-only versioned charter with typed links, armed by one approval of an enumerated check-in bundle, with exposure-tolerant check-ins and a Telegram project card (bu-jv1moa.12)
+13. Web watches through pinned research probes: owner-approved fixed questions run by code on the governed research host, alerting on price, availability or page change (bu-jv1moa.13)
+14. Inspectable owner knowledge: an owner-only Vouch for reported, inferred or web-derived facts, and a compiled owner profile page that is exactly what every lead is told (bu-jv1moa.14)
+15. Health visit brief: an owner-only 'since your last appointment' summary delivered before each medical appointment (bu-jv1moa.15)
