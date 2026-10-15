@@ -6,11 +6,19 @@ event, sender and control identity stay outside content scrubbing.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
 from butlers import ingestion_bearer_scrub as bearer_scrub
 from butlers.connectors.home_assistant_envelope import build_state_changed_normalized_text
+
+# Copy syntax, not bearer recognition: a value is a whitespace-delimited atom,
+# optionally surrounded by prose punctuation. Internal punctuation belongs to
+# the value (482913.00 and INV-482913-2026 are not copies of 482913). Signs and
+# unit symbols belong to the value too. Never normalize or rewrite punctuation.
+_COPY_ATOM = re.compile(r"\S+")
+_PROSE_PUNCTUATION = "\"'()[]{}.,;:!?“”‘’"
 
 
 class HABearerScrubError(RuntimeError):
@@ -105,16 +113,28 @@ def _context_redactions(text: str) -> tuple[str, list[tuple[str, str]]]:
 
 
 def _replace_copy(text: str, original: str, replacement: str) -> str:
-    """Replace complete selected tokens, never a substring of another value."""
+    """Project only complete lexical copies of the shared detector's selection.
+
+    Establish all atom edges in one pass. A formatted selection may span atoms,
+    but both ends must coincide with complete values, including quoted/prose
+    echoes. Numerical substrings inside a different atom are never copies.
+    This does not select any new bearer: ``original`` comes only from the
+    unchanged shared detector, and the context must re-render exactly afterward.
+    """
+    starts, ends = set(), set()
+    for atom in _COPY_ATOM.finditer(text):
+        start, end = atom.span()
+        while start < end and text[start] in _PROSE_PUNCTUATION:
+            start += 1
+        while end > start and text[end - 1] in _PROSE_PUNCTUATION:
+            end -= 1
+        starts.add(start)
+        ends.add(end)
     pieces = []
     cursor = 0
     while (index := text.find(original, cursor)) >= 0:
         end = index + len(original)
-        # Projection copies an already recognized token; these boundaries do
-        # not recognize new codes or broaden the shared detector's policy.
-        left = index and (text[index - 1].isalnum() or text[index - 1] == "_")
-        right = end < len(text) and (text[end].isalnum() or text[end] == "_")
-        complete = not (original[0].isalnum() and left or original[-1].isalnum() and right)
+        complete = index in starts and end in ends
         pieces.extend((text[cursor:index], replacement if complete else original))
         cursor = end
     pieces.append(text[cursor:])
@@ -151,11 +171,14 @@ def _replace_state_content(
 
 def _render_context(data: dict[str, Any], single_state: str | None) -> str:
     old, new = data.get("old_state") or {}, data.get("new_state") or {}
-    attributes = new.get("attributes") or {}
     current = (data.get(single_state) or {}) if single_state else new
+    attributes = current.get("attributes") or {}
+    friendly_name = data.get("friendly_name") or attributes.get("friendly_name")
+    if single_state:
+        friendly_name = attributes.get("friendly_name") or data.get("friendly_name")
     return build_state_changed_normalized_text(
         entity_id=data.get("entity_id") or "home_assistant",
-        friendly_name=data.get("friendly_name") or attributes.get("friendly_name"),
+        friendly_name=friendly_name,
         old_state=None if single_state else old.get("state"),
         new_state=current.get("state"),
         unit_of_measurement=attributes.get("unit_of_measurement"),
@@ -169,8 +192,9 @@ def _scrub_transition(data: dict[str, Any]) -> dict[str, Any]:
     for key in ("old_state", "new_state"):
         if key in result:
             result[key] = _scrub_state_values(result[key])
-    # The same label describes each state. Single-state renderings also protect
-    # the second code when a first code consumes the shared detector's match.
+    # Each state owns its label/units, even if the other state is renamed or
+    # absent. Also evaluate the actual transition rendering. Separate state
+    # probes protect a second code consumed by the first shared-detector match.
     for single in ("old_state", "new_state", None):
         if single and not result.get(single):
             continue

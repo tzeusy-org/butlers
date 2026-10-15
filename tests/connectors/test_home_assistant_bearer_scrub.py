@@ -42,6 +42,18 @@ _ENDPOINT = "home_assistant:homeassistant.test:8123"
 _TIME = "2026-10-15T09:00:00+00:00"
 _CODE = "482913"
 _URL = "https://acct.example.com/reset-password?token=abc123def456"
+_ORDINARY_COPY_CONTROLS = {
+    "amount_text": "482913.00",
+    "amount_value": 482913.0,
+    "amount_percent": "482913%",
+    "signed_value": "+482913",
+    "threshold_value": "<482913",
+    "order_id": "INV-482913-2026",
+    "unicode_id": "α482913β",
+    "underscored_id": "item_482913_value",
+    "date": "2026-10-15",
+    "postal_note": "Zip code 90210",
+}
 
 
 def _event(entity="sensor.phone_last_notification", state="Your code is 482913"):
@@ -179,6 +191,8 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
         split["data"]["new_state"]["attributes"] = {
             "friendly_name": "Your verification code",
             "echo": new_value,
+            "quoted_echo": f'"{new_value}"',
+            "prose_echo": f"Echo ({new_value}).",
         }
         original = copy.deepcopy(split)
         await dispatch("state_changed", split)
@@ -205,11 +219,39 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
         assert await persist_ha_history(
             pool,
             entity_id="person.synthetic",
-            state="482913",
+            state=new_value,
             attributes=split["data"]["new_state"]["attributes"],
             recorded_at=datetime(2026, 10, 15, 9, tzinfo=UTC),
         )
         _no_bearer(pool.execute.call_args.args)
+
+    # Each state owns its label. New metadata cannot erase a recognized old
+    # context, including when the entity has been removed altogether.
+    for new_state in ({"state": "unknown", "attributes": {"friendly_name": "Ordinary"}}, None):
+        old_context = _event()
+        old_context["time_fired"] = datetime.now(UTC).isoformat()
+        old_context["data"]["old_state"] = {
+            "state": "482913",
+            "attributes": {"friendly_name": "Your verification code", "echo": "482913"},
+        }
+        old_context["data"]["new_state"] = new_state
+        frozen_old_context = copy.deepcopy(old_context)
+        llm = AsyncMock()
+        evaluator = DiscretionEvaluator(_ENDPOINT, llm)
+        connector, _, dispatch = _wire(evaluator=evaluator)
+        await dispatch("state_changed", old_context)
+        assert len(evaluator.window.entries) == 1
+        _no_bearer([entry.text for entry in evaluator.window.entries])
+        llm.assert_not_awaited()
+        assert connector._mcp_client.call_tool.await_count == 1
+        _no_bearer(connector._mcp_client.call_tool.call_args.args[1])
+        delivered_old_context = AsyncMock()
+        old_queue = HAEventReorderBuffer(submit=delivered_old_context, window_s=0, max_size=100)
+        await old_queue.add("state_changed", old_context)
+        await old_queue.flush_all()
+        assert delivered_old_context.await_count == 1
+        _no_bearer(delivered_old_context.call_args.args[1])
+        assert old_context == frozen_old_context
 
     # Selected-code echoes are copies; a longer ordinary identifier containing
     # the same digits is not. Drive the real MCP and direct history consumers.
@@ -221,6 +263,7 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
         "order_note": "Order 14829130",
         "numeric": 14829130,
         "postal": "4829130",
+        **_ORDINARY_COPY_CONTROLS,
     }
     mixed["data"]["new_state"]["attributes"] = {
         "friendly_name": "Your verification code",
@@ -473,7 +516,11 @@ async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
         _no_bearer(row)
 
     mixed = copy.deepcopy(split)
-    ordinary_fields = {"order_number": "14829130", "order_note": "Order 14829130"}
+    ordinary_fields = {
+        "order_number": "14829130",
+        "order_note": "Order 14829130",
+        **_ORDINARY_COPY_CONTROLS,
+    }
     mixed["data"]["new_state"]["attributes"].update(echo="482913", **ordinary_fields)
     mixed_submit = AsyncMock()
     mixed_persistence = HAFilterPersistence(_ENDPOINT, None, mixed_submit)
@@ -499,6 +546,39 @@ async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
             _no_bearer([state["state"], state["attributes"]["echo"]])
             assert {key: state["attributes"][key] for key in ordinary_fields} == ordinary_fields
     assert mixed["data"]["new_state"]["attributes"]["echo"] == "482913"
+
+    for new_state in ({"state": "unknown", "attributes": {"friendly_name": "Ordinary"}}, None):
+        old_context = _event()
+        old_context["data"]["old_state"] = {
+            "state": "482913",
+            "attributes": {"friendly_name": "Your verification code", "echo": "482913"},
+        }
+        old_context["data"]["new_state"] = new_state
+        frozen_old_context = copy.deepcopy(old_context)
+        old_submit = AsyncMock()
+        old_persistence = HAFilterPersistence(_ENDPOINT, None, old_submit)
+        old_args = {
+            "entity_id": old_context["data"]["entity_id"],
+            "ha_event": old_context,
+            "time_fired": _TIME,
+            "friendly_name": "Ordinary",
+            "old_state": old_context["data"]["old_state"],
+            "new_state": new_state,
+        }
+        old_persistence.record_domain_excluded(**old_args, domain="sensor")
+        old_persistence.record_insignificant_delta(
+            **old_args, device_class="temperature", delta=0.1
+        )
+        old_persistence.record_discretion_ignore(**old_args)
+        old_persistence.record_global_skip(**old_args, rule_type="source_channel")
+        assert len(old_persistence) == 4
+        for row in old_persistence._buffer._rows:
+            _no_bearer(row)
+            await old_persistence._submit_scrubbed_replay(row[9])
+        assert old_submit.await_count == 4
+        for call in old_submit.call_args_list:
+            _no_bearer(call.args[0])
+        assert old_context == frozen_old_context
 
     submit = AsyncMock()
     persistence = HAFilterPersistence(_ENDPOINT, None, submit)

@@ -28,3 +28,9 @@ Original expected test delta remains Tests: +3 ~0 -0. Actual added delta is Test
 - [x] R23.2 Replace substring/fuzzy projection with complete-token copies and bounded ordered alignment while retaining contextual withholding, ordinary outputs and fixed refusal.
 - [x] R23.3 Record current owning tests, collection, inventory, strict checks and applicable guards with all source/case preservation and local PostgreSQL limitations.
 - [ ] R23.4 Obtain fresh independent review and exact-head hosted canonical PostgreSQL proof before merge readiness.
+
+## Complete-copy and own-state-context checkpoint
+- [x] P.1 Reproduce the reviewed decimal/compound fidelity and changed/missing-new-label custody failures on 4390 with the extended existing real-consumer owners.
+- [x] P.2 Project complete selected lexical copies and probe each state's own context plus the actual transition without changing shared detection or ordinary representations.
+- [x] P.3 Record final owning, source preservation, strict and applicable guard receipts for the private checkpoint.
+- [ ] P.4 Obtain a new independent exact-source review and actual hosted canonical PostgreSQL outcomes before any publication or readiness claim.
