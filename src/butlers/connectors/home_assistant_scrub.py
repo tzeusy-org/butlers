@@ -7,7 +7,6 @@ event, sender and control identity stay outside content scrubbing.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from difflib import SequenceMatcher
 from typing import Any
 
 from butlers import ingestion_bearer_scrub as bearer_scrub
@@ -41,55 +40,96 @@ def scrub_ha_normalized_text(text: str) -> str:
         raise HABearerScrubError("Home Assistant content scrub failed") from None
 
 
-def _placeholder_tokens(text: str) -> list[str]:
-    """Treat shared placeholders atomically when locating its redactions.
+def _content_chunks(text: str) -> list[tuple[str, bool]]:
+    """Partition public placeholders in order, searching each suffix only once.
 
-    Matching their internal punctuation against the source could otherwise
-    split one detector replacement into misleading partial source fragments.
-    This parses only public shared placeholders; it does not detect secrets.
+    This is placeholder parsing, not a second secret detector. Keeping protected
+    placeholders intact also prevents a code echo from rewriting their metadata.
     """
-    placeholders = {
-        bearer_scrub.placeholder(hit.kind, hit.provider_domain)
-        for hit in bearer_scrub.placeholder_artifacts(text)
-    }
+    chunks = []
+    cursor = 0
+    for hit in bearer_scrub.placeholder_artifacts(text):
+        hold = bearer_scrub.placeholder(hit.kind, hit.provider_domain)
+        index = text.find(hold, cursor)
+        if index < 0:
+            raise HABearerScrubError("Home Assistant content scrub failed")
+        chunks.append((text[cursor:index], False))
+        chunks.append((hold, True))
+        cursor = index + len(hold)
+    chunks.append((text[cursor:], False))
+    return chunks
+
+
+def _placeholder_tokens(text: str) -> list[str]:
+    """Represent unchanged placeholders atomically in a linear token stream."""
     tokens = []
-    index = 0
-    while index < len(text):
-        hold = next((p for p in placeholders if text.startswith(p, index)), None)
-        tokens.append(hold if hold is not None else text[index])
-        index += len(hold) if hold is not None else 1
+    for chunk, protected in _content_chunks(text):
+        if protected:
+            tokens.append(chunk)
+        else:
+            tokens.extend(chunk)
     return tokens
 
 
 def _context_redactions(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Locate only replacements already chosen by the existing detector."""
+    """Project one contiguous detector replacement without fuzzy alignment.
+
+    Per-value scrubbing has already handled independently recognized content.
+    Only the newly assembled label/state context needs projection here. Common
+    prefix/suffix scans visit each token at most twice, even for repetitive or
+    adversarial input. Separated/ambiguous edits refuse rather than searching
+    possible alignments, guessing, or falling back to raw content.
+    """
     safe = scrub_ha_normalized_text(text)
     if safe == text:
         return safe, []
     before, after = _placeholder_tokens(text), _placeholder_tokens(safe)
-    replacements = []
-    for kind, i, j, k, end in SequenceMatcher(None, before, after).get_opcodes():
-        if kind == "equal":
-            continue
-        original = "".join(before[i:j])
-        replacement = "".join(after[k:end])
-        artifacts = bearer_scrub.placeholder_artifacts(replacement)
-        if (
-            not original
-            or replacement
-            != "".join(bearer_scrub.placeholder(hit.kind, hit.provider_domain) for hit in artifacts)
-            or not artifacts
-        ):
-            raise HABearerScrubError("Home Assistant content scrub failed")
-        replacements.append((original, replacement))
-    return safe, replacements
+    start = 0
+    while start < min(len(before), len(after)) and before[start] == after[start]:
+        start += 1
+    old_end, new_end = len(before), len(after)
+    while old_end > start and new_end > start and before[old_end - 1] == after[new_end - 1]:
+        old_end -= 1
+        new_end -= 1
+    original = "".join(before[start:old_end])
+    replacement = "".join(after[start:new_end])
+    artifacts = bearer_scrub.placeholder_artifacts(replacement)
+    if (
+        not original
+        or not artifacts
+        or replacement
+        != "".join(bearer_scrub.placeholder(hit.kind, hit.provider_domain) for hit in artifacts)
+    ):
+        raise HABearerScrubError("Home Assistant content scrub failed")
+    return safe, [(original, replacement)]
+
+
+def _replace_copy(text: str, original: str, replacement: str) -> str:
+    """Replace complete selected tokens, never a substring of another value."""
+    pieces = []
+    cursor = 0
+    while (index := text.find(original, cursor)) >= 0:
+        end = index + len(original)
+        # Projection copies an already recognized token; these boundaries do
+        # not recognize new codes or broaden the shared detector's policy.
+        left = index and (text[index - 1].isalnum() or text[index - 1] == "_")
+        right = end < len(text) and (text[end].isalnum() or text[end] == "_")
+        complete = not (original[0].isalnum() and left or original[-1].isalnum() and right)
+        pieces.extend((text[cursor:index], replacement if complete else original))
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def _replace_values(value: Any, replacements: list[tuple[str, str]]) -> Any:
     if isinstance(value, str):
+        chunks = _content_chunks(value)
         for original, replacement in replacements:
-            value = value.replace(original, replacement)
-        return value
+            chunks = [
+                (chunk if protected else _replace_copy(chunk, original, replacement), protected)
+                for chunk, protected in chunks
+            ]
+        return "".join(chunk for chunk, _ in chunks)
     if isinstance(value, Mapping):
         return {key: _replace_values(child, replacements) for key, child in value.items()}
     if isinstance(value, (list, tuple)):
@@ -124,6 +164,8 @@ def _render_context(data: dict[str, Any], single_state: str | None) -> str:
 
 def _scrub_transition(data: dict[str, Any]) -> dict[str, Any]:
     result = dict(data)
+    if isinstance(result.get("friendly_name"), str):
+        result["friendly_name"] = scrub_ha_normalized_text(result["friendly_name"])
     for key in ("old_state", "new_state"):
         if key in result:
             result[key] = _scrub_state_values(result[key])

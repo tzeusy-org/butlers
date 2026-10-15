@@ -9,6 +9,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -210,6 +211,102 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
         )
         _no_bearer(pool.execute.call_args.args)
 
+    # Selected-code echoes are copies; a longer ordinary identifier containing
+    # the same digits is not. Drive the real MCP and direct history consumers.
+    mixed = _event(state="482913")
+    mixed["time_fired"] = datetime.now(UTC).isoformat()
+    mixed["data"]["old_state"] = {"state": "unknown", "attributes": {}}
+    ordinary_fields = {
+        "order_number": "14829130",
+        "order_note": "Order 14829130",
+        "numeric": 14829130,
+        "postal": "4829130",
+    }
+    mixed["data"]["new_state"]["attributes"] = {
+        "friendly_name": "Your verification code",
+        "echo": "482913",
+        "echo_note": "Echo 482913.",
+        **ordinary_fields,
+    }
+    original_mixed = copy.deepcopy(mixed)
+    connector, _, dispatch = _wire()
+    await dispatch("state_changed", mixed)
+    submitted = connector._mcp_client.call_tool.call_args.args[1]
+    for state in (
+        submitted["payload"]["raw"]["new_state"],
+        submitted["payload"]["raw"]["ha_event"]["data"]["new_state"],
+    ):
+        _no_bearer([state["state"], state["attributes"]["echo"], state["attributes"]["echo_note"]])
+        assert {key: state["attributes"][key] for key in ordinary_fields} == ordinary_fields
+    mixed_pool = MagicMock(execute=AsyncMock())
+    assert await persist_ha_history(
+        mixed_pool,
+        entity_id="person.synthetic",
+        state="482913",
+        attributes=mixed["data"]["new_state"]["attributes"],
+        recorded_at=datetime(2026, 10, 15, 9, tzinfo=UTC),
+    )
+    stored_attributes = mixed_pool.execute.call_args.args[3]
+    assert {key: stored_attributes[key] for key in ordinary_fields} == ordinary_fields
+    _no_bearer([mixed_pool.execute.call_args.args[2], stored_attributes["echo"]])
+    mixed_reordered = []
+
+    async def receive_mixed(event_type, safe, transport):
+        mixed_reordered.append(safe)
+
+    mixed_queue = HAEventReorderBuffer(submit=receive_mixed, window_s=0, max_size=100)
+    await mixed_queue.add("state_changed", mixed)
+    await mixed_queue.flush_all()
+    assert len(mixed_reordered) == 1
+    queued_state = mixed_reordered[0]["data"]["new_state"]
+    _no_bearer([queued_state["state"], queued_state["attributes"]["echo"]])
+    assert {key: queued_state["attributes"][key] for key in ordinary_fields} == ordinary_fields
+    assert mixed == original_mixed
+
+    # Count actual interpreter work through the real reorder consumer. This
+    # checks scaling rather than a machine-dependent elapsed-time threshold.
+    # Distinct reset-link domains are ordinary accepted provider input, not
+    # pre-made placeholders. Repetitive text also exercises alignment work.
+    async def measured_work(count):
+        event = _event(state="482913")
+        event["data"]["old_state"] = {"state": "unknown", "attributes": {}}
+        event["data"]["new_state"]["attributes"] = {
+            "friendly_name": " ".join(
+                f"https://p{i}.example/reset?token=synthetic" for i in range(count)
+            )
+            + " repeated " * count
+            + " Your verification code",
+        }
+        delivered = []
+
+        async def receive_work(event_type, safe, transport):
+            delivered.append(safe)
+
+        queue = HAEventReorderBuffer(submit=receive_work, window_s=0, max_size=100)
+        work = 0
+
+        def count_work(frame, event, arg):
+            nonlocal work
+            if event == "line":
+                work += 1
+            return count_work
+
+        previous = sys.gettrace()
+        try:
+            sys.settrace(count_work)
+            await queue.add("state_changed", event)
+            await queue.flush_all()
+        finally:
+            sys.settrace(previous)
+        assert len(delivered) == 1
+        _no_bearer(delivered)
+        assert event["data"]["new_state"]["state"] == "482913"
+        return work
+
+    small_work = await measured_work(64)
+    large_work = await measured_work(128)
+    assert large_work < 3 * small_work, (small_work, large_work)
+
     # An unrelated bare numeric sensor still reaches the real context/MCP unchanged.
     evaluator = DiscretionEvaluator(_ENDPOINT, AsyncMock())
     connector, _, dispatch = _wire(evaluator=evaluator)
@@ -374,6 +471,34 @@ async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
     assert len(split_persistence) == 4
     for row in split_persistence._buffer._rows:
         _no_bearer(row)
+
+    mixed = copy.deepcopy(split)
+    ordinary_fields = {"order_number": "14829130", "order_note": "Order 14829130"}
+    mixed["data"]["new_state"]["attributes"].update(echo="482913", **ordinary_fields)
+    mixed_submit = AsyncMock()
+    mixed_persistence = HAFilterPersistence(_ENDPOINT, None, mixed_submit)
+    mixed_args = {**args, "ha_event": mixed, "new_state": mixed["data"]["new_state"]}
+    mixed_persistence.record_domain_excluded(**mixed_args, domain="sensor")
+    mixed_persistence.record_insignificant_delta(
+        **mixed_args, device_class="temperature", delta=0.1
+    )
+    mixed_persistence.record_discretion_ignore(**mixed_args)
+    mixed_persistence.record_global_skip(**mixed_args, rule_type="source_channel")
+    assert len(mixed_persistence) == 4
+    for row in mixed_persistence._buffer._rows:
+        state = row[9]["payload"]["raw"]["new_state"]
+        assert {key: state["attributes"][key] for key in ordinary_fields} == ordinary_fields
+        _no_bearer([state["state"], state["attributes"]["echo"]])
+    mixed_payload = mixed_persistence._buffer._rows[0][9]
+    await mixed_persistence._submit_scrubbed_replay(mixed_payload)
+    for payload in (mixed_payload, mixed_submit.call_args.args[0]):
+        for state in (
+            payload["payload"]["raw"]["new_state"],
+            payload["payload"]["raw"]["ha_event"]["data"]["new_state"],
+        ):
+            _no_bearer([state["state"], state["attributes"]["echo"]])
+            assert {key: state["attributes"][key] for key in ordinary_fields} == ordinary_fields
+    assert mixed["data"]["new_state"]["attributes"]["echo"] == "482913"
 
     submit = AsyncMock()
     persistence = HAFilterPersistence(_ENDPOINT, None, submit)

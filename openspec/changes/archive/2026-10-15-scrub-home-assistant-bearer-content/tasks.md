@@ -22,3 +22,9 @@ Original expected test delta remains Tests: +3 ~0 -0. Actual added delta is Test
 - [x] R1.2 Protect detector-recognized contextual material in raw state/attribute copies and assembled discretion text; retain ordinary numeric/enum controls and all old cases.
 - [x] R1.3 Record correction-source owning, collection, inventory, strict and applicable guard receipts for the normal private checkpoint; retain default refusal and local PG limitation.
 - [ ] R1.4 Obtain fresh independent high-risk review and actual normal/protected hosted canonical PostgreSQL proof before merge readiness.
+
+## R2/R3 correction checkpoint
+- [x] R23.1 Reproduce ordinary-number corruption and excess work on the exact preceding source; extend the existing nearest unit owners with mixed-copy and accepted-input work evidence.
+- [x] R23.2 Replace substring/fuzzy projection with complete-token copies and bounded ordered alignment while retaining contextual withholding, ordinary outputs and fixed refusal.
+- [x] R23.3 Record current owning tests, collection, inventory, strict checks and applicable guards with all source/case preservation and local PostgreSQL limitations.
+- [ ] R23.4 Obtain fresh independent review and exact-head hosted canonical PostgreSQL proof before merge readiness.
