@@ -351,8 +351,8 @@ def git(root: Path, *args: str) -> str:
 
 
 def committed_records(root: Path, ref: str) -> list[dict]:
-    """Read complete original Git bodies/modes without dereferencing old links."""
-    records = []
+    """Read complete Git objects in one batch, preserving original link bodies."""
+    entries = []
     for row in git(root, "ls-tree", "-r", "-z", ref).split("\0"):
         if not row:
             continue
@@ -361,13 +361,29 @@ def committed_records(root: Path, ref: str) -> list[dict]:
         public_path(path)
         if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise EvidenceError("unsupported-before-source-object")
-        body = subprocess.check_output(
-            ["git", "-C", str(root), "cat-file", "blob", blob], env=git_environment()
-        )
+        entries.append((mode, blob, path))
+    carrier = subprocess.check_output(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(blob + "\n" for _, blob, _ in entries).encode(),
+        env=git_environment(),
+    )
+    records, offset = [], 0
+    for mode, blob, path in entries:
+        end = carrier.index(b"\n", offset)
+        actual, kind, length = carrier[offset:end].decode().split()
+        size = int(length)
+        if actual != blob or kind != "blob" or size < 0:
+            raise EvidenceError("invalid-before-source-carrier")
+        body = carrier[end + 1 : end + 1 + size]
+        offset = end + size + 2
+        if len(body) != size or carrier[offset - 1 : offset] != b"\n":
+            raise EvidenceError("incomplete-before-source-carrier")
         record = {"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": mode}
         if mode == "120000":
             record["link"] = body.decode()
         records.append(record)
+    if offset != len(carrier):
+        raise EvidenceError("extra-before-source-carrier")
     return sorted(records, key=lambda r: r["path"])
 
 
@@ -1535,7 +1551,9 @@ def verify_ledger(
     return removed
 
 
-def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def _verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     head = git(root, "rev-parse", "HEAD")
     tree = git(root, "rev-parse", "HEAD^{tree}")
     paths = tracked_paths(root)
@@ -1566,6 +1584,13 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if members & admitted:
             raise EvidenceError("duplicate-removed-alias")
         admitted |= members
+    contract_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.fresh_accounts(
+            root, base, trusted, losses, contract_directory, reports=contract_reports
+        )
     if set(losses) - admitted:
         raise EvidenceError("unproven-test-or-assertion-loss")
     if (
@@ -1575,18 +1600,23 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         or any(input_record(root, r["path"]) != r for r in relevant)
     ):
         raise EvidenceError("source-changed-during-admission")
-    return {
+    result = {
         "status": "PASS",
         "losses": len(losses),
         "ledger_clusters": len(clusters),
         "test_definitions": len(current),
         "source_read_only": True,
     }
+    if contract_reports:
+        result["contract_evolution_proofs"] = contract_reports
+    return result
 
 
-def verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     try:
-        return _verify(root, base, ledgers)
+        return _verify(root, base, ledgers, contract_directory=contract_directory, trusted=trusted)
     except EvidenceError:
         raise
     except (
@@ -1956,7 +1986,16 @@ def main(argv=None):
         # This directory is not searched on a subsequent admission.
         directory = Path(tempfile.mkdtemp(prefix="run-", dir=home))
         fresh = fresh_plan_ledgers(root, base, directory)
-        result = verify(root, base, [*args.ledger, *fresh])
+        trusted = (
+            git(root, "rev-parse", "HEAD^1")
+            if args.ci_event == "pull_request"
+            else base
+            if args.ci_event
+            else None
+        )
+        result = verify(
+            root, base, [*args.ledger, *fresh], contract_directory=directory, trusted=trusted
+        )
     except EvidenceError as exc:
         print(json.dumps({"status": "REFUSED", "category": str(exc)}))
         return 1
