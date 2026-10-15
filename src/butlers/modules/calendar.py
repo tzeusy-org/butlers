@@ -3253,10 +3253,9 @@ class CalendarModule(Module):
         if not self.canonical_approval_preparers():
             return {}
         return {
+            # Sensitivities only: presentation fields come from the central inventory,
+            # and a partial declaration fails the daemon's catalog check at startup.
             "calendar_respond": ToolMeta(
-                canonical_name="calendar_respond",
-                module_name="calendar",
-                group_name="core",
                 arg_sensitivities={
                     "_write": True,
                     "entry_id": True,
