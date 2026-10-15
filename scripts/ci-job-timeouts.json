@@ -435,6 +435,14 @@
       "installed_timeout_minutes": 60,
       "diagnostic_execution_bound_s": 1800,
       "review_policy": "Existing 25 watchdogs unchanged. New isolated job covers 640s UV installer + 640s frozen preparation + 1800s whole diagnostic + 520s checkout/cleanup/artifact reserve; actual healthy duration/calibration remains unknown."
+    },
+    {
+      "workflow": ".github/workflows/ci-latency.yml",
+      "job": "observe",
+      "installed_timeout_minutes": 6,
+      "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
+      "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
+      "p95_s": null
     }
   ],
   "tests": [

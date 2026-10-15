@@ -184,6 +184,17 @@ def test_bounded_read_and_error_report_are_closed(tmp_path):
     latency.write_report(report, tmp_path)
     assert "ERROR" in (tmp_path / "report.md").read_text()
     assert (tmp_path / "report.json").is_file()
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/ci-latency.yml").read_text())
+    job = workflow["jobs"]["observe"]
+    assert job["timeout-minutes"] == 6
+    assert len(workflow["jobs"]) == 1
+    assert "report.md" in job["steps"][1]["run"]
+    assert job["steps"][2]["if"] == "always()"
+    assert job["steps"][2]["with"]["name"] == "ci-latency"
+    assert "ci_latency" not in (root / ".github/workflows/ci-shard-weights.yml").read_text()
     assert (
         latency.observe(
             repository="owner/repo",

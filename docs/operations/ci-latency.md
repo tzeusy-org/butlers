@@ -48,6 +48,8 @@ Each measured success reads `/runs/{id}/attempts/{attempt}/jobs` and validates
 the complete job count and every job's run, attempt and head. One bounded page
 admits at most 100 jobs; overflow fails. Reads have 20-second timeouts, a 4 MiB
 response limit, and a 240-second observer deadline checked before every call.
+The final read may finish at 260 seconds; a six-minute job watchdog also bounds checkout, report
+and upload. These provisional bounds make no healthy-job p95 claim.
 There is no pagination guess, raw log download, test execution, artifact read,
 privilege change or metric-based required-gate decision.
 
@@ -71,14 +73,15 @@ p95 is nearest rank, with the clean sample count shown explicitly.
 
 ## Scheduled visibility and ownership
 
-The existing advisory
-[duration-candidate workflow](../../.github/workflows/ci-shard-weights.yml)
-runs the observer every six hours and on manual dispatch. Manual dispatch
+The separate nonrequired
+[latency workflow](../../.github/workflows/ci-latency.yml) runs one stdlib
+timestamp-only observer every six hours and on manual dispatch. Manual dispatch
 accepts an optional `since` value. The run summary displays the Markdown
 report and the `ci-latency` artifact retains both files for 14 days even on a
 breach, insufficient sample or collection error. The existing weight candidate
-observer runs independently of the latency verdict. This is a nonrequired
-observer; required queue checks execute no extra pipeline or measurement work.
+workflow remains independent: a latency breach cannot invalidate its successful
+candidates or stop their consumers refreshing. Required queue checks execute
+no extra pipeline or measurement work.
 
 Review reports after rollout using the actual rollout time. Breaches stay with
 `bu-q1hzqn`; source work is split across `.1` (DAG/instrumentation), `.2`

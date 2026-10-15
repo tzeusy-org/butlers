@@ -1,11 +1,6 @@
 name: CI advisory duration candidates
 on:
   workflow_dispatch:
-    inputs:
-      since:
-        description: Optional UTC rollout timestamp for the complete after-since latency cohort (max 100 runs)
-        required: false
-        type: string
   schedule:
     - cron: '17 */6 * * *'
 permissions:
@@ -17,30 +12,7 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v6
-      - name: Report the advisory seven-minute CI latency objective
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LATENCY_SINCE: ${{ inputs.since }}
-        run: |
-          args=()
-          if [[ -n "$LATENCY_SINCE" ]]; then args+=(--since "$LATENCY_SINCE"); fi
-          set +e
-          python3 scripts/ci_latency.py --output "${RUNNER_TEMP}/ci-latency" "${args[@]}"
-          verdict=$?
-          set -e
-          cat "${RUNNER_TEMP}/ci-latency/report.md" >> "$GITHUB_STEP_SUMMARY"
-          exit "$verdict"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-latency
-          path: ${{ runner.temp }}/ci-latency/
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 14
       - name: Read bounded successful same-run execution evidence only
-        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_weight_candidates.py --output "${RUNNER_TEMP}/ci-weight-candidate"
