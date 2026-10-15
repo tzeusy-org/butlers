@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -104,6 +105,60 @@ def test_setup_realpath_sharing_directories_equals_realpath(tmp_path, monkeypatc
                     assert _outcome(lambda p=path, s=strict: shared(p, strict=s)) == _outcome(
                         lambda p=path, s=strict: os.path.realpath(p, strict=s)
                     ), (path, strict)
+
+
+def test_worker_shares_only_coverage_walks_never_the_subject_realpath(tmp_path):
+    """REQ-testing-053: coverage's own os.path copy shares walks; the subject's is original."""
+    import coverage.files
+
+    assert coverage.files.os.path is not os.path
+    root = tmp_path.resolve() / "subject"
+    (root / "real").mkdir(parents=True)
+    (root / "tests").mkdir()
+    # The subject imports through a linked directory, so coverage's include
+    # matches only if each canonical name resolves that link exactly.
+    (root / "src").symlink_to("real", target_is_directory=True)
+    (root / "real/product.py").write_text("def value():\n    return 1\n")
+    (root / "tests/test_subject.py").write_text(
+        "import os\nimport posixpath\n\nimport coverage.files\nfrom product import value\n\n\n"
+        "def test_subject():\n"
+        "    assert os.path.realpath is posixpath.realpath\n"
+        "    assert coverage.files.os.path.realpath is not posixpath.realpath\n"
+        "    assert value() == 1\n"
+    )
+    output = tmp_path / "run.json"
+    request = output.with_suffix(".request.json")
+    request.write_text(
+        json.dumps(
+            {
+                "root": str(root),
+                "selection": ["tests/test_subject.py::test_subject"],
+                "scope": ["real/product.py"],
+                "nonce": "0" * 64,
+                "output": str(output),
+                "id": "run",
+            }
+        )
+    )
+    script = Path(evidence.__file__).resolve()
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(script.parent),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "COVERAGE_CORE": "ctrace",
+    }
+    subprocess.run(
+        [sys.executable, str(script), "_worker", str(request)],
+        cwd=root,
+        env=env,
+        check=True,
+        timeout=120,
+    )
+    result = json.loads(output.read_text())
+    [case] = result["cases"]
+    assert case["phases"] == {"setup": "passed", "call": "passed", "teardown": "passed"}
+    assert result["complete"] is True
+    assert {row[0] for row in result["arcs"][case["key"]]} == {"real/product.py"}
 
 
 def test_tool_resolution_equals_path_resolve(tmp_path):

@@ -268,22 +268,31 @@ def directory_sharing_realpath(original):
 
     A non-link absolute path is its directory's realpath plus its name, so each
     directory is resolved once, by the same rule, rather than once per file.
+    Its helpers are bound now, so a subject replacing them cannot reach it.
     """
     directories = {}
+    fspath, split, join, lstat, is_link = (
+        os.fspath,
+        os.path.split,
+        os.path.join,
+        os.lstat,
+        stat.S_ISLNK,
+    )
+    special = {"", os.curdir, os.pardir}
 
     def realpath(filename, *, strict=False):
-        path = os.fspath(filename)
+        path = fspath(filename)
         if not strict and isinstance(path, str) and path.startswith("/"):
-            directory, name = os.path.split(path)
-            if name not in {"", os.curdir, os.pardir}:
+            directory, name = split(path)
+            if name not in special:
                 try:
-                    link = stat.S_ISLNK(os.lstat(path).st_mode)
+                    link = is_link(lstat(path).st_mode)
                 except OSError:
                     link = True
                 if not link:
                     if directory not in directories:
                         directories[directory] = realpath(directory)
-                    return os.path.join(directories[directory], name)
+                    return join(directories[directory], name)
         return original(filename, strict=strict)
 
     return realpath
@@ -326,6 +335,7 @@ def case_arcs(data, root: Path, keys: list[str]) -> dict[str, list]:
 def worker(request: Path) -> int:
     """Raw pytest parameter identities remain only in this process's memory."""
     import coverage
+    import coverage.files
     import pytest
 
     config = strict_json(request)
@@ -422,6 +432,13 @@ def worker(request: Path) -> int:
             cases[item.nodeid]["phases"][report.when] = result
 
     previous_core = os.environ.get("COVERAGE_CORE")
+    # Coverage canonicalizes each newly executed file through its own isolated
+    # copy of os.path, a walk of observed lstat calls per file. Only that copy
+    # shares directory resolutions for the whole run; the subject's is untouched.
+    covered_paths = coverage.files.os.path
+    covered_realpath = covered_paths.realpath
+    if covered_paths is not os.path:
+        covered_paths.realpath = directory_sharing_realpath(covered_realpath)
     try:
         os.environ["COVERAGE_CORE"] = "ctrace"
         # Starting coverage resolves the path of every loaded module, a walk of
@@ -464,6 +481,7 @@ def worker(request: Path) -> int:
     finally:
         cov.stop()
         cov.save()
+        covered_paths.realpath = covered_realpath
         if previous_core is None:
             os.environ.pop("COVERAGE_CORE", None)
         else:
