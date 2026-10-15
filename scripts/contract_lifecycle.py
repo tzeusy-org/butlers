@@ -137,11 +137,13 @@ class Stream:
                 raise ValueError
             name, args, result = call.groups()
             number = re.match(r"(-?\d+)", result)
-            if name in {"execve", "execveat"} and number and int(number[1]) == 0:
-                paths = producer.RequestAccessStream.paths(args)
-                if not paths:
+            if name == "execveat" and number and int(number[1]) == 0:
+                raise ValueError  # dirfd/AT_EMPTY_PATH execution is unsupported
+            if name == "execve" and number and int(number[1]) == 0:
+                pathname = re.match(r'"((?:\\x[0-9a-f]{2})*)",', args)
+                if pathname is None or not pathname[1]:
                     raise ValueError
-                path = Path(os.fsdecode(paths[0]))
+                path = Path(os.fsdecode(bytes.fromhex(pathname[1].replace("\\x", ""))))
                 if not path.is_absolute():
                     path = Path(f"/proc/{actor}/cwd").resolve(strict=True) / path
                 observed = self.executable(path)

@@ -1248,6 +1248,12 @@ def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tm
     os.mkfifo(fifo)
     with pytest.raises(ledger.EvidenceError, match="nonregular-contract-executable"):
         contract_lifecycle.executable_record(str(fifo))
+    for pathname in ('""', r'"\x66\x6f\x6f"', r'"\x2f\x62\x69\x6e\x2f\x73\x68"'):
+        stream = contract_lifecycle.Stream()
+        stream.consume(
+            f"999999 execveat(AT_FDCWD, {pathname}, [], 0x0, AT_EMPTY_PATH) = 0".encode()
+        )
+        assert stream.failed  # no guessed argv/dirfd/native-image authority
     # A new tracked owner invalidates the complete source binding.
     (root / "tests/test_other.py").write_text("def test_other():\n    assert True\n")
     ledger.git(root, "add", ".")
