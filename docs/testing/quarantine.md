@@ -32,7 +32,16 @@ shards, the inventory collector, `make` targets and local runs.
 - **Default run:** listed tests are deselected (they appear in the `deselected` count, and the
   session header says how many are quarantined). The CI inventory, shard manifests and test budget
   count only selected tests, so they stay consistent.
-- **`--quarantined`:** runs only the listed tests.
+- **`--quarantined`:** runs only the listed tests within the requested scope. Use it for diagnostics,
+  including a single parameter; registry owners outside that scope need not be collected.
+- **`--quarantined-full`:** runs the complete registry for monitoring. Every registered whole owner
+  must survive actual collection and final selection, including marker and keyword filters. Every
+  collected parameter of those owners must remain selected. A stale owner, partially stale registry,
+  or filtered owner or parameter stops the run with a usage error. Pass whole paths, not `::` node
+  selectors; scoped diagnostics use `--quarantined` instead.
+- **Empty full registry:** a real, schema-valid registry with an empty `tests` list succeeds with a
+  validated-empty notice only after complete successful collection. A missing registry is an error in
+  full mode; ordinary default and diagnostic runs retain their missing-registry behavior.
 - **Malformed registry:** a missing field, an unknown key, a parameter suffix, a bead id that is not
   `bu-...`, or a duplicate stops the run with a usage error.
 
@@ -41,11 +50,17 @@ before the root `conftest.py`, whose guard explains a `butlers` package that res
 checkout. A plugin importing from `butlers` would turn that explanation into a bare `ImportError`.
 
 The nightly workflow's `quarantined` job runs
-`pytest tests/ roster/ --ignore=tests/e2e --quarantined -n 0` on a runner of its own, so a
-quarantined test keeps producing a signal. That job is not a required check.
+`pytest tests/ roster/ --ignore=tests/e2e --quarantined-full -n 0` on a runner of its own, so a
+quarantined test keeps producing a signal. It propagates pytest's status directly: arbitrary exit5,
+test failures, collection or usage errors and timeouts are not empty-registry success. Existing
+default nightly, bench and perf exclusions still apply; an excluded registered owner makes full
+monitoring fail. That job is not a required check.
 
 `tests/testing/test_quarantine.py` checks that every entry names a test that exists and that the
-repo configuration really deselects them.
+repo configuration really deselects them. Real pytest subprocess cases also exercise the actual
+nightly command's completeness and exit behavior. Local synthetic controls establish this selection
+contract; they do not establish that the current scheduled job ran, fix the quarantined causes, or
+restore those owners to blocking coverage.
 
 ## Rules
 
