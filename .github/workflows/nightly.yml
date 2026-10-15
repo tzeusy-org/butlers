@@ -356,11 +356,4 @@ jobs:
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: |
-          set +e
-          uv run pytest tests/ roster/ --ignore=tests/e2e --quarantined -n 0 -v -rf --tb=short
-          status=$?
-          if [ "${status}" -eq 5 ]; then
-            echo "::notice::tests/quarantine.json lists no tests"
-            exit 0
-          fi
-          exit "${status}"
+          uv run pytest tests/ roster/ --ignore=tests/e2e --quarantined-full -n 0 -v -rf --tb=short
