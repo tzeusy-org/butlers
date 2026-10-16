@@ -122,7 +122,20 @@ class TestBuildSwitchboardInsightNotifyFn:
                 new=AsyncMock(return_value=deliver_return),
             ) as mock_deliver,
         ):
-            result = await notify_fn("Test insight", {"channel": "telegram", "intent": "insight"})
+            feedback = [
+                {
+                    "insight_id": "11111111-1111-1111-1111-111111111111",
+                    "created_at": _PINNED_NOW.isoformat(),
+                }
+            ]
+            result = await notify_fn(
+                "Test insight",
+                {
+                    "channel": "telegram",
+                    "intent": "insight",
+                    "feedback_actions": feedback,
+                },
+            )
 
         assert result == deliver_return
         # Must resolve the deliverable numeric chat id, not the @username handle.
@@ -133,6 +146,9 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert call_kwargs.kwargs["message"] == "Test insight"
         assert call_kwargs.kwargs["recipient"] == "12345678"
         assert call_kwargs.kwargs["source_butler"] == "switchboard"
+        envelope = call_kwargs.kwargs["notify_request"]
+        assert envelope["delivery"]["intent"] == "insight"
+        assert envelope["feedback_actions"] == feedback
 
     @pytest.mark.asyncio
     async def test_failed_status_translated_to_error(self):
@@ -622,6 +638,9 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]
+        assert all(
+            action["created_at"] == _PINNED_NOW.isoformat() for action in meta["feedback_actions"]
+        )
         assert meta.get("channel") == expected_channel, (
             f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )
