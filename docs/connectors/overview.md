@@ -271,3 +271,22 @@ A dry run is not a stable-snapshot or applied-repair claim.
 The HA connector's state and recursive attribute content uses the shared ingestion bearer scrubber before filtering/discretion, submission, filtered-event buffering, person-history writes, and wellness emission. It withholds the shared detector's recognized keyword OTPs and reset/magic links in both normalized text and raw duplicates. The adapter also checks the existing assembled label/state normalization context before discretion retains it and projects recognized redactions into matching content copies. Each available state is checked under its own friendly name and units as well as the actual transition, so new or missing metadata cannot erase old-state context. Contextual projection replaces only complete selected lexical values, including quoted or prose echoes, and protects existing placeholders. Quotes and opening brackets may precede a copied value; closing brackets and sentence punctuation may follow it. Other leading punctuation, internal punctuation, signs, and unit symbols stay part of a distinct value: fractional decimals, decimal amounts and compound identifiers containing selected digits remain exact. Its ordered alignment uses bounded scans and refuses unestablished edits with a fixed content-free error. The HA adapter does not enable Telegram's aggressive bare-number mode; ordinary readings and enum states keep their existing representation and event identity.
 
 Scrub failure withholds the affected content and logs a fixed warning. Replay protects outgoing content without restoring withheld values or backfilling old rows. The transient REST comparison cache retains provider values for correct diff membership; only its copied downstream event is admitted to content consumers. This connector guarantee does not claim remediation of the separate module-owned HA entity snapshot/cache or the shared full-payload/error-custody investigations. No notification capability, allowlist, or authentication behavior is changed.
+
+
+## Ingestion replay and missing delivery plans
+
+The dashboard's single-event replay endpoint (`POST /api/ingestion/events/{id}/replay`)
+returns HTTP 409 with the fixed reason `no_retained_delivery_plan` for public
+`ingestion_events` rows whose connector policy permits replay. This includes
+`failed`, `ingested`, `replay_failed`, and legacy `replay_pending` rows: a status
+marker is not evidence of a retained classified plan or queued target work.
+The refusal preserves the complete source row, including failure detail, and
+never resets `switchboard.message_inbox` or schedules classification or delivery.
+Replay history records the refusal. Unsafe connector policy and unavailable
+policy evidence retain their existing rejection ordering.
+
+Bulk retry reports each such public row as a per-event conflict and includes it
+in `failed`, never `succeeded`. Connector `filtered_events` replay remains
+available under its existing replay-safe policy and worker. Retained target-plan
+recovery is future work; the missing-plan conflict does not imply recovery was
+queued. Operators should retain the original failure for investigation.

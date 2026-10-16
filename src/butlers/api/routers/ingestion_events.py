@@ -32,7 +32,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
@@ -89,6 +89,7 @@ rollup_router = APIRouter(
 )
 
 _REPLAY_SAFETY_UNAVAILABLE_REASON = "Replay safety could not be confirmed"
+_NO_RETAINED_PLAN_ERROR = "No retained delivery plan is available for recovery"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -128,6 +129,24 @@ async def _audit_replay_safety_rejection(
         )
     except Exception:
         logger.warning("replay: failed to append rejection audit entry for %s", event_id)
+
+
+async def _audit_missing_delivery_plan(
+    pool: Any, *, event_id: str, client_host: str | None
+) -> None:
+    """Record a refused recovery in the existing replay history, without payloads."""
+    actor = authenticated_principal()
+    try:
+        await _audit_append(
+            pool,
+            actor=actor,
+            action="ingestion.event.replay",
+            target=event_id,
+            note=json.dumps({"result": "refused", "reason": "no_retained_delivery_plan"}),
+            ip=client_host,
+        )
+    except Exception:
+        logger.warning("replay: failed to append refusal audit entry for %s", event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -944,12 +963,8 @@ async def bulk_retry_ingestion_events(
             },
         )
 
-    # Obtain the switchboard pool for resetting message_inbox on replay.
+    # Recovery never resets message_inbox. Retain the core call signature.
     switchboard_pool = None
-    try:
-        switchboard_pool = db.pool("switchboard")
-    except (KeyError, Exception):
-        pass  # Non-fatal: replay of ingested events will log a warning.
 
     results: list[dict] = []
     succeeded = 0
@@ -998,6 +1013,17 @@ async def bulk_retry_ingestion_events(
                     event_id,
                     exc_info=True,
                 )
+        elif outcome == "unrecoverable":
+            await _audit_missing_delivery_plan(pool, event_id=event_id, client_host=client_host)
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "conflict",
+                    "error": _NO_RETAINED_PLAN_ERROR,
+                    "reason": "no_retained_delivery_plan",
+                }
+            )
+            failed += 1
         elif outcome == "not_found":
             results.append(
                 {
@@ -1058,20 +1084,11 @@ async def replay_ingestion_event(
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict:
-    """Request replay of a failed or filtered event.
+    """Queue safe connector-filtered replay; refuse public recovery without a plan.
 
-    Checks ``public.ingestion_events`` first (for routing-failed events with
-    status ``'failed'``), then falls back to ``connectors.filtered_events``
-    (for events with status ``filtered``, ``error``, or ``replay_failed``).
-
-    Appends an entry to ``public.audit_log`` with ``action='ingestion.event.replay'``
-    and ``target=<event_id>`` on success.
-
-    Returns:
-        200 — ``{"status": "replay_pending", "id": "<uuid>"}``
-        404 — event not found in either table
-        409 — event exists but is not in a replayable state or connector-safe
-        503 — replay policy cannot be resolved safely
+    Public rows return 409 with ``no_retained_delivery_plan`` and retain source
+    and inbox state. Filtered replay retains its policy gate and worker. The
+    existing replay audit history records queued requests and plan refusals.
     """
     try:
         pool = db.credential_shared_pool()
@@ -1107,12 +1124,8 @@ async def replay_ingestion_event(
             },
         )
 
-    # Obtain the switchboard pool for resetting message_inbox on replay.
+    # Recovery never resets message_inbox. Retain the core call signature.
     switchboard_pool = None
-    try:
-        switchboard_pool = db.pool("switchboard")
-    except (KeyError, Exception):
-        pass  # Non-fatal: replay of ingested events will log a warning.
 
     result = await ingestion_event_replay_request(pool, event_id, switchboard_pool=switchboard_pool)
 
@@ -1135,6 +1148,18 @@ async def replay_ingestion_event(
             detail={
                 "error": "Event is not replay-safe",
                 "reason": result.get("reason"),
+            },
+        )
+
+    if result["outcome"] == "unrecoverable":
+        client_host = getattr(request.client, "host", None) if request.client else None
+        await _audit_missing_delivery_plan(pool, event_id=event_id, client_host=client_host)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": _NO_RETAINED_PLAN_ERROR,
+                "reason": "no_retained_delivery_plan",
+                "current_status": result["current_status"],
             },
         )
 
