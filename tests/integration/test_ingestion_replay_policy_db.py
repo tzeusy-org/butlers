@@ -244,7 +244,12 @@ async def _wait_until_replay_waits_on_registry_lock(
     *,
     update_relation: str = "public.ingestion_events",
 ) -> None:
-    """Prove the replay task is blocked on the live policy row lock for one mutation."""
+    """Prove the replay statement is blocked on the live policy row lock."""
+    query_pattern = (
+        "%SELECT ie.id, ie.status%FROM public.ingestion_events AS ie%"
+        if update_relation == "public.ingestion_events"
+        else f"%UPDATE {update_relation}%"
+    )
     async with pool.acquire() as observer:
         async with asyncio.timeout(5):
             while not await observer.fetchval(
@@ -258,7 +263,7 @@ async def _wait_until_replay_waits_on_registry_lock(
                       AND query LIKE $1
                 )
                 """,
-                f"%UPDATE {update_relation}%",
+                query_pattern,
             ):
                 await asyncio.sleep(0.01)
 
