@@ -46,6 +46,30 @@ or CI: GitHub Actions cannot reach the Dolt server behind `bd`.
 The default mode is vacuous against a queue that has not adopted the label: it finds nothing and
 reports clean. The strict mode (`--check-unlabeled-markers`) closes that gap.
 
+### Telegram renderability warnings
+
+The linter also emits advisory `warnings` for an option over512 characters or an estimated fixed
+Telegram prompt over4096 characters. They appear in human and JSON output. A warning does not
+change `ok`, `violations` or exit status: a convention-valid warning-only result still exits0,
+convention violations exit1, and input acquisition failures exit2. The existing weekly migration
+lint consumes convention violations; these advisories do not add another owner notification.
+
+The estimate uses the current full prompt template, including title, bead id, age, optional UTC
+due date, numbered option text, literal/newline characters, repeated default and instruction.
+Character counts use the same Python string length as routing. With complete context the
+same-clock estimate matches the formatter; incomplete date context uses a conservative0h age
+and omits an unusable due suffix. That lower bound can still prove an oversized prompt, while
+absence of a warning never certifies eligibility or delivery. Existing parse/label/default/date
+requirements and the16-option limit remain unchanged.
+
+Every enabled routing run with an available digest reports integer `skipped_unsendable`, including0:
+otherwise-eligible decisions excluded by either length limit, counted once per bead even if both
+limits fail. Already-prompted, live-intent, malformed, unavailable and other non-length exclusions
+are not counted. Empty-candidate, suppression and budget summaries retain the count. Disabled
+or unavailable runs retain their existing response without a fabricated measured count. Counting
+adds no per-excluded-bead prompt/intent/ledger write, budget use or delivery; existing enabled-job
+maintenance remains. No routing flag, sender, default, resend or callback contract is changed.
+
 ## Consumer
 
 `src/butlers/jobs/decision_review.py` runs the weekly decision-review digest and the P1/deploy

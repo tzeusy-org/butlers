@@ -94,12 +94,29 @@ async def test_disabled_by_default_touches_nothing(pool, monkeypatch, seams) -> 
     seams.assert_not_awaited()
     assert await _prompts(pool) == {}
 
+    assert await run_decision_routing(_NoRoutingAccess(), _digest=_NoRoutingAccess()) == {
+        "enabled": False
+    }
+    assert decision_routing.resolve_owner_telegram_recipient.call_count == 0
+    assert decision_routing._callback_secret.call_count == 0
+    assert seams.call_count == 0
+
 
 async def test_unavailable_digest_sends_nothing(pool, enabled, seams) -> None:
     result = await run_decision_routing(pool, _now=NOW, _digest=make_digest(available=False))
 
     assert result["available"] is False
     seams.assert_not_awaited()
+
+    assert "skipped_unsendable" not in result
+    assert await run_decision_routing(_NoRoutingAccess(), _digest=make_digest(available=False)) == {
+        "enabled": True,
+        "available": False,
+        "reason": "export_missing",
+    }
+    assert decision_routing.resolve_owner_telegram_recipient.call_count == 0
+    assert decision_routing._callback_secret.call_count == 0
+    assert seams.call_count == 0
 
 
 async def test_delivers_one_prompt_per_bead_once(pool, enabled, seams) -> None:
@@ -275,6 +292,7 @@ async def test_decided_or_unstructured_beads_are_not_offered(pool, enabled, seam
 
     assert result["candidates"] == 0
     seams.assert_not_awaited()
+    assert result["skipped_unsendable"] == 2
 
 
 async def test_superseded_intent_does_not_resend_a_consumed_prompt(pool, enabled, seams) -> None:
@@ -295,3 +313,205 @@ async def test_superseded_intent_does_not_resend_a_consumed_prompt(pool, enabled
     seams.assert_not_awaited()
     assert await _prompts(pool) == {"bu-test1": "delivered"}
     assert await _ledger(pool) == []
+
+
+class _NoRoutingAccess:
+    def __getattr__(self, name):
+        raise AssertionError("Disabled/unavailable routing accessed a forbidden seam")
+
+
+def _routing_source(bead_id, **changes):
+    record = {
+        "id": bead_id,
+        "title": "Pick a rollout",
+        "status": "open",
+        "issue_type": "task",
+        "labels": ["decision"],
+        "created_at": (NOW - timedelta(days=2)).isoformat(),
+        "due_at": (NOW + timedelta(days=1)).isoformat(),
+        "metadata": {"decision": {"options": ["Ship it", "Hold"], "default": "Hold"}},
+    }
+    record.update(changes)
+    return record
+
+
+async def test_routing_summary_counts_only_otherwise_eligible_unsendable_beads(
+    pool, enabled, seams, tmp_path
+):
+    import json
+    from dataclasses import replace
+
+    from butlers.jobs.decision_review import compute_decision_digest
+
+    def options(value):
+        return {"decision": {"options": [value, "Hold"], "default": "Hold"}}
+
+    def sized_message(bead_id, size):
+        record = _routing_source(bead_id, title="t")
+        bead = replace(make_bead(bead_id, title="t"), due_at=NOW + timedelta(days=1))
+        length = len(decision_routing.compose_prompt_message(bead))
+        record["title"] += "t" * (size - length)
+        assert (
+            len(decision_routing.compose_prompt_message(replace(bead, title=record["title"])))
+            == size
+        )
+        return record
+
+    records = [
+        _routing_source("bu-512", metadata=options("x" * 512)),
+        sized_message("bu-4096", 4096),
+        _routing_source("bu-unicode", metadata=options("x" * 513)),
+        _routing_source("bu-option", metadata=options("x" * 513)),
+        sized_message("bu-message", 4097),
+        _routing_source("bu-both", metadata=options("x" * 4100)),
+        _routing_source("bu-closed", status="closed", metadata=options("x" * 513)),
+        _routing_source("bu-unlabeled", labels=[], metadata=options("x" * 513)),
+        _routing_source("bu-epic", issue_type="epic", metadata=options("x" * 513)),
+        _routing_source("bu-created", created_at=None, metadata=options("x" * 513)),
+        _routing_source("bu-due", due_at="invalid", metadata=options("x" * 513)),
+        _routing_source("bu-malformed", metadata={"decision": {"options": ["x" * 513]}}),
+        _routing_source(
+            "bu-wide",
+            metadata={
+                "decision": {
+                    "options": [str(i) + "x" * 513 for i in range(17)],
+                    "default": "0" + "x" * 513,
+                }
+            },
+        ),
+        _routing_source("bu-prompted", metadata=options("x" * 513)),
+        _routing_source("bu-intent", metadata=options("x" * 513)),
+        # The real export parser keeps the last record for this id.
+        _routing_source("bu-unicode", metadata=options("🙂" * 512)),
+    ]
+    export = tmp_path / "issues.jsonl"
+    export.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    digest = compute_decision_digest(export, now=NOW)
+    assert digest.available
+    assert len([bead for bead in digest.open_decisions if bead.id == "bu-unicode"]) == 1
+    await pool.execute(
+        "INSERT INTO switchboard.decision_prompts "
+        "(bead_id, options, default_option, delivery_outcome, created_at, updated_at) "
+        "VALUES ('bu-prompted', '[\"Hold\"]', 'Hold', 'delivered', $1, $1)",
+        NOW - timedelta(days=2),
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.decision_intents (bead_id, option, source, actor) "
+        "VALUES ('bu-intent', 'Hold', 'dashboard', 'owner@dashboard')"
+    )
+    result = await run_decision_routing(pool, _now=NOW, _digest=digest)
+    assert result["skipped_unsendable"] == 3
+    assert result["candidates"] == 3
+    assert result["outcomes"] == {"delivered": 3}
+    sent = [call.kwargs["notify_request"]["delivery"]["message"] for call in seams.await_args_list]
+    assert [message.split("\n")[1].split(",")[0] for message in sent] == [
+        "bu-512",
+        "bu-4096",
+        "bu-unicode",
+    ]
+    assert {key for key, _, _ in await _ledger(pool)} == {
+        "decision_prompt:bu-512",
+        "decision_prompt:bu-4096",
+        "decision_prompt:bu-unicode",
+    }
+
+
+@pytest.mark.parametrize(
+    "case", ["no_candidates", "quiet_context_suppression", "budget_exhaustion"]
+)
+async def test_unsendable_count_survives_summary_return_paths(pool, enabled, seams, case):
+    oversized = make_bead("bu-long", options=("x" * 513, "Hold"))
+    if case == "no_candidates":
+        result = await run_decision_routing(pool, _now=NOW, _digest=make_digest(oversized))
+        assert result == {
+            "enabled": True,
+            "available": True,
+            "candidates": 0,
+            "skipped_unsendable": 1,
+            "outcomes": {},
+        }
+        empty = await run_decision_routing(pool, _now=NOW, _digest=make_digest())
+        assert empty["skipped_unsendable"] == 0
+        assert await _ledger(pool) == []
+    elif case == "quiet_context_suppression":
+        for reason in ["quiet_hours", "context_bus:sleeping"]:
+            normal = make_bead("bu-" + reason)
+            with patch.object(
+                decision_routing, "_check_suppression", AsyncMock(return_value=reason)
+            ):
+                result = await run_decision_routing(
+                    pool, _now=NOW, _digest=make_digest(oversized, normal)
+                )
+            assert result["skipped_unsendable"] == 1
+            assert result["deferred"] == reason
+        assert len(await _ledger(pool)) == 2
+        assert all(key != "decision_prompt:bu-long" for key, _, _ in await _ledger(pool))
+    else:
+        for i in range(3):
+            await pool.execute(
+                "INSERT INTO switchboard.decision_prompts "
+                "(bead_id, options, default_option, delivery_outcome, updated_at) "
+                "VALUES ($1, '[\"Hold\"]', 'Hold', 'delivered', $2)",
+                f"bu-budget-{i}",
+                NOW,
+            )
+        result = await run_decision_routing(
+            pool, _now=NOW, _digest=make_digest(oversized, make_bead("bu-normal"))
+        )
+        assert result["skipped_unsendable"] == 1
+        assert result["outcomes"] == {"budget_exhausted": 1}
+        assert await _ledger(pool) == [
+            ("decision_prompt:bu-normal", "deferred", "budget_exhausted")
+        ]
+    seams.assert_not_awaited()
+
+
+async def test_repeated_unsendable_reporting_creates_no_prompt_or_ledger(pool, enabled, seams):
+    digest = make_digest(
+        make_bead("bu-long", options=("x" * 513, "Hold")), make_bead("bu-title", title="t" * 4097)
+    )
+    # Read the real three stores explicitly; enabled expiry/read maintenance is allowed.
+    before = [
+        await pool.fetchval(f"SELECT count(*) FROM {table}")
+        for table in [
+            "switchboard.decision_prompts",
+            "switchboard.decision_intents",
+            "public.attention_ledger",
+        ]
+    ]
+    with (
+        patch.object(
+            decision_routing,
+            "resolve_owner_telegram_recipient",
+            AsyncMock(side_effect=AssertionError("owner lookup")),
+        ) as owner,
+        patch.object(
+            decision_routing,
+            "_callback_secret",
+            AsyncMock(side_effect=AssertionError("secret lookup")),
+        ) as secret,
+    ):
+        first = await run_decision_routing(pool, _now=NOW, _digest=digest)
+        second = await run_decision_routing(pool, _now=NOW + timedelta(minutes=1), _digest=digest)
+        owner.assert_not_awaited()
+        secret.assert_not_awaited()
+    assert (
+        first
+        == second
+        == {
+            "enabled": True,
+            "available": True,
+            "candidates": 0,
+            "skipped_unsendable": 2,
+            "outcomes": {},
+        }
+    )
+    assert [
+        await pool.fetchval(f"SELECT count(*) FROM {table}")
+        for table in [
+            "switchboard.decision_prompts",
+            "switchboard.decision_intents",
+            "public.attention_ledger",
+        ]
+    ] == before
+    seams.assert_not_awaited()
