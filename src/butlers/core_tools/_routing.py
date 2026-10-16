@@ -1819,6 +1819,16 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if delivery_command is None:
                         raise RuntimeError("Telegram delivery command was not materialized.")
                     if intent == "insight" and notify_request.feedback_actions:
+                        feedback_pool = daemon.db.pool if daemon.db is not None else None
+                        owner_channel = (
+                            await resolve_owner_channel_via_definer(
+                                feedback_pool, "telegram_bot", notify_request.delivery.recipient
+                            )
+                            if feedback_pool is not None
+                            else None
+                        )
+                        if owner_channel is None or not owner_channel[1]:
+                            raise ValueError("Insight feedback requires the primary owner channel.")
                         markup = await _insight_feedback_reply_markup(
                             daemon, notify_request.feedback_actions
                         )
