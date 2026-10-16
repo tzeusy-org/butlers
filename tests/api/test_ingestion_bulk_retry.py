@@ -70,7 +70,7 @@ async def test_bulk_retry_all_succeed(app):
     event_ids = [str(uuid4()) for _ in range(3)]
     _app_with_mock_db(app)
 
-    ok_result = {"outcome": "ok", "id": str(uuid4()), "source": "ingestion_events"}
+    ok_result = {"outcome": "ok", "id": str(uuid4()), "source": "filtered_events"}
 
     with (
         patch(
@@ -132,7 +132,7 @@ async def test_bulk_retry_partial_failure(app):
 
     def _replay_side_effect(pool, event_id, *, switchboard_pool=None):
         if event_id == id_ok:
-            return {"outcome": "ok", "id": id_ok, "source": "ingestion_events"}
+            return {"outcome": "ok", "id": id_ok, "source": "filtered_events"}
         if event_id == id_not_found:
             return {"outcome": "not_found"}
         # id_conflict
@@ -359,7 +359,7 @@ async def test_bulk_retry_audit_failure_is_nonfatal(app):
     event_ids = [str(uuid4()) for _ in range(2)]
     _app_with_mock_db(app)
 
-    ok_result = {"outcome": "ok", "id": str(uuid4()), "source": "ingestion_events"}
+    ok_result = {"outcome": "ok", "id": str(uuid4()), "source": "filtered_events"}
 
     with (
         patch(
@@ -638,3 +638,55 @@ async def test_bulk_retry_preflight_db_error_503(app):
         )
 
     assert resp.status_code == 503
+
+
+async def test_bulk_retry_public_refusals_do_not_count_as_success(app):
+    # REQ-ingestion-target-delivery-recovery-006: mixed batch retains each result.
+    import json
+
+    event_ids = [str(uuid4()) for _ in range(5)]
+    statuses = ("failed", "ingested", "replay_failed", "replay_pending")
+    _app_with_mock_db(app)
+    outcomes = [
+        {
+            "outcome": "unrecoverable",
+            "id": event_id,
+            "source": "ingestion_events",
+            "current_status": status,
+            "reason": "no_retained_delivery_plan",
+        }
+        for event_id, status in zip(event_ids, statuses, strict=False)
+    ] + [{"outcome": "ok", "id": event_ids[-1], "source": "filtered_events"}]
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            side_effect=outcomes,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append", new_callable=AsyncMock
+        ) as audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/ingestion/events/retry/bulk", json={"event_ids": event_ids}
+            )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["succeeded"] == 1 and body["failed"] == 4
+    assert len(body["results"]) == 5
+    for item, event_id in zip(body["results"][:4], event_ids[:4], strict=True):
+        assert item == {
+            "event_id": event_id,
+            "status": "conflict",
+            "error": "No retained delivery plan is available for recovery",
+            "reason": "no_retained_delivery_plan",
+        }
+    assert body["results"][-1] == {"event_id": event_ids[-1], "status": "replay_pending"}
+    assert audit.await_count == 5
+    for call in audit.await_args_list[:4]:
+        assert call.kwargs["actor"] == "owner"
+        note = json.loads(call.kwargs["note"])
+        assert note["result"] == "refused" and note["reason"] == "no_retained_delivery_plan"

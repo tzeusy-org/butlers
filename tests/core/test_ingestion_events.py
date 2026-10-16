@@ -728,6 +728,29 @@ async def test_ingestion_events_list_skips_ilike_for_empty_or_whitespace_q() -> 
     assert "ILIKE" in sql2 and "%alice%" in args2
 
 
+async def test_public_replay_missing_plan_never_writes_event_or_inbox() -> None:
+    # REQ-ingestion-target-delivery-recovery-006: legacy rows have no proven intent.
+    from butlers.core.ingestion_events import ingestion_event_replay_request
+
+    event_id = uuid.uuid4()
+    for status in ("failed", "ingested", "replay_failed", "replay_pending"):
+        for _ in range(2):  # Repeated requests must remain read-only.
+            pool = _FakePool(fetchrow_result={"id": event_id, "status": status})
+            inbox_pool = _FakePool()
+            result = await ingestion_event_replay_request(
+                pool, event_id, switchboard_pool=inbox_pool
+            )
+            assert result == {
+                "outcome": "unrecoverable",
+                "id": str(event_id),
+                "source": "ingestion_events",
+                "current_status": status,
+                "reason": "no_retained_delivery_plan",
+            }
+            assert all("UPDATE" not in call[1] for call in pool.calls)
+            assert inbox_pool.calls == []
+
+
 async def test_replay_request_and_inbox_lifecycle() -> None:
     """replay_request ok/not_found/conflict outcomes; inbox_lifecycle state lookup."""
     from butlers.core.ingestion_events import (
@@ -736,14 +759,14 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     )
 
     event_id = uuid.uuid4()
-    ok_row = _FakeRecord({"id": event_id})
+    ok_row = _FakeRecord({"id": event_id, "status": "failed"})
 
-    # Success. The policy predicate and transition live in the same statement:
+    # Public refusal. The policy predicate and read live in the same statement:
     # it locks the resolved registry row so a concurrent unsafe policy change
-    # cannot land between a successful safety read and the status update.
+    # cannot land before the safe missing-plan refusal.
     safe_transition_pool = _FakePool(fetchrow_result=ok_row)
     result = await ingestion_event_replay_request(safe_transition_pool, event_id)
-    assert result["outcome"] == "ok" and result["id"] == str(event_id)
+    assert result["outcome"] == "unrecoverable" and result["id"] == str(event_id)
     public_transition_sql = safe_transition_pool.calls[0][1]
     assert "FOR SHARE OF cr" in public_transition_sql
     assert "BOOL_AND(replay_safe IS TRUE)" in public_transition_sql
@@ -755,12 +778,12 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         "NULLIF(BTRIM(candidate.source_endpoint_identity), '') IS NOT NULL" in public_transition_sql
     )
 
-    filtered_transition_pool = _FakePool(fetchrow_results=[None, None, ok_row])
+    filtered_transition_pool = _FakePool(fetchrow_results=[None, ok_row])
     filtered_result = await ingestion_event_replay_request(filtered_transition_pool, event_id)
     assert filtered_result["outcome"] == "ok"
     filtered_transition_sql = [
         call[1] for call in filtered_transition_pool.calls if call[0] == "fetchrow"
-    ][2]
+    ][1]
     assert (
         "ARRAY_REMOVE(ARRAY[candidate.connector_type, candidate.source_channel], NULL)"
         in filtered_transition_sql
@@ -770,7 +793,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     # String UUID accepted
     assert (await ingestion_event_replay_request(_FakePool(fetchrow_result=ok_row), str(event_id)))[
         "outcome"
-    ] == "ok"
+    ] == "unrecoverable"
 
     # Not found
     assert (
@@ -779,9 +802,13 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         )
     )["outcome"] == "not_found"
 
-    # Conflict
+    # Conflict in the filtered store
+    class FilteredConflictPool(_FakePool):
+        async def fetchval(self, sql, *args):
+            return "replay_pending" if "connectors.filtered_events" in sql else None
+
     result_cf = await ingestion_event_replay_request(
-        _FakePool(fetchrow_result=None, fetchval_result="replay_pending"), uuid.uuid4()
+        FilteredConflictPool(fetchrow_result=None), uuid.uuid4()
     )
     assert result_cf["outcome"] == "conflict" and result_cf["current_status"] == "replay_pending"
 

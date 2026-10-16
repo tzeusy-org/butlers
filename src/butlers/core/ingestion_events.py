@@ -30,7 +30,7 @@ ingestion_event_mark_replay_complete — transition replay_pending → ingested 
 ingestion_event_reconcile_after_processing — shared, cancellation-safe post-processing
                                   reconciliation used by both the DurableBuffer worker and
                                   the create_task ingest fallback (bu-nqkha)
-ingestion_event_replay_request  — mark a filtered event as replay_pending
+ingestion_event_replay_request  — queue filtered replay or refuse unproven public recovery
 ingestion_events_replay_policy  — resolve fail-closed connector replay policy
 ingestion_event_replay_history  — query public.audit_log for replay attempts on an event
 """
@@ -1115,113 +1115,54 @@ async def ingestion_event_replay_request(
     *,
     switchboard_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
-    """Request replay of a failed, ingested, or filtered event.
+    """Queue connector-filtered replay, or refuse public recovery without a plan.
 
-    Checks ``public.ingestion_events`` first (for routing-failed events), then
-    falls back to ``connectors.filtered_events`` (for connector-filtered events).
-    Every transition joins and locks its source's active connector policy in
-    the same SQL statement, so a concurrent policy change cannot enqueue an
-    unsafe replay after UI/preflight policy evidence was read.
+    Public ingestion rows have no retained classified delivery plan or target
+    intents on this path. Their status and error detail stay unchanged, including
+    legacy ``replay_pending`` markers that prove no queued work. No inbox row is
+    reset and no reclassification or delivery is scheduled.
 
-    For failed ingestion events, this is a status-only ``failed`` →
-    ``ingested`` transition. It does not modify a corresponding
-    ``message_inbox`` row: a terminal inbox row (for example, ``parsed`` or
-    ``errored``) remains terminal, so the request neither redelivers nor
-    re-routes that message. For already-ingested or replay-failed events,
-    this instead sets status to ``'replay_pending'`` and, when a switchboard
-    pool is available, resets the corresponding ``message_inbox`` row to
-    ``'accepted'`` so the DurableBuffer scanner can re-route it.
-    For filtered events, sets status to ``'replay_pending'`` for the existing
-    replay worker.
+    Public lookup retains precedence and the existing authoritative policy gate.
+    Connector-filtered events retain their locked replay-safe transition from
+    ``filtered``, ``error``, ``replay_failed``, ``ingested``, or ``replay_complete``
+    to ``replay_pending`` for the existing connector worker.
 
-    Allowed transitions:
-    - ``failed``          → ``ingested``        (status-only; inbox unchanged)
-    - ``ingested``        → ``replay_pending``  (re-process via scanner when inbox resets)
-    - ``filtered``        → ``replay_pending``  (connector filter)
-    - ``error``           → ``replay_pending``  (connector error)
-    - ``replay_failed``   → ``replay_pending``  (re-replay)
-    - ``replay_complete`` → ``replay_pending``  (re-replay completed event)
-
-    Args:
-        pool: asyncpg connection pool that can resolve both
-            ``public.ingestion_events`` and ``connectors.filtered_events``.
-        event_id: UUID of the event to replay.
-        switchboard_pool: Optional asyncpg pool scoped to the switchboard schema.
-            Used when replaying ``ingested`` or ``replay_failed`` events to
-            reset ``message_inbox`` for scanner processing; not used for the
-            status-only ``failed`` transition.
-
-    Returns:
-        A dict with ``outcome`` key:
-        - ``"ok"``        → status was updated; dict also contains ``id`` and ``source``.
-        - ``"not_found"`` → no row with that id in either table.
-        - ``"conflict"``  → row exists but current status is not replayable;
-                            dict also contains ``current_status``.
-        - ``"unsafe"``    → the event exists but its connector policy is not
-                            explicitly replay-safe; dict also contains ``reason``.
-        - ``"policy_unavailable"`` → status mutation did not happen and a
-                            post-transition policy explanation could not load.
+    ``switchboard_pool`` is accepted for caller compatibility and never written.
+    Outcomes are ``ok`` (filtered replay queued), ``unrecoverable`` (public row,
+    with fixed ``reason`` and unchanged ``current_status``), ``unsafe``,
+    ``policy_unavailable``, ``conflict``, or ``not_found``.
     """
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
-    # 1. Try public.ingestion_events first (routing-failed events).
-    row = await pool.fetchrow(
-        f"""
-        {_INGESTED_REPLAY_POLICY_CTE}
-        UPDATE public.ingestion_events AS ie
-        SET status = 'ingested', error_detail = NULL
-        WHERE ie.id = $1 AND ie.status = 'failed'
-        {_INGESTED_REPLAY_POLICY_PREDICATE}
-        RETURNING ie.id
-        """,
-        event_id,
-    )
-    if row is not None:
-        return {"outcome": "ok", "id": str(row["id"]), "source": "ingestion_events"}
+    def public_refusal(status: str) -> dict[str, Any]:
+        return {
+            "outcome": "unrecoverable",
+            "id": str(event_id),
+            "source": "ingestion_events",
+            "current_status": status,
+            "reason": "no_retained_delivery_plan",
+        }
 
-    # 1b. Try public.ingestion_events for already-ingested events.
-    # These events were already routed successfully.  To replay, we mark them
-    # replay_pending and reset the message_inbox row to 'accepted' so the
-    # DurableBuffer scanner re-enqueues them for re-routing.
-    ingestion_replayable = ("ingested", "replay_failed")
+    # Read only: even an explicitly safe connector policy is not evidence of a
+    # retained target plan. Lock policy as before so concurrent unsafe changes
+    # retain their existing rejection ordering.
     row = await pool.fetchrow(
         f"""
         {_INGESTED_REPLAY_POLICY_CTE}
-        UPDATE public.ingestion_events AS ie
-        SET status = 'replay_pending'
-        WHERE ie.id = $1 AND ie.status = ANY($2)
+        SELECT ie.id, ie.status
+        FROM public.ingestion_events AS ie
+        WHERE ie.id = $1
         {_INGESTED_REPLAY_POLICY_PREDICATE}
-        RETURNING ie.id
         """,
         event_id,
-        list(ingestion_replayable),
     )
     if row is not None:
-        # Reset message_inbox lifecycle so the scanner picks it up.
-        if switchboard_pool is not None:
-            try:
-                await switchboard_pool.execute(
-                    """
-                    UPDATE message_inbox
-                    SET lifecycle_state = 'accepted',
-                        updated_at = now()
-                    WHERE id = $1
-                    """,
-                    event_id,
-                )
-            except Exception:
-                logger.warning(
-                    "replay: failed to reset message_inbox lifecycle for %s "
-                    "(scanner may not re-route until manual intervention)",
-                    event_id,
-                )
-        else:
-            logger.warning(
-                "replay: switchboard_pool not available; message_inbox not reset for %s",
-                event_id,
-            )
-        return {"outcome": "ok", "id": str(row["id"]), "source": "ingestion_events"}
+        return public_refusal(row["status"])
+
+    public_status = await pool.fetchval(
+        "SELECT status FROM public.ingestion_events WHERE id = $1", event_id
+    )
 
     # 2. Try connectors.filtered_events (any status except replay_pending).
     filtered_replayable = (
@@ -1231,20 +1172,21 @@ async def ingestion_event_replay_request(
         "ingested",
         "replay_complete",
     )
-    row = await pool.fetchrow(
-        f"""
-        {_FILTERED_REPLAY_POLICY_CTE}
-        UPDATE connectors.filtered_events AS fe
-        SET status = 'replay_pending', replay_requested_at = now(), error_detail = NULL
-        WHERE fe.id = $1 AND fe.status = ANY($2)
-        {_FILTERED_REPLAY_POLICY_PREDICATE}
-        RETURNING fe.id
-        """,
-        event_id,
-        list(filtered_replayable),
-    )
-    if row is not None:
-        return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
+    if public_status is None:
+        row = await pool.fetchrow(
+            f"""
+            {_FILTERED_REPLAY_POLICY_CTE}
+            UPDATE connectors.filtered_events AS fe
+            SET status = 'replay_pending', replay_requested_at = now(), error_detail = NULL
+            WHERE fe.id = $1 AND fe.status = ANY($2)
+            {_FILTERED_REPLAY_POLICY_PREDICATE}
+            RETURNING fe.id
+            """,
+            event_id,
+            list(filtered_replayable),
+        )
+        if row is not None:
+            return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
 
     # 3. A policy may have changed after the route's earlier preflight. The
     # transition above already refused to update in that case; resolve again
@@ -1264,14 +1206,14 @@ async def ingestion_event_replay_request(
             "source_channel": replay_policy.source_channel,
         }
 
-    # 4. Check both tables for non-replayable status.
-    for table in ("public.ingestion_events", "connectors.filtered_events"):
-        current_status = await pool.fetchval(
-            f"SELECT status FROM {table} WHERE id = $1",
-            event_id,
-        )
-        if current_status is not None:
-            return {"outcome": "conflict", "current_status": current_status}
+    if public_status is not None:
+        return public_refusal(public_status)
+
+    current_status = await pool.fetchval(
+        "SELECT status FROM connectors.filtered_events WHERE id = $1", event_id
+    )
+    if current_status is not None:
+        return {"outcome": "conflict", "current_status": current_status}
 
     return {"outcome": "not_found"}
 

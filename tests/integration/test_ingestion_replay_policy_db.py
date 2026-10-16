@@ -244,7 +244,12 @@ async def _wait_until_replay_waits_on_registry_lock(
     *,
     update_relation: str = "public.ingestion_events",
 ) -> None:
-    """Prove the replay task is blocked on the live policy row lock for one mutation."""
+    """Prove the replay statement is blocked on the live policy row lock."""
+    query_pattern = (
+        "%SELECT ie.id, ie.status%FROM public.ingestion_events AS ie%"
+        if update_relation == "public.ingestion_events"
+        else f"%UPDATE {update_relation}%"
+    )
     async with pool.acquire() as observer:
         async with asyncio.timeout(5):
             while not await observer.fetchval(
@@ -258,7 +263,7 @@ async def _wait_until_replay_waits_on_registry_lock(
                       AND query LIKE $1
                 )
                 """,
-                f"%UPDATE {update_relation}%",
+                query_pattern,
             ):
                 await asyncio.sleep(0.01)
 
@@ -283,8 +288,57 @@ async def test_public_replay_refuses_unsafe_policy(
     assert await _public_status(migrated_pool, event_id) == "failed"
 
 
+async def _assert_public_missing_plan_preserves_rows(
+    migrated_pool: asyncpg.Pool, event_id: uuid.UUID
+) -> None:
+    await migrated_pool.execute(
+        "SELECT switchboard.switchboard_message_inbox_ensure_partition(now())"
+    )
+    await migrated_pool.execute(
+        """
+        INSERT INTO switchboard.message_inbox (id, normalized_text, lifecycle_state)
+        VALUES ($1, 'synthetic retained event', 'parsed')
+        """,
+        event_id,
+    )
+    for status in ("failed", "ingested", "replay_failed", "replay_pending"):
+        await migrated_pool.execute(
+            "UPDATE public.ingestion_events SET status = $2, error_detail = 'retained failure' "
+            "WHERE id = $1",
+            event_id,
+            status,
+        )
+        before = await migrated_pool.fetchrow(
+            "SELECT * FROM public.ingestion_events WHERE id = $1", event_id
+        )
+        inbox_before = await migrated_pool.fetchrow(
+            "SELECT * FROM switchboard.message_inbox WHERE id = $1", event_id
+        )
+        for _ in range(2):
+            result = await ingestion_event_replay_request(
+                migrated_pool, event_id, switchboard_pool=migrated_pool
+            )
+            assert result["outcome"] == "unrecoverable"
+            assert result["reason"] == "no_retained_delivery_plan"
+            assert result["current_status"] == status
+            assert await _public_status(migrated_pool, event_id) == status
+            assert (
+                await migrated_pool.fetchrow(
+                    "SELECT * FROM public.ingestion_events WHERE id = $1", event_id
+                )
+                == before
+            )
+            assert (
+                await migrated_pool.fetchrow(
+                    "SELECT * FROM switchboard.message_inbox WHERE id = $1", event_id
+                )
+                == inbox_before
+            )
+
+
 async def test_public_channel_candidate_can_replay(migrated_pool: asyncpg.Pool) -> None:
-    """A public event may match its channel-specific registry connector type."""
+    """A channel-matched safe policy cannot substitute for a retained plan."""
+    # REQ-ingestion-target-delivery-recovery-006: preserve legacy source and inbox.
     event_id = await _seed_public_failed_event(
         migrated_pool,
         channel="telegram_bot",
@@ -297,14 +351,12 @@ async def test_public_channel_candidate_can_replay(migrated_pool: asyncpg.Pool) 
         replay_safe=True,
     )
 
-    result = await ingestion_event_replay_request(migrated_pool, event_id)
-
-    assert result["outcome"] == "ok"
-    assert await _public_status(migrated_pool, event_id) == "ingested"
+    await _assert_public_missing_plan_preserves_rows(migrated_pool, event_id)
 
 
 async def test_public_provider_candidate_can_replay(migrated_pool: asyncpg.Pool) -> None:
-    """A public event may match its provider-specific registry connector type."""
+    """A provider-matched safe policy cannot substitute for a retained plan."""
+    # REQ-ingestion-target-delivery-recovery-006: preserve legacy source and inbox.
     event_id = await _seed_public_failed_event(
         migrated_pool,
         channel="telegram_bot",
@@ -317,10 +369,7 @@ async def test_public_provider_candidate_can_replay(migrated_pool: asyncpg.Pool)
         replay_safe=True,
     )
 
-    result = await ingestion_event_replay_request(migrated_pool, event_id)
-
-    assert result["outcome"] == "ok"
-    assert await _public_status(migrated_pool, event_id) == "ingested"
+    await _assert_public_missing_plan_preserves_rows(migrated_pool, event_id)
 
 
 @pytest.mark.parametrize("policy", ["email", "missing", "unsafe", "ambiguous"])
