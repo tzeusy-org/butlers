@@ -63,7 +63,12 @@ The Compose launcher checks both dev Kubernetes runtime Deployments,
 `butlers-up` and `butlers-control`, including observed replicas remaining after
 desired replicas reach zero. Either active role refuses Compose startup before
 any lifecycle action. Production retains its unsplit `butlers-up` ownership
-check. This preflight is not an atomic cross-platform ownership lock: a
+check. A configured context must yield a successful ownership query for every
+selected role: only confirmed absence or valid zero replica counts allow
+startup. Timeouts, access denial, API/transport errors and invalid replica
+metadata refuse before lifecycle actions. Hosts without kubectl or a selected
+local Kubernetes context retain standalone Compose support; invalid local
+configuration also refuses. This preflight is not an atomic cross-platform ownership lock: a
 coordinated transition must stop both staged roles and confirm their pods have
 terminated before Compose or an unsplit release starts. The reverse transition
 must stop the complete Compose project before either Kubernetes role starts.

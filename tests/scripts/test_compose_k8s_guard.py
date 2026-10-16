@@ -25,6 +25,8 @@ def _run_launcher(
     args: tuple[str, ...],
     replicas: str,
     control_replicas: str | None = None,
+    probe_failure: tuple[str, str] | None = None,
+    cluster_context: str = "configured",
     override: bool = False,
     complete_launch: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
@@ -67,9 +69,31 @@ def _run_launcher(
         fake_bin / "kubectl",
         "#!/usr/bin/env bash\n"
         'printf "kubectl %s\\n" "$*" >> "$TEST_CALLS"\n'
+        'if [[ "$*" == "config view"* ]]; then\n'
+        '  [[ "$TEST_CLUSTER_CONTEXT" != "invalid" ]] || exit 1\n'
+        '  [[ "$TEST_CLUSTER_CONTEXT" != "configured" ]] || printf "offline-context"\n'
+        "  exit 0\n"
+        "fi\n"
         'replicas="$TEST_K8S_REPLICAS"\n'
         'if [[ "$*" == *"get deploy butlers-control "* ]]; then replicas="$TEST_K8S_CONTROL_REPLICAS"; fi\n'
-        '[[ -n "$replicas" ]] || exit 1\n'
+        'if [[ -n "$TEST_PROBE_ROLE" && "$*" == *"get deploy $TEST_PROBE_ROLE "* ]]; then\n'
+        '  case "$TEST_PROBE_FAILURE" in\n'
+        "    timeout) exit 124 ;;\n"
+        '    rbac|transport|api) printf "%s\\n" "$TEST_PROBE_FAILURE" >&2; exit 1 ;;\n'
+        '    malformed) printf "present invalid 0"; exit 0 ;;\n'
+        '    partial) printf "present 0"; exit 0 ;;\n'
+        '    negative) printf "present 0 -1"; exit 0 ;;\n'
+        "  esac\n"
+        "fi\n"
+        # Model server NotFound faithfully: only --ignore-not-found makes it
+        # a successful empty response. Failures never stand in for absence.
+        'if [[ -z "$replicas" ]]; then [[ "$*" == *--ignore-not-found* ]]; exit $?; fi\n'
+        'if [[ "$*" == *go-template=* ]]; then\n'
+        '  if [[ "$*" == *".status.replicas"* ]]; then\n'
+        '    [[ "$replicas" == *" "* ]] || replicas="$replicas 0"\n'
+        '  else replicas="${replicas%% *}"; fi\n'
+        '  printf "present %s" "$replicas"; exit 0\n'
+        "fi\n"
         'if [[ "$*" != *"{.status.replicas}"* ]]; then replicas="${replicas%% *}"; fi\n'
         'printf "%s" "$replicas"\n',
     )
@@ -107,7 +131,19 @@ def _run_launcher(
         "TEST_DOCKER_ARGV": str(tmp_path / "docker-argv.jsonl"),
         "TEST_K8S_REPLICAS": replicas,
         "TEST_K8S_CONTROL_REPLICAS": replicas if control_replicas is None else control_replicas,
+        "TEST_PROBE_ROLE": probe_failure[0] if probe_failure else "",
+        "TEST_PROBE_FAILURE": probe_failure[1] if probe_failure else "",
+        "TEST_CLUSTER_CONTEXT": cluster_context,
     }
+    if cluster_context == "not-installed":
+        (fake_bin / "kubectl").unlink()
+        # A hermetic executable search path proves command absence even on CI
+        # hosts that install kubectl. Lifecycle commands above stay fake.
+        for executable in ("bash", "dirname", "timeout", "sha256sum", "awk", "mkdir", "touch"):
+            binary = shutil.which(executable)
+            assert binary is not None
+            (fake_bin / executable).symlink_to(binary)
+        environment["PATH"] = str(fake_bin)
     if override:
         environment["BUTLERS_ALLOW_COMPOSE_WITH_K8S"] = "1"
     result = subprocess.run(
@@ -147,9 +183,10 @@ def test_refuses_while_release_has_replicas(tmp_path, args, namespace):
             ("0", "1", "butlers-control"),
             ("1", "0", "butlers-up"),
             ("0", "0 1", "butlers-control"),
+            ("0 1", "0", "butlers-up"),
         ):
             result, calls = _run_launcher(
-                tmp_path / (active + control.replace(" ", "-")),
+                tmp_path / (active + domains.replace(" ", "-") + control.replace(" ", "-")),
                 args=args,
                 replicas=domains,
                 control_replicas=control,
@@ -160,6 +197,41 @@ def test_refuses_while_release_has_replicas(tmp_path, args, namespace):
             assert "docker" not in calls
             assert "sudo" not in calls
 
+        # Exercise the real launcher through fake down/up, not source spelling.
+        # A configured role whose ownership is unknown must stop before either.
+        for role in ("butlers-up", "butlers-control"):
+            for failure in (
+                "timeout",
+                "rbac",
+                "transport",
+                "api",
+                "malformed",
+                "partial",
+                "negative",
+            ):
+                result, calls = _run_launcher(
+                    tmp_path / f"{role}-{failure}",
+                    args=args,
+                    replicas="0",
+                    probe_failure=(role, failure),
+                    complete_launch=True,
+                )
+                assert result.returncode == 1, (role, failure, result.stderr)
+                assert f"get deploy {role}" in calls
+                assert "docker" not in calls
+                assert "sudo" not in calls
+
+        result, calls = _run_launcher(
+            tmp_path / "invalid-local-config",
+            args=args,
+            replicas="0",
+            cluster_context="invalid",
+            complete_launch=True,
+        )
+        assert result.returncode == 1
+        assert "docker" not in calls
+        assert "sudo" not in calls
+
 
 @pytest.mark.parametrize("replicas", ["0", ""])
 def test_proceeds_when_release_is_absent_or_scaled_down(tmp_path, replicas):
@@ -167,6 +239,21 @@ def test_proceeds_when_release_is_absent_or_scaled_down(tmp_path, replicas):
 
     assert "served by Kubernetes" not in result.stderr
     assert "kubectl -n butlers-dev get deploy butlers-up" in calls
+
+    # Prove real lifecycle reachability for both confirmed absence and zero,
+    # plus a standalone host with no configured current Kubernetes context.
+    for context in ("configured", "unconfigured", "not-installed"):
+        result, calls = _run_launcher(
+            tmp_path / context,
+            args=(),
+            replicas=replicas,
+            cluster_context=context,
+            complete_launch=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "down --remove-orphans" in calls
+        assert "up -d" in calls
+        assert ("get deploy" in calls) == (context == "configured")
 
 
 def test_override_skips_the_cluster_check(tmp_path):
