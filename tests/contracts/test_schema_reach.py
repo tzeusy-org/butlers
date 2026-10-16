@@ -274,19 +274,21 @@ _SQL_FRAGMENT_RE = re.compile(
     r"(?:" + _SQL_HEADS + r")\b",
     re.IGNORECASE | re.DOTALL,
 )
-_SQL_NONCODE_RE = re.compile(
-    r"(?P<dollar>\$(?:[^\W\d]\w*)?\$).*?(?P=dollar)|"
-    r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'",
-    re.DOTALL,
-)
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[^\W\d]\w*)?\$")
 _DOLLAR_CODE_BODY_RE = re.compile(
     r"(?:\bDO(?:\s+LANGUAGE\s+\w+)?|"
     r"\bCREATE(?:\s+OR\s+REPLACE)?\s+(?:FUNCTION|PROCEDURE)\b.*\bAS)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
+_QUOTED_IDENTIFIER = r'"(?:[^"]|"")*"'
 _QUALIFIED_RE = re.compile(
-    r'(?<![\w.])"?(' + "|".join(sorted(_BUTLER_SCHEMAS)) + r')"?\s*\.\s*'
-    r'"?([a-zA-Z_][a-zA-Z0-9_]*)"?',
+    r'(?:(?<![\w.])(?P<quote>"?)(?P<schema>'
+    + "|".join(sorted(_BUTLER_SCHEMAS))
+    + r")(?P=quote)\s*\.\s*(?P<relation>"
+    + _QUOTED_IDENTIFIER
+    + r"|[a-zA-Z_][a-zA-Z0-9_]*)|"
+    + _QUOTED_IDENTIFIER
+    + r")",
     re.IGNORECASE,
 )
 _DYNAMIC_SLOT = r"(?:\{[^{}]*\}|%\([^)]+\)s|%s)"
@@ -294,7 +296,7 @@ _DYNAMIC_RELATION_RE = re.compile(
     r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|VIEW|REFERENCES|TRUNCATE)\s+"
     r"(?:(?:ONLY|IF\s+(?:NOT\s+)?EXISTS)\s+)*"
     r'((?:"?\w+"?\s*\.\s*)?"?' + _DYNAMIC_SLOT + r'"?'
-    r'(?:\s*\.\s*"?(?:\w+|' + _DYNAMIC_SLOT + r')"?)?)',
+    r'(?:\s*\.\s*"?(?:\w+|' + _DYNAMIC_SLOT + r')"?)?)|' + _QUOTED_IDENTIFIER,
     re.IGNORECASE,
 )
 
@@ -1019,25 +1021,85 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
 
 
 def _mask_sql_noncode(sql: str) -> str:
-    """Blank SQL data/comments, preserving offsets and executable dollar bodies."""
+    """Blank data/comments without losing quoted tokens or executable bodies.
 
-    def blank(text: str) -> str:
-        return re.sub(r"[^\n]", " ", text)
+    Comments are whitespace, including nested block comments. Quoted identifiers
+    remain intact for relation matching; single/E strings and dollar data do not.
+    Every replacement preserves length/newlines for original source diagnostics.
+    """
+    code = list(sql)
+    position = statement_start = 0
 
-    def replace(match: re.Match[str]) -> str:
-        delimiter = match.group("dollar")
-        if delimiter and _DOLLAR_CODE_BODY_RE.search(sql[: match.start()]):
-            # DO and CREATE FUNCTION/PROCEDURE bodies execute SQL. Keep scanning
-            # that code while masking any nested data strings and comments.
-            body = match.group()[len(delimiter) : -len(delimiter)]
-            return blank(delimiter) + _mask_sql_noncode(body) + blank(delimiter)
-        return blank(match.group())
+    def blank(start: int, end: int) -> None:
+        code[start:end] = ["\n" if char == "\n" else " " for char in sql[start:end]]
 
-    return _SQL_NONCODE_RE.sub(replace, sql)
+    while position < len(sql):
+        start = position
+        if sql.startswith("--", start):
+            end = sql.find("\n", start)
+            position = len(sql) if end == -1 else end
+            blank(start, position)
+        elif sql.startswith("/*", start):
+            position += 2
+            depth = 1
+            while position < len(sql) and depth:
+                if sql.startswith("/*", position):
+                    depth += 1
+                    position += 2
+                elif sql.startswith("*/", position):
+                    depth -= 1
+                    position += 2
+                else:
+                    position += 1
+            blank(start, position)
+        elif sql[start] in ("'", '"'):
+            quote = sql[start]
+            escaped = (
+                quote == "'"
+                and start > 0
+                and sql[start - 1] in "eE"
+                and (start == 1 or not (sql[start - 2].isalnum() or sql[start - 2] in "_$"))
+            )
+            position += 1
+            while position < len(sql):
+                if escaped and sql[position] == "\\":
+                    position = min(position + 2, len(sql))
+                elif sql[position] == quote:
+                    position += 1
+                    if position < len(sql) and sql[position] == quote:
+                        position += 1
+                    else:
+                        break
+                else:
+                    position += 1
+            if quote == "'":
+                blank(start, position)
+        elif (delimiter := _DOLLAR_QUOTE_RE.match(sql, start)) and (
+            start == 0 or not (sql[start - 1].isalnum() or sql[start - 1] in "_$")
+        ):
+            end = sql.find(delimiter.group(), delimiter.end())
+            position = len(sql) if end == -1 else end + len(delimiter.group())
+            prefix = "".join(code[statement_start:start])
+            if end != -1 and _DOLLAR_CODE_BODY_RE.search(prefix):
+                # Context uses already-blanked comments, so AS/DO whitespace
+                # cannot turn executable function/procedure/DO bodies into data.
+                body = _mask_sql_noncode(sql[delimiter.end() : end])
+                blank(start, delimiter.end())
+                code[delimiter.end() : end] = body
+                blank(end, position)
+            else:
+                blank(start, position)
+        else:
+            if sql[start] == ";":
+                statement_start = start + 1
+            position += 1
+    return "".join(code)
 
 
 def _is_sql_fragment(sql: str) -> bool:
     """Recognize supported commands after real, non-data statement boundaries."""
+    if not _SQL_KEYWORD_RE.search(sql):
+        return False
     code = _mask_sql_noncode(sql)
     return any(_SQL_FRAGMENT_RE.match(statement) for statement in code.split(";"))
 
@@ -1054,12 +1116,18 @@ def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int
                 # offsets while masking them (including source_ref/email values).
                 sql = _mask_sql_noncode(sql)
                 for match in _QUALIFIED_RE.finditer(sql):
-                    schema, relation = (part.lower() for part in match.groups())
+                    schema = match.group("schema")
+                    if schema is None:  # Consume a whole standalone quoted identifier.
+                        continue
+                    schema = schema.lower()
+                    relation = match.group("relation").strip('"').replace('""', '"').lower()
                     if schema != owner:
                         key = (relative, f"{schema}.{relation}")
                         found.setdefault(key, []).append(line + sql[: match.start()].count("\n"))
                 for match in _DYNAMIC_RELATION_RE.finditer(sql):
                     if sql.lstrip().upper().startswith("REVOKE"):
+                        continue
+                    if match.group(1) is None:  # Quoted alias, not a relation slot.
                         continue
                     slot = re.sub(r"\s+", " ", match.group(1)).strip()
                     key = (relative, f"<dynamic:{slot}>")
@@ -1158,6 +1226,76 @@ def test_foreign_schema_sql_is_allowlisted(
         nonreferences[name] = schema_reach_inventory(tmp_path)
     assert nonreferences == {name: {} for name in data_only}, (
         "Data strings, comments and bare local relations must not become foreign references"
+    )
+
+    # Comments are whitespace around executable dollar bodies; quoted tokens
+    # own their comment-like characters rather than swallowing later SQL.
+    lexical_statements = {
+        "quoted_identifier": f'SELECT 1 AS "--marker" FROM {foreign}',
+        "quoted_relation": 'SELECT * FROM health."review--unallowlisted"',
+        "escaped_quote": r"SELECT E'\'--' AS marker FROM " + foreign,
+        "nested_comment": f"SELECT /* outer /* inner */ still comment */ 1 FROM {foreign}",
+    }
+    for kind, declaration, body, language in (
+        (
+            "function",
+            "CREATE FUNCTION probe() RETURNS int AS",
+            f"SELECT count(*) FROM {foreign}",
+            "LANGUAGE sql",
+        ),
+        (
+            "procedure",
+            "CREATE PROCEDURE probe() AS",
+            f"BEGIN PERFORM * FROM {foreign}; END;",
+            "LANGUAGE plpgsql",
+        ),
+        ("do", "DO", f"BEGIN PERFORM * FROM {foreign}; END;", ""),
+        ("do_language", "DO LANGUAGE plpgsql", f"BEGIN PERFORM * FROM {foreign}; END;", ""),
+    ):
+        for comment_kind, comment in (
+            ("block", "/* context */"),
+            ("line", "-- context\n"),
+            ("nested", "/* outer /* inner */ still context */"),
+        ):
+            lexical_statements[f"{kind}_{comment_kind}"] = (
+                f"{declaration} {comment} $body$ {body} $body$ {language}"
+            )
+    lexical_references = {}
+    for name, sql in lexical_statements.items():
+        probe.write_text("query = " + repr(sql))
+        lexical_references[name] = set(schema_reach_inventory(tmp_path))
+    assert lexical_references == {
+        name: {
+            (
+                "src/probe.py",
+                "health.review--unallowlisted" if name == "quoted_relation" else foreign,
+            )
+        }
+        for name in lexical_statements
+    }, "Quoted tokens and comments cannot erase executable relation references"
+
+    lexical_data = {
+        "quoted_identifier": f'SELECT 1 AS "--{foreign}" FROM public.entities',
+        "escaped_quote": r"SELECT E'\'--" + foreign + "' AS marker FROM public.entities",
+        "nested_comment": f"SELECT /* outer /* inner */ FROM {foreign} */ 1 FROM public.entities",
+        "body_nested_data": f"DO $$ BEGIN RAISE NOTICE '--{foreign}'; END; $$",
+        "function_nested_data": f"CREATE FUNCTION probe() RETURNS text AS /* context */ $$ SELECT '{foreign}' $$ LANGUAGE sql",
+        "dollar_context_text": f"SELECT $$DO /* AS */ {foreign}$$ FROM public.entities",
+        "local_quoted_relation": f'SELECT * FROM public."--{foreign}"',
+        "quoted_semicolon": f'SELECT 1 AS "marker; FROM {foreign}" FROM public.entities',
+        "doubled_identifier_quote": f'SELECT 1 AS "marker""--{foreign}" FROM public.entities',
+        "escaped_backslash": r"SELECT E'\\' AS marker -- " + foreign,
+    }
+    lexical_nonreferences = {}
+    for name, sql in lexical_data.items():
+        probe.write_text("query = " + repr(sql))
+        lexical_nonreferences[name] = schema_reach_inventory(tmp_path)
+    assert lexical_nonreferences == {name: {} for name in lexical_data}, (
+        "True comments, quoted identifier content and escaped/dollar data are not relation references"
+    )
+    probe.write_text("query = " + repr("SELECT E'\\'--' AS marker\nFROM " + foreign))
+    assert schema_reach_inventory(tmp_path) == {("src/probe.py", foreign): [2]}, (
+        "Masking must retain original source line offsets"
     )
 
 
