@@ -856,8 +856,8 @@ services:
     restart: unless-stopped
 
   # ── Hotreload profile ─────────────────────────────────────────────────
-  # Volume-mount source for live code changes. Use --scale butlers-up=0
-  # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).
+  # Volume-mount source for live code changes. The canonical scripts/compose.sh
+  # scales replaced services to zero, including dev's baked control service.
 
   butlers-control-hotreload:
     profiles: [control-stage-hotreload]
