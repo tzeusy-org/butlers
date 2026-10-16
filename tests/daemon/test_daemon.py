@@ -1696,8 +1696,14 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
     return daemon, route_execute_fn
 
 
-async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
+async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) -> None:
     """route.execute: missing notify_request errors; success delivers; missing recipient errors."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
     # Missing notify_request → validation_error
     m1 = tmp_path / "m1"
     m1.mkdir()
@@ -1868,8 +1874,14 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     assert result["status"] == "error"
     assert result["error"]["class"] == "validation_error"
     call_kwargs = guard.await_args.kwargs
-    assert call_kwargs["park_tool_name"] == expected_tool
-    assert call_kwargs["park_tool_args"] == expected_args
+    assert call_kwargs["rule_tool_name"] == expected_tool
+    assert call_kwargs["rule_match_args"] == expected_args
+    assert call_kwargs["park_tool_name"] == "route.execute"
+    assert call_kwargs["park_tool_args"] == {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+    }
 
     # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
     refusal = result["result"]["notify_response"]
@@ -2015,6 +2027,10 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
 async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path: Path) -> None:
     """A direct or legacy deferred envelope cannot park/deliver without why."""
     import butlers.core.approvals_hooks as approval_hooks
+    from butlers.core.tool_call_capture import (
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
     from butlers.modules.approvals.email_guard import check_recipient
 
     butler_dir = _make_butler_toml(
@@ -2034,6 +2050,9 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
         recipient_guard=check_recipient,
         park_pending_action=AsyncMock(),
     )
+    # This owner exercises an LLM runtime; deterministic proposals have their own
+    # factual server dossier and are covered by the scheduled-delivery owner.
+    session_token = set_current_runtime_session_id(str(uuid.uuid4()))
     try:
         with (
             patch(
@@ -2062,6 +2081,7 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
                 },
             )
     finally:
+        reset_current_runtime_session_id(session_token)
         approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
 
     assert result["status"] == "error"
