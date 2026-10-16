@@ -1,0 +1,87 @@
+{{- if .Values.butlersControl.enabled }}
+{{- $u := .Values.publicUrl }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: butlers-control
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if $.Values.suspend }}0{{ else }}1{{ end }}
+  # Schedulers and connectors assume a single instance.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 8 }}
+    spec:
+      securityContext:
+        sysctls:
+          - {name: net.ipv4.ip_local_reserved_ports, value: "41100,41199"}
+      initContainers:
+        {{- include "butlers.waitFor" (dict "root" . "name" "dashboard-api" "url" "http://dashboard-api:41200/health") | nindent 8 }}
+        {{- include "butlers.oauthGate" . | nindent 8 }}
+      containers:
+        - name: butlers-control
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Same command as the compose service (runtime needs dev extras).
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host 0.0.0.0"]
+          ports:
+            - {name: service, containerPort: 41100}
+            - {name: session, containerPort: 41199}
+          env:
+            {{- include "butlers.postgresEnv" . | nindent 12 }}
+            - {name: HOME, value: /root}
+            - {name: BUTLERS_HOST, value: butlers-up}
+            - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
+            - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
+            - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "1"}
+          readinessProbe:
+            httpGet: {path: /health, port: service}
+            periodSeconds: 5
+          startupProbe:
+            httpGet: {path: /health, port: service}
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health, port: service}
+            periodSeconds: 15
+            failureThreshold: 8
+          resources:
+            {{- toYaml .Values.butlersControl.resources | nindent 12 }}
+          securityContext:
+            # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
+            appArmorProfile: {type: Unconfined}
+          volumeMounts:
+            - {name: logs, mountPath: /app/logs}
+            {{- range list "claude" "codex" "opencode" "gemini" }}
+            - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
+            {{- end }}
+            {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
+      volumes:
+        {{- include "butlers.logsVolume" . | nindent 8 }}
+        - name: runtime-home
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
+        {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
+---
+# Existing service callers use 41100. Session 41199 is separately restricted
+# by the control ingress policy and never used as a liveness probe.
+apiVersion: v1
+kind: Service
+metadata:
+  name: butlers-control
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 4 }}
+  ports:
+    - {name: service, port: 41100, targetPort: service}
+    - {name: session, port: 41199, targetPort: session}
+{{- end }}
