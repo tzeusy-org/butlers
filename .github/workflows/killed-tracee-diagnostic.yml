@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   killed-tracee-diagnostic:
-    if: github.head_ref == 'agent/bu-0nz5zg'
+    if: github.head_ref == 'diagnostic/bu-0nz5zg-after-fix'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:

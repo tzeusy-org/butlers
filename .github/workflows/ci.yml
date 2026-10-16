@@ -21,7 +21,7 @@ concurrency:
 jobs:
   route:
     # Disposable diagnostic branch only; NEVER MERGE this suppression.
-    if: github.head_ref != 'agent/bu-0nz5zg'
+    if: github.head_ref != 'diagnostic/bu-0nz5zg-after-fix'
     timeout-minutes: 2
     # Stdlib-only routing cannot establish testcase membership. Uncertainty widens.
     runs-on: ubuntu-latest
