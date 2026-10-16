@@ -60,7 +60,7 @@ Each healthy module's `on_startup(config, db)` runs in topological order after s
 
 ### Phase 12: Create Spawner and Runtime Wiring
 
-The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and module credentials. It then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
+The daemon creates a `Spawner` with the runtime adapter, verified binary, and connection pool. Module credentials stay in the daemon for module validation and tool execution. It then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
 
 ### Phase 13: Create FastMCP and Register Core Tools
 

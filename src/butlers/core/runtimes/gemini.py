@@ -290,8 +290,8 @@ class GeminiAdapter(RuntimeAdapter):
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
-        # Filter environment variables
-        filtered_env = _filter_env(env) if env else None
+        # Preserve an explicit empty mapping: None would inherit daemon credentials.
+        filtered_env = _filter_env(env)
 
         # Build command
         cmd = [

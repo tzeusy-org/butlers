@@ -1109,61 +1109,100 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
-    async def test_env_path_passthrough_and_optional_exclusion(self):
-        """PATH and declared required/optional vars passed; undeclared not leaked;
-        optional absent → excluded; module credentials included."""
+    async def test_env_path_passthrough_and_optional_exclusion(self, tmp_path: Path):
+        """Keep explicit operator env, PATH and tracing; withhold module credentials."""
         config = _make_config(
             env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"],
             env_optional=["OPT_VAR", "DASHBOARD_AUTH_DB_PASSWORD", "POSTGRES_PASSWORD"],
         )
-        with patch.dict(
-            os.environ,
-            {
-                "PATH": "/tmp/node-bin",
-                "MY_SECRET": "s3cret",
-                "DASHBOARD_API_KEY": "synthetic-dashboard-key",
-                "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
-                "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
-                "POSTGRES_PASSWORD": "synthetic-host-password",
-                "OPT_VAR": "opt-val",
-                "UNDECLARED_SECRET": "should-not-leak",
-            },
-            clear=False,
+        trace = {"TRACEPARENT": "00-" + "1" * 32 + "-" + "2" * 16 + "-01"}
+        module_values = {
+            "SMTP_PASSWORD": "synthetic-smtp-password",
+            "IMAP_TOKEN": "synthetic-imap-token",
+            "BUTLER_TELEGRAM_TOKEN": "synthetic-telegram-token",
+            "BUTLER_EMAIL_ADDRESS": "synthetic@example.invalid",
+            "BUTLER_EMAIL_PASSWORD": "synthetic-email-password",
+            "WHATSAPP_USER_SESSION": "synthetic-whatsapp-session",
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/tmp/node-bin",
+                    "MY_SECRET": "s3cret",
+                    "DASHBOARD_API_KEY": "synthetic-dashboard-key",
+                    "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
+                    "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+                    "POSTGRES_PASSWORD": "synthetic-host-password",
+                    "OPT_VAR": "opt-val",
+                    "UNDECLARED_SECRET": "should-not-leak",
+                    **module_values,
+                },
+                clear=False,
+            ),
+            patch("butlers.core.spawner_env.get_traceparent_env", return_value=trace),
         ):
             env = await _build_env(config)
             assert env["PATH"] == "/tmp/node-bin"
             assert env["MY_SECRET"] == "s3cret"
             assert env["OPT_VAR"] == "opt-val"
+            assert env["TRACEPARENT"] == trace["TRACEPARENT"]
             assert "UNDECLARED_SECRET" not in env
             assert "DASHBOARD_API_KEY" not in env
             assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
             assert "DATABASE_URL" not in env
             assert "POSTGRES_PASSWORD" not in env
 
-        # Optional absent → excluded
+            # Automatic module credential forwarding is forbidden.
+            config3 = _make_config()
+            env3 = await _build_env(config3)
+            for key in module_values:
+                assert key not in env3
+            assert env3 == {"PATH": "/tmp/node-bin", **trace}
+
+            # An explicit [butler.env] declaration remains operator authority.
+            declared = await _build_env(_make_config(env_optional=["SMTP_PASSWORD"]))
+            assert declared["SMTP_PASSWORD"] == module_values["SMTP_PASSWORD"]
+
+            # The shared legacy healing path still receives its purpose-bound
+            # GitHub token, PATH and trace, without declared/module credentials.
+            adapter = MockAdapter(result_text="", capture=True)
+            with (
+                patch.dict(os.environ, {"GH_TOKEN": "synthetic-healing-token"}, clear=False),
+                patch("butlers.core.spawner.get_traceparent_env", return_value=trace),
+            ):
+                await Spawner(config=config, config_dir=tmp_path, runtime=adapter).trigger(
+                    "synthetic healing probe", "healing"
+                )
+            assert adapter.calls[0]["env"] == {
+                "PATH": "/tmp/node-bin",
+                "GH_TOKEN": "synthetic-healing-token",
+                **trace,
+            }
+
+        # Optional absent -> excluded.
         config2 = _make_config(env_optional=["MISSING_OPT"])
-        os.environ.pop("MISSING_OPT", None)
-        env2 = await _build_env(config2)
+        with patch.dict(os.environ, {}, clear=True):
+            env2 = await _build_env(config2)
         assert "MISSING_OPT" not in env2
 
-        # Module credentials included
-        config3 = _make_config()
-        with patch.dict(
-            os.environ, {"SMTP_PASSWORD": "pw123", "IMAP_TOKEN": "tok456"}, clear=False
-        ):
-            env3 = await _build_env(
-                config3, module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
-            )
-            assert env3["SMTP_PASSWORD"] == "pw123"
-            assert env3["IMAP_TOKEN"] == "tok456"
-
     async def test_db_credential_resolution(self):
-        """DB-first path: module and butler creds resolved; missing key excluded."""
-        config = _make_config(env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"])
+        """Resolve declared operator vars from DB; never resolve module credentials."""
+        config = _make_config(
+            env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"],
+            env_optional=["DASHBOARD_AUTH_DB_PASSWORD", "POSTGRES_PASSWORD"],
+        )
         store = AsyncMock()
+        module_values = {
+            "SMTP_PASSWORD": "synthetic-db-smtp-password",
+            "IMAP_TOKEN": "synthetic-db-imap-token",
+            "BUTLER_TELEGRAM_TOKEN": "synthetic-db-telegram-token",
+            "BUTLER_EMAIL_ADDRESS": "synthetic-db@example.invalid",
+            "BUTLER_EMAIL_PASSWORD": "synthetic-db-email-password",
+            "WHATSAPP_USER_SESSION": "synthetic-db-whatsapp-session",
+        }
         resolved = {
-            "SMTP_PASSWORD": "db-smtp-pw",
-            "IMAP_TOKEN": "db-imap-tok",
+            **module_values,
             "MY_SECRET": "db-secret-value",
             "DASHBOARD_API_KEY": "synthetic-db-dashboard-key",
             "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-db-auth-password",
@@ -1171,27 +1210,29 @@ class TestCredentialPassthrough:
             "POSTGRES_PASSWORD": "synthetic-db-host-password",
         }
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-        env = await _build_env(
-            config,
-            module_credentials_env={
-                "email": [
-                    "SMTP_PASSWORD",
-                    "IMAP_TOKEN",
-                    "DASHBOARD_AUTH_DB_PASSWORD",
-                    "POSTGRES_PASSWORD",
-                ]
-            },
-            credential_store=store,
-        )
-        assert env["SMTP_PASSWORD"] == "db-smtp-pw"
-        assert env["IMAP_TOKEN"] == "db-imap-tok"
+        trace = {"TRACEPARENT": "00-" + "3" * 32 + "-" + "4" * 16 + "-01"}
+        with (
+            patch.dict(os.environ, {"PATH": "/tmp/node-bin", **module_values}, clear=False),
+            patch("butlers.core.spawner_env.get_traceparent_env", return_value=trace),
+        ):
+            env = await _build_env(
+                config,
+                credential_store=store,
+            )
+        for key in module_values:
+            assert key not in env
         assert env["MY_SECRET"] == "db-secret-value"
+        assert env["PATH"] == "/tmp/node-bin"
+        assert env["TRACEPARENT"] == trace["TRACEPARENT"]
         assert "DASHBOARD_API_KEY" not in env
         assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
         assert "DATABASE_URL" not in env
         assert "POSTGRES_PASSWORD" not in env
+        assert [call.args[0] for call in store.resolve.call_args_list] == (
+            config.env_required + config.env_optional
+        )
 
-        # Missing key excluded
+        # Missing key excluded.
         config2 = _make_config(env_required=["MISSING_KEY"])
         store2 = AsyncMock()
         store2.resolve = AsyncMock(return_value=None)

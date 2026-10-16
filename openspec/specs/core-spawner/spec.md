@@ -231,14 +231,22 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
+The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, distributed trace context, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
 
 ID: REQ-core-spawner-010
+Source: Credential Isolation; RFC 0038 live security fix bu-13itjw
+Scope: v1-mandatory
 
 #### Scenario: Only declared credentials are passed
 - **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
+- **THEN** only `PATH`, declared `[butler.env]` vars, and distributed trace context are included
 - **AND** other host environment variables are excluded
+
+#### Scenario: Module credentials are not passed
+- **WHEN** module credentials are available in the host environment or daemon credential store
+- **THEN** the spawner SHALL NOT automatically resolve or forward them into runtime children
+- **AND** an explicit `[butler.env]` declaration retains its existing operator-authorized behavior, subject to owner-auth and database-admin withholding
+- **AND** module startup validation and daemon-side tool credential resolution remain intact
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 The Codex adapter SHALL perform live Codex device-auth reconciliation before
