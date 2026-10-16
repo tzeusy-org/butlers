@@ -23,9 +23,11 @@ Butlers runs as a set of containers defined in the repository-root
 shared PostgreSQL database** (external to Compose, reached over the network) in
 which every butler owns its own schema; the butler daemon, the dashboard API,
 and the external-connector services all connect to it. There are **no per-butler
-containers** and **no local containerized Postgres** -- a single `butlers-up`
-container runs every butler in the roster, and the database lives on a remote
-host configured via `.env.dev` / `.env.prod`.
+containers** and **no local containerized Postgres**. Production keeps every
+butler in one `butlers-up` process. The prepared dev stage separates Switchboard
+into `butlers-control` and excludes it from the domain process, reserving one
+plus four session slots. The database lives on a remote host configured via
+`.env.dev` / `.env.prod`.
 
 The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
 Node.js 22 + the LLM runtime CLIs + `uv`).
@@ -50,7 +52,7 @@ Compose host, `butlers deploy` replaces direct Compose redeploy commands; see
 [Production Deploys](#production-deploys-butlers-deploy). Production uses the
 [Helm workflow](kubernetes-deployment.md#deploy).
 
-Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
+Ordinary dev uses the base file plus `docker-compose.control-stage.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
 privileged boundary in dev, pass `--with-restore-drill` after completing its
 operator bootstrap. Its selection is explicit: finding a configured secret does
@@ -58,7 +60,7 @@ not turn it on. `--prod` and `butlers deploy` always select the protected
 topology and fail closed when its prerequisites are missing.
 
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
-runs base-only `down --remove-orphans` before it starts the base stack. That
+runs the ordinary dev configuration's `down --remove-orphans` before startup. That
 removes the former relay and executor rather than leaving privileged services
 running as orphans. Keep passing `--with-restore-drill` on later dev launches
 when the protected services must remain enabled.
