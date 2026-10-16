@@ -13,6 +13,8 @@ selected population, artifact ID/SHA-256, and per-file cost. It retains all sour
 variants. Test case identifiers, parameter values, raw logs and process traces
 are deliberately excluded.
 
+The [2026-10-17 integration attribution](integration-cost-attribution-2026-10-17.md) adds ten newer hosted phase observations, explicit missing worker clocks and owner-routed candidates; it does not restamp this historical baseline.
+
 ## Source-compatible profiling candidates first
 
 File-byte compatibility alone does not prove equal collection inputs, fixtures,
