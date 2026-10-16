@@ -507,6 +507,18 @@
       "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
       "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/killed-tracee-diagnostic.yml",
+      "job": "killed-tracee-diagnostic",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 40,
+      "installed_timeout_minutes": 40,
+      "state": "Temporary never-merged diagnostic; provisional finite 1800-second child plus installation/encryption/upload reserve; no healthy calibration or timing claim.",
+      "retry_extra_s": 0,
+      "sample_source": "bu-0nz5zg one authorized hosted diagnostic, not ordinary CI"
     }
   ],
   "tests": [
