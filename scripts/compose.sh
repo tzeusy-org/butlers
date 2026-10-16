@@ -460,6 +460,18 @@ fi
 # stops/creates the executor, installs its firewall, then starts the merged
 # service set below.
 CMD=(docker compose -f docker-compose.yml)
+# Source-selected dev topology only. Production retains the unsplit service
+# and its process-local capacity five; no environment-file profile selection.
+if [ "$BUTLERS_MODE" = "dev" ]; then
+  CMD+=(-f docker-compose.control-stage.yml)
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-control
+  PROFILES+=(control-stage)
+  if [ "$HOTRELOAD_OPT" = "true" ]; then
+    PROFILES+=(control-stage-hotreload)
+  fi
+else
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-up
+fi
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   CMD+=(-f docker-compose.restore-drill.yml)
 fi
@@ -480,7 +492,10 @@ SCALE_ARGS=()
 for p in "${PROFILES[@]}"; do
   if [ "$p" = "hotreload" ]; then
     SCALE_ARGS+=(--scale butlers-up=0 --scale dashboard-api=0)
-    echo "Hotreload: scaling down butlers-up and dashboard-api (replaced by *-hotreload variants)"
+    if [ "$BUTLERS_MODE" = "dev" ]; then
+      SCALE_ARGS+=(--scale butlers-control=0)
+    fi
+    echo "Hotreload: scaling down butlers-up, butlers-control and dashboard-api (replaced by *-hotreload variants)"
   fi
 done
 

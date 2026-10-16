@@ -63,9 +63,19 @@ async def run_startup(daemon: Any) -> None:
     recorded as failed and skipped in later phases while the butler continues to
     start with the remaining healthy modules.
     """
+    # Only an explicitly installed startup selection activates this boundary.
+    profile = vars(daemon).get("_control_profile")
+    if profile is not None:
+        from butlers.control import check_private_key_absent
+
+        check_private_key_absent(profile)
+
     # 1. Load config (skip if pre-set, e.g. by e2e fixtures)
     if daemon.config is None:
         daemon.config = load_config(daemon.config_dir)
+
+    if profile is not None and daemon.config.name != "switchboard":
+        raise ValueError("control profile requires the switchboard config")
 
     # 1b. Configure structured logging for this butler
     from butlers.core.logging import configure_logging
@@ -127,6 +137,10 @@ async def run_startup(daemon: Any) -> None:
         if pool is None:
             raise RuntimeError("Injected Database must already be connected")
     daemon.db.owner_butler = daemon.config.name
+    if profile is not None:
+        from butlers.control import check_stored_private_key_absent
+
+        await check_stored_private_key_absent(pool)
 
     # 6b. Attach the butler-scoped DB log handler so /api/butlers/{name}/logs
     # surfaces live application logs.  The handler filters by butler context

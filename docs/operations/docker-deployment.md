@@ -107,8 +107,13 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
-- **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
+- **Dev runs Switchboard in `butlers-control` and domains in `butlers-up`.**
+  The launcher selects `docker-compose.control-stage.yml` (Compose >=2.24.4),
+  starts exactly one control/domain pair, and partitions the existing session
+  budget as 1+4. Control publishes the unchanged Switchboard service port;
+  domains use `butlers up --exclude switchboard`. The production launcher omits
+  the overlay and retains the original unsplit process with default capacity five.
+  Each keeps per-CLI runtime state in named volumes and runs
   `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
   mounts only the runtime-probe verifier keyring, never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
@@ -132,8 +137,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
   the `audio` profile.
 - **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
-- **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
-  volume-mount `src/` for live edits.
+- **`--hotreload`** swaps in `butlers-up-hotreload`, `dashboard-api-hotreload` and,
+  in dev only, `butlers-control-hotreload`. The launcher scales the corresponding
+  baked processes to zero; it never runs two reservations for the same role.
+  These services volume-mount `src/` for live edits. See [the stage contract,
+  session network and rollback](../architecture/key-absent-control.md).
 
 ## Production Deploys (`butlers deploy`)
 

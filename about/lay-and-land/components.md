@@ -75,6 +75,12 @@ butler in the roster runs one daemon instance.
 | **Skills** | `core/skills.py` | Discovers skill directories under `roster/{butler}/.agents/skills/`, reads system prompts, and injects them into spawned sessions. | Stable |
 | **Audit** | `core/audit.py` | Append-only audit trail for security-relevant operations (tool gating, credential access). | Evolving |
 
+The dev `KEY_ABSENT_STAGE` control workload (`src/butlers/control.py`) runs the
+existing Switchboard daemon separately from domains. It owns an additional
+refusal-only session listener on internal port 41199, without a GOAL signer or
+broker. The service listener stays on 41100. Production remains unsplit; see
+[profile and deployment boundaries](../../docs/architecture/key-absent-control.md).
+
 ### What the daemon owns
 
 - Its FastMCP SSE/HTTP server on the configured port
