@@ -94,7 +94,7 @@ function baseNoSlashRedirect(): Plugin {
 export default defineConfig({
   // Dependencies are shared between worktrees through a node_modules symlink,
   // so generated Vite artifacts must live in the writable worktree instead.
-  cacheDir: '.vite',
+  cacheDir: process.env.BUTLERS_VITEST_CACHE_DIR || '.vite',
   build: {
     // The statically routed app shell and the intentionally lazy map renderer
     // each remain below this measured budget after the explicit domain splits.
