@@ -261,9 +261,25 @@ def test_chronicler_relations_list_matches_migrations() -> None:
 # Chronicler case: public/unknown bare relations are forbidden there as well.
 _ROOT = Path(__file__).resolve().parents[2]
 _BUTLER_SCHEMAS = frozenset(p.parent.name for p in (_ROOT / "roster").glob("*/butler.toml"))
+_SQL_HEADS = (
+    r"SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|GRANT|REVOKE|TRUNCATE|"
+    r"DO|COMMENT|SET|EXPLAIN|COPY|MERGE|PREPARE|DECLARE|CALL|EXECUTE|REFRESH|VALUES|TABLE|BEGIN|START"
+)
+_SQL_KEYWORD_RE = re.compile(r"\b(?:" + _SQL_HEADS + r")\b", re.IGNORECASE)
 _SQL_FRAGMENT_RE = re.compile(
-    r"^\s*(?:(?:--[^\n]*(?:\n|$)|/\*.*?\*/)\s*)*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|"
-    r"ALTER|DROP|WITH|GRANT|REVOKE|TRUNCATE|DO|COMMENT|SET)\b",
+    r"^\s*(?:(?:--[^\n]*(?:\n|$)|/\*.*?\*/)\s*)*"
+    r"(?!MERGE\b(?!\s+INTO\b))(?!BEGIN\b(?!\s*(?:(?:WORK|TRANSACTION)\s*)?;))"
+    r"(?!START\b(?!\s+TRANSACTION\b))(?:" + _SQL_HEADS + r")\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_SQL_NONCODE_RE = re.compile(
+    r"(?P<dollar>\$(?:[^\W\d]\w*)?\$).*?(?P=dollar)|"
+    r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'",
+    re.DOTALL,
+)
+_DOLLAR_CODE_BODY_RE = re.compile(
+    r"(?:\bDO(?:\s+LANGUAGE\s+\w+)?|"
+    r"\bCREATE(?:\s+OR\s+REPLACE)?\s+(?:FUNCTION|PROCEDURE)\b.*\bAS)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 _QUALIFIED_RE = re.compile(
@@ -901,11 +917,7 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
     literal scan's authority (they are not silently certified as local).
     """
     result: list[tuple[int, str]] = []
-    if not _SQL_FRAGMENT_RE.search(source) and not re.search(
-        r"\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|GRANT|REVOKE|TRUNCATE)\b",
-        source,
-        re.IGNORECASE,
-    ):
+    if not _SQL_KEYWORD_RE.search(source):
         return result
     tree = ast.parse(source)
     constants: dict[str, str] = {}
@@ -1000,6 +1012,24 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
     return result
 
 
+def _mask_sql_noncode(sql: str) -> str:
+    """Blank SQL data/comments, preserving offsets and executable dollar bodies."""
+
+    def blank(text: str) -> str:
+        return re.sub(r"[^\n]", " ", text)
+
+    def replace(match: re.Match[str]) -> str:
+        delimiter = match.group("dollar")
+        if delimiter and _DOLLAR_CODE_BODY_RE.search(sql[: match.start()]):
+            # DO and CREATE FUNCTION/PROCEDURE bodies execute SQL. Keep scanning
+            # that code while masking any nested data strings and comments.
+            body = match.group()[len(delimiter) : -len(delimiter)]
+            return blank(delimiter) + _mask_sql_noncode(body) + blank(delimiter)
+        return blank(match.group())
+
+    return _SQL_NONCODE_RE.sub(replace, sql)
+
+
 def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int]]:
     """Return foreign literal references and unresolved relation slots with lines."""
     found: dict[tuple[str, str], list[int]] = {}
@@ -1010,12 +1040,7 @@ def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int
             for line, sql in _sql_nodes(path.read_text()):
                 # SQL data strings and comments are not relations. Preserve line
                 # offsets while masking them (including source_ref/email values).
-                sql = re.sub(
-                    r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'",
-                    lambda m: re.sub(r"[^\n]", " ", m.group()),
-                    sql,
-                    flags=re.DOTALL,
-                )
+                sql = _mask_sql_noncode(sql)
                 for match in _QUALIFIED_RE.finditer(sql):
                     schema, relation = (part.lower() for part in match.groups())
                     if schema != owner:
@@ -1036,7 +1061,9 @@ def schema_reach() -> dict[tuple[str, str], list[int]]:
     return schema_reach_inventory()
 
 
-def test_foreign_schema_sql_is_allowlisted(schema_reach: dict[tuple[str, str], list[int]]) -> None:
+def test_foreign_schema_sql_is_allowlisted(
+    schema_reach: dict[tuple[str, str], list[int]], tmp_path: Path
+) -> None:
     """One SQL-literal fence for every source and roster owning surface."""
     inventory = schema_reach
     violations = [
@@ -1062,6 +1089,59 @@ def test_foreign_schema_sql_is_allowlisted(schema_reach: dict[tuple[str, str], l
     assert not any(
         path == "roster/chronicler/api/router.py" for path, _ in SCHEMA_REACH_ALLOWLIST
     ), "The Chronicler router has no foreign-schema or dynamic allowance (D17)"
+
+    # Exercise the scanner with complete statements, including data that looks
+    # like a comment. These controls share this source gate's existing owner.
+    probe = tmp_path / "src" / "probe.py"
+    probe.parent.mkdir()
+    foreign = "health.review_unallowlisted"
+    statements = {
+        "select": f"SELECT * FROM {foreign}",
+        "explain": f"EXPLAIN SELECT * FROM {foreign}",
+        "explain_options": 'EXPLAIN (ANALYZE false, FORMAT JSON) SELECT * FROM "health"."review_unallowlisted"',
+        "copy": f"COPY {foreign} TO STDOUT",
+        "copy_select": f"COPY (SELECT * FROM {foreign}) TO STDOUT",
+        "merge": f"MERGE INTO {foreign} USING public.x ON false WHEN MATCHED THEN DELETE",
+        "transaction": f"BEGIN; SELECT * FROM {foreign}; COMMIT",
+        "transaction_work": f"BEGIN WORK; SELECT * FROM {foreign}; COMMIT",
+        "transaction_comment": f"START TRANSACTION; -- actual comment\nSELECT * FROM {foreign}; COMMIT",
+        "prepare": f"PREPARE probe AS SELECT * FROM {foreign}",
+        "declare": f"DECLARE probe CURSOR FOR SELECT * FROM {foreign}",
+        "table": f"TABLE {foreign}",
+        "refresh": f"REFRESH MATERIALIZED VIEW {foreign}",
+        "call": f"CALL {foreign}()",
+        "dollar_comment_data": f"SELECT $$--$$ AS marker FROM {foreign}",
+        "tagged_comment_data": f"SELECT $tag$--$tag$ AS marker FROM {foreign}",
+        "tagged_block_data": f"SELECT $tag$/* '$tag$ AS marker FROM {foreign}",
+        "do_body": f"DO $body$ BEGIN PERFORM * FROM {foreign}; END $body$",
+        "function_body": f"CREATE FUNCTION probe() RETURNS integer AS $body$ SELECT count(*) FROM {foreign} $body$ LANGUAGE sql",
+    }
+    references = {}
+    for name, sql in statements.items():
+        probe.write_text("query = " + repr(sql))
+        references[name] = set(schema_reach_inventory(tmp_path))
+    assert references == {name: {("src/probe.py", foreign)} for name in statements}, (
+        "Complete SQL statements and executable bodies must retain their foreign reference"
+    )
+
+    data_only = {
+        "dollar_data": f"SELECT $${foreign}$$ AS marker FROM public.entities",
+        "tagged_data": f"SELECT $tag$-- {foreign}$tag$ AS marker FROM public.entities",
+        "case_sensitive_tag": f"SELECT $Tag$-- $tag$ {foreign}$Tag$ FROM public.entities",
+        "single_quote": f"SELECT '-- {foreign}' FROM public.entities",
+        "line_comment": f"SELECT 1 -- FROM {foreign}\nFROM public.entities",
+        "block_comment": f"SELECT /* FROM {foreign} */ 1 FROM public.entities",
+        "merge_prose": "Merge duplicate entity source into {target['canonical_name']}",
+        "dollar_statement_data": f"SELECT $$; SELECT * FROM {foreign}$$ FROM public.entities",
+        "bare_local": "EXPLAIN SELECT * FROM local_relation",
+    }
+    nonreferences = {}
+    for name, sql in data_only.items():
+        probe.write_text("query = " + repr(sql))
+        nonreferences[name] = schema_reach_inventory(tmp_path)
+    assert nonreferences == {name: {} for name in data_only}, (
+        "Data strings, comments and bare local relations must not become foreign references"
+    )
 
 
 def test_schema_reach_allowlist_has_no_stale_entries(
