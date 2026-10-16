@@ -526,6 +526,87 @@ class TestRouteExecuteAuthz:
         assert result["transport"]["outcome"] == "uncertain"
         assert result["transport"]["error_detail"] == "transport_timeout"
 
+    async def test_permission_unavailable_is_transient_before_native_delivery(
+        self, tmp_path, caplog
+    ):
+        from types import SimpleNamespace
+
+        from butlers.core.permissions import PermissionUnavailable
+        from butlers.core_tools._routing import _build_routed_delivery_command
+
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        modules = {module.name: module for module in daemon._modules}
+        permission_pool = AsyncMock()
+        permission_pool.fetchrow.side_effect = OSError("private-database-error")
+        allowed = SimpleNamespace(allowed=True, dossier_error=None)
+        with (
+            patch(
+                "butlers.core.approvals_hooks.check_recipient",
+                new_callable=AsyncMock,
+                return_value=allowed,
+            ),
+            patch(
+                "butlers.core.approvals_hooks.check_email_recipient",
+                new_callable=AsyncMock,
+                return_value=allowed,
+            ),
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+            patch.object(modules["email"], "_smtp_send") as smtp,
+            patch.object(modules["telegram"], "_get_client") as get_client,
+        ):
+            modules["email"]._pool = permission_pool
+            modules["telegram"]._audit_pool = permission_pool
+            for channel, recipient in (("telegram", "12345"), ("email", "recipient@example.com")):
+                request = _valid_notify_request()
+                request["delivery"].update(
+                    channel=channel, recipient=recipient, message="private-body"
+                )
+                result = await route_execute(
+                    schema_version="route.v1",
+                    request_context=_route_request_context(),
+                    input={"prompt": "Deliver.", "context": {"notify_request": request}},
+                )
+                assert result["status"] == "error"
+                assert result["error"]["class"] == "target_unavailable"
+                assert result["error"]["retryable"] is True
+                assert result["transport"] == {
+                    "outcome": "not_attempted",
+                    "retryable": True,
+                    "error_class": "pre_transport",
+                    "error_detail": "policy_denied",
+                }
+                assert result["result"]["notify_response"]["error"]["retryable"] is True
+                # The native callback retained for execution after approval reads again.
+                permission_pool.fetchrow.side_effect = None
+                permission_pool.fetchrow.return_value = {"granted": True, "reason": "granted"}
+                command = await _build_routed_delivery_command(
+                    daemon=daemon,
+                    modules_by_name=modules,
+                    channel=channel,
+                    intent="send",
+                    message_text="private-body",
+                    origin="health",
+                    recipient=recipient,
+                    subject=None,
+                    notify_context=None,
+                )
+                permission_pool.fetchrow.side_effect = OSError("private-database-error")
+                with pytest.raises(PermissionUnavailable):
+                    await command.execute()
+                rendered = repr(result) + caplog.text
+                assert "private-body" not in rendered
+                assert "private-database-error" not in rendered
+            smtp.assert_not_called()
+            get_client.assert_not_called()
+
     @pytest.mark.parametrize(
         ("provider_rejected", "message", "outcome", "detail"),
         [

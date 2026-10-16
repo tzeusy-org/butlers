@@ -9434,11 +9434,13 @@ class CalendarModule(Module):
         update, or delete calendar events. A cell flipped to granted=false blocks
         the write outright via :class:`PermissionDenied` (an authorization
         decision). Mirrors the spawn gate: consult the matrix at the decision
-        point, before any provider write. require_permission fails open, so a DB
-        error never wedges calendar writes.
+        point, before any provider write. Unavailable permission state refuses before
+        any calendar write.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
-        await require_permission(pool, self._butler_name, CALENDAR_WRITE_PERMISSION)
+        await require_permission(
+            pool, self._butler_name, CALENDAR_WRITE_PERMISSION, fail_closed=True
+        )
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:
@@ -9672,8 +9674,7 @@ class CalendarModule(Module):
         calendar tools, so it must consult the matrix itself. Reuses the same
         :meth:`_require_calendar_write_permission` helper the MCP tools use, so a
         butler with ``calendar.write`` revoked cannot create events via this
-        sibling path. require_permission fails open, so a DB error never wedges
-        calendar writes.
+        sibling path. Unavailable permission state refuses before calendar writes.
         """
         if self._provider is None:
             return
