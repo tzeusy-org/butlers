@@ -271,17 +271,36 @@ _QUALIFIED_RE = re.compile(
     r'"?([a-zA-Z_][a-zA-Z0-9_]*)"?',
     re.IGNORECASE,
 )
+_DYNAMIC_SLOT = r"(?:\{[^{}]*\}|%\([^)]+\)s|%s)"
 _DYNAMIC_RELATION_RE = re.compile(
     r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|VIEW|REFERENCES|TRUNCATE)\s+"
-    r'(?:ONLY\s+)?((?:"?[\w]+"?\s*\.\s*)?(?:\{[^{}]*\}|%\([^)]+\)s|%s)'
-    r'(?:\s*\.\s*"?[\w]+"?)?)',
+    r"(?:(?:ONLY|IF\s+(?:NOT\s+)?EXISTS)\s+)*"
+    r'((?:"?\w+"?\s*\.\s*)?"?' + _DYNAMIC_SLOT + r'"?'
+    r'(?:\s*\.\s*"?(?:\w+|' + _DYNAMIC_SLOT + r')"?)?)',
     re.IGNORECASE,
 )
+
 
 # One entry per (source file, relation). Remove entries with their source reads;
 # additions require an explicitly reviewed architecture/retirement decision.
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
+    (
+        "roster/chronicler/tests/_inline_ddl.py",
+        '<dynamic:"{schema_name}".sessions>',
+    ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
+    (
+        "roster/chronicler/tests/test_storage_integration.py",
+        '<dynamic:"{fake_schema}".sessions>',
+    ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
+    (
+        "roster/chronicler/tests/test_storage_integration.py",
+        '<dynamic:"{schema_a}".sessions>',
+    ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
+    (
+        "roster/chronicler/tests/test_storage_integration.py",
+        '<dynamic:"{schema_b}".sessions>',
+    ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
     (
         "roster/concierge/migrations/001_fleet_views.py",
         "<dynamic:{schema}.sessions>",
@@ -301,15 +320,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/general/migrations/003_ordinary_source_authority.py",
         "<dynamic:{schema}.collection_vocabulary_keys>",
-    ): "burn-down: dynamic-local: quoted current General schema for trigger-owned collection tables; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: quoted current General schema for trigger-owned collection tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/general/migrations/003_ordinary_source_authority.py",
         "<dynamic:{schema}.collections>",
-    ): "burn-down: dynamic-local: quoted current General schema for trigger-owned collection tables; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: quoted current General schema for trigger-owned collection tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/messenger/tests/test_delivery_tracking_retirement.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed retired local Messenger table tuple in a test fixture; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed retired local Messenger table tuple in a test fixture; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/jobs/relationship_jobs.py",
         "switchboard.message_inbox",
@@ -317,15 +336,19 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/relationship/migrations/003_consolidate_contacts_to_public.py",
         "<dynamic:relationship.{table}>",
-    ): "burn-down: dynamic-local: Relationship-local table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: Relationship-local table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/migrations/010_drop_legacy_contact_tables.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed local legacy table tuple; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed local legacy table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/migrations/034_fact_evidence_and_coverage.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: local evidence/coverage grant table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local evidence/coverage grant table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "roster/relationship/tests/calendar_projection.py",
+        '<dynamic:"{schema}".alembic_version>',
+    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
         "roster/relationship/tests/calendar_projection.py",
         "health.calendar_sources",
@@ -337,15 +360,19 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/relationship/tests/test_commitment_extraction_db.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed public table cleanup tuple; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
+        "<dynamic:{_child}>",
+    ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: public account table fixtures; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_dedup_contacts_drop_fks_migration.py",
         "<dynamic:{tbl}>",
-    ): "burn-down: dynamic-local: local migration table fixtures; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local migration table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_jobs.py",
         "<dynamic:{schema}.calendar_events>",
@@ -357,11 +384,11 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/relationship/tests/test_relationship_assert_fact.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed local/public effect table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed local/public effect table fixture tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_relationship_assert_fact.py",
         "<dynamic:{t}>",
-    ): "burn-down: dynamic-local: closed local/public effect table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed local/public effect table fixture tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_whatsapp_reconciliation.py",
         "chronicler.episode_entities",
@@ -377,15 +404,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/relationship/tools/contacts.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed contact child table tuple; local ownership not statically visible in SQL; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed contact child table tuple; local ownership not statically visible in SQL; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tools/whatsapp_reconciliation.py",
         "<dynamic:{qualified}>",
-    ): "burn-down: catalog-discovered reconciliation relation; preserve merge invariants while removing schema coupling",
+    ): "dynamic-review: catalog-discovered reconciliation relation, quoted at execution; frozen unresolved slot needs ownership inspection, not presumed foreign-read replacement",
     (
         "roster/relationship/tools/whatsapp_reconciliation.py",
         "<dynamic:{relation}>",
-    ): "burn-down: catalog-discovered reconciliation relation; preserve merge invariants while removing schema coupling",
+    ): "dynamic-review: catalog-discovered reconciliation relation, quoted at execution; frozen unresolved slot needs ownership inspection, not presumed foreign-read replacement",
     (
         "roster/switchboard/migrations/037_qa_receiver_state_view.py",
         "<dynamic:{quoted_schema}.butler_registry>",
@@ -401,7 +428,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/switchboard/tests/test_correct_route.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: local route-test cleanup table selection; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
@@ -417,19 +444,19 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "roster/travel/migrations/002_metadata_backfill.py",
         "<dynamic:travel.{table}>",
-    ): "burn-down: dynamic-local: Travel-local closed metadata table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: Travel-local closed metadata table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/travel/tests/test_bookings.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: Travel table fixtures; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: Travel table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/travel/tests/test_migration_travel_002.py",
         "<dynamic:travel.{table}>",
-    ): "burn-down: dynamic-local: Travel-local migration table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: Travel-local migration table fixture tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/travel/tools/bookings.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed booking table_map; Travel ownership hidden behind table selector; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed booking table_map; Travel ownership hidden behind table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/api/approval_review.py",
         "<dynamic:{table}>",
@@ -449,6 +476,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/api/routers/contacts.py",
         "relationship.entity_facts",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/data_ops.py",
+        "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
         "src/butlers/api/routers/identity.py",
@@ -498,6 +529,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/api/routers/whatsapp.py",
         "switchboard.connector_registry",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/bootstrap_prerequisite.py",
+        '<dynamic:"{admin}".bootstrap_configuration>',
+    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
@@ -561,7 +596,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/core/condition_ledger.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: validated public condition-ledger relation selector; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/control_plane_identity.py",
         "switchboard.butler_registry",
@@ -573,23 +608,23 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/core/corrections.py",
         "<dynamic:{corrections_table}>",
-    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/corrections.py",
         "<dynamic:{memory_table}>",
-    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/corrections.py",
         "<dynamic:{sessions_table}>",
-    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/corrections.py",
         "<dynamic:{state_table}>",
-    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/corrections.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/decision_desk.py",
         "switchboard.decision_intents",
@@ -598,6 +633,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/decision_desk.py",
         "switchboard.decision_prompts",
     ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/deployments.py",
+        '<dynamic:"{schema}".alembic_version>',
+    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
         "src/butlers/core/entity_graph_edges.py",
         "relationship.entity_facts",
@@ -613,7 +652,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/core/ingestion_events.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: partition/ingestion table selector; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
@@ -621,7 +660,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/core/runtime_config.py",
         "<dynamic:{self._schema}.runtime_config>",
-    ): "burn-down: dynamic-local: configured runtime schema; source ownership is dynamic; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: configured runtime schema; source ownership is dynamic; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/core/scheduler.py",
         "switchboard.butler_registry_control_plane",
@@ -707,6 +746,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.decision_prompts",
     ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/jobs/deploy_drift.py",
+        '<dynamic:"{schema}".alembic_version>',
+    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
+    (
         "src/butlers/jobs/flight_status.py",
         "travel.legs",
     ): "burn-down: existing travel.legs coupling; route through owning service or make local schema authority explicit",
@@ -724,8 +767,12 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/jobs/retention.py",
+        '<dynamic:connectors."{name}">',
+    ): "dynamic-local: validated schema-specific session_process_logs selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/jobs/retention.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: validated schema-specific session_process_logs selector; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: validated schema-specific session_process_logs selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/jobs/spend.py",
         "<dynamic:{schema}.sessions>",
@@ -737,7 +784,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/modules/approvals/migrations/003_fingerprint_v2.py",
         "<dynamic:{table_name}>",
-    ): "burn-down: dynamic-local: local approvals table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local approvals table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/contacts/email_identity_matching.py",
         "relationship.entity_facts",
@@ -753,7 +800,7 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/modules/memory/ann_observability.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed local memory tier tables; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed local memory tier tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/knowledge_gaps.py",
         "relationship.entity_facts",
@@ -769,47 +816,47 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/modules/memory/migrations/004_embedding_model_version.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: local memory tier table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local memory tier table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/migrations/013_content_authority.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: local memory tier table loop; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: local memory tier table loop; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/reembedding.py",
         "<dynamic:{relation}>",
-    ): "burn-down: dynamic-local: validated memory-tier/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: validated memory-tier/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/reembedding.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: validated memory-tier/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: validated memory-tier/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/search.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: closed local memory table/type maps; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: closed local memory table/type maps; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{episodes_relation}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{facts_relation}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{links_relation}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{rules_relation}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{tombstones_relation}>",
-    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/tools/entities.py",
         "chronicler.episode_entities",
@@ -833,11 +880,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/testing/migration.py",
         "<dynamic:{_quote_ident(schema)}.alembic_version>",
-    ): "burn-down: dynamic-local: validated target schema migration-version table; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: validated target schema migration-version table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",
-    ): "burn-down: dynamic-local: benchmark-selected memory table; make target ownership explicit, without claiming a foreign read",
+    ): "dynamic-local: benchmark-selected memory table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/testing/schema_standins.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
 }
 
 
@@ -997,10 +1048,17 @@ def test_foreign_schema_sql_is_allowlisted(schema_reach: dict[tuple[str, str], l
     assert not violations, "Unallowlisted foreign/dynamic SQL relations:\n" + "\n".join(violations)
     assert all(
         reason.startswith(
-            ("sanctioned:", "retire:bu-ys9hdx.4:", "pending-bu-lsxqb0.2:", "burn-down:")
+            (
+                "sanctioned:",
+                "retire:bu-ys9hdx.4:",
+                "pending-bu-lsxqb0.2:",
+                "burn-down:",
+                "dynamic-local:",
+                "dynamic-review:",
+            )
         )
         for reason in SCHEMA_REACH_ALLOWLIST.values()
-    ), "Every allowance needs its sanctioned, retirement, pending-decision or burn-down reason"
+    ), "Every allowance needs a governing foreign-relation or explicit dynamic-slot reason"
     assert not any(
         path == "roster/chronicler/api/router.py" for path, _ in SCHEMA_REACH_ALLOWLIST
     ), "The Chronicler router has no foreign-schema or dynamic allowance (D17)"
