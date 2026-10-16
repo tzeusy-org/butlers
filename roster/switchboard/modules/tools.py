@@ -7,6 +7,7 @@ Called by ``SwitchboardModule.register_tools`` via
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -14,7 +15,10 @@ from butlers.core.approval_delivery_authority import (
     guard_registered_approval_tool,
     verify_switchboard_recovery,
 )
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.modules.base import group_enabled
+
+logger = logging.getLogger(__name__)
 
 
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
@@ -80,7 +84,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         allow_stale: bool = False,
         allow_quarantined: bool = False,
     ) -> dict[str, Any]:
-        """Route a tool call to a target butler via its MCP endpoint."""
+        """Route a daemon tool call; runtime sessions receive a non-retryable refusal."""
+        session_id = get_current_runtime_session_id()
+        if session_id is not None:
+            logger.warning("Refused generic route from runtime session %s", session_id)
+            return {"error": "route_refused_for_session", "retryable": False}
         return await _route(
             module._get_pool(),
             target_butler,
