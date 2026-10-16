@@ -1038,10 +1038,8 @@ def _mask_sql_noncode(sql: str) -> str:
 
 def _is_sql_fragment(sql: str) -> bool:
     """Recognize supported commands after real, non-data statement boundaries."""
-    if _SQL_FRAGMENT_RE.match(sql):
-        return True
     code = _mask_sql_noncode(sql)
-    return any(_SQL_FRAGMENT_RE.match(statement) for statement in code.split(";")[1:])
+    return any(_SQL_FRAGMENT_RE.match(statement) for statement in code.split(";"))
 
 
 def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int]]:
@@ -1123,6 +1121,7 @@ def test_foreign_schema_sql_is_allowlisted(
         "prepare": f"PREPARE probe AS SELECT * FROM {foreign}",
         "declare": f"DECLARE probe CURSOR FOR SELECT * FROM {foreign}",
         "table": f"TABLE {foreign}",
+        "table_comment": f"TABLE {foreign} -- a real comment",
         "refresh": f"REFRESH MATERIALIZED VIEW {foreign}",
         "call": f"CALL {foreign}()",
         "dollar_comment_data": f"SELECT $$--$$ AS marker FROM {foreign}",
