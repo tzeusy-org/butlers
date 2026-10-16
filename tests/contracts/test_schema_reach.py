@@ -274,6 +274,7 @@ _SQL_FRAGMENT_RE = re.compile(
     r"(?:" + _SQL_HEADS + r")\b",
     re.IGNORECASE | re.DOTALL,
 )
+_SQL_TOKEN_RE = re.compile(r"--|/\*|['\";$]")
 _DOLLAR_QUOTE_RE = re.compile(r"\$(?:[^\W\d]\w*)?\$")
 _DOLLAR_CODE_BODY_RE = re.compile(
     r"(?:\bDO(?:\s+LANGUAGE\s+\w+)?|"
@@ -1033,8 +1034,8 @@ def _mask_sql_noncode(sql: str) -> str:
     def blank(start: int, end: int) -> None:
         code[start:end] = ["\n" if char == "\n" else " " for char in sql[start:end]]
 
-    while position < len(sql):
-        start = position
+    while token := _SQL_TOKEN_RE.search(sql, position):
+        position = start = token.start()
         if sql.startswith("--", start):
             end = sql.find("\n", start)
             position = len(sql) if end == -1 else end
