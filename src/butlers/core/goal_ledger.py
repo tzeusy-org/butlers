@@ -93,7 +93,8 @@ class GoalLedger:
 
     async def increase_exposure(self, goal_id, exposed):
         await self.connection.execute(
-            "UPDATE switchboard.goals SET exposed=exposed OR $2, updated_at=now() WHERE id=$1",
+            "UPDATE switchboard.goals SET exposed=true, updated_at=now() "
+            "WHERE id=$1 AND $2 AND NOT exposed",
             goal_id,
             exposed,
         )
