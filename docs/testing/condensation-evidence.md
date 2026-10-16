@@ -484,6 +484,8 @@ filter also controls killed terminal records, so a delivery filter would omit
 other actual deaths. Complete TERM and KILL histories retain each real
 `+++ killed by ... +++` record within the unchanged deadline.
 
+The strace 6.8 `CLD_STOPPED` notification with numeric zero status is also
+accepted as nonterminal; it cannot settle a pending call or replace an exit record.
 The parser recognizes only complete canonical nonterminal notifications: standard
 (non-realtime) signal names with matching `si_signo`, `SI_USER` or `SI_TKILL`
 source PID/UID fields; `SIGCHLD` with `CLD_EXITED` numeric status or
