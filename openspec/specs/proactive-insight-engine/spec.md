@@ -609,6 +609,9 @@ suppressed skip.
   had not been attempted
 
 ### Requirement: Bounded Explicit Insight Feedback
+
+ID: REQ-proactive-insight-engine-034
+
 The broker SHALL expose useful, not-now, and never owner-feedback verbs without
 adding another global verbosity control. Feedback attribution SHALL be derived by
 the server and the persisted evidence SHALL remain content-blind.
