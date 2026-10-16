@@ -122,6 +122,38 @@ class TestBuildSwitchboardInsightNotifyFn:
                 new=AsyncMock(return_value=deliver_return),
             ) as mock_deliver,
         ):
+            result = await notify_fn("Test insight", {"channel": "telegram", "intent": "insight"})
+
+        assert result == deliver_return
+        # Must resolve the deliverable numeric chat id, not the @username handle.
+        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
+        mock_deliver.assert_awaited_once()
+        call_kwargs = mock_deliver.call_args
+        assert call_kwargs.kwargs["channel"] == "telegram"
+        assert call_kwargs.kwargs["message"] == "Test insight"
+        assert call_kwargs.kwargs["recipient"] == "12345678"
+        assert call_kwargs.kwargs["source_butler"] == "switchboard"
+
+    @pytest.mark.asyncio
+    async def test_telegram_feedback_bindings_survive_the_production_envelope(self):
+        """Broker metadata reaches the actual typed Messenger delivery path."""
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        pool = _make_mock_pool()
+        notify_fn = _build_switchboard_insight_notify_fn(pool)
+
+        deliver_return = {"status": "sent", "notification_id": "abc-123"}
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new=AsyncMock(return_value="12345678"),
+            ) as mock_resolve,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=AsyncMock(return_value=deliver_return),
+            ) as mock_deliver,
+        ):
             feedback = [
                 {
                     "insight_id": "11111111-1111-1111-1111-111111111111",
