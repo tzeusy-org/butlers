@@ -1,0 +1,45 @@
+name: Temporary killed-tracee diagnostic (NEVER MERGE)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/killed-tracee-diagnostic.yml'
+      - '.github/diagnostics/killed-tracee-capture.pem'
+      - 'scripts/killed_tracee_diagnostic.py'
+
+permissions:
+  contents: read
+
+jobs:
+  killed-tracee-diagnostic:
+    if: github.head_ref == 'agent/bu-0nz5zg'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12.15'
+      - name: Install exact environment family
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends strace
+          strace --version | head -1 | grep -E '^strace -- version 6\.8$'
+          python3 scripts/install_ci_uv.py
+          uv sync --frozen --dev
+      - name: One bounded 300-iteration diagnostic with three workers
+        run: uv run --no-sync python scripts/killed_tracee_diagnostic.py run "${RUNNER_TEMP}/killed-tracee-diagnostic"
+      - name: Upload encrypted synthetic capture and content-blind binding
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: killed-tracee-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/killed-tracee-diagnostic/capture.cms
+            ${{ runner.temp }}/killed-tracee-diagnostic/summary.json
+          if-no-files-found: error
+          retention-days: 7
