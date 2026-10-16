@@ -79,14 +79,26 @@ readonly RESTORE_DRILL_ENABLED
 # replicas. BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 overrides (non-live DB only).
 if [ "$BUTLERS_MODE" = "prod" ]; then K8S_NAMESPACE=butlers; else K8S_NAMESPACE=butlers-dev; fi
 if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/dev/null; then
-  K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy butlers-up \
-    -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
-  if [ -n "$K8S_REPLICAS" ] && [ "$K8S_REPLICAS" != "0" ]; then
-    echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
-    echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
-    echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
-    exit 1
+  K8S_DEPLOYMENTS=(butlers-up)
+  K8S_REPLICA_PATH='{.spec.replicas}'
+  if [ "$BUTLERS_MODE" = "dev" ]; then
+    K8S_DEPLOYMENTS+=(butlers-control)
+    # Desired zero is insufficient while the old staged pods still exist.
+    K8S_REPLICA_PATH='{.spec.replicas} {.status.replicas}'
   fi
+  for K8S_DEPLOYMENT in "${K8S_DEPLOYMENTS[@]}"; do
+    K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy "$K8S_DEPLOYMENT" \
+      -o "jsonpath=${K8S_REPLICA_PATH}" 2>/dev/null || true)
+    for K8S_REPLICA_COUNT in $K8S_REPLICAS; do
+      if [ "$K8S_REPLICA_COUNT" != "0" ]; then
+        echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
+        echo "  Active workload: ${K8S_DEPLOYMENT}." >&2
+        echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
+        echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+        exit 1
+      fi
+    done
+  done
 fi
 
 # Preserve the protected mode when a firewall preparation/apply failure tells an

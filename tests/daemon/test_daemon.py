@@ -1303,7 +1303,7 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
+async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> None:
     """Client None pre-start; successful connect sets client; shutdown clears it; connect failure non-fatal."""
     # Before start: client is always None
     assert ButlerDaemon(butler_dir).switchboard_client is None
@@ -1361,6 +1361,43 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         await daemon2.start()
     assert daemon2.switchboard_client is None
     assert daemon2._started_at is not None
+    await daemon2.shutdown()
+
+    # Actual roster configs feed notify, fact admission/recovery and the
+    # spawner's source endpoint. Exercise heartbeat reconnect with those same
+    # loaded configs, rather than only testing the URL helper in isolation.
+    from butlers.config import load_config
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    roster = Path(__file__).resolve().parents[2] / "roster"
+    domain_configs = [
+        p.parent for p in sorted(roster.glob("*/butler.toml")) if p.parent.name != "switchboard"
+    ]
+    assert domain_configs
+    for directory in domain_configs:
+        domain = ButlerDaemon(directory)
+        domain.config = load_config(directory)
+        expected = "http://butlers-control:41100/mcp"
+        assert domain.config.switchboard_url == expected
+        connected = asyncio.Event()
+        reconnected_client = AsyncMock()
+        reconnected_client.__aenter__.side_effect = lambda: connected.set()
+        with (
+            patch(
+                "butlers.switchboard_wiring.MCPClient", return_value=reconnected_client
+            ) as constructor,
+            patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        ):
+            heartbeat = asyncio.create_task(domain._switchboard_heartbeat_loop())
+            try:
+                await asyncio.wait_for(connected.wait(), timeout=1)
+            finally:
+                heartbeat.cancel()
+                await heartbeat
+            constructor.assert_called_once_with(expected, name=f"butler-{domain.config.name}")
+            assert domain.switchboard_client is reconnected_client
+            await domain._disconnect_switchboard()
+            assert domain.switchboard_client is None
 
 
 async def test_switchboard_heartbeat_uses_ping_for_liveness_probe(butler_dir: Path) -> None:

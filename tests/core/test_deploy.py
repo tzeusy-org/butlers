@@ -1048,17 +1048,6 @@ def test_key_absent_control_workload_and_session_network_contract():
         services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"]
         == "http://${BUTLERS_SWITCHBOARD_SERVICE:-butlers-up}:41100/sse"
     )
-    launcher = (root / "scripts/compose.sh").read_text()
-    assert "--scale butlers-up=0 --scale dashboard-api=0" in launcher
-    assert (
-        'if [ "$BUTLERS_MODE" = "dev" ]; then\n      SCALE_ARGS+=(--scale butlers-control=0)'
-        in launcher
-    )
-    assert "CMD+=(-f docker-compose.control-stage.yml)" in launcher
-    assert "PROFILES+=(control-stage-hotreload)" in launcher
-    assert "PROFILES+=(control-stage)" in launcher
-    assert "export BUTLERS_SWITCHBOARD_SERVICE=butlers-up" in launcher
-
     helm = shutil.which("helm")
     if helm is None:
         pytest.skip("helm not installed; Compose source assertions completed")

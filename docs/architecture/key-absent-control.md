@@ -10,6 +10,11 @@ their existing handlers. Domains run in `butlers-up --exclude switchboard`.
 `SWITCHBOARD_MCP_URL` selects control for canonical registered localhost:41100;
 `BUTLERS_HOST` selects domains. Remote registered endpoints remain unchanged.
 Dashboard process facts use each resolved endpoint's host.
+Configuration loading also resolves an explicit canonical
+`[butler.switchboard].url = "http://localhost:41100/mcp"` before notify,
+heartbeat reconnect, fact-authority admission/recovery and runtime consumers
+receive it. Registered path/query and explicit remote or custom endpoints stay
+intact; an unsplit launch without cross-container settings keeps localhost.
 
 The separate internal session port 41199 has no MCP server, goal admission,
 service routes, signer or credential resolver. Only GET /health returns fixed
@@ -54,6 +59,15 @@ and domain pair before starting the unsplit release at five, restore the
 Switchboard MCP destination to butlers-up, and verify no staged listener/process
 remains. Do not overlap split and unsplit processes against one database.
 No rollout or rollback is executed by this source assignment.
+The Compose launcher checks both dev Kubernetes runtime Deployments,
+`butlers-up` and `butlers-control`, including observed replicas remaining after
+desired replicas reach zero. Either active role refuses Compose startup before
+any lifecycle action. Production retains its unsplit `butlers-up` ownership
+check. This preflight is not an atomic cross-platform ownership lock: a
+coordinated transition must stop both staged roles and confirm their pods have
+terminated before Compose or an unsplit release starts. The reverse transition
+must stop the complete Compose project before either Kubernetes role starts.
+The existing override is solely for a non-live database.
 
 `ISOLATED_CANDIDATE` remains a separate, closed trusted harness with no live
 ingress, schedules or dashboard wiring and no reachable local legacy launcher.

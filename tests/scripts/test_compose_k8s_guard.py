@@ -24,6 +24,7 @@ def _run_launcher(
     *,
     args: tuple[str, ...],
     replicas: str,
+    control_replicas: str | None = None,
     override: bool = False,
     complete_launch: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
@@ -66,8 +67,11 @@ def _run_launcher(
         fake_bin / "kubectl",
         "#!/usr/bin/env bash\n"
         'printf "kubectl %s\\n" "$*" >> "$TEST_CALLS"\n'
-        '[[ -n "$TEST_K8S_REPLICAS" ]] || exit 1\n'
-        'printf "%s" "$TEST_K8S_REPLICAS"\n',
+        'replicas="$TEST_K8S_REPLICAS"\n'
+        'if [[ "$*" == *"get deploy butlers-control "* ]]; then replicas="$TEST_K8S_CONTROL_REPLICAS"; fi\n'
+        '[[ -n "$replicas" ]] || exit 1\n'
+        'if [[ "$*" != *"{.status.replicas}"* ]]; then replicas="${replicas%% *}"; fi\n'
+        'printf "%s" "$replicas"\n',
     )
     # All lifecycle calls remain fake, including image builds and firewall setup.
     _write_executable(
@@ -102,6 +106,7 @@ def _run_launcher(
         "TEST_CALLS": str(calls),
         "TEST_DOCKER_ARGV": str(tmp_path / "docker-argv.jsonl"),
         "TEST_K8S_REPLICAS": replicas,
+        "TEST_K8S_CONTROL_REPLICAS": replicas if control_replicas is None else control_replicas,
     }
     if override:
         environment["BUTLERS_ALLOW_COMPOSE_WITH_K8S"] = "1"
@@ -134,6 +139,26 @@ def test_refuses_while_release_has_replicas(tmp_path, args, namespace):
     assert f"kubectl -n {namespace} get deploy butlers-up" in calls
     assert "docker" not in calls
     assert "sudo" not in calls
+
+    # Retain every original mode/case and additionally exercise each staged
+    # role as the sole active Kubernetes owner, before any lifecycle action.
+    if namespace == "butlers-dev":
+        for domains, control, active in (
+            ("0", "1", "butlers-control"),
+            ("1", "0", "butlers-up"),
+            ("0", "0 1", "butlers-control"),
+        ):
+            result, calls = _run_launcher(
+                tmp_path / (active + control.replace(" ", "-")),
+                args=args,
+                replicas=domains,
+                control_replicas=control,
+            )
+            assert result.returncode == 1
+            assert f"namespace {namespace}" in result.stderr
+            assert f"get deploy {active}" in calls
+            assert "docker" not in calls
+            assert "sudo" not in calls
 
 
 @pytest.mark.parametrize("replicas", ["0", ""])
@@ -226,6 +251,7 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
     assert model["name"] == ("butlers" if "--prod" in args else "butlers-dev")
     assert ("restore-drill-executor" in services) == protected
     assert services["oauth-gate"]["environment"]["SKIP_OAUTH_CHECK"] == "true"
+    assert any("get deploy butlers-control " in call for call in call_lines) == staged
     # The same offline cases prove the dev split and the unchanged production
     # topology. No lifecycle operation reaches a real container or deployment.
     domains = services["butlers-up-hotreload" if hotreload else "butlers-up"]
