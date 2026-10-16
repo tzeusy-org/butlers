@@ -187,6 +187,8 @@ class TelegramModule(Module):
     Ingestion is owned by TelegramBotConnector via the canonical ingest API.
     """
 
+    supports_inert_link_delivery = True
+
     def __init__(self) -> None:
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
@@ -420,6 +422,9 @@ class TelegramModule(Module):
         text: str,
         reply_to_message_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        render_links_inert: bool = False,
+        server_built_reply_markup: bool = False,
     ) -> dict[str, Any]:
         """Call Telegram sendMessage API.
 
@@ -438,7 +443,11 @@ class TelegramModule(Module):
         audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
         response_status: int | None = None
         try:
-            validated_reply_markup = validate_telegram_reply_markup(reply_markup)
+            validated_reply_markup = validate_telegram_reply_markup(
+                reply_markup,
+                render_links_inert=render_links_inert,
+                server_built=server_built_reply_markup,
+            )
             await require_permission(
                 self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
             )
@@ -448,6 +457,15 @@ class TelegramModule(Module):
                 "text": _markdown_to_telegram_html(text),
                 "parse_mode": "HTML",
             }
+            if render_links_inert:
+                # Explicit preformatted entities exclude URL/text_link entities.
+                # Telegram offsets/lengths count UTF-16 code units, not codepoints.
+                payload.pop("parse_mode")
+                payload["text"] = text
+                payload["entities"] = [
+                    {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
+                ]
+                payload["link_preview_options"] = {"is_disabled": True}
             if reply_to_message_id is not None:
                 payload["reply_to_message_id"] = reply_to_message_id
             if validated_reply_markup is not None:
@@ -511,6 +529,8 @@ class TelegramModule(Module):
         message_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        render_links_inert: bool = False,
     ) -> dict[str, Any]:
         """Reply to a specific Telegram message."""
         return await self._send_message(
@@ -518,6 +538,7 @@ class TelegramModule(Module):
             text,
             reply_to_message_id=message_id,
             reply_markup=reply_markup,
+            **({"render_links_inert": True} if render_links_inert else {}),
         )
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:

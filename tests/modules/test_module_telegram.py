@@ -47,6 +47,64 @@ EXPECTED_TELEGRAM_TOOLS = {
 }
 
 
+@pytest.mark.parametrize(
+    ("button", "inert", "server_built", "allowed"),
+    [
+        ({"url": "https://example.test"}, False, False, True),
+        ({"url": "https://example.test"}, True, False, False),
+        ({"url": "https://example.test"}, True, True, True),
+        ({"login_url": {"url": "https://example.test"}}, False, True, False),
+        ({"web_app": {"url": "https://example.test"}}, False, True, False),
+        ({"callback_data": "review:1"}, True, False, True),
+    ],
+)
+def test_reply_markup_refuses_identity_handoffs_and_inert_caller_links(
+    button, inert, server_built, allowed
+):
+    from butlers.telegram_api import (
+        TelegramReplyMarkupValidationError,
+        validate_telegram_reply_markup,
+    )
+
+    markup = {"inline_keyboard": [[{"text": "Open", **button}]]}
+    if allowed:
+        assert (
+            validate_telegram_reply_markup(
+                markup, render_links_inert=inert, server_built=server_built
+            )
+            is markup
+        )
+    else:
+        with pytest.raises(TelegramReplyMarkupValidationError):
+            validate_telegram_reply_markup(
+                markup, render_links_inert=inert, server_built=server_built
+            )
+
+
+async def test_inert_delivery_uses_explicit_pre_entities_and_disables_previews():
+    module = TelegramModule()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"ok": True, "result": {"message_id": 42}}
+    client = AsyncMock()
+    client.post.return_value = response
+    text = "😀 [click](https://example.test) <a href='https://evil.test'>link</a>"
+    with (
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+        patch.object(module, "_get_client", return_value=client),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+    ):
+        await module._reply_to_message("123", 7, text, render_links_inert=True)
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["text"] == text
+    assert "parse_mode" not in payload
+    assert payload["entities"] == [
+        {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
+    ]
+    assert payload["link_preview_options"] == {"is_disabled": True}
+    assert payload["reply_to_message_id"] == 7
+
+
 @pytest.fixture
 def telegram_module() -> TelegramModule:
     return TelegramModule()

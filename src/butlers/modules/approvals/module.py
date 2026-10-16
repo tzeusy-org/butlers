@@ -597,7 +597,13 @@ class ApprovalsModule(Module):
             check_email_recipient,
             check_recipient,
         )
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
         from butlers.modules.approvals.park import park_pending_action
+
+        def approved_execution_matches(*, tool_name: str, tool_args: dict[str, Any]) -> bool:
+            return (
+                get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None
+            )
 
         hook_pool = getattr(db, "pool", None)
         if hook_pool is None:
@@ -610,6 +616,7 @@ class ApprovalsModule(Module):
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
             park_pending_action=park_pending_action,
+            approved_execution_matches=approved_execution_matches,
         )
 
     async def on_shutdown(self) -> None:

@@ -18,6 +18,62 @@ async def _admitted_park(_pool, **kwargs):
     return SimpleNamespace(action_id=kwargs["action_id"])
 
 
+async def test_approved_execution_matcher_is_pool_task_tool_and_argument_bound():
+    import asyncio
+
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        get_approval_execution_context,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    pool, other = object(), object()
+    args = {"input": {"context": {"notify_request": {"message": "approved"}}}}
+    register = dict(
+        email_guard=AsyncMock(), recipient_guard=AsyncMock(), park_pending_action=AsyncMock()
+    )
+    runtime = approvals_hooks.register_approval_hooks(
+        pool,
+        **register,
+        approved_execution_matches=lambda **kw: get_approval_execution_context(**kw) is not None,
+    )
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name="route.execute",
+            tool_args_digest=approval_tool_args_digest(args),
+            authorized_task=asyncio.current_task(),
+        )
+    )
+    try:
+
+        def match(target=pool, name="route.execute", payload=args):
+            return approvals_hooks.is_approved_tool_execution(
+                target, tool_name=name, tool_args=payload
+            )
+
+        assert match()
+        assert not match(other)
+        assert not match(name="telegram_send_message")
+        assert not match(payload={"input": {"context": {"notify_request": {"message": "changed"}}}})
+
+        async def child():
+            return match()
+
+        assert not await asyncio.create_task(child())
+        replacement = approvals_hooks.register_approval_hooks(pool, **register)
+        approvals_hooks.unregister_approval_hooks(pool, runtime)
+        assert not match()
+        approvals_hooks.unregister_approval_hooks(pool, replacement)
+        assert not match()
+    finally:
+        reset_approval_execution_context(token)
+
+
 def test_process_global_hook_surface_is_not_available() -> None:
     """A foreign pool must never gain approvals through a global fallback."""
     legacy_names = (

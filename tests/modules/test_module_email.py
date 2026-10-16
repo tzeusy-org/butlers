@@ -46,6 +46,32 @@ EXPECTED_EMAIL_READ_TOOLS = {
 }
 
 
+async def test_inert_delivery_defangs_plain_text_mail_and_subject():
+    from email import message_from_string
+
+    module = EmailModule()
+    smtp = MagicMock()
+    with (
+        patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+        patch.object(module, "_get_credentials", return_value=("owner@test.invalid", "synthetic")),
+        patch("butlers.modules.email.smtplib.SMTP", return_value=smtp),
+    ):
+        await module._reply_to_thread(
+            "recipient@test.invalid",
+            "thread-1",
+            "https://example.test bare.test user@test.test",
+            "See https://example.test",
+            render_links_inert=True,
+        )
+    message = message_from_string(smtp.sendmail.call_args.args[2])
+    assert message.get_content_type() == "text/plain"
+    assert message["Subject"] == "See https[:]//example[.]test"
+    assert message.get_payload(decode=True).decode() == (
+        "https[:]//example[.]test bare[.]test user[@]test[.]test"
+    )
+    assert smtp.sendmail.call_args.args[1] == ["recipient@test.invalid"]
+
+
 @pytest.fixture
 def email_module() -> EmailModule:
     return EmailModule()

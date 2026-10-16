@@ -753,6 +753,7 @@ class NotifyRequestV1(BaseModel):
     decision_dossier: dict[str, Any] | None = None
     actions: tuple[ApprovalRequestActionV1, ...] | None = None
     recovery: ApprovalRecoveryV1 | None = None
+    render_links_inert: bool = Field(default=False, strict=True)
 
     @field_validator("schema_version")
     @classmethod

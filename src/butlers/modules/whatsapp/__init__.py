@@ -99,6 +99,8 @@ class WhatsAppConfig(BaseModel):
 
 
 class WhatsAppModule(Module):
+    # The connector bridge has no preview-control contract. Do not advertise
+    # support by adding an ignored preview_url key to its /send request.
     """WhatsApp module providing send/reply MCP tools over the connector's bridge.
 
     Uses a two-layer gating model: ``send_tools`` controls tool registration,
@@ -110,6 +112,8 @@ class WhatsAppModule(Module):
     bridge and the whatsmeow session; this module's tools issue send/reply
     requests to that connector-owned Unix socket. It owns no database tables.
     """
+
+    supports_inert_link_delivery = False
 
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()

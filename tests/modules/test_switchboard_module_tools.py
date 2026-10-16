@@ -115,3 +115,51 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
         SimpleNamespace(groups=["lifecycle"]),
     )
     assert "deliver" not in {tool.name for tool in await disabled.list_tools()}
+
+    monkeypatch.setattr(delivery_module, "deliver", actual_deliver)
+    await _assert_internal_delivery_rendering_mark_is_monotonic(monkeypatch)
+
+
+async def _assert_internal_delivery_rendering_mark_is_monotonic(monkeypatch):
+    import inspect
+
+    from butlers.core.delivery_rendering import inert_delivery_content
+
+    delivery_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    from butlers.modules._roster_switchboard import tools
+
+    captured = []
+
+    async def dispatch(_pool, **kwargs):
+        captured.append(kwargs["notify_request"])
+        return {"status": "sent"}
+
+    monkeypatch.setattr(delivery_module, "_deliver_via_notify_request", dispatch)
+    module = SimpleNamespace(_get_pool=lambda: object())
+    mcp = _StubMCP()
+    tools.register_tools(mcp, module, SimpleNamespace(groups=["routing"]))
+    assert "render_links_inert" not in inspect.signature(mcp.tools["deliver"]).parameters
+    assert "content_requires_inert_links" not in inspect.signature(mcp.tools["deliver"]).parameters
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {"intent": "send", "channel": "telegram", "message": "hello", "recipient": "1"},
+        "render_links_inert": True,
+    }
+    await mcp.tools["deliver"](source_butler="health", notify_request=request)
+    assert captured[-1].render_links_inert is False
+    with inert_delivery_content():
+        request["render_links_inert"] = False
+        await mcp.tools["deliver"](source_butler="health", notify_request=request)
+        assert captured[-1].render_links_inert is True
+        await delivery_module.deliver(
+            object(),
+            source_butler="health",
+            notify_request=request,
+            content_requires_inert_links=False,
+        )
+        assert captured[-1].render_links_inert is True
+    await delivery_module.deliver(
+        object(), source_butler="health", notify_request=request, content_requires_inert_links=True
+    )
+    assert captured[-1].render_links_inert is True

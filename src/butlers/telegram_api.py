@@ -39,7 +39,12 @@ class TelegramReplyMarkupValidationError(ValueError):
         return payload
 
 
-def validate_telegram_reply_markup(reply_markup: dict[str, Any] | None) -> dict[str, Any] | None:
+def validate_telegram_reply_markup(
+    reply_markup: dict[str, Any] | None,
+    *,
+    render_links_inert: bool = False,
+    server_built: bool = False,
+) -> dict[str, Any] | None:
     """Validate inline-keyboard callback data without rewriting the payload."""
     if reply_markup is None:
         return None
@@ -65,6 +70,17 @@ def validate_telegram_reply_markup(reply_markup: dict[str, Any] | None) -> dict[
             if not isinstance(button, dict):
                 raise TelegramReplyMarkupValidationError(
                     "Inline keyboard buttons must be objects.", field=button_field
+                )
+            for identity_handoff in ("login_url", "web_app"):
+                if identity_handoff in button:
+                    raise TelegramReplyMarkupValidationError(
+                        "Telegram identity handoff buttons are forbidden.",
+                        field=f"{button_field}.{identity_handoff}",
+                    )
+            if render_links_inert and "url" in button and not server_built:
+                raise TelegramReplyMarkupValidationError(
+                    "Caller URL buttons are forbidden for inert-link delivery.",
+                    field=f"{button_field}.url",
                 )
             callback_data = button.get("callback_data")
             if callback_data is None:
