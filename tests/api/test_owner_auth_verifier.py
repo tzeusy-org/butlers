@@ -121,3 +121,98 @@ def test_verifier_suppresses_library_material_and_never_reflects_errors(caplog):
         assert private not in caplog.text
         assert private not in str(caught.value)
     assert verified.credential_id not in repr(verified)
+
+
+@pytest.mark.parametrize("phase", ["before_constructor", "before_verify", "reload_before_verify"])
+def test_verifier_privacy_survives_library_logging_reconfiguration(caplog, monkeypatch, phase):
+    import importlib
+    import logging.config
+    import sys
+
+    from fido2 import server
+
+    loggers = [logging.getLogger(name) for name in ("fido2", "fido2.server")]
+    saved = [(each, each.level, each.disabled, each.propagate) for each in loggers]
+    try:
+        if phase != "before_constructor":
+            verifier = WebAuthnVerifier(ORIGIN, RP)
+            monkeypatch.setattr(sys.modules[__name__], "WebAuthnVerifier", lambda *_: verifier)
+        # The standard incremental path re-enables named loggers and their
+        # propagation without replacing handlers or disabling ordinary capture.
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "incremental": True,
+                "loggers": {
+                    name: {"level": "DEBUG", "propagate": True}
+                    for name in ("fido2", "fido2.server")
+                },
+            }
+        )
+        if phase == "reload_before_verify":
+            importlib.reload(server)
+        logging.getLogger("fido2.server").warning("library-category-capture-active")
+        logging.getLogger("fido2").warning("library-parent-capture-active")
+        # Reuse the complete existing real-proof/privacy/capture control. No
+        # assertion is retired when exercising the later logging lifecycle.
+        test_verifier_suppresses_library_material_and_never_reflects_errors(caplog)
+        assert "library-category-capture-active" in caplog.text
+        assert "library-parent-capture-active" in caplog.text
+        for rsa_key in (False, True):
+            key = Passkey.create(rsa_key=rsa_key)
+            challenge, handle = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            options = {"publicKey": {"challenge": challenge, "user": {"id": handle}}}
+            verifier = WebAuthnVerifier(ORIGIN, RP)
+            registered = verifier.verify(
+                {"operation": "enroll", "challenge": challenge},
+                key.response(options, register=True),
+                None,
+            )
+            stored = {
+                "credential_data": registered.credential_data,
+                "user_handle": handle,
+                "backup_eligible": registered.backup_eligible,
+                "counter": registered.counter,
+            }
+            assertion = key.response(options, register=False, user_handle=handle)
+            # Reconfiguration and reload also occur after construction. The
+            # cached instance's methods still read the module publisher.
+            logging.config.dictConfig(
+                {
+                    "version": 1,
+                    "incremental": True,
+                    "loggers": {
+                        name: {"level": "DEBUG", "propagate": True}
+                        for name in ("fido2", "fido2.server")
+                    },
+                }
+            )
+            if phase == "reload_before_verify":
+                importlib.reload(server)
+            authenticated = verifier.verify(
+                {"operation": "login", "challenge": challenge}, assertion, stored
+            )
+            assert authenticated.credential_id == assertion["rawId"]
+            assert authenticated.credential_data is None
+            private = (
+                assertion["rawId"],
+                key.credential_id.hex(),
+                assertion["response"]["signature"],
+                registered.credential_data,
+                handle,
+                challenge,
+            )
+            assertion["response"]["signature"] = encode(b"invalid-signature")
+            with pytest.raises(
+                InvalidProof, match="^Invalid owner authentication proof$"
+            ) as caught:
+                verifier.verify({"operation": "login", "challenge": challenge}, assertion, stored)
+            for material in private:
+                assert material not in caplog.text
+                assert material not in str(caught.value)
+            assert "capture-active" in caplog.text
+    finally:
+        for each, level, disabled, propagate in saved:
+            each.setLevel(level)
+            each.disabled = disabled
+            each.propagate = propagate
