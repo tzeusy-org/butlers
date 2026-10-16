@@ -233,6 +233,8 @@ The Spawner SHALL build an explicit environment dict for each engineering execut
 Source: RFC 0038 D3 and D18
 Scope: v1-mandatory
 
+ID: REQ-core-spawner-010
+
 #### Scenario: Only declared credentials are passed
 - **WHEN** the Spawner builds an engineering executor's runtime environment
 - **THEN** only `PATH` and the executor's declared credential vars are included
