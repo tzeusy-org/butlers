@@ -121,3 +121,200 @@ def test_verifier_suppresses_library_material_and_never_reflects_errors(caplog):
         assert private not in caplog.text
         assert private not in str(caught.value)
     assert verified.credential_id not in repr(verified)
+
+
+@pytest.mark.parametrize("phase", ["before_constructor", "before_verify", "reload_before_verify"])
+def test_verifier_privacy_survives_library_logging_reconfiguration(caplog, monkeypatch, phase):
+    import importlib
+    import logging.config
+    import sys
+
+    from fido2 import server
+
+    loggers = [logging.getLogger(name) for name in ("fido2", "fido2.server")]
+    saved = [(each, each.level, each.disabled, each.propagate) for each in loggers]
+    try:
+        if phase != "before_constructor":
+            verifier = WebAuthnVerifier(ORIGIN, RP)
+            monkeypatch.setattr(sys.modules[__name__], "WebAuthnVerifier", lambda *_: verifier)
+        # The standard incremental path re-enables named loggers and their
+        # propagation without replacing handlers or disabling ordinary capture.
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "incremental": True,
+                "loggers": {
+                    name: {"level": "DEBUG", "propagate": True}
+                    for name in ("fido2", "fido2.server")
+                },
+            }
+        )
+        if phase == "reload_before_verify":
+            importlib.reload(server)
+        logging.getLogger("fido2.server").warning("library-category-capture-active")
+        logging.getLogger("fido2").warning("library-parent-capture-active")
+        # Reuse the complete existing real-proof/privacy/capture control. No
+        # assertion is retired when exercising the later logging lifecycle.
+        test_verifier_suppresses_library_material_and_never_reflects_errors(caplog)
+        assert "library-category-capture-active" in caplog.text
+        assert "library-parent-capture-active" in caplog.text
+        for rsa_key in (False, True):
+            key = Passkey.create(rsa_key=rsa_key)
+            challenge, handle = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            options = {"publicKey": {"challenge": challenge, "user": {"id": handle}}}
+            verifier = WebAuthnVerifier(ORIGIN, RP)
+            registered = verifier.verify(
+                {"operation": "enroll", "challenge": challenge},
+                key.response(options, register=True),
+                None,
+            )
+            stored = {
+                "credential_data": registered.credential_data,
+                "user_handle": handle,
+                "backup_eligible": registered.backup_eligible,
+                "counter": registered.counter,
+            }
+            assertion = key.response(options, register=False, user_handle=handle)
+            # Reconfiguration and reload also occur after construction. The
+            # cached instance's methods still read the module publisher.
+            logging.config.dictConfig(
+                {
+                    "version": 1,
+                    "incremental": True,
+                    "loggers": {
+                        name: {"level": "DEBUG", "propagate": True}
+                        for name in ("fido2", "fido2.server")
+                    },
+                }
+            )
+            if phase == "reload_before_verify":
+                importlib.reload(server)
+            authenticated = verifier.verify(
+                {"operation": "login", "challenge": challenge}, assertion, stored
+            )
+            assert authenticated.credential_id == assertion["rawId"]
+            assert authenticated.credential_data is None
+            private = (
+                assertion["rawId"],
+                key.credential_id.hex(),
+                assertion["response"]["signature"],
+                registered.credential_data,
+                handle,
+                challenge,
+            )
+            assertion["response"]["signature"] = encode(b"invalid-signature")
+            with pytest.raises(
+                InvalidProof, match="^Invalid owner authentication proof$"
+            ) as caught:
+                verifier.verify({"operation": "login", "challenge": challenge}, assertion, stored)
+            for material in private:
+                assert material not in caplog.text
+                assert material not in str(caught.value)
+            assert "capture-active" in caplog.text
+    finally:
+        for each, level, disabled, propagate in saved:
+            each.setLevel(level)
+            each.disabled = disabled
+            each.propagate = propagate
+
+
+@pytest.mark.parametrize("operation", ["enroll", "login"])
+@pytest.mark.parametrize("rsa_key", [False, True], ids=["ec", "rsa"])
+async def test_verifier_privacy_during_concurrent_vendor_reload(caplog, operation, rsa_key):
+    import asyncio
+    import importlib
+    import inspect
+    import logging.config
+    import sys
+    import threading
+
+    from fido2 import server
+
+    key = Passkey.create(rsa_key=rsa_key)
+    challenge, handle = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    options = {"publicKey": {"challenge": challenge, "user": {"id": handle}}}
+    verifier = WebAuthnVerifier(ORIGIN, RP)
+    registered = verifier.verify(
+        {"operation": "enroll", "challenge": challenge},
+        key.response(options, register=True),
+        None,
+    )
+    stored = {
+        "credential_data": registered.credential_data,
+        "user_handle": handle,
+        "backup_eligible": registered.backup_eligible,
+        "counter": registered.counter,
+    }
+    response = key.response(options, register=operation == "enroll", user_handle=handle)
+    ceremony = {"operation": operation, "challenge": challenge}
+    method = (
+        verifier.server.register_complete
+        if operation == "enroll"
+        else verifier.server.authenticate_complete
+    )
+    lines, start = inspect.getsourcelines(method)
+    publication_line = start + next(i for i, line in enumerate(lines) if "logger.info(" in line)
+    ready, resume = threading.Event(), threading.Event()
+
+    def trace(frame, event, arg):
+        if (
+            event == "line"
+            and frame.f_code is method.__func__.__code__
+            and frame.f_lineno == publication_line
+        ):
+            ready.set()
+            if not resume.wait(5):
+                raise TimeoutError("Vendor publication was not resumed")
+        return trace
+
+    def verify_in_worker():
+        # Pause the actual cryptographic vendor call, without replacing its
+        # logger or verification implementation. This is the service's to_thread
+        # execution boundary, overlapping a genuine canonical-module reload.
+        sys.settrace(trace)
+        try:
+            return verifier.verify(ceremony, response, stored if operation == "login" else None)
+        finally:
+            sys.settrace(None)
+
+    loggers = [logging.getLogger(name) for name in ("fido2", "fido2.server")]
+    saved = [(each, each.level, each.disabled, each.propagate) for each in loggers]
+    caplog.set_level(logging.DEBUG)
+    worker = asyncio.create_task(asyncio.to_thread(verify_in_worker))
+    try:
+        assert await asyncio.to_thread(ready.wait, 5), "Actual vendor publication was not reached"
+        importlib.reload(server)
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "incremental": True,
+                "loggers": {
+                    name: {"level": "DEBUG", "propagate": True}
+                    for name in ("fido2", "fido2.server")
+                },
+            }
+        )
+        logging.getLogger("owner_auth_test_sink").warning("concurrent-application-capture-active")
+        logging.getLogger("fido2.server").warning("concurrent-library-category-capture-active")
+    finally:
+        resume.set()
+        try:
+            verified = await asyncio.wait_for(worker, timeout=5)
+        finally:
+            for each, level, disabled, propagate in saved:
+                each.setLevel(level)
+                each.disabled = disabled
+                each.propagate = propagate
+    assert verified.credential_id == response["rawId"]
+    assert (verified.credential_data is None) == (operation == "login")
+    private = (
+        response["rawId"],
+        key.credential_id.hex(),
+        registered.credential_data,
+        handle,
+        challenge,
+        *response["response"].values(),
+    )
+    assert not any(isinstance(value, str) and value in caplog.text for value in private)
+    assert "concurrent-application-capture-active" in caplog.text
+    assert "concurrent-library-category-capture-active" in caplog.text
