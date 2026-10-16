@@ -230,6 +230,10 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
             conn.exec_driver_sql(f'CREATE DATABASE "{target}" OWNER "{parsed.username}"')
         target_url = parsed._replace(path="/" + target).geturl()
         bootstrap_again(postgres_container, target_url)
+        # Offline restore uses existing disposable CONTROL to assume fenced owners;
+        # dump, ledger ownership, snapshots and runtime pools stay ordinary.
+        restore_identity = urlparse(migration_bootstrap_db_url(postgres_container, target))
+        restore_env = {**os.environ, "PGPASSWORD_FOR_TEST": restore_identity.password or ""}
         restore = subprocess.run(
             [
                 *base,
@@ -242,9 +246,9 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
                 "-c",
                 'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; bash /restore.sh /backup.sql.gz '
                 f"--host host.docker.internal --port {postgres_container.get_exposed_port(5432)} "
-                f"--user {parsed.username} --target-db {target}",
+                f"--user {restore_identity.username} --target-db {target}",
             ],
-            env=password_env,
+            env=restore_env,
             capture_output=True,
             text=True,
             timeout=120,
