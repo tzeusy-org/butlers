@@ -107,6 +107,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 ## Implementation Notes
 
+- Existing `calendar.write` effect checks refuse a missing permission pool, failed read or malformed row with a typed transient `PermissionUnavailable` before provider writes and workspace mutation preparation. A readable missing row remains default-allow; explicit revocations and approvals still apply. Every fresh or deferred execution rechecks state without a new retry loop. The staged bu-30sah4 fix protects effects first; bu-svqpzo.3 owns the remaining shared callers and final fail-closed policy including spawn.
+
 - `GET /api/calendar/workspace/invitations` reads the current provider projection
   without provider requests or RSVP writes. Only an explicit `self=true`, exact
   `needsAction` status and literal `response_status_explicit=true` marker admit an

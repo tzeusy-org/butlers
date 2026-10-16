@@ -37,6 +37,16 @@ from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _available_permission_for_owner_resolution(request, monkeypatch):
+    """This identity-only test assumes a grant; availability has its own real-read tests."""
+    if request.node.name == "test_send_to_secondary_owner_email_is_allowed_cross_schema":
+        monkeypatch.setattr(
+            "butlers.modules.email.require_permission", AsyncMock(return_value=None)
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared test data
 # ---------------------------------------------------------------------------
