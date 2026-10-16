@@ -552,6 +552,120 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
                     os.kill(pid, 9)
 
 
+def test_vitest_concurrent_failure_terminates_both_owned_groups(tmp_path: Path) -> None:
+    """REQ-ci-shard-assurance-007: either failed peer closes both owned trees."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import ci_vitest as vitest
+
+    helper = tmp_path / "peer.py"
+    helper.write_text("""import os, signal, subprocess, sys, time
+from pathlib import Path
+root, name, failing = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(4); Path(sys.argv[2]).write_text('late')", str(root / (name + '-child')), str(root / (name + '-late'))])
+(root / (name + '-parent')).write_text(str(os.getpid()))
+limit = time.monotonic() + 3
+other = 'execute' if name == 'collect-full' else 'collect-full'
+while not (root / (other + '-child')).exists() or not (root / (name + '-child')).exists():
+    if time.monotonic() > limit: sys.exit(7)
+    time.sleep(0.01)
+(root / (name + '-overlap')).write_text('ready')
+if name == failing:
+    time.sleep(0.1)
+    sys.exit(1)
+time.sleep(10)
+""")
+    for failing in ("collect-full", "execute", "deadline"):
+        directory = tmp_path / failing
+        directory.mkdir()
+        started = time.monotonic()
+        try:
+            commands = {
+                name: (
+                    [sys.executable, str(helper), str(directory), name, failing],
+                    os.environ.copy(),
+                )
+                for name in ("collect-full", "execute")
+            }
+            with pytest.raises((vitest.VitestSubprocessFailure, vitest.VitestTimeout)):
+                with vitest.concurrent_processes(
+                    commands, cwd=tmp_path, deadline=started + 3
+                ) as outcomes:
+                    for _, result, _ in outcomes:
+                        if result.returncode:
+                            raise vitest.VitestSubprocessFailure("controlled peer failure")
+            assert time.monotonic() - started < 3.5
+            for name in commands:
+                assert (directory / (name + "-overlap")).read_text() == "ready"
+                for kind in ("parent", "child"):
+                    pid = int((directory / (name + "-" + kind)).read_text())
+                    stat = Path(f"/proc/{pid}/stat")
+                    drained = time.monotonic() + 0.2
+                    while True:
+                        try:
+                            state = stat.read_text().split()[2]
+                        except (FileNotFoundError, ProcessLookupError):
+                            break
+                        if state == "Z":
+                            break
+                        assert time.monotonic() < drained
+                        time.sleep(0.01)
+                assert not (directory / (name + "-late")).exists()
+        finally:
+            for ledger in directory.glob("*-child"):
+                pid = int(ledger.read_text())
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+
+
+def _vitest_concurrent_receipt_controls(root, pair, monkeypatch, tmp_path, bounded_helper):
+    """Additional interval/cache cases retain the original consumer body verbatim."""
+    import ci_vitest as vitest
+
+    with monkeypatch.context() as local:
+        for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "VITEST_CONTROL"):
+            local.delenv(name, raising=False)
+        local.setenv("VITEST_CONTROL_STARTUP_DELAY", "0.2")
+        for child in pair:
+            assert (
+                max(child["reference_elapsed_s"], child["execute_elapsed_s"]) <= child["elapsed_s"]
+            )
+            assert child["reference_elapsed_s"] + child["execute_elapsed_s"] > child["elapsed_s"]
+        concurrent = copy.deepcopy(pair)
+        for child in concurrent:
+            child.update(reference_elapsed_s=70, execute_elapsed_s=65, elapsed_s=80)
+        vitest.reconcile(root, concurrent)
+        for field, invalid in (
+            ("reference_elapsed_s", -1),
+            ("execute_elapsed_s", -1),
+            ("elapsed_s", -1),
+            ("reference_elapsed_s", float("nan")),
+            ("execute_elapsed_s", float("inf")),
+            ("elapsed_s", True),
+            ("reference_elapsed_s", "70"),
+            ("execute_elapsed_s", None),
+            ("elapsed_s", 69),
+            ("elapsed_s", 901),
+        ):
+            corrupted = copy.deepcopy(concurrent)
+            corrupted[0][field] = invalid
+            with pytest.raises(ValueError):
+                vitest.reconcile(root, corrupted)
+        caches = []
+
+        def observe(command, **kwargs):
+            if "BUTLERS_VITEST_CACHE_DIR" in kwargs["env"]:
+                caches.append(kwargs["env"]["BUTLERS_VITEST_CACHE_DIR"])
+            return bounded_helper(command, **kwargs)
+
+        local.setattr(vitest, "run_process", observe)
+        assert vitest.run(root, 1, tmp_path / "concurrent-private-caches") == 0
+        assert len(caches) == 2 and caches[0] != caches[1]
+        assert all(not Path(cache).exists() for cache in caches)
+    return True
+
+
 def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1536,6 +1650,9 @@ else:
         assert installer["run"] == "npm run test:e2e:install"
         assert "if" not in installer and not installer.get("continue-on-error")
     _exercise_browser_installer(tmp_path / "browser-install")
+    assert _vitest_concurrent_receipt_controls(
+        buildroot, pair, monkeypatch, tmp_path, bounded_helper
+    )
 
 
 def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:

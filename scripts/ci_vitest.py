@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import hashlib
 import json
 import math
@@ -17,7 +18,9 @@ import re
 import signal
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ci_frontend_evidence import ROOT, identity
@@ -36,17 +39,59 @@ class VitestTimeout(subprocess.TimeoutExpired):
         self.diagnostics = diagnostics
 
 
-def run_process(command: list[str], *, cwd: Path, env: dict, timeout: float):
-    """Include TERM/KILL and pipe drainage in the existing invocation deadline.
+class _ProcessGroups:
+    """Only the groups created by this reference/execution pair."""
 
-    subprocess.run's timeout kills only the direct child; a Vitest fork can
-    keep inherited pipes open after that child dies. A fresh session binds the
-    signals to this invocation, including its ordinary descendants. The cleanup
-    reserve reduces useful work time rather than extending the 180/900s limits.
-    """
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.lock = threading.Lock()
+        self.processes = []
+
+    def register(self, process):
+        with self.lock:
+            self.processes.append(process)
+            if self.cancelled.is_set():
+                self._signal(process, signal.SIGTERM)
+
+    @staticmethod
+    def _signal(process, sig):
+        try:
+            os.killpg(process.pid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def signal(self, sig):
+        with self.lock:
+            for process in self.processes:
+                self._signal(process, sig)
+
+    def cancel(self):
+        self.cancelled.set()
+        self.signal(signal.SIGTERM)
+
+    def release(self, process):
+        with self.lock:
+            # Finish ownership promptly rather than retaining a reaped leader's
+            # numeric group ID while its peer continues running.
+            self._signal(process, signal.SIGTERM)
+            self._signal(process, signal.SIGKILL)
+            self.processes.remove(process)
+
+
+def run_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    timeout: float,
+    deadline: float | None = None,
+    owner: _ProcessGroups | None = None,
+):
+    """Keep useful work, owned TERM/KILL and pipe drainage inside one deadline."""
     started = time.monotonic()
-    deadline = started + timeout
-    reserve = min(10.0, timeout / 2)
+    deadline = min(deadline, started + timeout) if deadline is not None else started + timeout
+    reserve = min(10.0, max(0, deadline - started) / 2)
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -55,28 +100,34 @@ def run_process(command: list[str], *, cwd: Path, env: dict, timeout: float):
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    if owner is not None:
+        owner.register(process)
     try:
-        stdout, stderr = process.communicate(timeout=max(0, deadline - reserve - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        term_sent = kill_sent = False
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            term_sent = True
-        except ProcessLookupError:
-            pass
-        try:
-            stdout, stderr = process.communicate(timeout=max(0, (deadline - time.monotonic()) / 2))
-        except subprocess.TimeoutExpired:
+        while True:
+            remaining = deadline - reserve - time.monotonic()
+            if remaining <= 0 or (owner is not None and owner.cancelled.is_set()):
+                raise subprocess.TimeoutExpired("locked-vitest", timeout)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-                kill_sent = True
-            except ProcessLookupError:
-                pass
-            try:
-                stdout, stderr = process.communicate(timeout=max(0, deadline - time.monotonic()))
+                stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+                break
             except subprocess.TimeoutExpired:
-                # An escaped process cannot extend the wrapper or supply item
-                # authority. Close our handles; do not search/kill other PIDs.
+                continue
+    except subprocess.TimeoutExpired:
+        cleanup_deadline = min(deadline, time.monotonic() + reserve)
+        term_sent = _ProcessGroups._signal(process, signal.SIGTERM)
+        kill_sent = False
+        try:
+            stdout, stderr = process.communicate(
+                timeout=max(0, (cleanup_deadline - time.monotonic()) / 2)
+            )
+        except subprocess.TimeoutExpired:
+            kill_sent = _ProcessGroups._signal(process, signal.SIGKILL)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=max(0, cleanup_deadline - time.monotonic())
+                )
+            except subprocess.TimeoutExpired:
+                # Escaped processes cannot extend our envelope or provide authority.
                 process.stdout.close()
                 process.stderr.close()
                 raise VitestTimeout(
@@ -101,7 +152,59 @@ def run_process(command: list[str], *, cwd: Path, env: dict, timeout: float):
                 "stderr_bytes": len(stderr),
             },
         ) from None
+    finally:
+        if owner is not None:
+            owner.release(process)
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+@contextmanager
+def concurrent_processes(commands: dict, *, cwd: Path, deadline: float):
+    """Yield each actual completed phase; refusal cancels and drains both peers."""
+    owner = _ProcessGroups()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(commands))
+
+    def execute(name, command, env):
+        started = time.monotonic()
+        try:
+            result = run_process(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout=max(0, deadline - started),
+                deadline=deadline,
+                owner=owner,
+            )
+        except VitestTimeout as exc:
+            exc.diagnostics["phase"] = name
+            raise
+        return name, result, time.monotonic() - started
+
+    def outcomes(pending):
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending,
+                timeout=max(0, deadline - time.monotonic()),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            if not done:
+                raise VitestTimeout(900, {"phase": "concurrent"})
+            for future in done:
+                yield future.result()
+
+    try:
+        futures = {
+            executor.submit(execute, name, command, env)
+            for name, (command, env) in commands.items()
+        }
+        yield outcomes(futures)
+    finally:
+        owner.cancel()
+        # Each worker's cleanup uses the SAME deadline and reserve, in parallel.
+        executor.shutdown(wait=True, cancel_futures=True)
+        # Workers release their groups only after owned cleanup, including
+        # ordinary descendants that closed inherited pipes.
+        owner.signal(signal.SIGKILL)
 
 
 def key(file: str, title: str, root: Path) -> str:
@@ -443,7 +546,7 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
                 for value in times
             )
             or times[2] > 900
-            or math.fsum(times[:2]) > times[2]
+            or max(times[:2]) > times[2]
         ):
             raise ValueError("Vitest child evidence unavailable")
         reference = validate_reference(receipt["reference"], root)
@@ -477,40 +580,55 @@ def run(root: Path, shard: int, output: Path) -> int:
             reference_path = Path(temporary) / "reference.json"
             execution_path = Path(temporary) / "execution.json"
             environment = {**os.environ, "CI": "1"}
-            stage = "collect-full"
-            phase_started = time.monotonic()
-            result = run_process(
-                ["node", str(REPORTER), "collect", str(root), str(reference_path)],
-                cwd=root / "frontend",
-                env=environment,
-                timeout=max(0, deadline - time.monotonic()),
-            )
-            if result.returncode:
-                raise VitestSubprocessFailure("actual full Vitest reference failed")
-            reference = validate_reference(json.loads(reference_path.read_text()), root)
-            receipt["reference"] = reference
-            receipt["reference_elapsed_s"] = time.monotonic() - phase_started
-            stage = "execute"
-            phase_started = time.monotonic()
-            result = run_process(
-                [
-                    str(root / "frontend/node_modules/.bin/vitest"),
-                    "run",
-                    "--configLoader",
-                    "runner",
-                    f"--shard={shard}/2",
-                    f"--reporter={REPORTER}",
-                ],
-                cwd=root / "frontend",
-                env={**environment, "BUTLERS_VITEST_EVIDENCE": str(execution_path)},
-                timeout=max(0, deadline - time.monotonic()),
-            )
-            receipt["exit_code"] = result.returncode
-            receipt["execute_elapsed_s"] = time.monotonic() - phase_started
+            stage = "concurrent"
+            commands = {
+                "collect-full": (
+                    ["node", str(REPORTER), "collect", str(root), str(reference_path)],
+                    {
+                        **environment,
+                        "BUTLERS_VITEST_CACHE_DIR": str(Path(temporary) / "reference-cache"),
+                    },
+                ),
+                "execute": (
+                    [
+                        str(root / "frontend/node_modules/.bin/vitest"),
+                        "run",
+                        "--configLoader",
+                        "runner",
+                        f"--shard={shard}/2",
+                        f"--reporter={REPORTER}",
+                    ],
+                    {
+                        **environment,
+                        "BUTLERS_VITEST_EVIDENCE": str(execution_path),
+                        "BUTLERS_VITEST_CACHE_DIR": str(Path(temporary) / "execution-cache"),
+                    },
+                ),
+            }
+            with concurrent_processes(
+                commands, cwd=root / "frontend", deadline=deadline
+            ) as outcomes:
+                for phase, result, elapsed in outcomes:
+                    stage = phase
+                    receipt[
+                        "reference_elapsed_s" if phase == "collect-full" else "execute_elapsed_s"
+                    ] = elapsed
+                    if phase == "execute":
+                        receipt["exit_code"] = result.returncode
+                    if result.returncode:
+                        raise VitestSubprocessFailure("actual locked Vitest phase failed")
+                    if phase == "collect-full":
+                        reference = validate_reference(json.loads(reference_path.read_text()), root)
+                        receipt["reference"] = reference
+                    else:
+                        stage = "report"
+                        # Parse promptly so malformed execution also cancels a
+                        # still-running full reference. Full reconciliation waits.
+                        receipt["execution"] = json.loads(execution_path.read_text())
             stage = "report"
-            execution = json.loads(execution_path.read_text())
-            receipt["execution"] = execution
-            proof = validate_execution(reference, execution, shard)
+            proof = validate_execution(reference, receipt["execution"], shard)
+            if not same_json_value(identity(root), receipt["identity"]):
+                raise ValueError("frontend source changed during collection/execution")
             receipt.update(proof)
             if time.monotonic() > deadline:
                 raise VitestTimeout(900, {"phase": "report"})
@@ -524,6 +642,7 @@ def run(root: Path, shard: int, output: Path) -> int:
             category = "timeout"
             if isinstance(exc, VitestTimeout):
                 receipt["process_cleanup"] = exc.diagnostics
+                stage = exc.diagnostics.get("phase", stage)
         elif isinstance(exc, VitestSubprocessFailure):
             category = "subprocess_failed"
         elif isinstance(exc, OSError):
@@ -532,9 +651,14 @@ def run(root: Path, shard: int, output: Path) -> int:
             category = "invalid_evidence"
         receipt["failure_category"] = category
     finally:
+        elapsed = time.monotonic() - started
+        if elapsed > 900:
+            receipt["complete"] = False
+            receipt["failure_category"] = "timeout"
+            stage, exit_code = "cleanup", 2
         receipt["stage"] = stage
         receipt["wrapper_exit"] = exit_code
-        receipt["elapsed_s"] = time.monotonic() - started
+        receipt["elapsed_s"] = elapsed
         output.mkdir(parents=True, exist_ok=True)
         (output / "receipt.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
     if not receipt["complete"]:
