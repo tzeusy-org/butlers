@@ -429,6 +429,11 @@ it before changing the subsystem.
 
 ### Database and migrations
 
+- `tests/contracts/test_schema_reach.py` fences foreign-butler SQL literals across `src/` and
+  `roster/`. Its single reasoned allowlist must shrink when reads disappear; stale entries fail.
+  Unresolved dynamic relation slots require explicit justification, and the Chronicler router
+  retains its stricter zero-foreign-relation rule.
+
 - Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
   them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
   so migration tests must replay bootstrap and write under real `SET ROLE` identities.
