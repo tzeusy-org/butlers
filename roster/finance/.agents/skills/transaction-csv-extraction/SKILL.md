@@ -38,7 +38,11 @@ reported USD fallback warning when unknown.
 1. Call `import_transactions(storage_ref=..., account_id=..., dry_run=true)`.
 2. Show the owner the detected format, detected date format, total and parsed row
    counts, parse errors, and the bounded preview (at most ten transactions).
-   Explain each `is_duplicate` flag and any currency warning.
+   Explain each `is_duplicate` flag and any currency warning. When
+   `output_truncated=true`, disclose the `truncation` counts: preview cells and
+   error samples may be clipped and some details omitted. `output_limits` gives
+   the budgets (32 KiB total, 256 characters per string). Clipped text is not a
+   complete original value; the daemon retains full values for import.
 3. When parsing fails or the owner identifies an incorrect interpretation,
    adjust only these closed-form options and preview again:
 

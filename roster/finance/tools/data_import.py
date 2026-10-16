@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import re
 import uuid
@@ -337,7 +338,7 @@ def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
     return {
         _COL_DATE: date_col,
         _COL_MERCHANT: merchant_col,
-        _COL_AMOUNT: amount_col if not has_split else None,
+        _COL_AMOUNT: amount_col,
         "debit_col": debit_col,
         "credit_col": credit_col,
         "use_split": has_split,
@@ -419,6 +420,10 @@ def _parse_row(
         else:
             return None  # both empty or zero — skip
     else:
+        if not amount_col:
+            raise ValueError(
+                "No signed amount column found; provide column_map with an amount column"
+            )
         raw_amount = _resolve_col(row, amount_col) if amount_col else None
         if not raw_amount or not raw_amount.strip():
             return None
@@ -962,6 +967,145 @@ def _summarize_import(
 # ---------------------------------------------------------------------------
 
 
+# Session-facing limits apply only to the returned projection, never to CSV
+# cells used for parsing, duplicate checks, storage, or analytics.
+_OUTPUT_STRING_CHARS = 256
+_OUTPUT_KEY_CHARS = 64
+_OUTPUT_OBJECT_FIELDS = 8
+_OUTPUT_LIST_ITEMS = 50
+_OUTPUT_ERROR_BYTES = 2048
+_OUTPUT_LIST_BYTES = 8192
+_OUTPUT_RESPONSE_BYTES = 32768
+
+
+def _bound_import_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project untrusted import output into a finite JSON budget with honest loss counts.
+
+    Sizes use the conservative ASCII-escaped default json.dumps representation.
+    Nested objects (including each error/preview row) fit 2 KiB; lists fit 8 KiB.
+    Reserve 1 KiB of the whole 32 KiB budget for limits and truncation metadata.
+    """
+    clipped_strings: set[tuple[Any, ...]] = set()
+    truncation = {
+        "strings_truncated": 0,
+        "keys_truncated": 0,
+        "fields_omitted": 0,
+        "items_omitted": 0,
+    }
+
+    def size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=True).encode("utf-8"))
+
+    def project(
+        value: Any, *, path: tuple[Any, ...], depth: int = 0, mark_rows: bool = False
+    ) -> Any:
+        before = sum(truncation.values())
+        if isinstance(value, str):
+            if len(value) > _OUTPUT_STRING_CHARS:
+                clipped_strings.add(path)
+                truncation["strings_truncated"] = len(clipped_strings)
+            return value[:_OUTPUT_STRING_CHARS]
+        if isinstance(value, (dict, list)) and depth >= 6:
+            truncation["fields_omitted"] += 1
+            return "[omitted]"
+        if isinstance(value, dict):
+            output = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _OUTPUT_OBJECT_FIELDS:
+                    truncation["fields_omitted"] += len(value) - index
+                    break
+                label = str(key)[:_OUTPUT_KEY_CHARS]
+                if len(str(key)) > _OUTPUT_KEY_CHARS:
+                    truncation["keys_truncated"] += 1
+                if label in output:
+                    truncation["fields_omitted"] += 1
+                    continue
+                output[label] = project(item, path=path + (label,), depth=depth + 1)
+            # Reserve space for the per-row flag when a caller requested it.
+            while size(output) > _OUTPUT_ERROR_BYTES - 32:
+                containers = [
+                    (key, size(item))
+                    for key, item in output.items()
+                    if isinstance(item, (dict, list)) and item
+                ]
+                strings = [
+                    (key, size(item))
+                    for key, item in output.items()
+                    if isinstance(item, str) and item
+                ]
+                if containers:
+                    key = max(containers, key=lambda pair: pair[1])[0]
+                    if isinstance(output[key], dict):
+                        output[key].popitem()
+                        truncation["fields_omitted"] += 1
+                    else:
+                        output[key].pop()
+                        truncation["items_omitted"] += 1
+                elif strings:
+                    key = max(strings, key=lambda pair: pair[1])[0]
+                    output[key] = output[key][: len(output[key]) // 2]
+                    clipped_strings.add(path + (key,))
+                    truncation["strings_truncated"] = len(clipped_strings)
+                else:
+                    output.popitem()
+                    truncation["fields_omitted"] += 1
+            if mark_rows and sum(truncation.values()) > before:
+                output["truncated"] = True
+            return output
+        if isinstance(value, list):
+            output = [
+                project(item, path=path + (index,), depth=depth + 1, mark_rows=mark_rows)
+                for index, item in enumerate(value[:_OUTPUT_LIST_ITEMS])
+            ]
+            truncation["items_omitted"] += max(0, len(value) - len(output))
+            while size(output) > _OUTPUT_LIST_BYTES:
+                output.pop()
+                truncation["items_omitted"] += 1
+            return output
+        return value
+
+    output = {
+        key: project(value, path=(key,), mark_rows=key in ("preview", "error_details"))
+        for key, value in result.items()
+    }
+    # The root has a fixed capability schema: retain counts/flags and shed the
+    # largest display list first if their combined projections exceed budget.
+    while size(output) > _OUTPUT_RESPONSE_BYTES - 1024:
+        lists = [
+            (key, size(value)) for key, value in output.items() if isinstance(value, list) and value
+        ]
+        if lists:
+            key = max(lists, key=lambda item: item[1])[0]
+            output[key].pop()
+            truncation["items_omitted"] += 1
+        else:
+            # Defensive bound for future display fields; current scalar schema
+            # fits well inside the budget after string clipping.
+            output.popitem()
+            truncation["fields_omitted"] += 1
+    for key, total in (
+        ("preview", result.get("parsed", len(result.get("preview", [])))),
+        ("error_details", result.get("parse_errors", result.get("errors", 0))),
+        ("categories_used", len(result.get("categories_used", []))),
+    ):
+        if key not in result:
+            continue
+        label = "preview_rows_omitted" if key == "preview" else key + "_omitted"
+        truncation[label] = max(0, total - len(output.get(key, [])))
+    output["output_truncated"] = any(truncation.values())
+    output["truncation"] = truncation
+    output["output_limits"] = {
+        "string_chars": _OUTPUT_STRING_CHARS,
+        "key_chars": _OUTPUT_KEY_CHARS,
+        "object_fields": _OUTPUT_OBJECT_FIELDS,
+        "list_items": _OUTPUT_LIST_ITEMS,
+        "error_bytes": _OUTPUT_ERROR_BYTES,
+        "list_bytes": _OUTPUT_LIST_BYTES,
+        "response_bytes": _OUTPUT_RESPONSE_BYTES,
+    }
+    return output
+
+
 def _validate_import_options(
     delimiter: str,
     date_format: str | None,
@@ -992,7 +1136,7 @@ def _validate_import_options(
         try:
             sample = datetime(2000, 2, 29, 12, 34, 56, tzinfo=UTC)
             datetime.strptime(sample.strftime(date_format), date_format)
-        except (ValueError, TypeError, OverflowError):
+        except (ValueError, TypeError, OverflowError, re.error):
             return "date_format must be a valid strptime format"
     return None
 
@@ -1027,17 +1171,19 @@ async def import_transactions(
     """
     error = _validate_import_options(delimiter, date_format, amount_sign, column_map)
     if error:
-        return {"status": "validation_error", "error": error}
+        return _bound_import_result({"status": "validation_error", "error": error})
     try:
         content = await _load_csv_from_blob(blob_store, storage_ref)
     except Exception as exc:
-        return {
-            "status": "error",
-            "error": f"Failed to load file from blob storage: {exc}",
-            "storage_ref": storage_ref,
-            "import_batch_id": str(uuid.uuid4()),
-        }
-    return await _import_csv_content(
+        return _bound_import_result(
+            {
+                "status": "error",
+                "error": f"Failed to load file from blob storage: {exc}",
+                "storage_ref": storage_ref,
+                "import_batch_id": str(uuid.uuid4()),
+            }
+        )
+    result = await _import_csv_content(
         pool,
         content,
         account_id=account_id,
@@ -1049,6 +1195,7 @@ async def import_transactions(
         date_format=date_format,
         amount_sign=amount_sign,
     )
+    return _bound_import_result(result)
 
 
 async def _has_merchant_mappings_table(pool: asyncpg.Pool) -> bool:
@@ -1272,7 +1419,7 @@ async def _check_duplicates_for_preview(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point — file-path based
+# Shared content import pipeline
 # ---------------------------------------------------------------------------
 
 
@@ -1320,12 +1467,12 @@ async def _import_csv_content(
             "status": "error",
             "error": (
                 "Could not auto-detect date format. "
-                f"Sample values: {sample_dates[:5]}. "
                 "Provide a column_map with 'date' pointing to the correct column, "
                 "or supply date_format (for example %d/%m/%Y)."
             ),
             "import_batch_id": import_batch_id,
             "detected_format": fmt["name"],
+            "date_samples": sample_dates[:5],
         }
 
     # --- Parse all rows ---

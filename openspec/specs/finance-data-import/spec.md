@@ -41,9 +41,10 @@ The daemon SHALL accept closed-form parsing overrides and validate them before r
 - **AND** `date_format` SHALL be a nonempty valid strptime format
 - **AND** `amount_sign` SHALL accept only `negative_debit`, `positive_debit`, or `split_cols`, overriding the detected convention
 - **AND** `split_cols` SHALL require both `debit` and `credit` CSV column names in `column_map`
+- **AND** signed overrides SHALL use the `amount` column even when `debit` and `credit` columns coexist; absence of a signed amount column SHALL produce an actionable row error
 
 #### Scenario: Invalid parsing options
-- **WHEN** an option is invalid, such as `delimiter="ab"`, an unknown `amount_sign`, or an invalid `date_format`
+- **WHEN** an option is invalid, such as `delimiter="ab"`, an unknown `amount_sign`, or an invalid `date_format` (including repeated directives such as `%Y/%Y`)
 - **THEN** the response SHALL contain `status="validation_error"` and an actionable error
 - **AND** no blob read or database operation SHALL occur
 
@@ -101,7 +102,11 @@ The session-facing tool SHALL accept a blob `storage_ref` from the routed attach
 #### Scenario: Untrusted bounded output
 - **WHEN** a preview or parse error contains CSV cells
 - **THEN** the capability documentation SHALL label those values as untrusted file content
-- **AND** previews SHALL contain at most ten rows, with bounded error details
+- **AND** previews SHALL contain at most ten rows, with at most twenty error details in dry runs and fifty in imports
+- **AND** the returned projection SHALL limit strings to 256 characters, keys to 64 characters, nested objects to eight input fields and 2 KiB, lists to fifty items and 8 KiB, and the complete response to 32 KiB measured as ASCII-escaped JSON
+- **AND** these limits SHALL apply to date-detection samples, error reasons and raw cells, preview cells, categories, blob failures, and echoed inputs
+- **AND** `output_truncated`, per-row `truncated` flags, `truncation` counts, and `output_limits` SHALL disclose clipping or omission; summary counts SHALL retain the complete population
+- **AND** projection limits SHALL NOT truncate the cells used internally for parsing, duplicate checks, persistence, or analytics
 
 ### Requirement: Retroactive Baseline Analytics
 The system SHALL compute analytics baselines after a historical import to enable immediate anomaly detection and trend analysis.
