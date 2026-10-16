@@ -460,6 +460,9 @@ fi
 # stops/creates the executor, installs its firewall, then starts the merged
 # service set below.
 CMD=(docker compose -f docker-compose.yml)
+if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
+  CMD+=(-f docker-compose.restore-drill.yml)
+fi
 # Source-selected dev topology only. Production retains the unsplit service
 # and its process-local capacity five; no environment-file profile selection.
 if [ "$BUTLERS_MODE" = "dev" ]; then
@@ -471,9 +474,6 @@ if [ "$BUTLERS_MODE" = "dev" ]; then
   fi
 else
   export BUTLERS_SWITCHBOARD_SERVICE=butlers-up
-fi
-if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
-  CMD+=(-f docker-compose.restore-drill.yml)
 fi
 if [ "$OBSERVABILITY" = "true" ]; then
   CMD+=(-f docker-compose.observability.yml)
