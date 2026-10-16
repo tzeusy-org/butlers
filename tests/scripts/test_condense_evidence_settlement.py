@@ -223,3 +223,62 @@ def _ordinary_signal_history(root):
     assert consumer.source_records(root, [control.name]) == records
     evidence.publish(root / "signal-contract.json", outcomes)
     return True
+
+
+def test_stopped_child_zero_status_notification_replays_without_settling_calls(tmp_path):
+    """REQ-testing-053: replay the strace 6.8 stop notification captured by bu-0nz5zg."""
+    # Captured shape, with synthetic PID/UID/ticks replacing run-specific values.
+    notification = (
+        b"1 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_STOPPED, si_pid=2, "
+        b"si_uid=1, si_status=0, si_utime=0, si_stime=0} ---"
+    )
+
+    def stream():
+        return evidence.RequestAccessStream(
+            tmp_path,
+            {"absent.json"},
+            tmp_path / "run.request.json",
+            tmp_path / "run.json",
+            "0" * 64,
+        )
+
+    for delivered in (
+        notification,
+        notification.replace(b"si_utime=0", b"si_utime=1 /* 0.01 s */"),
+        notification.replace(b"si_stime=0", b"si_stime=1 /* 0.01 s */"),
+    ):
+        observed = stream()
+        observed.consume(delivered)
+        assert not observed.failed and not observed.pending and not observed.exits
+        assert observed.actors == {1} and not observed.parents and not observed.executables
+        assert observed.probes == observed.subject_reads == observed.accesses == observed.reads == 0
+        assert not observed.finish()[0]  # A notification cannot prove completion.
+
+        observed.consume(b"1 wait4(2,  <unfinished ...>")
+        pending = dict(observed.pending)
+        observed.consume(delivered)
+        assert not observed.failed and observed.pending == pending and not observed.exits
+        assert not observed.finish()[0]
+        observed.consume(b"1 <... wait4 resumed>NULL, 0, NULL) = 2")
+        assert not observed.failed and not observed.pending and not observed.exits
+        observed.consume(b"1 +++ exited with 0 +++")
+        assert not observed.failed and observed.exits == {1}
+        observed.consume(delivered)
+        assert observed.failed  # The supported shape cannot bypass post-exit refusal.
+
+    for malformed in (
+        notification[:-4],
+        notification.replace(b"CLD_STOPPED", b"CLD_UNSUPPORTED"),
+        notification.replace(b"CLD_STOPPED", b"CLD_KILLED"),
+        notification.replace(b"CLD_STOPPED", b"CLD_CONTINUED"),
+        notification.replace(b"si_status=0", b"si_status=1"),
+        notification.replace(b"si_status=0", b"si_status=-1"),
+        notification.replace(b"si_status=0", b"si_status=00"),
+        notification.replace(b"si_status=0", b"si_status=0.0"),
+        notification.replace(b"si_status=0", b"si_status=SIGINVENTED"),
+        notification.replace(b"si_status=0, ", b""),
+        notification.replace(b"} ---", b", extra=0} ---"),
+    ):
+        observed = stream()
+        observed.consume(malformed)
+        assert observed.failed and not observed.exits and not observed.finish()[0]
