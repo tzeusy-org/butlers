@@ -307,6 +307,11 @@ already owned by Kubernetes. In dev the launcher checks both `butlers-up` and
 either active role refuses a competing fleet. Production retains the unsplit
 `butlers-up` replica check in `butlers`. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
 non-live database, never a live-fleet cutover shortcut.
+With a selected local Kubernetes context, a failed or malformed ownership query
+refuses all Compose lifecycle actions. Only successful absent/zero responses
+permit startup. Standalone hosts without kubectl or a selected context remain
+supported; local configuration is inspected without contacting a cluster, and
+invalid configuration refuses rather than being treated as standalone.
 
 The protected restore-drill executor remains Docker-only: it attests Docker
 cgroups and host iptables. Production Compose includes the protected fragment;

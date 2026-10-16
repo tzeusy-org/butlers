@@ -56,7 +56,10 @@ topology and fail closed when its prerequisites are missing.
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
 runs the ordinary dev configuration's `down --remove-orphans` before startup. That
 removes the former relay and executor rather than leaving privileged services
-running as orphans. Keep passing `--with-restore-drill` on later dev launches
+running as orphans. For an ordinary unsplit Compose model, base-only `down --remove-orphans`
+performs that cleanup without evaluating protected configuration. The staged dev launcher
+includes the base and control-stage files instead; it still excludes the protected
+restore-drill fragment during ordinary cleanup. Keep passing `--with-restore-drill` on later dev launches
 when the protected services must remain enabled.
 
 ## Read-only protected-topology inspection
