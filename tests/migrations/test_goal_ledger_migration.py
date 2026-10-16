@@ -104,6 +104,19 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
             ).all()
             assert roles
             original_rows = snapshot(ledger_url)[0]
+            # Resolve names as the owner: denied runtimes cannot traverse the
+            # schema, but the OID overload still checks their actual table ACL.
+            table_oids = dict(
+                conn.execute(
+                    text(
+                        "SELECT c.relname,c.oid FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                        "WHERE n.nspname='switchboard' AND c.relname=ANY(:tables)"
+                    ),
+                    {"tables": list(TABLES)},
+                ).all()
+            )
+            assert set(table_oids) == set(TABLES)
             for role, superuser, bypass in roles:
                 assert not superuser and not bypass
                 assert not conn.execute(
@@ -121,8 +134,10 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
                 try:
                     for table in TABLES:
                         assert not conn.execute(
-                            text("SELECT has_table_privilege(current_user,:table,'TRUNCATE')"),
-                            {"table": "switchboard." + table},
+                            text(
+                                "SELECT has_table_privilege(current_user,CAST(:table_oid AS oid),'TRUNCATE')"
+                            ),
+                            {"table_oid": table_oids[table]},
                         ).scalar_one()
                         try:
                             count = conn.execute(
