@@ -1443,7 +1443,7 @@ def _make_route_envelope(
 
 
 def _parked_route_command(daemon: Any) -> tuple[str, dict[str, Any]]:
-    """Return the single native command captured by the pending-action insert."""
+    """Return the single stored command captured by the pending-action insert."""
     pending_inserts = [
         call
         for call in daemon.db.pool.execute.await_args_list
@@ -1476,6 +1476,7 @@ class TestRouteExecuteApprovalGate:
             message="I received the DBS Card Transaction Alert but the body was empty.",
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
+        reply_spy = AsyncMock(return_value={"status": "sent"})
 
         with (
             patch(
@@ -1485,7 +1486,8 @@ class TestRouteExecuteApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
+            patch.object(EmailModule, "_reply_to_thread", new=reply_spy),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1499,7 +1501,8 @@ class TestRouteExecuteApprovalGate:
         thread_id = envelope["input"]["context"]["notify_request"]["request_context"][
             "source_thread_identity"
         ]
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "email_reply_to_thread",
             {
                 "to": DBS_ALERT_EMAIL,
@@ -1508,6 +1511,8 @@ class TestRouteExecuteApprovalGate:
                 "subject": "[relationship] Notification",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        reply_spy.assert_not_awaited()
 
     async def test_send_to_secondary_owner_email_is_allowed_cross_schema(
         self, tmp_path: Path
@@ -1572,6 +1577,7 @@ class TestRouteExecuteApprovalGate:
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
         park = AsyncMock(side_effect=record_pending_action)
+        send_spy = AsyncMock(return_value={"status": "sent"})
 
         with (
             patch(
@@ -1581,8 +1587,9 @@ class TestRouteExecuteApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
+            patch.object(EmailModule, "_send_email", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1592,7 +1599,8 @@ class TestRouteExecuteApprovalGate:
         assert "blocked" in result["error"]["message"].lower()
         assert result["error"]["retryable"] is False
         assert park.await_args.kwargs["origin_butler"] == "messenger"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "email_send_message",
             {
                 "to": KNOWN_NON_OWNER_EMAIL,
@@ -1600,6 +1608,8 @@ class TestRouteExecuteApprovalGate:
                 "body": "Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        send_spy.assert_not_awaited()
 
     async def test_reply_without_provider_thread_identity_fails_before_parking(
         self, tmp_path: Path
@@ -1726,7 +1736,7 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_send_message", new=send_spy),
             patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
@@ -1747,13 +1757,15 @@ class TestRouteExecuteTelegramApprovalGate:
             if "INSERT INTO pending_actions" in call.args[0]
         ]
         assert len(pending_inserts) == 1
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_send_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
                 "text": "[relationship] Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1856,7 +1868,7 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
@@ -1868,13 +1880,15 @@ class TestRouteExecuteTelegramApprovalGate:
         error_obj = result.get("error", {})
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_send_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
                 "text": "[relationship] Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_reply_to_non_owner_telegram_parks_native_reply_command(
@@ -1903,13 +1917,14 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_reply_to_message", new=reply_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_reply_to_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
@@ -1917,6 +1932,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Reply in place",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         reply_spy.assert_not_awaited()
 
 
@@ -1975,16 +1991,18 @@ class TestRouteExecuteWhatsAppApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "whatsapp_send_message",
             {"recipient": recipient, "text": "[relationship] Hello friend"},
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_reply_parks_current_native_send_semantics(self, tmp_path: Path) -> None:
@@ -2010,16 +2028,18 @@ class TestRouteExecuteWhatsAppApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "whatsapp_send_message",
             {"recipient": thread_identity, "text": "[relationship] Reply in place"},
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
 

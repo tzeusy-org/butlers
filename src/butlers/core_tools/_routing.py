@@ -1892,7 +1892,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     from butlers.core.approval_review import ParkedApprovalRefusal
 
                     raise ParkedApprovalRefusal(
-                        "Delivery parked for owner review on the approval dashboard "
+                        "Delivery blocked; parked for owner review on the approval dashboard "
                         f"(action_id={decision.action_id}).",
                         decision=decision,
                         butler=daemon.config.name,
