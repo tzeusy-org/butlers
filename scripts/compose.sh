@@ -495,7 +495,7 @@ for p in "${PROFILES[@]}"; do
     if [ "$BUTLERS_MODE" = "dev" ]; then
       SCALE_ARGS+=(--scale butlers-control=0)
     fi
-    echo "Hotreload: scaling down butlers-up, butlers-control and dashboard-api (replaced by *-hotreload variants)"
+    echo "Hotreload: replacing baked services with the selected hotreload variants"
   fi
 done
 
