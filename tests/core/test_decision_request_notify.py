@@ -321,10 +321,16 @@ async def test_insight_feedback_reaches_telegram_send_for_standalone_and_digest(
             }
             if count:
                 notify["feedback_actions"] = bindings
-            with patch(
-                "butlers.core.approvals_hooks.check_recipient",
-                AsyncMock(
-                    return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()
+            with (
+                patch(
+                    "butlers.core.approvals_hooks.check_recipient",
+                    AsyncMock(
+                        return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()
+                    ),
+                ),
+                patch(
+                    "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                    AsyncMock(return_value=(None, True)),
                 ),
             ):
                 result = await route(
@@ -377,6 +383,31 @@ async def test_insight_feedback_reaches_telegram_send_for_standalone_and_digest(
             "owner@example.test", "[switchboard] Notification", "Insight text"
         )
         daemon._credential_store.resolve.assert_not_awaited()
+        # A standing rule for another recipient cannot carry owner feedback controls.
+        before_sends = telegram._send_message.await_count
+        notify["delivery"].update(intent="insight", channel="telegram", recipient="777")
+        with (
+            patch(
+                "butlers.core.approvals_hooks.check_recipient",
+                AsyncMock(
+                    return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()
+                ),
+            ),
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            result = await route(
+                schema_version="route.v1",
+                request_context={
+                    **_route_request_context(),
+                    "source_sender_identity": "switchboard",
+                },
+                input={"prompt": "Deliver", "context": {"notify_request": notify}},
+            )
+        assert result["status"] == "error"
+        assert telegram._send_message.await_count == before_sends
     finally:
         if daemon is not None:
             await daemon.shutdown()
