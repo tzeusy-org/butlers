@@ -124,3 +124,70 @@ def test_repo_skill_files_use_yaml_frontmatter() -> None:
     assert missing_name == []
     assert mismatched_name == []
     assert missing_description == []
+
+
+# RFC 0038 D18: engineering executors keep a shell in an isolated worktree,
+# receive no MCP config, and are not goal invocations. Do not exempt a whole
+# butler: every additional engineering-only skill needs an explicit entry.
+_ENGINEERING_EXECUTOR_SKILLS = {
+    "roster/qa/.agents/skills/investigation-notes/SKILL.md": "RFC 0038 D18",
+}
+
+
+def _skill_execution_instructions(text: str) -> list[str]:
+    """Find executable instructions while allowing plain documentation links.
+
+    Markdown link destinations and autolink URLs are the only link allowlist.
+    Labels and surrounding prose remain scanned. Fenced Python examples of MCP
+    calls remain scanned too; a code fence is never an execution exemption.
+    """
+    import re
+
+    text = re.sub(r"(?<=\]\()https?://[^\s)]+(?=\))|<https?://[^\s>]+>", "", text)
+    patterns = (
+        r"\bimport_csv\b",
+        r"\burllib\b",
+        r"\brequests\.",
+        r"\bcurl\s+",
+        r"\bsubprocess\b",
+        r"\b(?:write|run|execute)\s+(?:a|the)\s+script\b",
+        r"(?m)^\s*(?:\$\s*)?(?:python3?|bash|sh|mkdir)\s+",
+        r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?:https?://|/api/)",
+    )
+    return [pattern for pattern in patterns if re.search(pattern, text, re.IGNORECASE)]
+
+
+def test_roster_skills_use_capabilities_without_shell_or_http() -> None:
+    """Every roster skill root loaded by core.skills obeys RFC 0038 D2/D3."""
+    for forbidden in (
+        "import_csv.py",
+        "urllib.request",
+        "requests.post(url)",
+        "curl url",
+        "subprocess.run(cmd)",
+        "python import.py",
+        "python3 -c code",
+        "Write a script",
+        "Run the script",
+        "POST /api/finance/transactions/bulk",
+    ):
+        assert _skill_execution_instructions(forbidden), forbidden
+    assert not _skill_execution_instructions(
+        "[reference](https://example.test/urllib)\n"
+        "```python\nawait import_transactions(storage_ref=ref, dry_run=True)\n```"
+    )
+    assert _ENGINEERING_EXECUTOR_SKILLS == {
+        "roster/qa/.agents/skills/investigation-notes/SKILL.md": "RFC 0038 D18",
+    }
+    repo_root = Path(__file__).resolve().parents[2]
+    skills = sorted(repo_root.glob("roster/**/SKILL.md"))
+    assert skills
+    violations = {}
+    for skill in skills:
+        path = skill.relative_to(repo_root).as_posix()
+        if path in _ENGINEERING_EXECUTOR_SKILLS:
+            continue
+        matches = _skill_execution_instructions(skill.read_text(encoding="utf-8"))
+        if matches:
+            violations[path] = matches
+    assert not violations, violations

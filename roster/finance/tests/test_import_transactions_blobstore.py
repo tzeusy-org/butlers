@@ -162,6 +162,7 @@ class TestImportTransactionsToolRegistration:
             "check that the fake data_import module is injected correctly"
         )
 
+        assert "import_transactions_from_file" not in mcp.tools
         sig = inspect.signature(mcp.tools["import_transactions"])
         params = list(sig.parameters.keys())
 
@@ -216,12 +217,18 @@ class TestImportTransactionsToolRegistration:
             account_id="acct-123",
             currency="EUR",
             dry_run=True,
+            delimiter=";",
+            date_format="%d/%m/%Y",
+            amount_sign="positive_debit",
         )
 
         call_kwargs = fake_data_import.import_transactions.call_args.kwargs
         assert call_kwargs.get("account_id") == "acct-123"
         assert call_kwargs.get("currency") == "EUR"
         assert call_kwargs.get("dry_run") is True
+        assert call_kwargs.get("delimiter") == ";"
+        assert call_kwargs.get("date_format") == "%d/%m/%Y"
+        assert call_kwargs.get("amount_sign") == "positive_debit"
 
     async def test_import_transactions_column_map_parsed_from_json(self):
         """column_map JSON string is parsed to dict before forwarding."""
@@ -269,3 +276,82 @@ class TestModuleBaseSignature:
         assert "blob_store" in sig.parameters
         param = sig.parameters["blob_store"]
         assert param.default is None
+
+
+class TestImportParsingOptions:
+    async def test_semicolon_day_first_positive_debit_import(self):
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock(
+            return_value=(
+                "\ufeffDate;Merchant;Amount\n04/03/2024;Café;12.50\n05/03/2024;Refund;-2.00\n".encode(
+                    "utf-8"
+                )
+            )
+        )
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchval = AsyncMock(return_value=False)
+        pool.execute = AsyncMock()
+        result = await import_transactions(
+            pool,
+            blob,
+            "s3://bucket/statement.csv",
+            currency="SGD",
+            delimiter=";",
+            date_format="%d/%m/%Y",
+            amount_sign="positive_debit",
+        )
+        assert (result["imported"], result["errors"]) == (2, 0)
+        calls = pool.execute.call_args_list
+        assert calls[0].args[2] == datetime(2024, 3, 4, tzinfo=UTC)
+        assert calls[0].args[3] == "Café"
+        assert calls[0].args[5:8] == (Decimal("12.50"), "SGD", "debit")
+        assert calls[1].args[5:8] == (Decimal("2.00"), "SGD", "credit")
+
+    async def test_invalid_options_rejected_before_blob_read(self):
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock()
+        for options in (
+            {"delimiter": "ab"},
+            {"delimiter": ""},
+            {"delimiter": 1},
+            {"amount_sign": "unknown"},
+            {"date_format": "%Q"},
+            {"date_format": ""},
+            {"date_format": 1},
+            {"amount_sign": "split_cols", "column_map": {"debit": "Paid"}},
+        ):
+            result = await import_transactions(MagicMock(), blob, "ref", **options)
+            assert result["status"] == "validation_error", options
+            assert result["error"]
+        blob.get.assert_not_awaited()
+
+    async def test_split_column_overrides_through_blob_import(self):
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock(
+            return_value=(b"When|Payee|Paid|Received\n2024-01-15|Cafe|5|\n2024-01-16|Refund||2\n")
+        )
+        pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)
+        result = await import_transactions(
+            pool,
+            blob,
+            "ref",
+            dry_run=True,
+            delimiter="|",
+            amount_sign="split_cols",
+            column_map={"date": "When", "merchant": "Payee", "debit": "Paid", "credit": "Received"},
+        )
+        assert result["parsed"] == 2
+        assert [row["merchant"] for row in result["preview"]] == ["Cafe", "Refund"]
+        assert [row["direction"] for row in result["preview"]] == ["debit", "credit"]
+        assert [row["amount"] for row in result["preview"]] == ["5", "2"]

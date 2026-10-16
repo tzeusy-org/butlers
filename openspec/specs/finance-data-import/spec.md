@@ -9,7 +9,7 @@ Historical data import pipeline -- multi-format CSV normalization, deduplication
 The system SHALL auto-detect common bank export CSV formats by analyzing header rows and column patterns.
 
 #### Scenario: Known format detection
-- **WHEN** `import_transactions(file_path, account_id=None)` is called with a CSV file
+- **WHEN** `import_transactions(storage_ref, account_id=None)` is called with a CSV blob reference
 - **THEN** the system SHALL read the header row and match it against known bank format signatures
 - **AND** supported formats SHALL include at minimum: Chase (Date, Description, Amount, Balance), Amex (Date, Description, Amount, Extended Details), Capital One (Transaction Date, Posted Date, Card No., Description, Category, Debit, Credit), and a generic CSV format (requires at least date, description/merchant, and amount columns)
 - **AND** the detected format SHALL be returned in the response as `detected_format`
@@ -20,10 +20,32 @@ The system SHALL auto-detect common bank export CSV formats by analyzing header 
 - **AND** if generic parsing fails, the system SHALL return an error with `status="unrecognized_format"` and include the detected headers for the user to provide a manual column mapping
 
 #### Scenario: Manual column mapping override
-- **WHEN** `import_transactions(file_path, column_map={date: "Col1", merchant: "Col2", amount: "Col3"})` is called with an explicit column mapping
+- **WHEN** `import_transactions(storage_ref, column_map={date: "Col1", merchant: "Col2", amount: "Col3"})` is called with an explicit column mapping
 - **THEN** the system SHALL use the provided mapping instead of auto-detection
 - **AND** required mapped columns SHALL be: `date`, `merchant` (or `description`), and `amount`
+- **AND** separate amount columns SHALL be named by `debit` and `credit` when `amount_sign="split_cols"` is supplied
 - **AND** optional mapped columns SHALL include: `category`, `currency`, `account`, `reference`
+
+### Requirement: Explicit Parsing Options
+The daemon SHALL accept closed-form parsing overrides and validate them before retrieving the blob.
+
+#### Scenario: Semicolon and day-first positive-debit export
+- **WHEN** `import_transactions(storage_ref, delimiter=";", date_format="%d/%m/%Y", amount_sign="positive_debit")` imports a semicolon-separated CSV
+- **THEN** all CSV readers SHALL use the specified delimiter
+- **AND** the explicit strptime format SHALL bypass date auto-detection
+- **AND** positive amounts SHALL become absolute debit amounts and negative amounts SHALL become absolute credit amounts
+
+#### Scenario: Supported parsing overrides
+- **WHEN** parsing options are supplied
+- **THEN** `delimiter` SHALL accept only comma (default), semicolon, tab, or pipe
+- **AND** `date_format` SHALL be a nonempty valid strptime format
+- **AND** `amount_sign` SHALL accept only `negative_debit`, `positive_debit`, or `split_cols`, overriding the detected convention
+- **AND** `split_cols` SHALL require both `debit` and `credit` CSV column names in `column_map`
+
+#### Scenario: Invalid parsing options
+- **WHEN** an option is invalid, such as `delimiter="ab"`, an unknown `amount_sign`, or an invalid `date_format`
+- **THEN** the response SHALL contain `status="validation_error"` and an actionable error
+- **AND** no blob read or database operation SHALL occur
 
 ### Requirement: Data Normalization
 The system SHALL normalize transaction data from different bank formats into the canonical `finance.transactions` table schema.
@@ -62,18 +84,37 @@ The system SHALL prevent duplicate transactions during import by checking agains
 - **THEN** the response SHALL include: `total` (rows in CSV), `imported` (new transactions created), `skipped` (duplicates detected), `errors` (rows that failed validation), `error_details` (list of `{row, reason}`), `detected_format`, `date_range` (earliest and latest transaction dates), and `categories_used` (list of categories assigned)
 
 #### Scenario: Dry run mode
-- **WHEN** `import_transactions(file_path, dry_run=true)` is called
+- **WHEN** `import_transactions(storage_ref, dry_run=true)` is called
 - **THEN** the system SHALL parse and validate the CSV, detect duplicates, and return the import summary
 - **AND** no transaction rows SHALL be created in `finance.transactions`
-- **AND** the response SHALL include a `preview` of the first 10 transactions that would be imported
+- **AND** the response SHALL include a `preview` of at most the first 10 parsed transactions, each with an `is_duplicate` flag
+- **AND** learned merchant-category mappings SHALL be applied without inserting transactions
+
+### Requirement: Blob-only Import Boundary
+The session-facing tool SHALL accept a blob `storage_ref` from the routed attachment list. CSV content SHALL be parsed in the daemon, outside model context.
+
+#### Scenario: Host filesystem tool retirement
+- **WHEN** finance MCP tools are registered
+- **THEN** `import_transactions` SHALL be available in the bulk group
+- **AND** no `import_transactions_from_file` tool SHALL be registered or exported
+
+#### Scenario: Untrusted bounded output
+- **WHEN** a preview or parse error contains CSV cells
+- **THEN** the capability documentation SHALL label those values as untrusted file content
+- **AND** previews SHALL contain at most ten rows, with bounded error details
 
 ### Requirement: Retroactive Baseline Analytics
 The system SHALL compute analytics baselines after a historical import to enable immediate anomaly detection and trend analysis.
 
+#### Scenario: Post-import spending summary refresh
+- **WHEN** one or more new transactions are imported outside dry-run mode
+- **THEN** the daemon SHALL refresh the spending_summaries materialized view when present
+- **AND** the response SHALL report `mv_refreshed`
+
 #### Scenario: Post-import baseline computation
 - **WHEN** `import_transactions()` successfully imports 50+ transactions
 - **THEN** the system SHALL automatically trigger `compute_baselines()` to establish per-merchant and per-category baselines from the imported data
-- **AND** the import response SHALL include `baselines_computed=true`
+- **AND** the import response SHALL include `baselines_triggered=true`
 
 #### Scenario: Post-import merchant categorization learning
 - **WHEN** imported transactions include category data

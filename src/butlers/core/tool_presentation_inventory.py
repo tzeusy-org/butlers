@@ -372,7 +372,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "finance",
         "bulk",
         "bulk_recategorize bulk_record_transactions bulk_update_transactions import_transactions "
-        "import_transactions_from_file merge_duplicates split_transaction",
+        "merge_duplicates split_transaction",
     ),
     *_declare(
         "finance",
