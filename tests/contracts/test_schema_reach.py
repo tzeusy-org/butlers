@@ -269,7 +269,9 @@ _SQL_KEYWORD_RE = re.compile(r"\b(?:" + _SQL_HEADS + r")\b", re.IGNORECASE)
 _SQL_FRAGMENT_RE = re.compile(
     r"^\s*(?:(?:--[^\n]*(?:\n|$)|/\*.*?\*/)\s*)*"
     r"(?!MERGE\b(?!\s+INTO\b))(?!BEGIN\b(?!\s*(?:(?:WORK|TRANSACTION)\s*)?;))"
-    r"(?!START\b(?!\s+TRANSACTION\b))(?:" + _SQL_HEADS + r")\b",
+    r"(?!START\b(?!\s+TRANSACTION\b))"
+    r'(?!TABLE\b(?!\s+(?:ONLY\s+)?[\w."]+\s*(?:$|;|ORDER\b|LIMIT\b|OFFSET\b|FETCH\b|FOR\b)))'
+    r"(?:" + _SQL_HEADS + r")\b",
     re.IGNORECASE | re.DOTALL,
 )
 _SQL_NONCODE_RE = re.compile(
@@ -357,6 +359,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "roster/relationship/migrations/010_drop_legacy_contact_tables.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed local legacy table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "roster/relationship/migrations/030_dedup_contacts_drop_contacts_fks.py",
+        "<dynamic:{tbl}>",
+    ): "dynamic-local: downgrade restores the closed _SNAPSHOT_TABLES tuple of Relationship-local tables from their local snapshots; inventory justification only, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/migrations/034_fact_evidence_and_coverage.py",
         "<dynamic:{table}>",
@@ -971,7 +977,7 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
                 self.generic_visit(node)
 
         def visit_Constant(self, node: ast.Constant) -> None:
-            if isinstance(node.value, str) and _SQL_FRAGMENT_RE.match(node.value):
+            if isinstance(node.value, str) and _is_sql_fragment(node.value):
                 result.append((node.lineno, node.value))
 
         def visit_BinOp(self, node: ast.BinOp) -> None:
@@ -982,7 +988,7 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
                 isinstance(node.op, ast.Add)
                 and isinstance(first, ast.Constant)
                 and isinstance(first.value, str)
-                and _SQL_FRAGMENT_RE.match(first.value)
+                and _is_sql_fragment(first.value)
             ):
                 self.generic_visit(node)
                 return
@@ -1005,7 +1011,7 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
                 else constants.get(ast.unparse(part.value), "{" + ast.unparse(part.value) + "}")
                 for part in node.values
             )
-            if _SQL_FRAGMENT_RE.match(sql):
+            if _is_sql_fragment(sql):
                 result.append((node.lineno, sql))
 
     Visitor().visit(tree)
@@ -1028,6 +1034,14 @@ def _mask_sql_noncode(sql: str) -> str:
         return blank(match.group())
 
     return _SQL_NONCODE_RE.sub(replace, sql)
+
+
+def _is_sql_fragment(sql: str) -> bool:
+    """Recognize supported commands after real, non-data statement boundaries."""
+    if _SQL_FRAGMENT_RE.match(sql):
+        return True
+    code = _mask_sql_noncode(sql)
+    return any(_SQL_FRAGMENT_RE.match(statement) for statement in code.split(";")[1:])
 
 
 def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int]]:
@@ -1102,6 +1116,7 @@ def test_foreign_schema_sql_is_allowlisted(
         "copy": f"COPY {foreign} TO STDOUT",
         "copy_select": f"COPY (SELECT * FROM {foreign}) TO STDOUT",
         "merge": f"MERGE INTO {foreign} USING public.x ON false WHEN MATCHED THEN DELETE",
+        "lock_then_select": f"LOCK TABLE public.entities IN ACCESS SHARE MODE; SELECT * FROM {foreign}",
         "transaction": f"BEGIN; SELECT * FROM {foreign}; COMMIT",
         "transaction_work": f"BEGIN WORK; SELECT * FROM {foreign}; COMMIT",
         "transaction_comment": f"START TRANSACTION; -- actual comment\nSELECT * FROM {foreign}; COMMIT",
@@ -1131,7 +1146,10 @@ def test_foreign_schema_sql_is_allowlisted(
         "single_quote": f"SELECT '-- {foreign}' FROM public.entities",
         "line_comment": f"SELECT 1 -- FROM {foreign}\nFROM public.entities",
         "block_comment": f"SELECT /* FROM {foreign} */ 1 FROM public.entities",
+        "table_prose": "Skipping %s credential lookup; table %s is missing",
         "merge_prose": "Merge duplicate entity source into {target['canonical_name']}",
+        "quoted_statement_data": f"message = 'marker; SELECT * FROM {foreign}'",
+        "comment_statement_data": f"message -- marker; SELECT * FROM {foreign}",
         "dollar_statement_data": f"SELECT $$; SELECT * FROM {foreign}$$ FROM public.entities",
         "bare_local": "EXPLAIN SELECT * FROM local_relation",
     }
