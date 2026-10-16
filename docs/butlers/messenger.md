@@ -25,11 +25,22 @@ specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tr
   Telegram, email or WhatsApp adapter, then the outcome and attention ledger. `msg_003` retired the
   unwired `delivery_requests` tracking stack; do not reintroduce a tracking health, queue, retry or
   receipt surface without an admission path that owns those records.
-- Inline approvals materialise one registered native delivery command before gating and reuse it
-  for immediate execution and deferred replay (`tool_args` hold only handler kwargs). Email replies
+- Inline approvals materialise the native command for owner and standing-rule checks. A recipient
+  park stores the complete original `route.execute` envelope, including rendering policy. Human
+  approval replays that exact envelope through the registered handler and the existing executor's
+  task, tool and argument binding. Scheduled non-owner deliveries without a matching owner rule
+  now require approval; a missing runtime or failed park refuses before sending. Email replies
   need an authoritative `request_context.source_thread_identity`, never `request_id`, and channel
   policies such as WhatsApp `send_enabled` apply on both paths. Retries expose only allowlisted
   validation classes; raw provider errors stay in logs and audit.
+- `render_links_inert` is derived from internal sender marks at Switchboard, never a model tool
+  argument. A nested sender cannot clear an existing mark. Telegram sends literal text in explicit
+  `pre` entities and disables previews; email defangs address and URL separators. Telegram refuses
+  caller URL buttons while marked and always refuses `login_url` and `web_app`; existing server
+  dashboard buttons remain usable. See the [Telegram Bot API](https://core.telegram.org/bots/api)
+  entity and link-preview contracts. The current WhatsApp delivery bridge has no preview-control
+  contract, so marked deliveries park for explicit approval. Its ingestion connector's readback
+  fields do not establish outbound preview support. Unmarked WhatsApp behavior is unchanged.
 
 - A committed recipient park emits a typed same-request/channel Messenger review reference.
   Switchboard's internal writer stores that bounded reference beside the failed notification in
