@@ -339,3 +339,55 @@ casing convention. There SHALL be no `routedPct` alias.
 - **THEN** `spark24h` is 24 zeros, `rate1h` is `0.0`, `routed_pct` is `0.0`,
   `filtered24h` is `0`, `routed_by_butler` is `{}`, and
   `aggregates_available` is `false`
+
+
+### Requirement: Bearer scrub operation aggregates
+
+The flat `GET /api/ingestion/pipeline?window=1h|24h|7d` response SHALL add
+`bearer_scrub_counts: {auth_code: number, reset_link: number, magic_link: number} | null`
+and `bearer_scrub_available: boolean`. These fields describe estimated fresh
+Switchboard scrub operations during the selected window, including attempts
+before acceptance commits. They SHALL NOT claim unique accepted messages,
+connector-prescrubbed observations, historical cleanup or proven false positives.
+
+The reader SHALL use a fixed `sum by (kind) (increase(<verified exported
+butlers.ingest.bearer_scrubbed counter>[<window>]))` PromQL query through
+`butlers.core.prometheus.async_query`, aggregating source_channel away. The
+three closed artifact kinds above are the only response labels. It SHALL NOT
+query message text, add sender/domain/message/policy labels or use a SQL fallback.
+
+Scrub fields SHALL share the existing lazy 60-second per-window cache with
+Prometheus funnel fields. Slow queries remain outside the cache lock; cold
+concurrent reads may duplicate queries, without mutating or replaying ingestion.
+Scrub availability SHALL be independent of funnel and PostgreSQL backlog
+availability. Missing configuration, query errors/timeouts, malformed shapes,
+unknown kind labels, negative or non-finite samples SHALL yield HTTP200 with
+null scrub counts and availability=false, preserving independently readable
+sections. Readable empty results SHALL yield all three measured zero slots with
+availability=true. Finite non-negative fractional estimates SHALL be preserved.
+
+#### Scenario: Known scrub kinds are bounded operation estimates
+
+- **WHEN** Prometheus returns readable samples for known kinds in a selected window
+- **THEN** the response contains the three closed kind slots and their non-negative estimates
+- **AND** source_channel and all other source labels do not appear in the response
+
+#### Scenario: Empty scrub measurements are distinct from unavailable
+
+- **WHEN** the scrub query returns an empty readable vector
+- **THEN** all three slots are zero and bearer_scrub_available is true
+- **WHEN** the scrub source cannot be read or its samples are invalid
+- **THEN** bearer_scrub_counts is null and bearer_scrub_available is false
+
+#### Scenario: Scrub and funnel failures degrade independently
+
+- **WHEN** only the scrub query fails
+- **THEN** healthy funnel and backlog values remain unchanged
+- **WHEN** only the funnel query fails and the scrub query succeeds
+- **THEN** scrub estimates remain available with the independently degraded funnel
+
+#### Scenario: Scrub reads reuse the window cache without side effects
+
+- **WHEN** a pipeline read repeats within the same window's 60-second cache lifetime
+- **THEN** scrub and funnel fields are served without new PromQL queries
+- **AND** expiry or a different window causes fresh reads, never writes or ingestion replay
