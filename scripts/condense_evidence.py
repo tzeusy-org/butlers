@@ -809,6 +809,7 @@ class RequestAccessStream:
     CHILD_DELIVERY = re.compile(
         r"--- SIGCHLD \{si_signo=SIGCHLD, si_code=(?:CLD_EXITED, "
         r"si_pid=\d+, si_uid=\d+, si_status=\d+|"
+        r"CLD_STOPPED, si_pid=\d+, si_uid=\d+, si_status=0|"
         r"CLD_(?:KILLED|DUMPED|TRAPPED|STOPPED|CONTINUED), "
         r"si_pid=\d+, si_uid=\d+, si_status=" + SIGNAL + r"), "
         r"si_utime=" + TICKS + r", si_stime=" + TICKS + r"\} ---"
