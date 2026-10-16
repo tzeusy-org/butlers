@@ -109,6 +109,13 @@ Scope: v1-mandatory
 - **THEN** the goal is admitted with origin `obligation` and exactly that capability set, and its actuation follows the RFC 0028 risk map
 - **AND** a device name or note in the event that someone other than the owner could set is untrusted output, so reading it exposes the invocation
 
+#### Scenario: Staffer admission uses a closed Git-owned contract
+- **WHEN** trusted infrastructure admits a staffer using its versioned Git-owned declaration
+- **THEN** the declaration identifies staffer, owning domain, contract and pinned catalog digests, exact capability IDs and resource sets, and execute or park-only restriction
+- **AND** missing, stale or unreadable declarations/catalogs, wildcards, duplicate/unknown IDs, owner-decision, custody or transact entries refuse admission
+- **AND** intersection only narrows resources and preserves park-only; no prompt confers authority
+
+
 ### Requirement: Grants bound discovery and every call
 The broker SHALL list to an invocation only capabilities within its grant and
 SHALL check every call against the grant's capabilities, resource scope,

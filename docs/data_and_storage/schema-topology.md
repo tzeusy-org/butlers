@@ -214,3 +214,14 @@ and core-only installations below this additive revision stay unstamped; retries
 unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
 The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
 credential or protection against a compromised trusted database actor.
+
+## Dark Switchboard goal ledger
+
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions}`
+for RFC0038's unwired admission slice. `core_266` adds a nullable explicit
+`runtime_config.goal_admission_config` snapshot in each migrated core schema;
+only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
+non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
+backup while denying other runtimes after bootstrap regrants. See
+[goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
+source keys, lock order, policy snapshots and actual verification obligations.
