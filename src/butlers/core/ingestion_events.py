@@ -30,7 +30,7 @@ ingestion_event_mark_replay_complete — transition replay_pending → ingested 
 ingestion_event_reconcile_after_processing — shared, cancellation-safe post-processing
                                   reconciliation used by both the DurableBuffer worker and
                                   the create_task ingest fallback (bu-nqkha)
-ingestion_event_replay_request  — mark a filtered event as replay_pending
+ingestion_event_replay_request  — queue filtered replay or refuse unproven public recovery
 ingestion_events_replay_policy  — resolve fail-closed connector replay policy
 ingestion_event_replay_history  — query public.audit_log for replay attempts on an event
 """
