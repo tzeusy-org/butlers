@@ -49,7 +49,9 @@ from butlers.core.temporal.scheduling import (
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.fleet_events import publish_fleet_event
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
 from butlers.modules.calendar_response import (
     CalendarResponseCoordinator,
     CalendarResponseError,
@@ -3830,7 +3832,6 @@ class CalendarModule(Module):
             entity_ids: list[uuid.UUID] | None = None,
             clear_entity_ids: bool = False,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -3848,6 +3849,32 @@ class CalendarModule(Module):
             Fail-closed: provider errors return a structured error dict rather than
             silently dropping the mutation (spec section 4.4 / 15.2).
             """
+            approval_tool_name = "calendar_update_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                all_day=all_day,
+                timezone=timezone,
+                description=description,
+                body=body,
+                location=location,
+                attendees=attendees,
+                recurrence_rule=recurrence_rule,
+                recurrence_scope=recurrence_scope,
+                instance_start_at=instance_start_at,
+                color_id=color_id,
+                calendar_id=calendar_id,
+                conflict_policy=conflict_policy,
+                entity_ids=entity_ids,
+                clear_entity_ids=clear_entity_ids,
+                request_id=request_id,
+            )
+            start_at = calendar_approval_datetime(start_at)
+            end_at = calendar_approval_datetime(end_at)
+            instance_start_at = calendar_approval_datetime(instance_start_at)
             if clear_entity_ids and entity_ids != []:
                 raise ValueError("clear_entity_ids requires entity_ids=[]")
             if recurrence_scope != "series":
@@ -3871,7 +3898,7 @@ class CalendarModule(Module):
                     clear_entity_ids=clear_entity_ids,
                     request_id=request_id,
                     tool_name="calendar_update_event",
-                    approval_bypass=_approval_bypass,
+                    approval_args=approval_args,
                 )
             await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
@@ -3907,6 +3934,8 @@ class CalendarModule(Module):
                 action_type="workspace_user_update",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -4235,7 +4264,6 @@ class CalendarModule(Module):
             instance_start_at: datetime | None = None,
             send_updates: str | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Delete or cancel a calendar event.
 
@@ -4253,6 +4281,17 @@ class CalendarModule(Module):
             Returns status="deleted" on success, or status="not_found" when
             the event did not exist (already deleted — treated as success).
             """
+            approval_tool_name = "calendar_delete_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                calendar_id=calendar_id,
+                recurrence_scope=recurrence_scope,
+                instance_start_at=instance_start_at,
+                send_updates=send_updates,
+                request_id=request_id,
+            )
+            instance_start_at = calendar_approval_datetime(instance_start_at)
             if recurrence_scope != "series":
                 return await module._apply_occurrence_delete(
                     event_id=event_id,
@@ -4262,7 +4301,7 @@ class CalendarModule(Module):
                     send_updates=send_updates,
                     request_id=request_id,
                     tool_name="calendar_delete_event",
-                    approval_bypass=_approval_bypass,
+                    approval_args=approval_args,
                 )
             await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
@@ -4284,6 +4323,8 @@ class CalendarModule(Module):
                 action_type="workspace_user_delete",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -4432,7 +4473,6 @@ class CalendarModule(Module):
             calendar_id: str | None = None,
             entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Edit a single occurrence (or this-and-following) of a recurring event.
 
@@ -4443,6 +4483,26 @@ class CalendarModule(Module):
             series at the boundary and applies the edit to the remainder.  The
             matching ``calendar_event_instances`` row is marked ``is_exception``.
             """
+            approval_tool_name = "calendar_update_event_instance"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                instance_start_at=instance_start_at,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                description=description,
+                body=body,
+                location=location,
+                recurrence_scope=recurrence_scope,
+                calendar_id=calendar_id,
+                entity_ids=entity_ids,
+                request_id=request_id,
+            )
+            instance_start_at = calendar_approval_datetime(instance_start_at)
+            start_at = calendar_approval_datetime(start_at)
+            end_at = calendar_approval_datetime(end_at)
             return await module._apply_occurrence_update(
                 event_id=event_id,
                 instance_start_at=instance_start_at,
@@ -4460,7 +4520,7 @@ class CalendarModule(Module):
                 entity_ids=entity_ids,
                 request_id=request_id,
                 tool_name="calendar_update_event_instance",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
 
         @_tool("core")
@@ -4471,7 +4531,6 @@ class CalendarModule(Module):
             send_updates: str | None = None,
             calendar_id: str | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Delete a single occurrence (or this-and-following) of a recurring event.
 
@@ -4483,6 +4542,17 @@ class CalendarModule(Module):
             ``is_exception`` (status cancelled).  A non-existent base event surfaces
             a fail-open not-found response.
             """
+            approval_tool_name = "calendar_delete_event_instance"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                instance_start_at=instance_start_at,
+                recurrence_scope=recurrence_scope,
+                send_updates=send_updates,
+                calendar_id=calendar_id,
+                request_id=request_id,
+            )
+            instance_start_at = calendar_approval_datetime(instance_start_at)
             return await module._apply_occurrence_delete(
                 event_id=event_id,
                 instance_start_at=instance_start_at,
@@ -4491,7 +4561,7 @@ class CalendarModule(Module):
                 send_updates=send_updates,
                 request_id=request_id,
                 tool_name="calendar_delete_event_instance",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
 
         @_tool("butler_events")
@@ -4510,7 +4580,6 @@ class CalendarModule(Module):
             action_args: dict[str, Any] | None = None,
             source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Create a butler-view workspace event as schedule or reminder.
 
@@ -4528,6 +4597,27 @@ class CalendarModule(Module):
             executable actions, and action arguments belong to scheduled-task events
             and are rejected when ``source_hint`` selects ``butler_reminder``.
             """
+            approval_tool_name = "calendar_create_butler_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                butler_name=butler_name,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                description=description,
+                location=location,
+                recurrence_rule=recurrence_rule,
+                cron=cron,
+                until_at=until_at,
+                action=action,
+                action_args=action_args,
+                source_hint=source_hint,
+                request_id=request_id,
+            )
+            start_at = calendar_approval_datetime(start_at)
+            end_at = calendar_approval_datetime(end_at)
+            until_at = calendar_approval_datetime(until_at)
             normalized_butler = butler_name.strip()
             if not normalized_butler:
                 raise ValueError("butler_name must be a non-empty string")
@@ -4609,7 +4699,8 @@ class CalendarModule(Module):
                 action_type="workspace_butler_create",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
-                allow_pending_replay=_approval_bypass,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -4784,7 +4875,6 @@ class CalendarModule(Module):
             body: str | None = None,
             entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Update a butler schedule/reminder event.
 
@@ -4792,6 +4882,26 @@ class CalendarModule(Module):
             ``body`` is stored for calendar-native reminders and remains
             audit-only for scheduled tasks.
             """
+            approval_tool_name = "calendar_update_butler_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                recurrence_rule=recurrence_rule,
+                cron=cron,
+                until_at=until_at,
+                enabled=enabled,
+                source_hint=source_hint,
+                body=body,
+                entity_ids=entity_ids,
+                request_id=request_id,
+            )
+            start_at = calendar_approval_datetime(start_at)
+            end_at = calendar_approval_datetime(end_at)
+            until_at = calendar_approval_datetime(until_at)
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -4812,7 +4922,8 @@ class CalendarModule(Module):
                 action_type="workspace_butler_update",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
-                allow_pending_replay=_approval_bypass,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -4959,12 +5070,21 @@ class CalendarModule(Module):
             instance_start_at: datetime | None = None,
             source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Delete a butler schedule/reminder event at the requested scope.
 
             ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
             """
+            approval_tool_name = "calendar_delete_butler_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                scope=scope,
+                instance_start_at=instance_start_at,
+                source_hint=source_hint,
+                request_id=request_id,
+            )
+            instance_start_at = calendar_approval_datetime(instance_start_at)
             if scope not in {"this", "following", "series"}:
                 raise ValueError("scope must be one of: this | following | series")
             if scope != "series":
@@ -4984,7 +5104,8 @@ class CalendarModule(Module):
                 action_type="workspace_butler_delete",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
-                allow_pending_replay=_approval_bypass,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -4994,17 +5115,11 @@ class CalendarModule(Module):
                 if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
                 else SOURCE_KIND_INTERNAL_SCHEDULER
             )
-            if not _approval_bypass and scope != "this":
+            if scope != "this":
                 approval_result = await module._gate_high_impact_mutation(
                     action_type="workspace_butler_delete",
                     tool_name="calendar_delete_butler_event",
-                    tool_args={
-                        "event_id": event_id,
-                        "scope": scope,
-                        "instance_start_at": instance_start_at,
-                        "source_hint": source_hint,
-                        "request_id": normalized_request_id,
-                    },
+                    tool_args=approval_args,
                     request_id=normalized_request_id,
                     idempotency_key=idempotency_key,
                     action_payload=action_payload,
@@ -5097,12 +5212,19 @@ class CalendarModule(Module):
             enabled: bool,
             source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
-            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Pause/resume a butler schedule/reminder event.
 
             ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
             """
+            approval_tool_name = "calendar_toggle_butler_event"
+            approval_args = calendar_approval_args(
+                approval_tool_name,
+                event_id=event_id,
+                enabled=enabled,
+                source_hint=source_hint,
+                request_id=request_id,
+            )
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -5114,7 +5236,8 @@ class CalendarModule(Module):
                 action_type="workspace_butler_toggle",
                 request_id=normalized_request_id,
                 action_payload=action_payload,
-                allow_pending_replay=_approval_bypass,
+                tool_name=approval_tool_name,
+                tool_args=approval_args,
             )
             if replay is not None:
                 return replay
@@ -5124,23 +5247,17 @@ class CalendarModule(Module):
                 if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
                 else SOURCE_KIND_INTERNAL_SCHEDULER
             )
-            if not _approval_bypass:
-                approval_result = await module._gate_high_impact_mutation(
-                    action_type="workspace_butler_toggle",
-                    tool_name="calendar_toggle_butler_event",
-                    tool_args={
-                        "event_id": event_id,
-                        "enabled": enabled,
-                        "source_hint": source_hint,
-                        "request_id": normalized_request_id,
-                    },
-                    request_id=normalized_request_id,
-                    idempotency_key=idempotency_key,
-                    action_payload=action_payload,
-                    source_kind=tentative_source_kind,
-                )
-                if approval_result is not None:
-                    return approval_result
+            approval_result = await module._gate_high_impact_mutation(
+                action_type="workspace_butler_toggle",
+                tool_name="calendar_toggle_butler_event",
+                tool_args=approval_args,
+                request_id=normalized_request_id,
+                idempotency_key=idempotency_key,
+                action_payload=action_payload,
+                source_kind=tentative_source_kind,
+            )
+            if approval_result is not None:
+                return approval_result
 
             try:
                 source_type, target_id = await module._resolve_butler_event_target(
@@ -9768,7 +9885,8 @@ class CalendarModule(Module):
         action_type: str,
         request_id: str | None,
         action_payload: dict[str, Any],
-        allow_pending_replay: bool = False,
+        tool_name: str | None = None,
+        tool_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         idempotency_key = self._mutation_idempotency_key(action_type, request_id)
         existing = await self._load_projection_action(idempotency_key)
@@ -9787,7 +9905,10 @@ class CalendarModule(Module):
                     "error": error or "Mutation failed",
                     "idempotent_replay": True,
                 }
-            if status == MUTATION_STATUS_PENDING and not allow_pending_replay:
+            if (
+                status == MUTATION_STATUS_PENDING
+                and get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is None
+            ):
                 return idempotency_key, {
                     "status": "pending",
                     "message": "Mutation already queued for processing",
@@ -9993,21 +10114,22 @@ class CalendarModule(Module):
         action_payload: dict[str, Any],
         recurrence_scope: str,
         occurrences_touched: int,
-        approval_bypass: bool,
     ) -> dict[str, Any] | None:
         """Route large ``series`` / ``following`` mutations through the approval gate.
 
         Returns an ``approval_required`` response when gated, otherwise ``None``.
         A single-occurrence ``this`` mutation is never gated on impact.
         """
-        if approval_bypass or self._approval_enqueuer is None:
+        if (
+            get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None
+            or self._approval_enqueuer is None
+        ):
             return None
         if recurrence_scope == "this":
             return None
         if occurrences_touched < RECURRENCE_HIGH_IMPACT_THRESHOLD:
             return None
-        gated_tool_args = dict(tool_args)
-        gated_tool_args["_approval_bypass"] = True
+        gated_tool_args = calendar_approval_args(tool_name, **tool_args)
         agent_summary = (
             f"Calendar recurrence high-impact action: {tool_name} touches "
             f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
@@ -10046,7 +10168,7 @@ class CalendarModule(Module):
         send_updates: str | None,
         request_id: str | None,
         tool_name: str,
-        approval_bypass: bool = False,
+        approval_args: dict[str, Any],
     ) -> dict[str, Any]:
         """Delete a single occurrence (``this``) or this-and-following of a series."""
         await self._require_calendar_write_permission()
@@ -10077,6 +10199,8 @@ class CalendarModule(Module):
             action_type="workspace_user_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name=tool_name,
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -10152,19 +10276,12 @@ class CalendarModule(Module):
         gate = await self._maybe_gate_recurrence_impact(
             tool_name=tool_name,
             action_type="workspace_user_delete",
-            tool_args={
-                "event_id": normalized_event_id,
-                "calendar_id": resolved_calendar_id,
-                "recurrence_scope": recurrence_scope,
-                "instance_start_at": occurrence_start.isoformat(),
-                "send_updates": send_updates,
-            },
+            tool_args=approval_args,
             request_id=normalized_request_id,
             idempotency_key=idempotency_key,
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
-            approval_bypass=approval_bypass,
         )
         if gate is not None:
             return gate
@@ -10242,7 +10359,7 @@ class CalendarModule(Module):
         request_id: str | None,
         tool_name: str,
         clear_entity_ids: bool = False,
-        approval_bypass: bool = False,
+        approval_args: dict[str, Any],
     ) -> dict[str, Any]:
         """Edit a single occurrence (``this``) or this-and-following of a series.
 
@@ -10287,6 +10404,8 @@ class CalendarModule(Module):
             action_type="workspace_user_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name=tool_name,
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -10331,21 +10450,12 @@ class CalendarModule(Module):
         gate = await self._maybe_gate_recurrence_impact(
             tool_name=tool_name,
             action_type="workspace_user_update",
-            tool_args={
-                "event_id": normalized_event_id,
-                "instance_start_at": occurrence_start.isoformat(),
-                "recurrence_scope": recurrence_scope,
-                "title": title,
-                "calendar_id": resolved_calendar_id,
-                "entity_ids": [str(e) for e in entity_ids] if entity_ids is not None else None,
-                "clear_entity_ids": clear_entity_ids,
-            },
+            tool_args=approval_args,
             request_id=normalized_request_id,
             idempotency_key=idempotency_key,
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
-            approval_bypass=approval_bypass,
         )
         if gate is not None:
             return gate
@@ -10466,13 +10576,14 @@ class CalendarModule(Module):
         action_payload: dict[str, Any],
         source_kind: str,
     ) -> dict[str, Any] | None:
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
+            return None
         if action_type not in MUTATION_HIGH_IMPACT_ACTIONS:
             return None
         if self._approval_enqueuer is None:
             return None
 
-        gated_tool_args = dict(tool_args)
-        gated_tool_args["_approval_bypass"] = True
+        gated_tool_args = calendar_approval_args(tool_name, **tool_args)
         agent_summary = (
             f"Calendar workspace high-impact action requested: {tool_name} "
             f"(butler={self._butler_name})"

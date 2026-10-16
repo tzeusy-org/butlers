@@ -33,6 +33,7 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.calendar_approval import CALENDAR_APPROVAL_TOOLS, calendar_approval_args
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -245,6 +246,7 @@ async def execute_approved_action(
                     )
 
                 dispatch_args = tool_args
+                context_args = tool_args
                 if tool_name == "relationship_assert_fact":
                     stored_args = existing_row.get("tool_args")
                     if isinstance(stored_args, str):
@@ -264,6 +266,35 @@ async def execute_approved_action(
                     dispatch_args = {
                         key: value for key, value in stored_args.items() if key != "verified"
                     }
+                elif tool_name in CALENDAR_APPROVAL_TOOLS:
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Retire only the old producer's literal marker, after
+                    # verifying the exact locked original envelope. The marker
+                    # is never forwarded and grants no authority to a caller.
+                    public_args = dict(stored_args)
+                    if "_approval_bypass" in public_args:
+                        if public_args.pop("_approval_bypass") is not True:
+                            return ExecutionResult(
+                                success=False, error="invalid legacy calendar approval marker"
+                            )
+                    try:
+                        dispatch_args = calendar_approval_args(tool_name, **public_args)
+                    except (TypeError, ValueError):
+                        return ExecutionResult(
+                            success=False, error="invalid approved calendar arguments"
+                        )
+                    context_args = dispatch_args
 
                 try:
                     authorized_task = asyncio.current_task()
@@ -274,7 +305,7 @@ async def execute_approved_action(
                         session_id=existing_row.get("session_id"),
                         actor=existing_row.get("decided_by") or "system:approval_executor",
                         tool_name=tool_name,
-                        tool_args_digest=approval_tool_args_digest(tool_args),
+                        tool_args_digest=approval_tool_args_digest(context_args),
                         authorized_task=authorized_task,
                     )
                     context_token = set_approval_execution_context(execution_context)

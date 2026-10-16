@@ -81,6 +81,16 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
 
+#### Scenario: Caller arguments cannot assert calendar mutation approval
+
+- **WHEN** a session supplies an approval-asserting argument to a calendar mutation tool
+- **THEN** argument validation SHALL reject it or the ordinary approval gate SHALL remain in force without a mutation
+- **AND** the eight approval-aware mutation tools SHALL expose no approval-asserting parameter
+- **AND** approved replay SHALL execute only the exact locked stored call under the executor's task, tool, and canonical argument-digest context
+- **AND** newly parked calls SHALL retain the complete public parameters and defaults through JSON datetime round trips
+- **AND** a legacy producer marker MAY retire only after its original stored argument digest is verified; unknown keys, a nonliteral marker, or changed arguments SHALL refuse before effect
+- **AND** repeated or concurrent execution of the same approved action SHALL return its stored result without repeating the mutation
+
 #### Scenario: Create butler-generated event
 
 - **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields
