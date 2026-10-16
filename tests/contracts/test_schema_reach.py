@@ -1,0 +1,1016 @@
+# Repository-wide foreign-butler SQL ratchet (bu-ys9hdx.5).
+# The retained D17 guards below are the stricter Chronicler-router case.
+"""Contract: no cross-schema SQL references in chronicler handlers (RFC D17).
+
+Per design.md §D17, every SQL string literal in ``roster/chronicler/api/router.py``
+must reference only relations that resolve into the ``chronicler`` schema.
+
+Rules enforced by this test:
+  - ``chronicler.<name>``  → OK if ``<name>`` is in the known relation list; FAIL otherwise.
+  - bare ``<name>``        → OK if ``<name>`` is in the known relation list; FAIL otherwise.
+  - ``<other_schema>.<name>`` → FAIL unconditionally (cross-schema read).
+
+This test supersedes the partial per-handler guardrails added in earlier PRs
+(#1138, #1141, #1144, #1145, #1147, #1148, #1150, #1152) and provides a single
+authoritative check for the entire handler module.
+
+Backfill audit result (run 2026-04-25 against main):
+  All 11 SQL strings extracted from router.py resolved to known chronicler
+  relations. Zero violations found. Clean.
+
+Promoted from tests/chronicler/test_aggregation_no_cross_schema.py [bu-m564i].
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.contract
+
+# ---------------------------------------------------------------------------
+# Target file
+# ---------------------------------------------------------------------------
+
+_ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "api" / "router.py"
+
+# ---------------------------------------------------------------------------
+# Known chronicler-schema relations
+#
+# Derived from scanning all migration files in roster/chronicler/migrations/:
+#   001_chronicler_tables.py  → tables + views
+#   004_tier2_cache.py        → tier2_cache table
+#   025_day_close_cache_tuple_locks.py → tuple lock registry
+#
+# Core butler tables (present in every butler schema via the core module):
+#   scheduled_tasks
+# ---------------------------------------------------------------------------
+
+_CHRONICLER_RELATIONS: frozenset[str] = frozenset(
+    {
+        # ── Tables (001_chronicler_tables.py) ─────────────────────────────
+        "source_adapter_state",
+        "projection_checkpoints",
+        "point_events",
+        "episodes",
+        "episode_event_links",
+        "overrides",
+        "idempotency_keys",
+        # ── Tables (014_episode_entities.py) ──────────────────────────────
+        "episode_entities",
+        # ── Views (001_chronicler_tables.py) ──────────────────────────────
+        "v_latest_overrides",
+        "v_episodes_corrected",
+        "v_point_events_corrected",
+        # ── Tables (004_tier2_cache.py) ───────────────────────────────────
+        "tier2_cache",
+        # ── Tables (025_day_close_cache_tuple_locks.py) ───────────────────
+        "day_close_cache_locks",
+        # ── Core butler tables (every butler schema) ──────────────────────
+        "scheduled_tasks",
+        # ── Per-butler tables accessed via fan-out (not via chronicler pool) ─
+        # GET /api/chronicler/ops/sessions uses db.fan_out_with_status() to query
+        # each butler's sessions table through its own schema-scoped pool.  This
+        # does NOT violate D17 — the fan-out never runs SQL through the chronicler
+        # pool; it runs through each butler's own connection pool.
+        "sessions",
+        # GET /api/chronicler/who-you-were-with uses
+        # db.fan_out_with_status(butler_names=["relationship"]) to resolve
+        # entity_id -> canonical_name through the relationship butler's OWN
+        # pool (bare 'entities' resolves via that pool's search_path to
+        # public.entities). Same fan_out carve-out as 'sessions' above — never
+        # runs through the chronicler pool.
+        "entities",
+    }
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# SQL verb heuristic: strings that begin with a DML/DDL keyword are SQL.
+# This excludes docstrings, log messages, and prose strings that happen to
+# contain words like FROM or JOIN.
+_SQL_START_RE = re.compile(
+    r"^\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b",
+    re.IGNORECASE,
+)
+
+# Capture the relation name following FROM or JOIN.
+_FROM_JOIN_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_.]*)",
+    re.IGNORECASE,
+)
+
+# SQL keywords that can appear immediately after FROM or JOIN but are never
+# relation names.  For example: "CROSS JOIN LATERAL <expr>" or "JOIN ONLY <table>".
+_SQL_NON_RELATION_KEYWORDS = frozenset(
+    {
+        "lateral",
+        "only",
+        "inner",
+        "outer",
+        "left",
+        "right",
+        "full",
+        "cross",
+        "natural",
+        "select",
+        "values",
+        "with",
+    }
+)
+
+
+def _extract_sql_string_literals(source: str) -> list[str]:
+    """Return all string constants from *source* that start with a SQL verb keyword."""
+    tree = ast.parse(source)
+    literals: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if _SQL_START_RE.match(node.value):
+                literals.append(node.value)
+    return literals
+
+
+def _categorize_relation(raw_token: str) -> tuple[str, str | None]:
+    """Categorize a raw FROM/JOIN token into (verdict, detail).
+
+    Returns:
+        (``"ok"``, None)       – known chronicler relation
+        (``"fail"``, detail)   – cross-schema read or unknown bare name
+    """
+    token = raw_token.strip().lower()
+    if not token:
+        return ("ok", None)
+
+    # Skip SQL keywords that are not relation names (e.g. LATERAL in
+    # "CROSS JOIN LATERAL <function>(...)").
+    if token in _SQL_NON_RELATION_KEYWORDS:
+        return ("ok", None)
+
+    if "." in token:
+        schema, _, bare = token.partition(".")
+        if schema == "chronicler":
+            # chronicler.<name> — check the bare name is known
+            if bare in _CHRONICLER_RELATIONS:
+                return ("ok", None)
+            return ("fail", f"schema-qualified chronicler reference to unknown relation: {token!r}")
+        # Any other schema — unconditional cross-schema fail
+        return ("fail", f"cross-schema reference: {token!r}")
+
+    # Bare name — must appear in the chronicler relation list
+    if token in _CHRONICLER_RELATIONS:
+        return ("ok", None)
+    return ("fail", f"unknown bare relation (not in chronicler schema list): {token!r}")
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_no_cross_schema_sql_in_router() -> None:
+    """All SQL in router.py must reference only known chronicler-schema relations.
+
+    Validates:
+    1. Every FROM/JOIN token in every SQL string literal is either:
+       - a bare name present in ``_CHRONICLER_RELATIONS``, or
+       - ``chronicler.<name>`` where ``<name>`` is in ``_CHRONICLER_RELATIONS``.
+    2. Any other schema-qualified reference (e.g. ``public.contacts``,
+       ``connectors.steam_play_history``) causes the test to fail.
+    3. Bare names not in ``_CHRONICLER_RELATIONS`` also fail, because the
+       test cannot infer ``search_path`` resolution at parse time.
+    """
+    assert _ROUTER_PATH.exists(), f"router.py not found at {_ROUTER_PATH}"
+    source = _ROUTER_PATH.read_text()
+    sql_literals = _extract_sql_string_literals(source)
+
+    violations: list[str] = []
+    for sql in sql_literals:
+        for match in _FROM_JOIN_RE.finditer(sql):
+            raw_token = match.group(1)
+            verdict, detail = _categorize_relation(raw_token)
+            if verdict == "fail":
+                # Include a short SQL snippet for context
+                snippet = sql.strip()[:120].replace("\n", " ")
+                violations.append(f"{detail} [sql: {snippet!r}]")
+
+    assert not violations, (
+        f"router.py contains {len(violations)} SQL reference(s) that violate the "
+        f"no-cross-schema-read invariant (D17):\n" + "\n".join(f"  {v}" for v in violations)
+    )
+
+
+def test_router_has_extractable_sql_strings() -> None:
+    """Sanity check: the extractor must find at least one SQL string in router.py.
+
+    This prevents a false-green result where the router file is empty or the
+    SQL heuristic silently matches nothing.
+    """
+    assert _ROUTER_PATH.exists(), f"router.py not found at {_ROUTER_PATH}"
+    source = _ROUTER_PATH.read_text()
+    sql_literals = _extract_sql_string_literals(source)
+    assert len(sql_literals) >= 1, (
+        "Expected to find at least one SQL string literal in router.py; "
+        f"found {len(sql_literals)}. The extractor may be broken."
+    )
+
+
+def test_chronicler_relations_list_matches_migrations() -> None:
+    """Cross-check: every name in _CHRONICLER_RELATIONS must appear in at least one migration.
+
+    This test detects stale entries in the relations list (e.g. a renamed or
+    dropped table whose old name was forgotten in the guardrail).
+    """
+    migrations_dir = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "migrations"
+    assert migrations_dir.exists(), f"migrations dir not found at {migrations_dir}"
+
+    # Collect all migration source text (skip __init__.py)
+    migration_source = ""
+    for mig_file in sorted(migrations_dir.glob("*.py")):
+        if mig_file.name == "__init__.py":
+            continue
+        migration_source += mig_file.read_text()
+
+    # Core tables like scheduled_tasks are not created by chronicler migrations —
+    # they are part of the core butler schema or accessed via fan_out.
+    # 'entities' is public.entities, resolved via fan_out to the relationship
+    # butler's own pool (see the _CHRONICLER_RELATIONS comment above) — it will
+    # never appear in a chronicler migration file either.
+    # Exclude them from this migration-presence check.
+    _CORE_BUTLER_TABLES = frozenset({"scheduled_tasks", "sessions", "entities"})
+
+    stale: list[str] = []
+    for relation in sorted(_CHRONICLER_RELATIONS - _CORE_BUTLER_TABLES):
+        # A relation must appear as a table/view name in at least one migration.
+        # We do a simple substring search for the quoted name or bare name.
+        if relation not in migration_source:
+            stale.append(relation)
+
+    assert not stale, (
+        "The following names are in _CHRONICLER_RELATIONS but do not appear in any "
+        "chronicler migration file — they may be stale:\n" + "\n".join(f"  {r}" for r in stale)
+    )
+
+
+# Repository-wide ratchet. The three D17 owners above remain its stricter
+# Chronicler case: public/unknown bare relations are forbidden there as well.
+_ROOT = Path(__file__).resolve().parents[2]
+_BUTLER_SCHEMAS = frozenset(p.parent.name for p in (_ROOT / "roster").glob("*/butler.toml"))
+_SQL_FRAGMENT_RE = re.compile(
+    r"^\s*(?:(?:--[^\n]*(?:\n|$)|/\*.*?\*/)\s*)*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|"
+    r"ALTER|DROP|WITH|GRANT|REVOKE|TRUNCATE|DO|COMMENT|SET)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_QUALIFIED_RE = re.compile(
+    r'(?<![\w.])"?(' + "|".join(sorted(_BUTLER_SCHEMAS)) + r')"?\s*\.\s*'
+    r'"?([a-zA-Z_][a-zA-Z0-9_]*)"?',
+    re.IGNORECASE,
+)
+_DYNAMIC_RELATION_RE = re.compile(
+    r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|VIEW|REFERENCES|TRUNCATE)\s+"
+    r'(?:ONLY\s+)?((?:"?[\w]+"?\s*\.\s*)?(?:\{[^{}]*\}|%\([^)]+\)s|%s)'
+    r'(?:\s*\.\s*"?[\w]+"?)?)',
+    re.IGNORECASE,
+)
+
+# One entry per (source file, relation). Remove entries with their source reads;
+# additions require an explicitly reviewed architecture/retirement decision.
+# Dynamic entries are exact normalized relation slots, not whole-file waivers.
+SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
+    (
+        "roster/concierge/migrations/001_fleet_views.py",
+        "<dynamic:{schema}.sessions>",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "roster/concierge/tests/test_dashboard_read.py",
+        "<dynamic:{q.FLEET_SPEND_VIEW}>",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "roster/concierge/tests/test_dashboard_read.py",
+        "<dynamic:{schema}.sessions>",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "roster/concierge/tests/test_dashboard_read.py",
+        "health.sessions",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "roster/general/migrations/003_ordinary_source_authority.py",
+        "<dynamic:{schema}.collection_vocabulary_keys>",
+    ): "burn-down: dynamic-local: quoted current General schema for trigger-owned collection tables; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/general/migrations/003_ordinary_source_authority.py",
+        "<dynamic:{schema}.collections>",
+    ): "burn-down: dynamic-local: quoted current General schema for trigger-owned collection tables; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/messenger/tests/test_delivery_tracking_retirement.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed retired local Messenger table tuple in a test fixture; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/jobs/relationship_jobs.py",
+        "switchboard.message_inbox",
+    ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/relationship/migrations/003_consolidate_contacts_to_public.py",
+        "<dynamic:relationship.{table}>",
+    ): "burn-down: dynamic-local: Relationship-local table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/migrations/010_drop_legacy_contact_tables.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed local legacy table tuple; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/migrations/034_fact_evidence_and_coverage.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: local evidence/coverage grant table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/calendar_projection.py",
+        "health.calendar_sources",
+    ): "burn-down: existing health.calendar_sources coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/relationship/tests/calendar_projection.py",
+        "switchboard.message_inbox",
+    ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/relationship/tests/test_commitment_extraction_db.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed public table cleanup tuple; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: public account table fixtures; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/test_dedup_contacts_drop_fks_migration.py",
+        "<dynamic:{tbl}>",
+    ): "burn-down: dynamic-local: local migration table fixtures; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/test_jobs.py",
+        "<dynamic:{schema}.calendar_events>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "roster/relationship/tests/test_jobs.py",
+        "health.calendar_events",
+    ): "burn-down: existing health.calendar_events coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/relationship/tests/test_relationship_assert_fact.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed local/public effect table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/test_relationship_assert_fact.py",
+        "<dynamic:{t}>",
+    ): "burn-down: dynamic-local: closed local/public effect table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tests/test_whatsapp_reconciliation.py",
+        "chronicler.episode_entities",
+    ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
+    (
+        "roster/relationship/tests/test_whatsapp_reconciliation.py",
+        "chronicler.episodes",
+    ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
+    (
+        "roster/relationship/tests/test_whatsapp_reconciliation.py",
+        "chronicler.point_events",
+    ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
+    (
+        "roster/relationship/tools/contacts.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed contact child table tuple; local ownership not statically visible in SQL; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/relationship/tools/whatsapp_reconciliation.py",
+        "<dynamic:{qualified}>",
+    ): "burn-down: catalog-discovered reconciliation relation; preserve merge invariants while removing schema coupling",
+    (
+        "roster/relationship/tools/whatsapp_reconciliation.py",
+        "<dynamic:{relation}>",
+    ): "burn-down: catalog-discovered reconciliation relation; preserve merge invariants while removing schema coupling",
+    (
+        "roster/switchboard/migrations/037_qa_receiver_state_view.py",
+        "<dynamic:{quoted_schema}.butler_registry>",
+    ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
+    (
+        "roster/switchboard/migrations/037_qa_receiver_state_view.py",
+        "<dynamic:{quoted_schema}.butler_registry_control_plane>",
+    ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
+    (
+        "roster/switchboard/migrations/038_qa_local_schedule_policy.py",
+        "<dynamic:{quoted_schema}.butler_registry_control_plane>",
+    ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
+    (
+        "roster/switchboard/tests/test_correct_route.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: local route-test cleanup table selection; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/switchboard/tests/test_identity_injection.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/switchboard/tests/test_identity_mint_concurrency_integration.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/switchboard/tests/test_switchboard_no_fact_writes.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "roster/travel/migrations/002_metadata_backfill.py",
+        "<dynamic:travel.{table}>",
+    ): "burn-down: dynamic-local: Travel-local closed metadata table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/travel/tests/test_bookings.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: Travel table fixtures; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/travel/tests/test_migration_travel_002.py",
+        "<dynamic:travel.{table}>",
+    ): "burn-down: dynamic-local: Travel-local migration table fixture tuple; make target ownership explicit, without claiming a foreign read",
+    (
+        "roster/travel/tools/bookings.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed booking table_map; Travel ownership hidden behind table selector; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/api/approval_review.py",
+        "<dynamic:{table}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/read_models/activity_v1.py",
+        "<dynamic:{episodes_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/read_models/search_v1.py",
+        "relationship.entity_facts",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/approvals.py",
+        "switchboard.dead_letter_queue",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/contacts.py",
+        "relationship.entity_facts",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/identity.py",
+        "relationship.entity_facts",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{episodes_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{facts_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{rules_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{tombstones_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/preferences.py",
+        "<dynamic:{facts_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/priority_contacts.py",
+        "relationship.entity_facts",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/secrets_v2.py",
+        "<dynamic:{found_relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/secrets_v2.py",
+        "<dynamic:{relation}>",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/spotify.py",
+        "switchboard.connector_registry",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/whatsapp.py",
+        "switchboard.connector_registry",
+    ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/chronicler/adapters/calendar.py",
+        "<dynamic:{quoted}.calendar_event_entities>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/calendar.py",
+        "<dynamic:{quoted}.calendar_event_instances>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/calendar.py",
+        "<dynamic:{quoted}.calendar_events>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/calendar.py",
+        "<dynamic:{quoted}.calendar_sources>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/comms.py",
+        "relationship.entity_facts",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/google_health.py",
+        "health.facts",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/meals.py",
+        "health.meals",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/reading.py",
+        "health.facts",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/sessions.py",
+        "<dynamic:{quoted}.sessions>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/chronicler/adapters/sessions.py",
+        "relationship.entity_facts",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
+    (
+        "src/butlers/connectors/cursor_store.py",
+        "switchboard.connector_registry",
+    ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/connectors/gmail_policy.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/connectors/google_drive.py",
+        "switchboard.connector_registry",
+    ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/connectors/owntracks.py",
+        "switchboard.connector_registry",
+    ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/connectors/telegram_bot.py",
+        "switchboard.media_refs",
+    ): "burn-down: existing switchboard.media_refs coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/condition_ledger.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: validated public condition-ledger relation selector; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/control_plane_identity.py",
+        "switchboard.butler_registry",
+    ): "burn-down: existing switchboard.butler_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/control_plane_identity.py",
+        "switchboard.butler_registry_control_plane",
+    ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/corrections.py",
+        "<dynamic:{corrections_table}>",
+    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/corrections.py",
+        "<dynamic:{memory_table}>",
+    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/corrections.py",
+        "<dynamic:{sessions_table}>",
+    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/corrections.py",
+        "<dynamic:{state_table}>",
+    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/corrections.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: schema-qualified session/state/memory correction selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/decision_desk.py",
+        "switchboard.decision_intents",
+    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/decision_desk.py",
+        "switchboard.decision_prompts",
+    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/entity_graph_edges.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/fact_authority.py",
+        "switchboard.message_inbox",
+    ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/fleet_conditions.py",
+        "switchboard.butler_registry_control_plane",
+    ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/ingestion_events.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: partition/ingestion table selector; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/ingestion_events.py",
+        "switchboard.connector_registry",
+    ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/runtime_config.py",
+        "<dynamic:{self._schema}.runtime_config>",
+    ): "burn-down: dynamic-local: configured runtime schema; source ownership is dynamic; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/core/scheduler.py",
+        "switchboard.butler_registry_control_plane",
+    ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/daemon.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/entity_facts_channels.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/identity.py",
+        "relationship.entity_facts",
+    ): "retire:bu-ys9hdx.4: identity/channel resolution source and its fixture authority",
+    (
+        "src/butlers/ingestion_policy.py",
+        "switchboard.ingestion_rules",
+    ): "burn-down: existing switchboard.ingestion_rules coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/atmosphere_consumers.py",
+        "travel.trips",
+    ): "burn-down: existing travel.trips coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/briefing.py",
+        "education.mind_map_nodes",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "education.mind_maps",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "education.quiz_responses",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "general.v_briefing_contributions",
+    ): "sanctioned:RFC-0010: migration-tracked daily briefing contribution view",
+    (
+        "src/butlers/jobs/briefing.py",
+        "travel.accommodations",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "travel.documents",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "travel.legs",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/briefing.py",
+        "travel.trips",
+    ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/calendar_overlay.py",
+        "travel.accommodations",
+    ): "burn-down: direct travel overlay tables; RFC-0020 sanctions the contribution view, not these direct reads",
+    (
+        "src/butlers/jobs/calendar_overlay.py",
+        "travel.legs",
+    ): "burn-down: direct travel overlay tables; RFC-0020 sanctions the contribution view, not these direct reads",
+    (
+        "src/butlers/jobs/calendar_overlay.py",
+        "travel.trips",
+    ): "burn-down: direct travel overlay tables; RFC-0020 sanctions the contribution view, not these direct reads",
+    (
+        "src/butlers/jobs/calendar_prep.py",
+        "switchboard.message_inbox",
+    ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/context_producers.py",
+        "travel.trips",
+    ): "burn-down: existing travel.trips coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/decision_routing.py",
+        "switchboard.decision_intents",
+    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/decision_routing.py",
+        "switchboard.decision_prompts",
+    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/flight_status.py",
+        "travel.legs",
+    ): "burn-down: existing travel.legs coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/flight_status.py",
+        "travel.trips",
+    ): "burn-down: existing travel.trips coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/home.py",
+        "home.maintenance_items",
+    ): "burn-down: existing home.maintenance_items coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/meeting_debrief.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/jobs/retention.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: validated schema-specific session_process_logs selector; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/jobs/spend.py",
+        "<dynamic:{schema}.sessions>",
+    ): "burn-down: dynamic fleet session schema enumeration; not the RFC-0030 Concierge view",
+    (
+        "src/butlers/modules/approvals/email_guard.py",
+        "relationship.entity_facts",
+    ): "retire:bu-ys9hdx.4: identity/channel resolution source and its fixture authority",
+    (
+        "src/butlers/modules/approvals/migrations/003_fingerprint_v2.py",
+        "<dynamic:{table_name}>",
+    ): "burn-down: dynamic-local: local approvals table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/contacts/email_identity_matching.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/modules/dashboard_read/queries.py",
+        "concierge.v_fleet_sessions",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "src/butlers/modules/dashboard_read/queries.py",
+        "concierge.v_fleet_spend",
+    ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
+    (
+        "src/butlers/modules/memory/ann_observability.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed local memory tier tables; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/knowledge_gaps.py",
+        "relationship.entity_facts",
+    ): "burn-down: Relationship-only branch of shared memory code; preserve local fact/coverage behavior when exposing ownership",
+    (
+        "src/butlers/modules/memory/knowledge_gaps.py",
+        "relationship.entity_predicate_registry",
+    ): "burn-down: Relationship-only branch of shared memory code; preserve local fact/coverage behavior when exposing ownership",
+    (
+        "src/butlers/modules/memory/knowledge_gaps.py",
+        "relationship.fact_coverage",
+    ): "burn-down: Relationship-only branch of shared memory code; preserve local fact/coverage behavior when exposing ownership",
+    (
+        "src/butlers/modules/memory/migrations/004_embedding_model_version.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: local memory tier table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/migrations/013_content_authority.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: local memory tier table loop; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/reembedding.py",
+        "<dynamic:{relation}>",
+    ): "burn-down: dynamic-local: validated memory-tier/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/reembedding.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: validated memory-tier/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/search.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: closed local memory table/type maps; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{episodes_relation}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{facts_relation}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{links_relation}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{rules_relation}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{tombstones_relation}>",
+    ): "burn-down: dynamic-local: memory relation helpers/source-schema selectors; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/modules/memory/tools/entities.py",
+        "chronicler.episode_entities",
+    ): "burn-down: existing chronicler.episode_entities coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/modules/memory/tools/writing.py",
+        "relationship.entity_predicate_registry",
+    ): "burn-down: existing relationship.entity_predicate_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/owner_bootstrap.py",
+        "relationship.entity_facts",
+    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
+        "relationship.entity_predicate_registry",
+    ): "burn-down: existing relationship.entity_predicate_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
+        "relationship.facts",
+    ): "burn-down: existing relationship.facts coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/testing/migration.py",
+        "<dynamic:{_quote_ident(schema)}.alembic_version>",
+    ): "burn-down: dynamic-local: validated target schema migration-version table; make target ownership explicit, without claiming a foreign read",
+    (
+        "src/butlers/testing/recall_bench.py",
+        "<dynamic:{table}>",
+    ): "burn-down: dynamic-local: benchmark-selected memory table; make target ownership explicit, without claiming a foreign read",
+}
+
+
+def _sql_nodes(source: str) -> list[tuple[int, str]]:
+    """Extract SQL literals/fragments without executing source or guessing dataflow.
+
+    Adjacent literals are folded by Python's AST. F-string expressions become
+    explicit slots; format() braces retain their spelling. Entirely runtime SQL
+    and relation names obtained through arbitrary Python dataflow are outside a
+    literal scan's authority (they are not silently certified as local).
+    """
+    result: list[tuple[int, str]] = []
+    if not _SQL_FRAGMENT_RE.search(source) and not re.search(
+        r"\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|GRANT|REVOKE|TRUNCATE)\b",
+        source,
+        re.IGNORECASE,
+    ):
+        return result
+    tree = ast.parse(source)
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        else:
+            continue
+        if (
+            isinstance(target, ast.Name)
+            and target.id.isupper()
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            constants[target.id] = value.value
+    if constants:
+        stores = dict.fromkeys(constants, 0)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                names = [node.id]
+            elif isinstance(node, ast.arg):
+                names = [node.arg]
+            elif isinstance(node, ast.alias):
+                names = [node.asname or node.name.split(".")[0]]
+            elif isinstance(
+                node,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.ExceptHandler,
+                    ast.MatchAs,
+                    ast.MatchStar,
+                ),
+            ):
+                names = [node.name]
+            elif isinstance(node, ast.MatchMapping):
+                names = [node.rest]
+            else:
+                names = []
+            for name in names:
+                if name in stores:
+                    stores[name] += 1
+        constants = {name: value for name, value in constants.items() if stores[name] == 1}
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Expr(self, node: ast.Expr) -> None:
+            if not isinstance(node.value, ast.Constant):
+                self.generic_visit(node)
+
+        def visit_Constant(self, node: ast.Constant) -> None:
+            if isinstance(node.value, str) and _SQL_FRAGMENT_RE.match(node.value):
+                result.append((node.lineno, node.value))
+
+        def visit_BinOp(self, node: ast.BinOp) -> None:
+            first = node
+            while isinstance(first, ast.BinOp) and isinstance(first.op, ast.Add):
+                first = first.left
+            if not (
+                isinstance(node.op, ast.Add)
+                and isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+                and _SQL_FRAGMENT_RE.match(first.value)
+            ):
+                self.generic_visit(node)
+                return
+
+            def render(part: ast.AST) -> str:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    return part.value
+                if isinstance(part, ast.BinOp) and isinstance(part.op, ast.Add):
+                    return render(part.left) + render(part.right)
+                if isinstance(part, ast.Name) and part.id in constants:
+                    return constants[part.id]
+                return "{" + ast.unparse(part) + "}"
+
+            result.append((node.lineno, render(node)))
+
+        def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+            sql = "".join(
+                part.value
+                if isinstance(part, ast.Constant)
+                else constants.get(ast.unparse(part.value), "{" + ast.unparse(part.value) + "}")
+                for part in node.values
+            )
+            if _SQL_FRAGMENT_RE.match(sql):
+                result.append((node.lineno, sql))
+
+    Visitor().visit(tree)
+    return result
+
+
+def schema_reach_inventory(root: Path = _ROOT) -> dict[tuple[str, str], list[int]]:
+    """Return foreign literal references and unresolved relation slots with lines."""
+    found: dict[tuple[str, str], list[int]] = {}
+    for directory in ("src", "roster"):
+        for path in sorted((root / directory).rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            owner = path.relative_to(root).parts[1] if directory == "roster" else None
+            for line, sql in _sql_nodes(path.read_text()):
+                # SQL data strings and comments are not relations. Preserve line
+                # offsets while masking them (including source_ref/email values).
+                sql = re.sub(
+                    r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'",
+                    lambda m: re.sub(r"[^\n]", " ", m.group()),
+                    sql,
+                    flags=re.DOTALL,
+                )
+                for match in _QUALIFIED_RE.finditer(sql):
+                    schema, relation = (part.lower() for part in match.groups())
+                    if schema != owner:
+                        key = (relative, f"{schema}.{relation}")
+                        found.setdefault(key, []).append(line + sql[: match.start()].count("\n"))
+                for match in _DYNAMIC_RELATION_RE.finditer(sql):
+                    if sql.lstrip().upper().startswith("REVOKE"):
+                        continue
+                    slot = re.sub(r"\s+", " ", match.group(1)).strip()
+                    key = (relative, f"<dynamic:{slot}>")
+                    found.setdefault(key, []).append(line + sql[: match.start()].count("\n"))
+    return found
+
+
+@pytest.fixture(scope="module")
+def schema_reach() -> dict[tuple[str, str], list[int]]:
+    """One source snapshot shared by both ratchet assertions."""
+    return schema_reach_inventory()
+
+
+def test_foreign_schema_sql_is_allowlisted(schema_reach: dict[tuple[str, str], list[int]]) -> None:
+    """One SQL-literal fence for every source and roster owning surface."""
+    inventory = schema_reach
+    violations = [
+        f"{path}:{line}: {relation}"
+        for (path, relation), lines in sorted(inventory.items())
+        if (path, relation) not in SCHEMA_REACH_ALLOWLIST
+        for line in sorted(set(lines))
+    ]
+    assert not violations, "Unallowlisted foreign/dynamic SQL relations:\n" + "\n".join(violations)
+    assert all(
+        reason.startswith(
+            ("sanctioned:", "retire:bu-ys9hdx.4:", "pending-bu-lsxqb0.2:", "burn-down:")
+        )
+        for reason in SCHEMA_REACH_ALLOWLIST.values()
+    ), "Every allowance needs its sanctioned, retirement, pending-decision or burn-down reason"
+    assert not any(
+        path == "roster/chronicler/api/router.py" for path, _ in SCHEMA_REACH_ALLOWLIST
+    ), "The Chronicler router has no foreign-schema or dynamic allowance (D17)"
+
+
+def test_schema_reach_allowlist_has_no_stale_entries(
+    schema_reach: dict[tuple[str, str], list[int]],
+) -> None:
+    """Deleted reads must shrink the allowlist in the same change."""
+    stale = SCHEMA_REACH_ALLOWLIST.keys() - schema_reach.keys()
+    assert not stale, "Stale schema-reach allowances:\n" + "\n".join(
+        f"{path}: {relation}" for path, relation in sorted(stale)
+    )
