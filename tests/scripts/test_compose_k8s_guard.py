@@ -45,6 +45,7 @@ def _run_launcher(
         for filename in (
             "docker-compose.yml",
             "docker-compose.restore-drill.yml",
+            "docker-compose.control-stage.yml",
             "docker-compose.observability.yml",
         ):
             shutil.copy2(_REPO_ROOT / filename, repo)
@@ -78,7 +79,8 @@ def _run_launcher(
         "with open(os.environ['TEST_DOCKER_ARGV'], 'a') as stream:\n"
         "    json.dump({'argv': sys.argv[1:], 'env': {key: os.environ[key] for key in "
         "os.environ if key.startswith(('POSTGRES_', 'RESTORE_DRILL_EXECUTOR_', "
-        "'OTEL_', 'GF_AUTH_', 'COMPOSE_PROJECT_', 'SKIP_OAUTH_'))}}, stream)\n"
+        "'OTEL_', 'GF_AUTH_', 'COMPOSE_PROJECT_', 'SKIP_OAUTH_', "
+        "'BUTLERS_SWITCHBOARD_SERVICE'))}}, stream)\n"
         "    stream.write('\\n')\n"
         f"sys.exit({0 if complete_launch else 1})\n",
     )
@@ -175,10 +177,13 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
     ]
     compose = [record for record in records if record["argv"][0] == "compose"]
     protected = "--prod" in args or "--with-restore-drill" in args
+    staged = "--prod" not in args
     hotreload = "--hotreload" in args or ("--prod" not in args and "--no-hotreload" not in args)
     files = ["docker-compose.yml"]
     if protected:
         files.append("docker-compose.restore-drill.yml")
+    if staged:
+        files.append("docker-compose.control-stage.yml")
     if observability:
         files.append("docker-compose.observability.yml")
     profiles = ["dev"]
@@ -188,6 +193,10 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
         profiles.append("hotreload")
     if observability:
         profiles.append("observability")
+    if staged:
+        profiles.append("control-stage")
+        if hotreload:
+            profiles.append("control-stage-hotreload")
     prefix = ["compose", *(word for file in files for word in ("-f", file))]
     prefix += [word for profile in profiles for word in ("--profile", profile)]
     # Render the captured command with the real CLI in the disposable copy.
@@ -217,6 +226,27 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
     assert model["name"] == ("butlers" if "--prod" in args else "butlers-dev")
     assert ("restore-drill-executor" in services) == protected
     assert services["oauth-gate"]["environment"]["SKIP_OAUTH_CHECK"] == "true"
+    # The same offline cases prove the dev split and the unchanged production
+    # topology. No lifecycle operation reaches a real container or deployment.
+    domains = services["butlers-up-hotreload" if hotreload else "butlers-up"]
+    capacity = int(domains["environment"]["BUTLERS_MAX_GLOBAL_SESSIONS"])
+    if staged:
+        control = services["butlers-control-hotreload" if hotreload else "butlers-control"]
+        control_capacity = int(control["environment"]["BUTLERS_MAX_GLOBAL_SESSIONS"])
+        assert capacity == 4 and control_capacity == 1 and capacity + control_capacity == 5
+        assert "--exclude switchboard" in domains["entrypoint"][-1]
+        assert domains["environment"]["SWITCHBOARD_MCP_URL"] == "http://butlers-control:41100/sse"
+        assert services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"] == (
+            "http://butlers-control:41100/sse"
+        )
+        assert "KEY_ABSENT_STAGE" in control["entrypoint"][-1]
+    else:
+        assert capacity == 5
+        assert "butlers-control" not in services and "butlers-control-hotreload" not in services
+        assert "--exclude switchboard" not in domains["entrypoint"][-1]
+        assert services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"] == (
+            "http://butlers-up:41100/sse"
+        )
     endpoint = services["butlers-up"]["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"]
     assert endpoint == ("http://localhost:4318" if observability else "")
     if observability:
@@ -235,6 +265,7 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
             "up",
             "-d",
             *(["--scale", "butlers-up=0", "--scale", "dashboard-api=0"] if hotreload else []),
+            *(["--scale", "butlers-control=0"] if hotreload and staged else []),
         ],
     ]
     if protected:
