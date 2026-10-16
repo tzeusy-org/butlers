@@ -216,3 +216,105 @@ def test_verifier_privacy_survives_library_logging_reconfiguration(caplog, monke
             each.setLevel(level)
             each.disabled = disabled
             each.propagate = propagate
+
+
+@pytest.mark.parametrize("operation", ["enroll", "login"])
+@pytest.mark.parametrize("rsa_key", [False, True], ids=["ec", "rsa"])
+async def test_verifier_privacy_during_concurrent_vendor_reload(caplog, operation, rsa_key):
+    import asyncio
+    import importlib
+    import inspect
+    import logging.config
+    import sys
+    import threading
+
+    from fido2 import server
+
+    key = Passkey.create(rsa_key=rsa_key)
+    challenge, handle = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    options = {"publicKey": {"challenge": challenge, "user": {"id": handle}}}
+    verifier = WebAuthnVerifier(ORIGIN, RP)
+    registered = verifier.verify(
+        {"operation": "enroll", "challenge": challenge},
+        key.response(options, register=True),
+        None,
+    )
+    stored = {
+        "credential_data": registered.credential_data,
+        "user_handle": handle,
+        "backup_eligible": registered.backup_eligible,
+        "counter": registered.counter,
+    }
+    response = key.response(options, register=operation == "enroll", user_handle=handle)
+    ceremony = {"operation": operation, "challenge": challenge}
+    method = (
+        verifier.server.register_complete
+        if operation == "enroll"
+        else verifier.server.authenticate_complete
+    )
+    lines, start = inspect.getsourcelines(method)
+    publication_line = start + next(i for i, line in enumerate(lines) if "logger.info(" in line)
+    ready, resume = threading.Event(), threading.Event()
+
+    def trace(frame, event, arg):
+        if (
+            event == "line"
+            and frame.f_code is method.__func__.__code__
+            and frame.f_lineno == publication_line
+        ):
+            ready.set()
+            if not resume.wait(5):
+                raise TimeoutError("Vendor publication was not resumed")
+        return trace
+
+    def verify_in_worker():
+        # Pause the actual cryptographic vendor call, without replacing its
+        # logger or verification implementation. This is the service's to_thread
+        # execution boundary, overlapping a genuine canonical-module reload.
+        sys.settrace(trace)
+        try:
+            return verifier.verify(ceremony, response, stored if operation == "login" else None)
+        finally:
+            sys.settrace(None)
+
+    loggers = [logging.getLogger(name) for name in ("fido2", "fido2.server")]
+    saved = [(each, each.level, each.disabled, each.propagate) for each in loggers]
+    caplog.set_level(logging.DEBUG)
+    worker = asyncio.create_task(asyncio.to_thread(verify_in_worker))
+    try:
+        assert await asyncio.to_thread(ready.wait, 5), "Actual vendor publication was not reached"
+        importlib.reload(server)
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "incremental": True,
+                "loggers": {
+                    name: {"level": "DEBUG", "propagate": True}
+                    for name in ("fido2", "fido2.server")
+                },
+            }
+        )
+        logging.getLogger("owner_auth_test_sink").warning("concurrent-application-capture-active")
+        logging.getLogger("fido2.server").warning("concurrent-library-category-capture-active")
+    finally:
+        resume.set()
+        try:
+            verified = await asyncio.wait_for(worker, timeout=5)
+        finally:
+            for each, level, disabled, propagate in saved:
+                each.setLevel(level)
+                each.disabled = disabled
+                each.propagate = propagate
+    assert verified.credential_id == response["rawId"]
+    assert (verified.credential_data is None) == (operation == "login")
+    private = (
+        response["rawId"],
+        key.credential_id.hex(),
+        registered.credential_data,
+        handle,
+        challenge,
+        *response["response"].values(),
+    )
+    assert not any(isinstance(value, str) and value in caplog.text for value in private)
+    assert "concurrent-application-capture-active" in caplog.text
+    assert "concurrent-library-category-capture-active" in caplog.text
