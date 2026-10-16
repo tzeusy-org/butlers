@@ -370,10 +370,14 @@ async def record_insight_feedback(
     snooze_until: str | datetime | None = None,
     evidence_ref: str | None = None,
     now: datetime | None = None,
+    skip_unchanged: bool = False,
+    callback_token: str | None = None,
+    callback_secret: str | None = None,
 ) -> dict[str, Any]:
     """Persist one owner verdict and apply its reversible cooldown effect."""
     if verdict not in VALID_FEEDBACK_VERDICTS:
         return {"status": "error", "reason": "verdict must be useful, not_now, or never"}
+    server_clock = now is None
     if now is None:
         now = datetime.now(UTC)
 
@@ -399,7 +403,7 @@ async def record_insight_feedback(
     async with pool.acquire() as conn, conn.transaction():
         candidate = await conn.fetchrow(
             """
-            SELECT id, dedup_key, category, origin_butler
+            SELECT id, dedup_key, category, origin_butler, created_at
             FROM insight_candidates WHERE id = $1::uuid
             FOR UPDATE
             """,
@@ -407,6 +411,47 @@ async def record_insight_feedback(
         )
         if candidate is None:
             return {"status": "error", "reason": "insight not found"}
+        if callback_token is not None:
+            from butlers.core.insight_feedback_callbacks import verify_insight_feedback_token
+
+            verified = verify_insight_feedback_token(
+                callback_token, created_at=candidate["created_at"], secret=callback_secret or ""
+            )
+            if (
+                verified is None
+                or str(verified.insight_id) != insight_id
+                or verified.verdict != verdict
+            ):
+                return {"status": "error", "reason": "invalid callback token"}
+        # Timestamp after the lock: concurrent taps must keep commit order.
+        if skip_unchanged and server_clock:
+            now = datetime.now(UTC)
+        if skip_unchanged:
+            latest = await conn.fetchrow(
+                "SELECT verdict, snooze_until FROM insight_feedback "
+                "WHERE insight_id = $1::uuid ORDER BY decided_at DESC, id DESC LIMIT 1",
+                insight_id,
+            )
+            replay = (
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM insight_feedback "
+                    "WHERE insight_id = $1::uuid AND actor = $2 AND evidence_ref = $3)",
+                    insight_id,
+                    actor,
+                    evidence_ref,
+                )
+                if evidence_ref
+                else False
+            )
+            if latest is not None and (latest["verdict"] == verdict or replay):
+                return {
+                    "status": "already_recorded",
+                    "verdict": latest["verdict"],
+                    "insight_id": insight_id,
+                    "snooze_until": latest["snooze_until"].isoformat()
+                    if latest["snooze_until"]
+                    else None,
+                }
         family = dedup_family(candidate["dedup_key"])
         await conn.execute(
             """
@@ -2399,11 +2444,12 @@ async def delivery_cycle(
         "feedback_actions": [
             {
                 "insight_id": insight_id,
+                "created_at": selected[index]["created_at"].isoformat(),
                 "useful": f"/api/switchboard/insights/{insight_id}/useful",
                 "snooze": f"/api/switchboard/insights/{insight_id}/snooze",
                 "mute": f"/api/switchboard/insights/{insight_id}/mute",
             }
-            for insight_id in selected_ids
+            for index, insight_id in enumerate(selected_ids)
         ],
     }
 
