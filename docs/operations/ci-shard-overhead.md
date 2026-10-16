@@ -33,8 +33,8 @@ is 14: eleven backend children plus guards plus two Vitest children. Once guards
 finishes, browser can replace its one slot. The workflow contract enumerates the
 actual DAG rather than assuming matrix declarations each cost one runner.
 Inventory retains the former producer's complete 35-minute cap provisionally;
-there is no independent healthy inventory p95 yet, and all existing job caps and
-UV recovery reserves remain.
+the dated inventory measurement below does not supply multi-week timeout
+calibration, and all existing job caps and UV recovery reserves remain.
 
 The independent 30-run before observation on 2026-10-15 measured required-path
 p50/p95 at 1165s/1555s and guards at 353.5s/414s; scheduling delay was 3s/358s.
@@ -50,6 +50,101 @@ adds a separately scheduled environment setup. A named hosted after observation
 is still required to measure the result; a single run cannot establish the
 parent 20-run objective, a seven-minute bound, or the original five-minute lane
 promises. No wall-clock gain is claimed from the graph alone.
+
+## Inventory measurement, 2026-10-16
+
+The ten most recent successful first-attempt `CI` `merge_group` runs on the
+`main` queue after 2026-10-15T09:32:15Z give inventory producer p50/p95 of
+**74s/93s** and inventory whole-job p50/p95 of **115s/143s**. The producer
+p95 <=90s and whole-job p95 <=120s targets are both missed. This is a
+measurement-only update: no workflow or producer optimization is claimed.
+
+The read-only `GET /repos/tzeusy-org/butlers/actions/workflows/ci.yml/runs`
+query used `event=merge_group`, `status=success`,
+`created=>2026-10-15T09:32:15Z`, `per_page=100`, and page 1. Its complete response
+contained 20 runs. All had attempt 1 and `gh-readonly-queue/main/` branches;
+selecting the latest ten by creation time produced the following cohort without
+replacing any missing observation. Each full head is on the first-parent history
+of main at `27ba30d28a8dc6d907aa0791751dfe7afb86d58f`. Measurements were captured
+at 2026-10-16T17:42Z from `GET /repos/tzeusy-org/butlers/actions/runs/<id>/attempts/1/jobs`
+responses, with run/head/attempt,
+complete pagination and the unique successful `inventory` job checked.
+
+Queue wait is the inventory job's own `created_at` to `started_at`; it excludes
+its wait for `route`. Whole-job wall is `started_at` to `completed_at`. Step
+wall is that step's `started_at` to `completed_at`. API timestamps have one-second
+resolution, so an observed 0s is not a claim of zero work. Missing timestamps,
+steps, identities or cache evidence would be `UNKNOWN`, never inferred from
+neighboring steps. All timing observations below are present. Step sums need
+not equal job wall because runner gaps are not assigned to a step.
+
+| Ref | Run / inventory job | Full head SHA | Queue (s) | Job (s) | `.venv` cache hit |
+| --- | --- | --- | ---: | ---: | --- |
+| R1 | [38927012323](https://github.com/tzeusy-org/butlers/actions/runs/38927012323/job/117061137781) | `27ba30d28a8dc6d907aa0791751dfe7afb86d58f` | 2 | 81 | yes |
+| R2 | [38924036334](https://github.com/tzeusy-org/butlers/actions/runs/38924036334/job/117050984330) | `d8599adf529da7ee43a2996ebf26325291ebfbce` | 2 | 115 | no |
+| R3 | [38832816064](https://github.com/tzeusy-org/butlers/actions/runs/38832816064/job/116755235083) | `51ec60a37b9ab2544fb172d80b989e34f9875349` | 2 | 128 | yes |
+| R4 | [38828475429](https://github.com/tzeusy-org/butlers/actions/runs/38828475429/job/116741498754) | `633075b4443cdf59115de95e9704b6f2e4bdadd3` | 2 | 143 | no |
+| R5 | [38828416026](https://github.com/tzeusy-org/butlers/actions/runs/38828416026/job/116741304842) | `27694036608432b9bfd18e6d70964a6142b9c0a4` | 2 | 113 | no |
+| R6 | [38820543948](https://github.com/tzeusy-org/butlers/actions/runs/38820543948/job/116715865797) | `cb2b4a7981b82f61d7b182b434edf23330153db7` | 2 | 135 | no |
+| R7 | [38814969781](https://github.com/tzeusy-org/butlers/actions/runs/38814969781/job/116697323646) | `a5ab052d3b6458e0071283834a42129f0d698ebd` | 2 | 126 | no |
+| R8 | [38812590287](https://github.com/tzeusy-org/butlers/actions/runs/38812590287/job/116689325431) | `3f184e63a0817ae92087b7b50bd98c94f41b3659` | 2 | 133 | no |
+| R9 | [38798033562](https://github.com/tzeusy-org/butlers/actions/runs/38798033562/job/116639585275) | `7759a9da4f55a8aa9ed17674fe054033594191fe` | 2 | 112 | no |
+| R10 | [38786791398](https://github.com/tzeusy-org/butlers/actions/runs/38786791398/job/116600843276) | `656d545b3f5cac40ca0419ff8e0b8e1a49c65735` | 2 | 104 | yes |
+
+The cache column comes from the exact inventory job log's explicit cache
+hit/restored or cache-not-found messages (`GET /repos/tzeusy-org/butlers/actions/jobs/<id>/logs`):
+three hits, seven misses, no unknowns.
+Every sampled head has the same inventory workflow block, with one
+`actions/cache` step for `.venv`, an exact environment key and no restore prefixes.
+A cache hit still performs mandatory frozen editable repair. Cache state is not
+inferred from step duration or from a successful job.
+
+All durations below are seconds. R1-R10 refer to the exact run/head rows above.
+Percentiles use nearest rank `sorted[ceil(p * 10) - 1]`: p50 is the fifth ordered
+observation and p95 is the maximum. Every row has ten observations; no missing
+value is dropped to manufacture a percentile.
+
+| Step or job metric | R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | p50 | p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Set up job | 1 | 1 | 1 | 1 | 2 | 1 | 0 | 1 | 0 | 1 | 1 | 2 |
+| Run actions/checkout@v6 | 6 | 8 | 9 | 8 | 6 | 8 | 8 | 8 | 8 | 9 | 8 | 9 |
+| Set up Python 3.12 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 |
+| Install uv | 2 | 1 | 2 | 0 | 2 | 1 | 1 | 0 | 0 | 1 | 1 | 2 |
+| Compute exact environment cache key | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 1 |
+| Restore advisory environment cache | 7 | 1 | 11 | 0 | 0 | 0 | 0 | 1 | 0 | 8 | 0 | 11 |
+| Install dependencies | 1 | 20 | 3 | 26 | 19 | 23 | 25 | 24 | 21 | 3 | 20 | 26 |
+| Restore compatible advisory file weights | 2 | 2 | 2 | 2 | 3 | 4 | 1 | 2 | 1 | 2 | 2 | 4 |
+| Collect one fresh installed pytest inventory and enforce both budgets | 57 | 71 | 93 | 90 | 71 | 87 | 81 | 83 | 72 | 74 | 74 | 93 |
+| Upload exact attempt inventory and assignment | 2 | 1 | 2 | 2 | 1 | 1 | 1 | 2 | 1 | 2 | 1 | 2 |
+| Post Restore advisory environment cache | 0 | 6 | 0 | 8 | 5 | 6 | 6 | 7 | 5 | 0 | 5 | 8 |
+| Post Set up Python 3.12 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 1 |
+| Post Run actions/checkout@v6 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 |
+| Complete job | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Inventory scheduling delay | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
+| Inventory job wall | 81 | 115 | 128 | 143 | 113 | 135 | 126 | 133 | 112 | 104 | 115 | 143 |
+
+The material measured steps are fresh inventory collection (74s p50) and
+mandatory dependency preparation (20s p50). Collection already uses the one fresh
+installed pytest collection delivered by #4415/#4530, with both lane populations,
+whole-file assignment and budget checks. It has no hosted before/after evidence
+for a further bounded optimization here. Dependency preparation remains owned by
+`bu-ly3lv5.5`; this measurement adds no install or cache layer.
+
+Checkout is 8s p50, below the 10s threshold for an optimization in this task.
+Tracing its actual consumers finds only `git rev-parse HEAD` and `HEAD^{tree}`
+in `ci_partition.py`; source hashing reads current checkout files, and advisory
+weight restoration reads the GitHub observer API/artifact. None of these
+consumers needs Git history. This establishes a possible history-depth question,
+not a measured material gain, so `fetch-depth: 0` is unchanged.
+
+Hand the two missed targets to existing `bu-gvut0.5.5`: collection is the largest
+step (74s/93s p50/p95), while environment preparation adds 20s/26s and whole-job
+p95 is 143s. These ten successful first-attempt observations satisfy this
+inventory measurement packet, but do not establish the parent twenty-run
+required-path objective, a global seven-minute gate, causal speedup, or a
+multi-week timeout calibration. Historical populations, child recollection,
+complete-identity reconciliation, budgets, selectors, markers, privacy and
+watchdogs remain unchanged.
 
 ## Dependencies and database targets
 
