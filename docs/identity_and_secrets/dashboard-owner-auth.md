@@ -334,3 +334,8 @@ The canonical origin, RP ID, and forwarded-header checks remain required.
 - Bitwarden's WebAuthn wrapper can return `credProps: undefined` unrequested. Treat undefined
   optional outputs as absent, keep rejecting defined extension data, and send
   `clientExtensionResults: {}`.
+- The WebAuthn adapter binds the library's server logger to a private disabled sink before
+  construction and verification. Registry logger settings alone are insufficient: standard
+  logging reconfiguration can re-enable them, and a library reload restores its module logger.
+  Keep ordinary application and capture sinks active; never retain library credential messages
+  or reflect library exception arguments.
