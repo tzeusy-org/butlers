@@ -120,6 +120,23 @@ try {
     assert.equal(s.reporter.updateQueue.ended, true);
     assert.equal(s.reporter.updateQueue.failures, 0);
   }
+  {
+    const s = setup();
+    const ready = s.run.updated({ kind: 'ready' }, s.values);
+    const rejected = s.run.updated({ kind: 'reject' }, s.values);
+    const result = s.run.updated({ kind: 'result' }, s.values);
+    const outcomes = await Promise.allSettled([ready, rejected, result]);
+    assert.deepEqual(outcomes.map((entry) => entry.status),
+      ['fulfilled', 'rejected', 'fulfilled']);
+    assert.deepEqual(s.calls, ['ready', 'reject', 'result']);
+    s.reporter.onTestModuleEnd(s.module);
+    await s.reporter.onTestRunEnd([s.module], [], 'passed');
+    const receipt = JSON.parse(fs.readFileSync(output));
+    assert.equal(receipt.update_errors, 1);
+    assert.equal(Object.keys(receipt.results).length, 1);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  }
   console.log('ordered-vitest-bookkeeping-conformance-passed');
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

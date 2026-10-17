@@ -29,6 +29,20 @@ Do not use bd's built-in `issue_type: decision`. It is an ADR-style template for
 made (`--validate` demands `## Decision` / `## Rationale` / `## Alternatives Considered`). Decision
 beads keep their normal type, usually `task`, and carry the `decision` label.
 
+### Gating work on a decision
+
+- Assign the decision bead to the owner and gate each dependent with a real edge:
+  `bd dep add <gated-bead> <decision-bead>`. An `owner-gated` label alone gates nothing: an open,
+  unassigned bead with that label still appears in `bd ready` and the fleet can claim it.
+- Do not put the `decision` label on `[HOLD]` release gates or on owner action and authorization
+  beads ("run the live drill", "authorize the cutover"). The Decision Desk closes a decision bead
+  when the owner picks any option, so a "not yet" answer would close it and unblock its dependents.
+  Keep those as owner-assigned tasks; an owner action with no blocker uses manual `blocked` status.
+- Write options that make sense on their own ("B: keep disabled"), never bare letters: the owner
+  answers from Telegram or the dashboard without the description.
+- Before filing, check that the question is still open: `git log origin/main --grep <id>`, merged
+  spec text, and recorded owner answers often settle it already.
+
 ## Linter
 
 `scripts/lint_decision_beads.py` checks every `decision`-labelled bead for the four properties:
@@ -46,6 +60,30 @@ or CI: GitHub Actions cannot reach the Dolt server behind `bd`.
 The default mode is vacuous against a queue that has not adopted the label: it finds nothing and
 reports clean. The strict mode (`--check-unlabeled-markers`) closes that gap.
 
+### Telegram renderability warnings
+
+The linter also emits advisory `warnings` for an option over512 characters or an estimated fixed
+Telegram prompt over4096 characters. They appear in human and JSON output. A warning does not
+change `ok`, `violations` or exit status: a convention-valid warning-only result still exits0,
+convention violations exit1, and input acquisition failures exit2. The existing weekly migration
+lint consumes convention violations; these advisories do not add another owner notification.
+
+The estimate uses the current full prompt template, including title, bead id, age, optional UTC
+due date, numbered option text, literal/newline characters, repeated default and instruction.
+Character counts use the same Python string length as routing. With complete context the
+same-clock estimate matches the formatter; incomplete date context uses a conservative0h age
+and omits an unusable due suffix. That lower bound can still prove an oversized prompt, while
+absence of a warning never certifies eligibility or delivery. Existing parse/label/default/date
+requirements and the16-option limit remain unchanged.
+
+Every enabled routing run with an available digest reports integer `skipped_unsendable`, including0:
+otherwise-eligible decisions excluded by either length limit, counted once per bead even if both
+limits fail. Already-prompted, live-intent, malformed, unavailable and other non-length exclusions
+are not counted. Empty-candidate, suppression and budget summaries retain the count. Disabled
+or unavailable runs retain their existing response without a fabricated measured count. Counting
+adds no per-excluded-bead prompt/intent/ledger write, budget use or delivery; existing enabled-job
+maintenance remains. No routing flag, sender, default, resend or callback contract is changed.
+
 ## Consumer
 
 `src/butlers/jobs/decision_review.py` runs the weekly decision-review digest and the P1/deploy
@@ -61,6 +99,56 @@ the bead with `bd`, with the reason `Decision: <option> (decision-intent <id>, v
 actor `butlers-decision-desk`. An intent whose bead was closed, relabelled or re-optioned first
 fails with a categorical reason and leaves the bead alone; see
 [Kubernetes deployment](kubernetes-deployment.md#beads-export).
+
+An applied intent can become `superseded` history when a later local export proves that the
+same decision was reopened. Listing or recording a choice requires a timezone-aware bead
+`updated_at` after the original applied `finished_at`, a snapshot at least ten minutes after
+that finish, and snapshot age between zero and ten minutes. Missing, invalid, future, old or
+unavailable evidence preserves the applied live slot; a fresh file mtime alone is insufficient.
+Ten minutes is a conservative two-cycle window for the enabled development five-minute export
+cadence, not a measured worst-case lag guarantee or calibration for the disabled fifteen-minute
+default. An outage cannot qualify by elapsed time alone.
+
+Supersession preserves the original application and audit fields, releases the existing positive
+live-index slot, and never requeues or reapplies that intent. A later explicit owner choice gets a
+new pending id, including the same option. The Decisions lane shows the live intent first, otherwise
+its newest terminal history, and renders superseded as a previous choice. A consumed Telegram
+prompt stays consumed and returns Already handled; no prompt is re-sent or routing enabled.
+Migration `sw_046` expands the status check only. Its downgrade refuses superseded rows rather
+than rewriting or deleting history.
+
+Telegram decision callbacks use `POST /api/decisions/prompts/{prompt_id}/choose` with JSON
+`{"option_index": 0, "token": "<original dsk1 callback token>"}`. The connector forwards the
+original verified token, its scoped `X-Butlers-Approval-Callback-Token` credential, and the fixed
+`X-Butlers-Decision-Actor: owner@telegram` header. A token alone grants no authority; the owner
+dashboard key cannot substitute for callback provenance. Caller body attribution is ignored.
+
+The API independently resolves `APPROVAL_CALLBACK_SECRET` from the shared Tier 1 database through
+`CredentialStore.resolve(..., env_fallback=False)`. An unavailable pool, absent/empty secret or
+lookup failure returns `503 callback_verification_unavailable`; environment values do not rescue
+it. Inside the intent transaction the API locks the current prompt with `FOR UPDATE`, verifies the
+token against that row's creation time, and compares both the signed prompt id and option index to
+the request before any reconciliation or choice write. The lock lasts through commit, including
+an authenticated business refusal that commits proved supersession. Invalid authentication
+cannot supersede history. A legal reservation may still refresh a `not_attempted` prompt after
+the choice commits; an old token cannot authorize that refreshed generation.
+
+Missing, malformed, unencodable, oversized or incorrectly bound tokens return
+`403 invalid_callback_token`. Malformed whole requests, invalid path UUIDs and other field
+validation errors return `422 invalid_callback_request`; mixed token and other validation errors
+use that 422 category. With usable custody a missing prompt remains `404 prompt_not_found`;
+unoffered index `422 option_not_offered`, changed options `409 options_changed`, unavailable digest
+503, and consumed superseded prompt `409 intent_conflict:superseded` retain their meanings.
+Identical authenticated repeats preserve `200` with `meta.created=false`.
+
+Callback audit events retain method, path, status, result, verified context and trace correlation,
+but use only a fixed safe body projection, including malformed JSON and the unsupported single
+trailing slash. Responses, logs and telemetry omit raw tokens, signature fragments, credentials
+and request/exception bodies. The trailing slash remains non-redirecting (owner: 404; scoped
+callback credential alone: 401). Connector transport failures say to retry and retain the keyboard.
+Deploy compatible connector and API versions together: the API requires `token` and provides no
+tokenless fallback. This hardening does not enable routing, expire tokens or change reoffer policy.
+
 
 ## Related Pages
 

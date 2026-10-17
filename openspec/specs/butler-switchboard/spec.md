@@ -19,6 +19,13 @@ The Switchboard SHALL maintain a registry of all agents (butlers and staffers) a
 - **THEN** the Switchboard SHALL route the request to the staffer as it does today
 - **AND** this routing path is not affected by the user-message classification exclusion
 
+#### Scenario: Runtime sessions cannot use the generic routing proxy
+- **WHEN** a runtime session calls the registered generic `route` MCP tool with a runtime session id bound by the existing request middleware (from the query locator or an admitted invocation header)
+- **THEN** the wrapper SHALL return `{"error": "route_refused_for_session", "retryable": false}` before contacting any target or applying caller-supplied stale/quarantine overrides
+- **AND** it SHALL log the refused session id at WARNING and declare the tool not LLM-presentable
+- **AND** daemon callers with no runtime session context SHALL retain existing routing behavior and stale/quarantine eligibility gates
+- **AND** Switchboard's direct in-process `route()` calls SHALL remain unchanged, including calls made within a session context
+
 #### Scenario: Staffer registration includes type
 - **WHEN** a staffer registers with the Switchboard at startup
 - **THEN** the registration payload SHALL include `type = "staffer"`

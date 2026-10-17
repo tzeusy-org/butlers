@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,7 +24,20 @@ from pydantic import ValidationError
 from butlers.modules.base import Module
 from butlers.modules.email import EmailConfig, EmailModule
 
+# The retained historical permission-test narratives describe the original enforcement.
+# Effects now refuse unavailable state; the real-lookup availability test below covers
+# bu-30sah4's effect stage, before bu-svqpzo.3 changes remaining shared callers.
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _allow_effects_for_provider_tests(request, monkeypatch):
+    """Provider-only unit tests assume an available grant; gate tests use real reads."""
+    if request.cls is not TestEmailSendPermissionEnforcement:
+        monkeypatch.setattr(
+            "butlers.modules.email.require_permission", AsyncMock(return_value=None)
+        )
+
 
 # Default config registers read-only tools; send_tools=True adds send/reply
 EXPECTED_EMAIL_READ_TOOLS = {
@@ -212,6 +226,38 @@ class TestEmailSendPermissionEnforcement:
 
         assert result["status"] == "sent"
         mock_smtp.assert_called_once()
+
+    async def test_send_rechecks_unavailable_permissions_before_smtp(self) -> None:
+        """Real lookup failures prevent both fresh sends and reply callbacks."""
+        mod = EmailModule()
+        mod._butler_name = "test-butler"
+        pool = AsyncMock()
+        with (
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+            patch.object(mod, "_smtp_send", return_value={"status": "sent"}) as smtp,
+        ):
+            for failure in ("missing", "query", "malformed"):
+                mod._pool = None if failure == "missing" else pool
+                pool.fetchrow.side_effect = (
+                    OSError("private-database-error") if failure == "query" else None
+                )
+                pool.fetchrow.return_value = {"granted": "false", "reason": "private-row-reason"}
+                results = await asyncio.gather(
+                    mod._send_email("recipient@example.com", "private-subject", "private-body"),
+                    mod._reply_to_thread("recipient@example.com", "thread", "private-body"),
+                    return_exceptions=True,
+                )
+                smtp.assert_not_called()
+                from butlers.core.permissions import PermissionUnavailable
+
+                assert all(isinstance(result, PermissionUnavailable) for result in results)
+
+            # There is no cached denial or grant: a fresh retry re-reads the store.
+            for row in (None, {"granted": True, "reason": "owner grant"}):
+                pool.fetchrow.return_value = row
+                result = await mod._send_email("recipient@example.com", "Subject", "Body")
+                assert result["status"] == "sent"
+            assert smtp.call_count == 2
 
 
 class TestEmailModuleExtraStatusFields:

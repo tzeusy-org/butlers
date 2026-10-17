@@ -771,34 +771,6 @@ body {
   }
 }
 
-/* ---------------------------------------------------------------------------
- * Motion utilities
- *
- * Compound transition shortcuts with duration and easing baked in.
- * Prefer these over bare `duration-200 ease-*` pairs so the contract
- * stays single-source.
- *
- * Usage:
- *   .transition-fast   transition: all 150ms cubic-bezier(0.22, 1, 0.36, 1)
- *   .transition-base   transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1)
- *   .transition-slow   transition: all 250ms cubic-bezier(0.22, 1, 0.36, 1)
- *
- * To animate a specific property, combine with a transition-property modifier:
- *   transition-[transform] duration-base ease-out-quart
- *   transition-[opacity] duration-fast ease-out-quart
- * ---------------------------------------------------------------------------*/
-@utility transition-fast {
-  transition: all var(--duration-fast) var(--ease-out-quart);
-}
-
-@utility transition-base {
-  transition: all var(--duration-base) var(--ease-out-quart);
-}
-
-@utility transition-slow {
-  transition: all var(--duration-slow) var(--ease-out-quart);
-}
-
 /* Named duration utilities for use alongside transition-property modifiers.
  * e.g. transition-[transform] duration-base ease-out-quart */
 @utility duration-fast {
@@ -856,24 +828,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Calendar search jump-to flash
+ * Calendar search jump-to highlight
  *
  * Applied transiently (~2.2s) to the calendar entry a user jumped to from the
  * search palette, so the eye lands on it after the grid navigates to its day.
- * Neutral foreground pulse only — no state hues.
+ * Static neutral foreground attention paint — no motion or state hues.
  * ---------------------------------------------------------------------------*/
-@keyframes calendar-entry-flash {
-  0% {
-    box-shadow: 0 0 0 2px var(--fg);
-    background-color: oklch(from var(--fg) l c h / 0.12);
-  }
-  100% {
-    box-shadow: 0 0 0 2px transparent;
-    background-color: transparent;
-  }
-}
 .calendar-entry-flash {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
 }
@@ -885,14 +848,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Chat message-search jump-to flash (bu-0ynlk.9)
+ * Chat message-search jump-to highlight (bu-0ynlk.9)
  *
- * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * Same static jump-to-highlight treatment as .calendar-entry-flash above, applied to a
  * message bubble when a conversation_recall / message-search result is
  * opened and scrolled into view.
  * ---------------------------------------------------------------------------*/
 .chat-message-highlight {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
   border-radius: var(--radius-md);
@@ -905,14 +869,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Spend routing-rule jump-to flash (bu-lygbct)
+ * Spend routing-rule jump-to highlight (bu-lygbct)
  *
- * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * Same static jump-to-highlight treatment as .calendar-entry-flash above, applied to a
  * routing-rule row when an audit-log "rule:<id>" target is followed to
  * /spend?rule=<id>.
  * ---------------------------------------------------------------------------*/
 .spend-rule-highlight {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
 }

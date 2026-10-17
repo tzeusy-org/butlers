@@ -24,7 +24,20 @@ from pydantic import ValidationError
 from butlers.modules.base import Module
 from butlers.modules.telegram import TelegramConfig, TelegramModule, _markdown_to_telegram_html
 
+# The retained historical permission-test narratives describe the original enforcement.
+# Effects now refuse unavailable state; the real-lookup availability test below covers
+# bu-30sah4's effect stage, before bu-svqpzo.3 changes remaining shared callers.
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _allow_effects_for_provider_tests(request, monkeypatch):
+    """Provider-only unit tests assume an available grant; gate tests use real reads."""
+    if request.cls is not TestTelegramSendPermissionEnforcement:
+        monkeypatch.setattr(
+            "butlers.modules.telegram.require_permission", AsyncMock(return_value=None)
+        )
+
 
 EXPECTED_TELEGRAM_TOOLS = {
     "telegram_send_message",
@@ -519,10 +532,57 @@ class TestTelegramSendPermissionEnforcement:
         # Gate consulted the matrix with the notify capability.
         assert mock_require.await_args.args[2] == "notify"
 
+    async def test_real_permission_failures_block_all_mutations(self, caplog) -> None:
+        from butlers.core.permissions import PermissionUnavailable
+
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        pool = AsyncMock()
+        client = AsyncMock()
+        response = MagicMock()
+        response.json.return_value = {"ok": True, "result": {"message_id": 45}}
+        client.post.return_value = response
+        with (
+            patch.object(mod, "_get_client", return_value=client),
+            patch.object(mod, "_base_url", return_value="https://example.com/private-token"),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+        ):
+            for failure in ("missing", "query", "malformed"):
+                mod._audit_pool = None if failure == "missing" else pool
+                pool.fetchrow.side_effect = (
+                    OSError("private-database-error") if failure == "query" else None
+                )
+                pool.fetchrow.return_value = {"granted": "false", "reason": "private-row"}
+                calls = (
+                    mod._send_message("private-recipient", "private-body"),
+                    mod._reply_to_message("private-recipient", 1, "private-body"),
+                    mod._edit_message_text("private-recipient", 1, "private-body"),
+                    mod._remove_inline_keyboard("private-recipient", 1),
+                )
+                for call in calls:
+                    with pytest.raises(PermissionUnavailable) as caught:
+                        await call
+                    rendered = repr(caught.value) + caplog.text + repr(audit.await_args_list)
+                    for private in (
+                        "private-recipient",
+                        "private-body",
+                        "private-token",
+                        "private-row",
+                        "private-database-error",
+                    ):
+                        assert private not in rendered
+                client.post.assert_not_awaited()
+                audit.assert_not_awaited()
+                assert "telegram_permission_unavailable" in caplog.text
+            for row in (None, {"granted": True, "reason": "granted"}):
+                pool.fetchrow.return_value = row
+                await mod._send_message("12345", "recovered")
+            assert client.post.await_count == 2
+
     def test_permission_pool_prefers_audit_then_db(self) -> None:
         """_permission_pool prefers the switchboard audit pool, then the butler pool."""
         mod = TelegramModule()
-        # No pools wired → None (fails open).
+        # No pools wired → None (unavailable to the effect gate).
         assert mod._permission_pool() is None
 
         # Butler pool only.

@@ -27,6 +27,8 @@ SELECTORS = {
     "integration": "integration and not nightly and not bench and not perf",
 }
 DIMENSIONS = {"unit": 5, "integration": 6}
+# Generous above every hosted shard cap; keeps advisory medians/sums finite.
+MAX_ADVISORY_FILE_SECONDS = 24 * 60 * 60
 HEX = re.compile(r"[0-9a-f]{64}")
 
 
@@ -262,6 +264,10 @@ def collect_inventory(*, root: Path = ROOT) -> dict:
         "selectors": SELECTORS,
         "nonce": nonce,
         "collected_at": datetime.now(UTC).isoformat(),
+        "file_digests": {
+            name: hashlib.sha256(file_path(name, root).read_bytes()).hexdigest()
+            for name in sorted({name for files in collected["lanes"].values() for name in files})
+        },
     }
     data["digest"] = body_digest(data)
     validate_inventory(data, root=root)
@@ -278,29 +284,60 @@ def check_budgets(data: dict, *, root: Path = ROOT) -> dict[str, int]:
     return counts
 
 
+def weight_runtime(data: dict) -> dict:
+    """Cost compatibility is narrower than authoritative source/run identity."""
+    return {
+        "python": data["identity"]["python"],
+        "lock_digest": data["identity"]["lock_digest"],
+        "selectors": data["selectors"],
+        "pytest_version": data["pytest_version"],
+    }
+
+
+def weight_tracer() -> str | None:
+    """Match the actual shard mode; an unknown setting gets no timing hints."""
+    default = "0" if os.environ.get("GITHUB_EVENT_NAME") == "pull_request" else "1"
+    coverage = os.environ.get("CI_COVERAGE", default)
+    if coverage == "0":
+        return "none"
+    if coverage == "1":
+        return {"ctrace": "CTracer", "sysmon": "SysMonitor"}.get(
+            os.environ.get("CI_COVERAGE_CORE", "ctrace")
+        )
+    return None
+
+
 def partition(data: dict, weights: dict, *, root: Path = ROOT) -> dict:
     """Deterministic LPT; advisory timing can never suppress collected files."""
     validate_inventory(data, root=root)
     degraded = False
+    profile = {}
     try:
-        age = datetime.now(UTC) - datetime.fromisoformat(weights["collected_at"])
+        profile = weights["profiles"][weight_tracer()]
+        age = datetime.now(UTC) - datetime.fromisoformat(profile["collected_at"])
         compatible = (
-            weights["schema"] == "ci-weights.v1"
-            and weights["config_digest"] == data["identity"]["config_digest"]
+            weights["schema"] == "ci-weights.v2"
+            and exact_json(profile["runtime"], weight_runtime(data))
+            and isinstance(profile.get("file_digests"), dict)
             and timedelta(0) <= age <= timedelta(days=14)
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, AttributeError):
         compatible = False
     assignment = {}
     for lane, files in data["lanes"].items():
-        candidate_lanes = weights.get("lanes") if compatible else None
+        candidate_lanes = profile.get("lanes") if compatible else None
         candidates = candidate_lanes.get(lane, {}) if isinstance(candidate_lanes, dict) else {}
         if not isinstance(candidates, dict):
             candidates = {}
         values = {
             name: value
             for name, value in candidates.items()
-            if name in files and type(value) in (int, float) and math.isfinite(value) and value > 0
+            if name in files
+            and type(value) in (int, float)
+            and 0 < value <= MAX_ADVISORY_FILE_SECONDS
+            and isinstance(profile["file_digests"].get(name), str)
+            and HEX.fullmatch(profile["file_digests"][name])
+            and profile["file_digests"][name] == data.get("file_digests", {}).get(name)
         }
         fallback = statistics.median(values.values()) if values else 1.0
         costs = {name: values.get(name, fallback) for name in files}
@@ -487,11 +524,12 @@ def reconcile(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--weights", type=Path)
     args = parser.parse_args()
     try:
         data = collect_inventory()
         counts = check_budgets(data)
-        weights_path = ROOT / ".github/ci-test-weights.json"
+        weights_path = args.weights or ROOT / ".github/ci-test-weights.json"
         assignment = partition(data, load_advisory_weights(weights_path))
         args.output.mkdir(parents=True, exist_ok=True)
         for name, value in (("inventory.json", data), ("assignment.json", assignment)):

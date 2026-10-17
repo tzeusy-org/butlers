@@ -75,7 +75,12 @@ def mint_decision_callback_token(
 
 def parse_decision_callback_token(token: str | object) -> DecisionCallbackToken | None:
     """Extract an *unverified* prompt id and index, only to look the prompt up."""
-    if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_APPROVAL_CALLBACK_DATA_BYTES:
+    if not isinstance(token, str):
+        return None
+    try:
+        if len(token.encode("utf-8")) > MAX_APPROVAL_CALLBACK_DATA_BYTES:
+            return None
+    except UnicodeEncodeError:
         return None
     parts = token.split(":")
     if len(parts) != 4 or parts[0] != DECISION_CALLBACK_PREFIX:

@@ -18,18 +18,24 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
 
+from butlers.core.decision_callbacks import verify_decision_callback_token
 from butlers.jobs.decision_review import DecisionBead, DecisionDigest, compute_decision_digest
 
 IntentSource = Literal["dashboard", "telegram"]
-IntentStatus = Literal["pending", "applying", "applied", "failed"]
+IntentStatus = Literal["pending", "applying", "applied", "failed", "superseded"]
 
 LIVE_STATUSES: frozenset[str] = frozenset({"pending", "applying", "applied"})
+# Two cycles of the enabled development bridge's five-minute export cadence.
+# These operational windows are not a measured worst-case export-lag bound.
+_REOPEN_GRACE = timedelta(minutes=10)
+_REOPEN_SNAPSHOT_AGE = timedelta(minutes=10)
 
 _INTENT_COLUMNS = (
     "id, bead_id, option, source, actor, prompt_id, status, attempts, failure_reason, "
@@ -136,33 +142,136 @@ async def record_decision_intent(
     *digest* defaults to a fresh :func:`compute_decision_digest`; callers that
     already hold one (or tests) pass it in.
     """
-    # A live intent answers first: a repeat tap after the applier closed the
-    # bead (so it has left the digest) is still "already recorded", not invalid.
-    existing = await live_intent(pool, bead_id)
+    digest = digest if digest is not None else compute_decision_digest()
+    async with _intent_transaction(pool) as connection:
+        await _reconcile_reopened(connection, [bead_id], digest)
+        return await _record_locked(
+            connection,
+            bead_id=bead_id,
+            option=option,
+            source=source,
+            actor=actor,
+            prompt_id=prompt_id,
+            digest=digest,
+        )
+
+
+@asynccontextmanager
+async def _intent_transaction(pool: asyncpg.Pool | asyncpg.Connection):
+    async with AsyncExitStack() as stack:
+        connection = (
+            await stack.enter_async_context(pool.acquire())
+            if isinstance(pool, asyncpg.Pool)
+            else pool
+        )
+        refusal = None
+        async with connection.transaction():
+            try:
+                yield connection
+            except DecisionIntentError as exc:
+                # A named choice refusal must not roll back proved reopening
+                # metadata. Database errors still abort the whole transaction.
+                refusal = exc
+        if refusal is not None:
+            raise refusal
+
+
+def _aware(value: datetime | None) -> bool:
+    return isinstance(value, datetime) and value.utcoffset() is not None
+
+
+async def _reconcile_reopened(
+    connection: asyncpg.Connection, bead_ids: list[str], digest: DecisionDigest
+) -> None:
+    # Lock history without a status filter: a waiter must observe the row after
+    # a concurrent applied -> superseded transition, not miss its old prompt.
+    rows = await connection.fetch(
+        f"SELECT {_INTENT_COLUMNS} FROM switchboard.decision_intents "
+        "WHERE bead_id = ANY($1::text[]) ORDER BY bead_id, id FOR UPDATE",
+        sorted(set(bead_ids)),
+    )
+    exported = digest.export_as_of
+    if not (
+        digest.available
+        and _aware(exported)
+        and _aware(digest.checked_at)
+        and timedelta(0) <= digest.checked_at - exported <= _REOPEN_SNAPSHOT_AGE
+    ):
+        return
+    open_beads = {bead.id: bead for bead in digest.open_decisions}
+    for row in rows:
+        bead = open_beads.get(row["bead_id"])
+        finished = row["finished_at"]
+        if (
+            row["status"] == "applied"
+            and bead is not None
+            and _aware(finished)
+            and _aware(bead.updated_at)
+            and finished < bead.updated_at <= exported
+            and exported - finished >= _REOPEN_GRACE
+        ):
+            await connection.execute(
+                "UPDATE switchboard.decision_intents SET status = 'superseded', updated_at = now() "
+                "WHERE id = $1 AND status = 'applied'",
+                row["id"],
+            )
+
+
+async def _record_locked(
+    connection: asyncpg.Connection,
+    *,
+    bead_id: str,
+    option: str,
+    source: IntentSource,
+    actor: str,
+    prompt_id: uuid.UUID | None,
+    digest: DecisionDigest,
+    expected_options: tuple[str, ...] | None = None,
+) -> RecordResult:
+    if prompt_id is not None:
+        consumed = await connection.fetchrow(
+            f"SELECT {_INTENT_COLUMNS} FROM switchboard.decision_intents "
+            "WHERE prompt_id = $1 AND status = 'superseded' LIMIT 1",
+            prompt_id,
+        )
+        if consumed is not None:
+            raise DecisionIntentError(
+                "intent_conflict:superseded",
+                kind="conflict",
+                existing=DecisionIntent.from_row(consumed),
+            )
+    # A live intent still answers before digest validation: after closure an
+    # identical repeat remains already recorded even if the digest is unavailable.
+    existing = await live_intent(connection, bead_id)
     if existing is not None:
         return _same_or_conflict(existing, option)
 
-    bead = find_open_decision(digest if digest is not None else compute_decision_digest(), bead_id)
+    bead = find_open_decision(digest, bead_id)
+    if expected_options is not None and tuple(bead.options or ()) != expected_options:
+        raise DecisionIntentError("options_changed", kind="conflict")
     if option not in (bead.options or ()):
         raise DecisionIntentError("option_not_offered", kind="invalid")
 
     try:
-        row = await pool.fetchrow(
-            f"""
+        # An insert race aborts only this savepoint, so the winner can be read
+        # from the outer transaction without swallowing a failed transaction.
+        async with connection.transaction():
+            row = await connection.fetchrow(
+                f"""
             INSERT INTO switchboard.decision_intents (bead_id, option, source, actor, prompt_id)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING {_INTENT_COLUMNS}
             """,
-            bead_id,
-            option,
-            source,
-            actor,
-            prompt_id,
-        )
+                bead_id,
+                option,
+                source,
+                actor,
+                prompt_id,
+            )
     except asyncpg.UniqueViolationError:
         # A concurrent recorder won the live-intent slot between our read and
         # insert; answer from its row exactly as a sequential repeat would.
-        existing = await live_intent(pool, bead_id)
+        existing = await live_intent(connection, bead_id)
         if existing is None:
             raise
         return _same_or_conflict(existing, option)
@@ -178,17 +287,24 @@ def _same_or_conflict(existing: DecisionIntent, option: str) -> RecordResult:
 
 
 async def latest_intents(
-    pool: asyncpg.Pool | asyncpg.Connection, bead_ids: list[str]
+    pool: asyncpg.Pool | asyncpg.Connection,
+    bead_ids: list[str],
+    *,
+    digest: DecisionDigest | None = None,
 ) -> dict[str, DecisionIntent]:
-    """Map each bead to its live intent, else its most recent failed one."""
+    """Map each bead to its live intent, else its newest terminal history."""
     if not bead_ids:
         return {}
+    if digest is not None:
+        async with _intent_transaction(pool) as connection:
+            await _reconcile_reopened(connection, bead_ids, digest)
+            return await latest_intents(connection, bead_ids)
     rows = await pool.fetch(
         f"""
         SELECT DISTINCT ON (bead_id) {_INTENT_COLUMNS}
         FROM switchboard.decision_intents
         WHERE bead_id = ANY($1::text[])
-        ORDER BY bead_id, (status <> 'failed') DESC, created_at DESC
+        ORDER BY bead_id, (status IN ('pending', 'applying', 'applied')) DESC, created_at DESC
         """,
         bead_ids,
     )
@@ -196,13 +312,11 @@ async def latest_intents(
 
 
 async def get_prompt(
-    pool: asyncpg.Pool | asyncpg.Connection, prompt_id: uuid.UUID
+    pool: asyncpg.Pool | asyncpg.Connection, prompt_id: uuid.UUID, *, for_update: bool = False
 ) -> DecisionPrompt | None:
     row = await pool.fetchrow(
-        """
-        SELECT id, bead_id, options, default_option, created_at, delivery_outcome, delivered_at
-        FROM switchboard.decision_prompts WHERE id = $1
-        """,
+        "SELECT id, bead_id, options, default_option, created_at, delivery_outcome, delivered_at "
+        "FROM switchboard.decision_prompts WHERE id = $1" + (" FOR UPDATE" if for_update else ""),
         prompt_id,
     )
     if row is None:
@@ -242,21 +356,69 @@ async def record_prompt_choice(
     """
     if not 0 <= option_index < len(prompt.options):
         raise DecisionIntentError("option_not_offered", kind="invalid")
-    existing = await live_intent(pool, prompt.bead_id)
-    if existing is not None:
-        return _same_or_conflict(existing, prompt.options[option_index])
     digest = digest if digest is not None else compute_decision_digest()
-    bead = find_open_decision(digest, prompt.bead_id)
-    if tuple(bead.options or ()) != prompt.options:
-        raise DecisionIntentError("options_changed", kind="conflict")
-    return await record_decision_intent(
-        pool,
+    async with _intent_transaction(pool) as connection:
+        return await _record_prompt_choice_locked(connection, prompt, option_index, actor, digest)
+
+
+class InvalidDecisionCallback(Exception):
+    """Authentication refused before any decision mutation."""
+
+
+class DecisionPromptNotFound(Exception):
+    """The requested prompt does not exist."""
+
+
+async def record_verified_prompt_choice(
+    pool: asyncpg.Pool,
+    *,
+    prompt_id: uuid.UUID,
+    option_index: int,
+    token: str,
+    secret: str | bytes,
+    actor: str,
+    digest: DecisionDigest,
+) -> RecordResult:
+    """Authenticate the current prompt generation and hold its lock through commit.
+
+    Authentication errors are deliberately distinct from named business refusals:
+    only an authenticated choice may reconcile reopening metadata.
+    """
+    async with _intent_transaction(pool) as connection:
+        prompt = await get_prompt(connection, prompt_id, for_update=True)
+        if prompt is None:
+            raise DecisionPromptNotFound()
+        verified = verify_decision_callback_token(
+            token, created_at=prompt.created_at, secret=secret
+        )
+        if (
+            verified is None
+            or verified.prompt_id != prompt_id
+            or verified.option_index != option_index
+        ):
+            raise InvalidDecisionCallback()
+        return await _record_prompt_choice_locked(connection, prompt, option_index, actor, digest)
+
+
+async def _record_prompt_choice_locked(
+    connection: asyncpg.Connection,
+    prompt: DecisionPrompt,
+    option_index: int,
+    actor: str,
+    digest: DecisionDigest,
+) -> RecordResult:
+    if not 0 <= option_index < len(prompt.options):
+        raise DecisionIntentError("option_not_offered", kind="invalid")
+    await _reconcile_reopened(connection, [prompt.bead_id], digest)
+    return await _record_locked(
+        connection,
         bead_id=prompt.bead_id,
         option=prompt.options[option_index],
         source="telegram",
         actor=actor,
         prompt_id=prompt.id,
         digest=digest,
+        expected_options=prompt.options,
     )
 
 
@@ -265,6 +427,8 @@ __all__ = [
     "DecisionIntent",
     "DecisionIntentError",
     "DecisionPrompt",
+    "DecisionPromptNotFound",
+    "InvalidDecisionCallback",
     "RecordResult",
     "find_open_decision",
     "get_prompt",
@@ -272,4 +436,5 @@ __all__ = [
     "live_intent",
     "record_decision_intent",
     "record_prompt_choice",
+    "record_verified_prompt_choice",
 ]

@@ -10,8 +10,9 @@ GET /api/ingestion/pipeline?window=24h — pipeline funnel stats (ingested, filt
 
 Stats are sourced from Prometheus via PromQL through
 ``src/butlers/core/prometheus.py``.  Results are cached for 60
-seconds per (window) key.  On any Prometheus failure the endpoint returns
-zeros with ``aggregates_available: false`` — it NEVER returns HTTP 500.
+seconds per (window) key. On any funnel-source failure the endpoint returns
+funnel zeros with ``aggregates_available: false`` — it NEVER returns HTTP 500.
+The bearer-scrub projection has its own availability flag and nullable counts.
 
 "Failure" includes a well-formed response we cannot read: an unparseable or
 non-finite scalar, and an unusable sparkline matrix, both degrade the whole
@@ -458,6 +459,48 @@ async def _fetch_backlog_counts(db: DatabaseManager | None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_BEARER_SCRUB_KINDS = ("auth_code", "reset_link", "magic_link")
+
+
+async def _fetch_bearer_scrub_counts(prom_url: str, window: str) -> dict[str, float] | None:
+    """Read fresh Switchboard scrub-operation estimates, independently of the funnel.
+
+    Only closed kinds and finite non-negative counts leave this boundary. A
+    readable empty vector is measured zero; any unreadable sample invalidates
+    the section. Upstream labels and diagnostics never enter this projection.
+    """
+    query = f"sum by (kind) (increase(butlers_ingest_bearer_scrubbed_total[{window}]))"
+    try:
+        result = await async_query(prom_url, query)
+        if not isinstance(result, list):
+            return None
+        counts = dict.fromkeys(_BEARER_SCRUB_KINDS, 0.0)
+        for sample in result:
+            if not isinstance(sample, dict) or "error" in sample:
+                return None
+            metric, value = sample.get("metric"), sample.get("value")
+            if not isinstance(metric, dict) or metric.get("kind") not in counts:
+                return None
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                return None
+            if type(value[0]) not in (int, float) or not math.isfinite(value[0]):
+                return None
+            if isinstance(value[1], bool) or not isinstance(value[1], (str, int, float)):
+                return None
+            amount = float(value[1])
+            if not math.isfinite(amount) or amount < 0:
+                return None
+            kind = metric["kind"]
+            counts[kind] += amount
+            if not math.isfinite(counts[kind]):
+                return None
+        return counts
+    except Exception:
+        # No raw Prometheus sample, response, or exception text in this section.
+        logger.debug("pipeline_stats: bearer scrub source unavailable")
+        return None
+
+
 async def _get_cached_pipeline_stats(window: str) -> dict:
     """Return cached pipeline stats for the given window (60s TTL).
 
@@ -486,6 +529,9 @@ async def _get_cached_pipeline_stats(window: str) -> dict:
                 "pipeline_stats: unexpected error fetching from Prometheus", exc_info=True
             )
             data = _degraded_response(window)
+
+    counts = await _fetch_bearer_scrub_counts(prom_url, window) if prom_url else None
+    data = {**data, "bearer_scrub_counts": counts, "bearer_scrub_available": counts is not None}
 
     # Update cache
     async with _pipeline_cache_lock:
@@ -547,6 +593,12 @@ async def get_pipeline_stats(
       it is true, every zero above is a zero Prometheus actually reported
       (an empty result set included); the endpoint never substitutes one
       (bu-0m31b)
+
+    Independently available Prometheus scrub projection:
+    - ``bearer_scrub_counts``: finite non-negative operation estimates for the
+      three closed kinds, or null when the scrub source is unreadable
+    - ``bearer_scrub_available``: only true certifies measured scrub counts;
+      failures do not discard independently readable funnel or backlog fields
 
     Plus, independent of Prometheus (bu-g4oiu — DB truth, not windowed/derived):
     - ``failed_total``: current count of ``public.ingestion_events`` rows with

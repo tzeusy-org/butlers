@@ -68,6 +68,7 @@ witness/
 .beads/interaction.jsonl
 .beads/interactions.jsonl
 .beads/.bv.lock
+.beads.gate.lock
 .beads/issues.jsonl
 .beads/issues.export.jsonl
 .beads/dolt-config.log

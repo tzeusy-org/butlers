@@ -1210,7 +1210,7 @@ class TelegramBotConnector:
             return True
 
         status_code, payload = await self._submit_decision_choice(
-            str(parsed.prompt_id), parsed.option_index
+            str(parsed.prompt_id), parsed.option_index, callback_data
         )
         data = payload.get("data") if isinstance(payload, dict) else None
         if status_code == 200 and isinstance(data, dict):
@@ -1268,7 +1268,7 @@ class TelegramBotConnector:
         return (detail if isinstance(detail, dict) else None), False
 
     async def _submit_decision_choice(
-        self, prompt_id: str, option_index: int
+        self, prompt_id: str, option_index: int, token: str
     ) -> tuple[int | None, dict[str, Any] | None]:
         """POST the choice; return ``(status, body)``, or ``(None, None)`` if unreachable."""
         connector_token = self._config.approval_callback_connector_token
@@ -1278,14 +1278,14 @@ class TelegramBotConnector:
             response = await self._http_client.post(
                 f"{self._config.internal_api_url.rstrip('/')}"
                 f"/api/decisions/prompts/{prompt_id}/choose",
-                json={"option_index": option_index},
+                json={"option_index": option_index, "token": token},
                 headers={
                     _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
                     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
                 },
             )
         except Exception:  # noqa: BLE001 -- a callback must never crash polling
-            logger.warning("Telegram decision callback choose route failed", exc_info=True)
+            logger.warning("Telegram decision callback choose route failed")
             return None, None
         try:
             body = response.json()

@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class DecisionBeadSummary(BaseModel):
@@ -49,8 +49,8 @@ class DecisionIntentSummary(BaseModel):
     """A recorded owner choice and its honest apply state (bu-ckkpz.3).
 
     ``status`` is ``pending``/``applying`` (recorded, awaiting the tracker
-    bridge), ``applied`` or ``failed``. ``failure_reason`` and ``last_error``
-    are categorical codes, never raw ``bd`` output.
+    bridge), ``applied``, ``failed`` or ``superseded`` (previous applied history).
+    ``failure_reason`` and ``last_error`` are categorical codes, never raw ``bd`` output.
     """
 
     id: UUID
@@ -79,7 +79,22 @@ class RecordDecisionIntentRequest(BaseModel):
 
 
 class ChooseDecisionPromptRequest(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     option_index: int = Field(ge=0, le=15)
+    token: SecretStr = Field(repr=False)
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def validate_token(cls, value: object) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("invalid_callback_token")
+        try:
+            if len(value.encode("utf-8")) > 64:
+                raise ValueError("invalid_callback_token")
+        except UnicodeEncodeError:
+            raise ValueError("invalid_callback_token") from None
+        return value
 
 
 DecisionBeadSummary.model_rebuild()

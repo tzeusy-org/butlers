@@ -65,11 +65,70 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci_route.py
 
+  inventory:
+    timeout-minutes: 35
+    # Fresh membership, both budgets and the exact attempt assignment are the
+    # only backend prerequisites. Static guards remain mandatory final gates.
+    runs-on: ubuntu-latest
+    needs: [route]
+    if: needs.route.outputs.inventory == 'true'
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CI_COVERAGE: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+
+      - name: Install uv
+        run: python3 scripts/install_ci_uv.py
+
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
+      - name: Install dependencies
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Restore compatible advisory file weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
+
+      - name: Collect one fresh installed pytest inventory and enforce both budgets
+        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
+
+      - name: Upload exact attempt inventory and assignment
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   guards:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; guards owns inventory/budget, preflight owns reconciliation and smoke.
+    # their exact scopes; inventory owns membership/budgets, preflight owns reconciliation and smoke.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
@@ -96,22 +155,7 @@ jobs:
           python-version: "3.12.15"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Set up Node 24
         uses: actions/setup-node@v6
@@ -420,23 +464,6 @@ jobs:
           done <<< "$GUARD_OUTCOMES"
           exit "$failed"
 
-  # Preserve the historic `check` status as a fail-closed fan-in. The
-  # one-time preflight and ten duration-balanced file shards all begin
-  # independently; no broad lane serializes the backend critical path.
-      - name: Collect one fresh installed pytest inventory and enforce both budgets
-        if: needs.route.outputs.inventory == 'true'
-        run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
-
-      - name: Upload exact attempt inventory and assignment
-        if: needs.route.outputs.inventory == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory/*.json
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
-
       - name: Set up Node 24
         if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
@@ -522,22 +549,7 @@ jobs:
           python-version: "3.12.15"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Compute exact environment cache key
         id: environment-key
@@ -689,16 +701,16 @@ jobs:
   check-unit:
     timeout-minutes: 28
     runs-on: ubuntu-latest
-    needs: [route, guards]
+    needs: [route, inventory]
     # Whole-file computed assignment, independently recollected before execution.
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5]
-    if: needs.route.outputs.mode == 'full' && needs.guards.result == 'success'
+    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
 
     env:
-      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
+      CI_COVERAGE: '0'
 
     steps:
       - uses: actions/checkout@v6
@@ -709,22 +721,7 @@ jobs:
           python-version: "3.12.15"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Compute exact environment cache key
         id: environment-key
@@ -776,7 +773,6 @@ jobs:
         # Computed whole-file assignments preserve whole-file fixture lifetime. The selector
         # owns the current marker expression and explicitly keeps xdist loadfile.
         env:
-          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-${{ matrix.shard }}.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}
           CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
@@ -813,31 +809,19 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-      - name: Upload unit shard ${{ matrix.shard }} coverage data
-        if: ${{ always() && env.CI_COVERAGE == '1' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-unit-${{ matrix.shard }}-coverage-data
-          path: |
-            ${{ runner.temp }}/ci-coverage/coverage-unit-${{ matrix.shard }}.data
-            ${{ runner.temp }}/ci-coverage/coverage-unit-${{ matrix.shard }}.data.metadata.json
-          retention-days: 7
-          if-no-files-found: error
-          overwrite: true
-
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
-    needs: [route, guards]
+    needs: [route, inventory]
     # Whole-file computed assignment, independently recollected before execution.
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-    if: needs.route.outputs.mode == 'full' && needs.guards.result == 'success'
+    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
 
     env:
-      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
+      CI_COVERAGE: '0'
 
     steps:
       - uses: actions/checkout@v6
@@ -848,22 +832,7 @@ jobs:
           python-version: "3.12.15"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Compute exact environment cache key
         id: environment-key
@@ -944,10 +913,9 @@ jobs:
           key: ${{ steps.timing-key.outputs.key }}
 
       - name: Integration tests (shard ${{ matrix.shard }})
-        # Guards produces the fresh assignment; this child independently verifies
+        # Inventory produces the fresh assignment; this child independently verifies
         # its actual items before Docker/testcontainers run. Preflight reconciles after all children.
         env:
-          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-${{ matrix.shard }}.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}
           CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -984,33 +952,19 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-      - name: Upload integration shard ${{ matrix.shard }} coverage data
-        if: ${{ always() && env.CI_COVERAGE == '1' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-integration-${{ matrix.shard }}-coverage-data
-          path: |
-            ${{ runner.temp }}/ci-coverage/coverage-integration-${{ matrix.shard }}.data
-            ${{ runner.temp }}/ci-coverage/coverage-integration-${{ matrix.shard }}.data.metadata.json
-          retention-days: 7
-          if-no-files-found: error
-          overwrite: true
-
   check-affected:
     timeout-minutes: 82
     outputs:
       verified: ${{ steps.selected-execution.outputs.verified }}
     # Affected-test lane (bu-v28ho): the route job's evidence when it
     # selected a scoped plan. Runs the planner-selected test paths directly
-    # instead of the full eleven-child matrix. Not part of the coverage-combine
-    # pipeline in `coverage` -- this lane trades combined coverage for wall
-    # time on the PRs where the planner's selection is precise, and the
-    # merge queue's merge_group run still exercises every shard with
-    # coverage before anything lands on main.
+    # instead of the full eleven-child matrix. The merge queue still exercises
+    # every shard before main; owned daily/manual coverage assurance separately
+    # instruments the same complete populations.
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    # Explicit route/guard prerequisites keep the conditional affected lane
-    # from becoming a substitute for a failed classifier or static gate.
+    needs: [route]
+    # Explicit route admission bounds the scoped lane; the required final
+    # verdict still refuses a failed classifier or static guard.
     if: always() && needs.route.result == 'success' && github.event_name == 'pull_request' && needs.route.outputs.mode == 'scoped'
 
     steps:
@@ -1022,22 +976,7 @@ jobs:
           python-version: "3.12.15"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Compute exact environment cache key
         id: environment-key
@@ -1103,7 +1042,7 @@ jobs:
   check:
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected]
+    needs: [route, guards, inventory, check-preflight, check-unit, check-integration, check-affected]
     if: always()
     steps:
       - name: Fail closed from prerequisite verdicts only
@@ -1141,6 +1080,7 @@ jobs:
               expected = {
                   "route",
                   "guards",
+                  "inventory",
                   "check-preflight",
                   "check-unit",
                   "check-integration",
@@ -1202,6 +1142,7 @@ jobs:
               results = {
                   "route": "success",
                   "guards": "success",
+                  "inventory": "success" if mode in {"full", "push"} else "skipped",
                   "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
                   "check-affected": "success" if mode == "scoped" else "skipped",
                   "check-unit": "success" if mode == "full" else "skipped",
@@ -1216,208 +1157,11 @@ jobs:
           raise SystemExit(0 if passed else 1)
           PY
 
-  coverage:
-    timeout-minutes: 16
-    runs-on: ubuntu-latest
-    # Visible reporting only; required check/guards/frontend never await it.
-    # always() avoids skip propagation from the shards' intentionally skipped plan.
-    needs: [check-unit, check-integration]
-    if: github.event_name == 'merge_group' && needs.check-unit.result == 'success' && needs.check-integration.result == 'success'
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies for coverage aggregation
-        run: python3 scripts/ci_environment.py prepare
-
-      - name: Download generated inventory and assignment
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-
-      - name: Download unit shard 1 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-unit-1-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/unit-1
-
-      - name: Download unit shard 2 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-unit-2-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/unit-2
-
-      - name: Download unit shard 3 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-unit-3-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/unit-3
-
-      - name: Download unit shard 4 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-unit-4-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/unit-4
-
-      - name: Download unit shard 5 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-unit-5-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/unit-5
-
-      - name: Download integration shard 1 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-1-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-1
-
-      - name: Download integration shard 2 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-2-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-2
-
-      - name: Download integration shard 3 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-3-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-3
-
-      - name: Download integration shard 4 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-4-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-4
-
-      - name: Download integration shard 5 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-5-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-5
-
-      - name: Download integration shard 6 coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-integration-6-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/integration-6
-
-      - name: Combine coverage from all independent test shards
-        id: coverage
-        env:
-          UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
-          UNIT_2_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-2/coverage-unit-2.data
-          UNIT_3_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-3/coverage-unit-3.data
-          UNIT_4_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-4/coverage-unit-4.data
-          UNIT_5_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-5/coverage-unit-5.data
-          INTEGRATION_1_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-1/coverage-integration-1.data
-          INTEGRATION_2_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-2/coverage-integration-2.data
-          INTEGRATION_3_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-3/coverage-integration-3.data
-          INTEGRATION_4_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-4/coverage-integration-4.data
-          INTEGRATION_6_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-6/coverage-integration-6.data
-          INTEGRATION_5_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-5/coverage-integration-5.data
-          COMBINED_COVERAGE: ${{ runner.temp }}/ci-coverage/coverage-combined.data
-          COMBINED_REPORT: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
-        run: |
-          mkdir -p "$(dirname "$COMBINED_COVERAGE")" "$(dirname "$COMBINED_REPORT")"
-          rm -f "$COMBINED_COVERAGE" "$COMBINED_REPORT"
-          uv run python scripts/check_ci_coverage.py \
-            --input-root "${RUNNER_TEMP}/ci-coverage" \
-            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
-            --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT"
-          uv run coverage combine --data-file="$COMBINED_COVERAGE" \
-            "$UNIT_1_COVERAGE" \
-            "$UNIT_2_COVERAGE" \
-            "$UNIT_3_COVERAGE" \
-            "$UNIT_4_COVERAGE" \
-            "$UNIT_5_COVERAGE" \
-            "$INTEGRATION_1_COVERAGE" \
-            "$INTEGRATION_2_COVERAGE" \
-            "$INTEGRATION_3_COVERAGE" \
-            "$INTEGRATION_4_COVERAGE" \
-            "$INTEGRATION_5_COVERAGE" \
-            "$INTEGRATION_6_COVERAGE"
-          uv run coverage json --data-file="$COMBINED_COVERAGE" -o "$COMBINED_REPORT"
-          uv run coverage report --data-file="$COMBINED_COVERAGE" --show-missing
-          export COMBINED_REPORT
-          COVERAGE=$(python3 -c 'import json, os; print(round(json.load(open(os.environ["COMBINED_REPORT"]))["totals"]["percent_covered"]))')
-          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
-          # Color thresholds: green >=80, yellow >=60, red <60.
-          if [ "$COVERAGE" -ge 80 ]; then
-            echo "color=brightgreen" >> "$GITHUB_OUTPUT"
-          elif [ "$COVERAGE" -ge 60 ]; then
-            echo "color=yellow" >> "$GITHUB_OUTPUT"
-          else
-            echo "color=red" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload combined coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-combined-coverage-report
-          path: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
-          retention-days: 14
-          if-no-files-found: warn
-          overwrite: true
-
-      - name: Update coverage badge
-        # Shards no longer run on push:main, so the merge queue's merge_group run
-        # is the lane that still has coverage data for the tree about to land.
-        # merge_group runs execute in the repository context and see repository
-        # secrets; dynamic-badges-action needs only the gist secrets, not the ref.
-        if: ${{ success() }}
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ secrets.COVERAGE_GIST_ID }}
-          filename: butlers-coverage.json
-          label: coverage
-          message: ${{ steps.coverage.outputs.percentage }}%
-          color: ${{ steps.coverage.outputs.color }}
-
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    if: needs.route.outputs.frontend == 'true' && needs.guards.result == 'success'
+    needs: [route]
+    if: needs.route.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:

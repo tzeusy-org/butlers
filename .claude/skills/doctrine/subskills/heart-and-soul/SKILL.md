@@ -35,17 +35,14 @@ The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge
 
 Consult `about/heart-and-soul/README.md` for the canonical reading order and usage guide.
 
-## Non-Negotiable Rules (from vision.md)
+## Non-Negotiable Rules
 
-These are the load-bearing constraints. Violating any of them means the change does not ship.
-
-1. **User-federated**: one user, one instance, full sovereignty. No multi-tenancy.
-2. **Modules only add tools**: they never touch core infrastructure.
-3. **Inter-butler communication is MCP-only through the Switchboard**: no shared memory, no direct calls, no schema cross-access.
-4. **Daemon is deterministic infrastructure; intelligence is in ephemeral LLM sessions**: no reasoning in the daemon.
-5. **Git-based config is the source of truth for butler identity**: personality, schedule, modules, manifesto live in `roster/`.
-6. **Each butler has a manifesto that governs its scope and personality**: features must align with the manifesto.
-7. **Transport is connector responsibility; butlers never know about transport details**: connectors normalize, butlers receive structured requests.
+Read the seven rules in `about/heart-and-soul/vision.md`; do not rely on a copy.
+Since 2026-10-14 the doctrine describes goal-based reasoning: one lead per goal,
+optional depth-1 children, grants derived from goal origin and enforced by the
+Switchboard broker (RFC 0038). Discovery and task prompts never confer
+authority. The code reaches this design in one hard cutover; until then the
+classify-and-route path is frozen to fixes.
 
 ## Do Not Use This Skill For
 

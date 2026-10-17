@@ -1,0 +1,507 @@
+# Full current-source coverage with genuine schedule/manual/PR event provenance.
+# Owns full coverage; required CI runs the same selected tests without instrumentation.
+name: CI coverage assurance
+on:
+  schedule:
+    - cron: 37 19 * * *
+  workflow_dispatch: null
+  pull_request:
+    paths:
+      - .github/workflows/ci.yml
+      - .github/workflows/ci-coverage.yml
+      - .github/actions/ci-python-environment/**
+      - scripts/check_ci_coverage.py
+      - scripts/check_ci_test_shards.py
+      - scripts/ci_partition.py
+      - scripts/ci_weight_candidates.py
+      - .github/ci-test-weights.json
+      - scripts/ci_inventory_collector.py
+      - scripts/ci_preflight_reconcile.py
+      - scripts/ci_shard_observer.py
+      - scripts/ci_environment.py
+      - scripts/install_ci_uv.py
+      - scripts/summarize_junit_durations.py
+      - src/butlers/testing/**
+      - tests/contracts/test_ci_test_targets.py
+      - tests/scripts/test_ci_partition.py
+      - tests/scripts/test_check_ci_test_shards.py
+      - pyproject.toml
+      - uv.lock
+      - .coveragerc
+      - conftest.py
+permissions:
+  contents: read
+env:
+  UV_PYTHON: 3.12.15
+  CI_COVERAGE: '1'
+concurrency:
+  group: CI-coverage-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  coverage-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+      - name: Restore compatible advisory file weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
+      - name: Collect full current inventory
+        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
+      - name: Upload exact attempt inventory and assignment
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+  coverage-shards:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    needs:
+      - coverage-inventory
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: unit
+            shard: 1
+            timeout: 28
+          - lane: unit
+            shard: 2
+            timeout: 28
+          - lane: unit
+            shard: 3
+            timeout: 28
+          - lane: unit
+            shard: 4
+            timeout: 28
+          - lane: unit
+            shard: 5
+            timeout: 28
+          - lane: integration
+            shard: 1
+            timeout: 36
+          - lane: integration
+            shard: 2
+            timeout: 36
+          - lane: integration
+            shard: 3
+            timeout: 36
+          - lane: integration
+            shard: 4
+            timeout: 36
+          - lane: integration
+            shard: 5
+            timeout: 36
+          - lane: integration
+            shard: 6
+            timeout: 36
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+        with:
+          request-observer: 'true'
+      - name: Free disk space before testcontainers
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h /
+          MIN_FREE_GB=30
+          available_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+          case "$available_kib" in
+            ''|*[!0-9]*)
+              echo "::error::could not determine free disk space"
+              exit 1
+              ;;
+          esac
+          available_gb=$((available_kib / 1024 / 1024))
+          if [ "$available_gb" -lt "$MIN_FREE_GB" ]; then
+            echo "Cleaning disk: ${available_gb} GiB is below ${MIN_FREE_GB} GiB."
+            sudo rm -rf /usr/local/lib/android
+            sudo rm -rf /usr/share/dotnet
+            sudo rm -rf /opt/ghc
+            sudo rm -rf /usr/local/.ghcup
+            sudo rm -rf /usr/share/swift
+            sudo rm -rf /usr/local/share/boost
+            sudo apt-get clean -q
+            docker image prune -f --filter "until=1h" || true
+          else
+            echo "Skipping disk cleanup: ${available_gb} GiB meets ${MIN_FREE_GB} GiB floor."
+          fi
+          echo "Disk usage after cleanup decision:"
+          df -h /
+        if: matrix.lane == 'integration'
+      - name: Download current inventory and computed assignment
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane ${{ matrix.lane }} --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory")"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+      - name: Run the complete assigned covered shard
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
+          TESTCONTAINERS_RYUK_DISABLED: ${{ matrix.lane == 'integration' && 'true' || 'false' }}
+        run: uv run python scripts/check_ci_test_shards.py run --lane ${{ matrix.lane }} --shard ${{ matrix.shard
+          }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+      - name: Prepare ${{ matrix.lane }} shard ${{ matrix.shard }} duration evidence
+        if: always()
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt" \
+            --limit 25
+      - name: Upload complete covered execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.lane }}-${{ matrix.shard }}-test-evidence
+          path: |
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/runner-observation.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/condensation-refusal-*.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload raw covered shard inputs
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.lane }}-${{ matrix.shard }}-coverage-data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data.metadata.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+  coverage-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 27
+    needs:
+      - coverage-inventory
+      - coverage-shards
+    if: always()
+    steps:
+      - name: Require every coverage prerequisite
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          expected = {'coverage-shards', 'coverage-inventory'}
+          valid = isinstance(needs, dict) and set(needs) == expected
+          valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
+          raise SystemExit(0 if valid else 1)
+          PY
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+        with:
+          request-observer: 'true'
+      - name: Download fresh full inventory
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory
+      - name: Download all eleven child test receipts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-receipts
+      - name: Reconcile all eleven covered execution populations
+        id: reconcile
+        env:
+          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
+        run: |
+          uv run --no-sync python scripts/ci_preflight_reconcile.py \
+            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
+            --receipts "${RUNNER_TEMP}/ci-test-receipts" \
+            --output "${RUNNER_TEMP}/ci-artifacts/smoke"
+      - name: Smoke tests (fast gate + release evidence)
+        id: smoke
+        env:
+          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: |
+          mkdir -p "$SMOKE_EVIDENCE_DIR"
+          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
+
+          START_TS=$(date +%s)
+          set +e
+          $SMOKE_CMD --junit-xml="$SMOKE_EVIDENCE_DIR/raw-junit.xml" 2>&1 | tee "$SMOKE_EVIDENCE_DIR/smoke.log"
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+          END_TS=$(date +%s)
+          DURATION_S=$((END_TS - START_TS))
+          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
+
+          # Write release-evidence JSON and emit a clearly-formatted log line.
+          SMOKE_EXIT_VAL=$SMOKE_EXIT \
+          SMOKE_SHA="${{ github.sha }}" \
+          SMOKE_DURATION=$DURATION_S \
+          SMOKE_STATUS=$STATUS \
+          SMOKE_CMD_VAL="$SMOKE_CMD" \
+          SMOKE_EVIDENCE_DIR="$SMOKE_EVIDENCE_DIR" \
+          python3 << 'PYEOF'
+          import json, os, sys, xml.etree.ElementTree as ET
+
+          sha = os.environ["SMOKE_SHA"]
+          duration_s = int(os.environ["SMOKE_DURATION"])
+          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
+          status = os.environ["SMOKE_STATUS"]
+          cmd = os.environ["SMOKE_CMD_VAL"]
+          evidence_dir = os.environ["SMOKE_EVIDENCE_DIR"]
+
+          try:
+              root = ET.parse(os.path.join(evidence_dir, "raw-junit.xml")).getroot()
+              skipped_classes = sorted({
+                  tc.get("classname") or tc.get("name", "unknown")
+                  for tc in root.findall(".//testcase")
+                  if tc.find("skipped") is not None
+              })
+          except (ET.ParseError, OSError) as exc:
+              print(exc, file=sys.stderr)
+              skipped_classes = ["unavailable"]
+
+          evidence = {
+              "cmd": cmd,
+              "sha": sha,
+              "duration_s": duration_s,
+              "status": status,
+              "exit_code": exit_code,
+              "skipped_classes": skipped_classes,
+          }
+          with open(os.path.join(evidence_dir, "release-evidence.json"), "w") as f:
+              json.dump(evidence, f, indent=2)
+
+          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
+          print()
+          print(json.dumps(evidence, indent=2))
+          PYEOF
+
+          exit "$SMOKE_EXIT"
+        if: steps.reconcile.outputs.smoke_covered != 'true'
+      - name: Prepare smoke test duration evidence
+        if: ${{ always() && steps.smoke.outcome != 'skipped' }}
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/smoke/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/smoke/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/smoke/top-durations.txt" \
+            --limit 25
+      - name: Upload complete execution reconciliation
+        if: always() && steps.reconcile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coverage-execution-proof
+          path: ${{ runner.temp }}/ci-artifacts/smoke/reconciliation.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload smoke release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-release-evidence
+          path: ${{ runner.temp }}/ci-artifacts/smoke/release-evidence.json
+          retention-days: 30
+          if-no-files-found: warn
+          overwrite: true
+      - name: Upload smoke test evidence
+        if: ${{ always() && steps.smoke.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-test-evidence
+          path: |
+            ${{ runner.temp }}/ci-artifacts/smoke/junit.xml
+            ${{ runner.temp }}/ci-artifacts/smoke/top-durations.txt
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+  coverage-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    needs:
+      - coverage-inventory
+      - coverage-shards
+      - coverage-preflight
+    if: always()
+    steps:
+      - name: Require every coverage prerequisite
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          expected = {'coverage-shards', 'coverage-preflight', 'coverage-inventory'}
+          valid = isinstance(needs, dict) and set(needs) == expected
+          valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
+          raise SystemExit(0 if valid else 1)
+          PY
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+      - name: Download generated inventory and assignment
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory
+      - name: Download unit shard 1 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-1-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-1
+      - name: Download unit shard 2 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-2-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-2
+      - name: Download unit shard 3 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-3-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-3
+      - name: Download unit shard 4 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-4-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-4
+      - name: Download unit shard 5 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-5-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-5
+      - name: Download integration shard 1 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-1-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-1
+      - name: Download integration shard 2 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-2-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-2
+      - name: Download integration shard 3 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-3-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-3
+      - name: Download integration shard 4 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-4-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-4
+      - name: Download integration shard 5 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-5-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-5
+      - name: Download integration shard 6 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-6-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-6
+      - name: Combine coverage from all independent test shards
+        id: coverage
+        env:
+          UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
+          UNIT_2_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-2/coverage-unit-2.data
+          UNIT_3_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-3/coverage-unit-3.data
+          UNIT_4_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-4/coverage-unit-4.data
+          UNIT_5_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-5/coverage-unit-5.data
+          INTEGRATION_1_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-1/coverage-integration-1.data
+          INTEGRATION_2_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-2/coverage-integration-2.data
+          INTEGRATION_3_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-3/coverage-integration-3.data
+          INTEGRATION_4_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-4/coverage-integration-4.data
+          INTEGRATION_6_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-6/coverage-integration-6.data
+          INTEGRATION_5_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-5/coverage-integration-5.data
+          COMBINED_COVERAGE: ${{ runner.temp }}/ci-coverage/coverage-combined.data
+          COMBINED_REPORT: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
+        run: |
+          mkdir -p "$(dirname "$COMBINED_COVERAGE")" "$(dirname "$COMBINED_REPORT")"
+          rm -f "$COMBINED_COVERAGE" "$COMBINED_REPORT"
+          uv run python scripts/check_ci_coverage.py \
+            --input-root "${RUNNER_TEMP}/ci-coverage" \
+            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
+            --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --event "$GITHUB_EVENT_NAME"
+          uv run coverage combine --data-file="$COMBINED_COVERAGE" \
+            "$UNIT_1_COVERAGE" \
+            "$UNIT_2_COVERAGE" \
+            "$UNIT_3_COVERAGE" \
+            "$UNIT_4_COVERAGE" \
+            "$UNIT_5_COVERAGE" \
+            "$INTEGRATION_1_COVERAGE" \
+            "$INTEGRATION_2_COVERAGE" \
+            "$INTEGRATION_3_COVERAGE" \
+            "$INTEGRATION_4_COVERAGE" \
+            "$INTEGRATION_5_COVERAGE" \
+            "$INTEGRATION_6_COVERAGE"
+          uv run coverage json --data-file="$COMBINED_COVERAGE" -o "$COMBINED_REPORT"
+          uv run coverage report --data-file="$COMBINED_COVERAGE" --show-missing
+          export COMBINED_REPORT
+          COVERAGE=$(python3 -c 'import json, os; print(round(json.load(open(os.environ["COMBINED_REPORT"]))["totals"]["percent_covered"]))')
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          # Color thresholds: green >=80, yellow >=60, red <60.
+          if [ "$COVERAGE" -ge 80 ]; then
+            echo "color=brightgreen" >> "$GITHUB_OUTPUT"
+          elif [ "$COVERAGE" -ge 60 ]; then
+            echo "color=yellow" >> "$GITHUB_OUTPUT"
+          else
+            echo "color=red" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-combined-coverage-report
+          path: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Update coverage badge
+        if: ${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name
+          == 'workflow_dispatch') }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: butlers-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percentage }}%
+          color: ${{ steps.coverage.outputs.color }}

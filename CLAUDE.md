@@ -20,6 +20,7 @@ Detail belongs in the destinations below — add it there, not here.
 | Identity & entity resolution (`public.entities`, `relationship.entity_facts`, `notify()`) | `docs/concepts/identity-model.md` |
 | Butler daemon internals, runtime config seeding | `docs/architecture/butler-daemon.md`, `docs/concepts/butler-lifecycle.md` |
 | Memory subsystem design | `docs/modules/memory.md` |
+| Goal runtime and capability grants (hard cutover pending; classify-and-route is frozen to fixes) | `about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md` |
 | Debugging a dev-stack session/routing failure | `butlers-tooling` skill → `butler-dev-debug` subskill |
 
 ## Repo Root Discipline (NON-NEGOTIABLE)

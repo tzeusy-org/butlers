@@ -340,7 +340,7 @@ function MindMapsProgressPanel({
                           aria-label={`${pct}% mastered`}
                         >
                           <div
-                            className="h-full bg-primary rounded-full transition-all"
+                            className="h-full bg-primary rounded-full"
                             style={{ width: `${pct}%` }}
                             data-testid="mastery-progress-bar"
                           />

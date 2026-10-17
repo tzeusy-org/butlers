@@ -773,3 +773,56 @@ def test_run_shard_retains_auto_workers_for_integration(
         == 0
     )
     assert captured["command"][captured["command"].index("-n") + 1] == "auto"
+
+
+def test_run_shard_binds_coverage_to_the_assigned_manifest_not_the_timing_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A compatible cached timing receipt reorders execution. The coverage
+    # reporter still recomputes assigned_files() and requires that exact list,
+    # so the stamped metadata must carry the assignment, not the schedule.
+    import ci_partition
+
+    monkeypatch.setenv("CI_COVERAGE", "1")
+    subprocess_run = subprocess.run
+    for name in ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py"):
+        _write_test_file(tmp_path, name)
+    _computed_runner_fixture(monkeypatch, tmp_path)
+    inventory = ci_partition.collect_inventory(root=tmp_path)
+    weights = ci_partition.load_advisory_weights(tmp_path / ".github/ci-test-weights.json")
+    assignment = ci_partition.partition(inventory, weights, root=tmp_path)
+    by_shard = {
+        index: ci_partition.assigned_files(
+            inventory, assignment, lane="unit", index=index, root=tmp_path
+        )
+        for index in range(1, shards.LANES["unit"].shard_count + 1)
+    }
+    shard, assigned = next((index, files) for index, files in by_shard.items() if len(files) > 1)
+    scheduled = list(reversed(assigned))
+    monkeypatch.setattr(shards, "duration_order", lambda files, **kwargs: (scheduled, "compatible"))
+    coverage_file = tmp_path / "coverage" / f"coverage-unit-{shard}.data"
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git" or "--collect-only" in command:
+            return subprocess_run(command, **kwargs)
+        captured["env"] = kwargs["env"]
+        coverage_file.write_bytes(b"coverage data")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(shards.subprocess, "run", fake_run)
+    assert (
+        shards.run_shard(
+            lane="unit",
+            shard=shard,
+            repo_root=tmp_path,
+            coverage_file=coverage_file,
+            evidence_dir=tmp_path / "evidence",
+        )
+        == 0
+    )
+
+    assert json.loads(captured["env"]["CI_SHARD_CONTEXT"])["files"] == scheduled
+    metadata = json.loads(coverage_file.with_suffix(".data.metadata.json").read_text())
+    assert metadata["test_files"] == assigned
+    assert metadata["test_files"] != scheduled

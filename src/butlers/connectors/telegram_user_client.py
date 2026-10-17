@@ -90,7 +90,7 @@ from butlers.credential_store import (
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env, is_db_unreachable
-from butlers.ingestion_bearer_scrub import scrub_envelope
+from butlers.ingestion_bearer_scrub import is_auth_service_sender, scrub_envelope
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
@@ -1014,6 +1014,10 @@ class TelegramUserClientConnector:
                     weight=sender_weight,
                     participant_count=_participant_count if _participant_count > 0 else None,
                     chat_type=_chat_type,
+                    provider_domain="telegram",
+                    aggressive=any(
+                        is_auth_service_sender({"identity": sid}) for sid in _new_sender_ids
+                    ),
                 )
                 if d_result.verdict == "IGNORE":
                     logger.debug(
@@ -1392,6 +1396,8 @@ class TelegramUserClientConnector:
                             _live_participant_count if _live_participant_count > 0 else None
                         ),
                         chat_type=_live_chat_type,
+                        provider_domain="telegram",
+                        aggressive=is_auth_service_sender({"identity": sender_id}),
                     )
                     if d_result.verdict == "IGNORE":
                         logger.debug(

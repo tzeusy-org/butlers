@@ -4,7 +4,7 @@
 
 A non-standard-lens run of the JARVIS pursuit, aimed at the owner's goal: clean up and simplify the butlers platform. The question for every lens was what can be deleted, merged, collapsed or made single-home without weakening a guarantee. Eighteen read-only agents measured and audited the platform; a critic tried to falsify the boldest claims. 74 candidate moves reduce to fifteen ranked moves, eight owner decisions and eighteen vetted follow-ups, deduplicated against each other, every non-closed bead and the run-17 SDLC epic.
 
-[Structured evidence](2026-10-13-simplification-pursuit-data.json)
+Structured evidence: `git show b747a55a530364d987fb37457c343193e9362fe7:docs/redesigns/2026-10-13-simplification-pursuit-data.json` (removed from the tree by run 20 under the two-newest-runs rule).
 
 ## Decision in view
 
@@ -183,5 +183,5 @@ The lenses left 101 notes on existing beads (stale, under-scoped, superseded). N
 
 - Orchestration: 18 agents in 9 batches of 2, about 55 minutes apart (never more than 2 in flight). The orchestrating session was interrupted after batch 6; batches 7-9 resumed from a new session against the durable harvest file, with no agent lost or re-run. Workflow runs `wf_270c6765-e10`, `wf_86440d47-4be`, `wf_dc0361e5-8e7`, `wf_de45004d-b78`; zero agent errors. Models: opus/high for measurement, audits, designs and critique; sonnet/high for the QC, frontend, knowledge and observability lenses.
 - Agents were read-only except for scratch files outside the tree; measurement used `rg`, `wc`, AST and radon scans and `git log`. No test suite, DB or live stack was run, so LOC payoffs are static counts; each owning bead measures its own deletion.
-- Access: `jq '.audits["<lens>"]' docs/redesigns/2026-10-13-simplification-pursuit-data.json`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
+- Access: `git show b747a55a530364d987fb37457c343193e9362fe7:docs/redesigns/2026-10-13-simplification-pursuit-data.json | jq '.audits["<lens>"]'`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
 - Retention: this PR removes `2026-10-06-jarvis-pursuit-data.json` from the tree per the two-newest-runs rule; read it with `git show fb0dad17316c0b20869e7b4de97ea0ba97fbb1a6:docs/redesigns/2026-10-06-jarvis-pursuit-data.json`.

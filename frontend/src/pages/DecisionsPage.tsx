@@ -102,6 +102,8 @@ function DecisionIntentStatus({ intent }: { intent: DecisionIntentSummary }) {
   let text: string;
   if (intent.status === "applied") {
     text = `Applied: ${intent.option}.`;
+  } else if (intent.status === "superseded") {
+    text = `Previous choice superseded after reopening: ${intent.option}.`;
   } else if (intent.status === "failed") {
     text = `Applying ${intent.option} failed: ${formatReason(intent.failure_reason ?? "unknown")}.`;
   } else {

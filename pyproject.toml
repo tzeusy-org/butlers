@@ -128,7 +128,11 @@ pythonpath = ["."]
 # --dist loadfile: keeps tests from the same file on the same worker so that
 #   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
 #   are not torn down and recreated across workers mid-module.
-addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
+# -p tests.quarantine: deselects the flaky tests listed in
+#   tests/quarantine.json; `--quarantined` runs only them (docs/testing/quarantine.md).
+# -p tests.log_isolation: detaches butler DB log handlers a test attached to the
+#   root logger and never shut down, so they cannot leak into later tests.
+addopts = "--import-mode=importlib -p tests.quarantine -p tests.log_isolation -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",

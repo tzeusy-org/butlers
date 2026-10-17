@@ -104,6 +104,8 @@ Add to `src/butlers/modules/` and ensure the module registry discovers it. The r
 ## Key Rules
 
 - Modules ONLY add tools — never modify core infrastructure
+- Every tool needs a docstring: it is the MCP description, and strict providers reject a tool
+  without one (`tests/contracts/test_tool_descriptions.py` enforces it)
 - Module dependencies are resolved via topological sort
 - Config is validated via Pydantic before `register_tools()` is called
 - Blocking I/O (HTTP calls) must use `asyncio.to_thread` or async HTTP clients

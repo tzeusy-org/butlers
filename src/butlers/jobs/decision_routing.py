@@ -80,24 +80,39 @@ def _dedup_key(bead_id: str) -> str:
     return f"decision_prompt:{bead_id}"
 
 
-def _ordered_candidates(
+@dataclass(frozen=True)
+class _CandidateSelection:
+    candidates: list[DecisionBead]
+    skipped_unsendable: int
+
+
+def _select_candidates(
     digest: DecisionDigest, *, prompted: set[str], decided: set[str]
-) -> list[DecisionBead]:
+) -> _CandidateSelection:
     escalated = {hit.decision_id for hit in digest.escalations}
-    eligible = [
-        bead
-        for bead in digest.open_decisions
-        if bead.structured_details_available
-        and bead.options
-        and len(bead.options) <= MAX_DECISION_OPTIONS
-        and all(len(option) <= _MAX_OPTION_CHARS for option in bead.options)
-        and len(compose_prompt_message(bead)) <= _MAX_TELEGRAM_TEXT_CHARS
-        and bead.id not in prompted
-        and bead.id not in decided
-    ]
+    eligible = []
+    skipped = set()
+    for bead in digest.open_decisions:
+        if (
+            not bead.structured_details_available
+            or not bead.options
+            or len(bead.options) > MAX_DECISION_OPTIONS
+            or bead.id in prompted
+            or bead.id in decided
+        ):
+            continue
+        if (
+            any(len(option) > _MAX_OPTION_CHARS for option in bead.options)
+            or len(compose_prompt_message(bead)) > _MAX_TELEGRAM_TEXT_CHARS
+        ):
+            skipped.add(bead.id)
+        else:
+            eligible.append(bead)
     # open_decisions is already oldest-first; a stable sort keeps that order
     # within each group.
-    return sorted(eligible, key=lambda bead: bead.id not in escalated)
+    return _CandidateSelection(
+        sorted(eligible, key=lambda bead: bead.id not in escalated), len(skipped)
+    )
 
 
 def _button_label(index: int, option: str) -> str:
@@ -363,11 +378,13 @@ async def run_decision_routing(
             bead_ids,
         )
     }
-    candidates = _ordered_candidates(digest, prompted=prompted, decided=decided)
+    selection = _select_candidates(digest, prompted=prompted, decided=decided)
+    candidates = selection.candidates
     summary: dict[str, Any] = {
         "enabled": True,
         "available": True,
         "candidates": len(candidates),
+        "skipped_unsendable": selection.skipped_unsendable,
         "outcomes": {},
     }
     if not candidates:

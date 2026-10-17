@@ -33,7 +33,7 @@ import re
 import shutil
 import sys
 import warnings
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 import structlog
@@ -52,9 +52,17 @@ warnings.filterwarnings("ignore", message=r"websockets\.server\.WebSocketServerP
 _butler_context: ContextVar[str | None] = ContextVar("butler_name", default=None)
 
 
-def set_butler_context(name: str) -> None:
-    """Set the butler name for the current async context."""
-    _butler_context.set(name)
+def set_butler_context(name: str) -> Token[str | None]:
+    """Set the butler name for the current async context.
+
+    Returns the token a scoped caller passes to :func:`reset_butler_context`.
+    """
+    return _butler_context.set(name)
+
+
+def reset_butler_context(token: Token[str | None]) -> None:
+    """Restore the butler name that was current before ``set_butler_context``."""
+    _butler_context.reset(token)
 
 
 def get_butler_context() -> str | None:
