@@ -247,17 +247,17 @@ a later non-suppressed cycle.
 
 ### Requirement: Context-Bus Gating of the Delivery Cycle
 The delivery cycle SHALL consult the situational context bus
-(`public.user_context`) for an active `dnd`, `meeting`, `sleeping`, or
-`traveling` signal, deterministically, as an additional suppression input
-alongside the global Owner Attention Policy. When more than one such signal
-is active, precedence is `dnd`, then `meeting`, then `sleeping`, then
-`traveling` — the first of these, in that order, with an active
+(`public.user_context`) for an active `dnd`, `focused`, `meeting`,
+`sleeping`, or `traveling` signal, deterministically, as an additional
+suppression input alongside the global Owner Attention Policy. When more than
+one such signal is active, precedence is `dnd`, then `focused`, then
+`meeting`, then `sleeping`, then `traveling` — the first of these, in that order, with an active
 non-max-held instance wins and is reported as the suppression signal.
 
 Each signal type has its own max-hold TTL bounding how long that signal
 alone may suppress routine delivery, independent of the signal's own (often
-much longer) context-bus expiry: `dnd` 4 hours, `meeting` 2 hours, `sleeping`
-10 hours, `traveling` 6 hours. A signal whose `set_at` is older than its
+much longer) context-bus expiry: `dnd` 4 hours, `focused` 4 hours, `meeting` 2
+hours, `sleeping` 10 hours, `traveling` 6 hours. A signal whose `set_at` is older than its
 max-hold TTL, relative to the delivery cycle's `now`, no longer suppresses
 delivery even while it otherwise remains active on the context bus — this
 exists because `traveling` may legitimately stay active for up to 30 days
@@ -274,11 +274,11 @@ silently queue for the length of a trip.
   `reason="context_bus:dnd"`
 
 #### Scenario: meeting or traveling signal suppresses like dnd/sleeping
-- **WHEN** `public.user_context` has an active `meeting` or `traveling`
+- **WHEN** `public.user_context` has an active `focused`, `meeting` or `traveling`
   signal within its max-hold TTL, and no higher-precedence signal is active
 - **AND** no pending candidate is priority>=90
-- **THEN** the cycle is suppressed with `reason="context_bus:meeting"` (or
-  `"context_bus:traveling"`), exactly as `dnd`/`sleeping` suppress today
+- **THEN** the cycle is suppressed with `reason="context_bus:focused"`,
+  `"context_bus:meeting"` or `"context_bus:traveling"` respectively, exactly as `dnd`/`sleeping` suppress today
 
 #### Scenario: A signal beyond its max-hold TTL no longer suppresses
 - **WHEN** `public.user_context` has an active `traveling` signal whose
@@ -573,7 +573,7 @@ suppressed skip.
 
 #### Scenario: A context-bus signal schedules a catch-up at its max-hold end
 - **WHEN** the delivery cycle is fully suppressed by an active context-bus
-  signal (`dnd`, `meeting`, `sleeping`, or `traveling`), with no urgent
+  signal (`dnd`, `focused`, `meeting`, `sleeping`, or `traveling`), with no urgent
   candidate pending
 - **THEN** a one-shot catch-up task is reconciled for that signal's `set_at`
   plus its own max-hold TTL
@@ -751,7 +751,7 @@ requirement existed.
 The delivery cycle SHALL record a `held_by` key in the `metadata` of any
 `public.attention_ledger` row it writes with `outcome="suppressed"`, naming
 the specific suppression signal — the context-bus signal type (`"dnd"`,
-`"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
+`"focused"`, `"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
 `"quiet_hours"` — so the specific hold is queryable as structured data
 without parsing the free-text `reason` field.
 
@@ -808,7 +808,7 @@ the next scheduled daily cron slot. Instead:
   routine digest entirely for that tick (`reason="travel_day_defer"`),
   regardless of how long `traveling` has been active, and SHALL NOT
   force-deliver it via the hard fallback deadline below;
-- otherwise (an active `dnd`, `meeting`, `sleeping`, or quiet-hours
+- otherwise (an active `dnd`, `focused`, `meeting`, `sleeping`, or quiet-hours
   suppression), the cycle SHALL bypass suppression for the full routine
   pending set once the delivery cycle's `now` reaches the hard fallback
   deadline (11:00 UTC), so a held digest is never silently skipped for an
@@ -827,7 +827,7 @@ consult unconditionally per RFC 0011 Amendment 1).
 
 #### Scenario: The hard fallback deadline force-delivers a held routine digest
 - **WHEN** `daily_hold_mode=True`, the active suppressing signal is `dnd`,
-  `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
+  `focused`, `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
   the delivery cycle's `now` has reached the hard fallback deadline
 - **THEN** the cycle proceeds with the full routine pending candidate set as
   if unsuppressed
