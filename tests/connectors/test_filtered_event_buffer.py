@@ -11,6 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -353,6 +354,142 @@ def test_important_dropped_marker_is_stripped_before_replay() -> None:
 
     assert "drop_context" not in stored
     parse_ingest_envelope({"schema_version": "ingest.v1", **stored})
+
+
+async def test_scrubbed_row_replays_with_placeholder_and_unchanged_identity() -> None:
+    """A row recorded with an OTP drains and submits placeholder text, identity intact."""
+    from butlers.connectors.filtered_event_buffer import drain_replay_pending
+
+    buf = _make_buffer()
+    payload = _bearer_payload("Your code is 482913")
+    buf.record(
+        external_message_id="msg-1",
+        source_channel="email",
+        sender_identity="sender@example.com",
+        subject_or_preview="Hello",
+        filter_reason="label_exclude:SPAM",
+        full_payload=payload,
+    )
+    stored = buf._rows[0][9]
+
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": 1,
+                "received_at": buf._rows[0][0],
+                "external_message_id": "msg-1",
+                "full_payload": stored,
+            }
+        ]
+    )
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = ctx
+    submitted: list[dict] = []
+
+    async def submit(envelope: dict) -> None:
+        submitted.append(envelope)
+
+    await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit)
+
+    assert len(submitted) == 1
+    envelope = submitted[0]
+    assert "482913" not in str(envelope)
+    assert "[auth-code withheld" in envelope["payload"]["normalized_text"]
+    assert envelope["event"] == payload["event"]
+    assert envelope["sender"] == payload["sender"]
+    assert conn.execute.await_args.args[1] == "replay_complete"
+
+
+def _bearer_payload(text: str, *, sender: str = "sender@example.com", provider: str = "gmail"):
+    return FilteredEventBuffer.full_payload(
+        channel="email",
+        provider=provider,
+        endpoint_identity="gmail:user:alice@example.com",
+        external_event_id="msg-001",
+        external_thread_id="thread-001",
+        observed_at="2026-03-11T10:00:00Z",
+        sender_identity=sender,
+        raw={"nested": {"body": "Reset: https://example.com/reset?token=synthetic-reset-token"}},
+        normalized_text=text,
+        policy_tier="full",
+    )
+
+
+def test_record_scrubs_payload_and_error_detail() -> None:
+    buf = _make_buffer()
+    buf.record(
+        external_message_id="msg-1",
+        source_channel="email",
+        sender_identity="sender@example.com",
+        subject_or_preview="Hello",
+        filter_reason="validation_error",
+        full_payload=_bearer_payload("Your code is 482913"),
+        status="error",
+        error_detail="failed on: Your code is 482913",
+    )
+    row = buf._rows[0]
+    payload, error = row[9], row[10]
+    assert "482913" not in str(payload) and "synthetic-reset-token" not in str(payload)
+    assert "482913" not in error
+    assert payload["control"]["bearer_scrubbed"] is True
+    assert payload["event"]["external_event_id"] == "msg-001"
+    assert (row[7], row[8]) == ("validation_error", "error")
+
+    # Telegram 777000 service sender: a bare code is withheld (aggressive path).
+    buf.record(
+        external_message_id="auth",
+        source_channel="telegram",
+        sender_identity="777000",
+        subject_or_preview=None,
+        filter_reason="validation_error",
+        full_payload=_bearer_payload("123456 is your login", sender="777000", provider="telegram"),
+    )
+    assert "123456" not in buf._rows[1][9]["payload"]["normalized_text"]
+
+
+def test_record_keeps_ordinary_numbers_byte_identical() -> None:
+    payload = _bearer_payload("Invoice 482913 total 20.50")
+    payload["payload"]["raw"] = {"body": "Invoice 482913 total 20.50"}
+    expected = json.loads(json.dumps(payload))
+    buf = _make_buffer()
+    buf.record(
+        external_message_id="msg-1",
+        source_channel="email",
+        sender_identity="sender@example.com",
+        subject_or_preview="Hello",
+        filter_reason="label_exclude:SPAM",
+        full_payload=payload,
+        error_detail="HTTP 500",
+    )
+    assert buf._rows[0][9] == expected
+    assert buf._rows[0][10] == "HTTP 500"
+
+
+def test_record_detector_failure_withholds_text_without_changing_status() -> None:
+    buf = _make_buffer()
+    with patch(
+        "butlers.connectors.filtered_event_buffer.scrub_envelope", side_effect=RuntimeError("x")
+    ):
+        buf.record(
+            external_message_id="msg-1",
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview="Hello",
+            filter_reason="validation_error",
+            full_payload=_bearer_payload("Your code is 482913"),
+            status="error",
+            error_detail="Your code is 482913",
+        )
+    row = buf._rows[0]
+    assert "482913" not in str(row[9]) and "synthetic-reset-token" not in str(row[9])
+    assert row[10] == "[withheld: bearer scrub unavailable]"
+    assert row[9]["event"]["external_event_id"] == "msg-001"
+    assert (row[7], row[8]) == ("validation_error", "error")
 
 
 def _stored(channel: str, provider: str, thread: str | None, raw: dict, **split: str) -> dict:
