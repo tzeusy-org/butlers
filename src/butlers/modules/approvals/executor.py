@@ -4,8 +4,7 @@ Provides a standalone executor that:
 1. Calls the original tool function with the deserialized args
 2. Captures the result or exception
 3. Updates the PendingAction with execution_result and status='executed'
-4. Increments rule use_count for auto-approved actions
-5. Returns an ExecutionResult for the caller
+4. Returns an ExecutionResult for the caller
 
 Both manual approval (from module.py) and auto-approval (from gate.py)
 should use this executor for consistent audit logging.
@@ -165,8 +164,8 @@ async def execute_approved_action(
     """Execute an approved action and persist the result.
 
     Calls ``tool_fn(**tool_args)``, captures the result or exception,
-    updates the ``pending_actions`` table, and increments rule ``use_count``
-    if auto-approved.
+    and updates the ``pending_actions`` table.  Rule ``use_count`` is claimed
+    by the gate (``rules.claim_rule_use``) before the action is approved, never here.
 
     Parameters
     ----------
@@ -181,8 +180,8 @@ async def execute_approved_action(
     tool_fn:
         The original tool function to invoke.
     approval_rule_id:
-        If set, the action was auto-approved by this rule; its use_count
-        will be incremented.
+        If set, the action was auto-approved by this rule (its use was already
+        claimed by the gate; the executor does not count it again).
     decision_memory_writer:
         Optional owning-memory writer invoked after the execution outcome is
         committed and audited. Its failures are intentionally non-blocking.
@@ -349,12 +348,6 @@ async def execute_approved_action(
                         metadata={"tool_name": tool_name},
                         occurred_at=now,
                     )
-
-                    if approval_rule_id is not None:
-                        await write_target.execute(
-                            "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                            approval_rule_id,
-                        )
         except Exception as exc:
             logger.error(
                 "Could not persist successful execution for action %s (%s): %s",

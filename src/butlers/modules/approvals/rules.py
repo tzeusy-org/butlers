@@ -156,6 +156,38 @@ def is_rule_effective(
     )
 
 
+def claim_rule_use_sql(rule_param: int = 1, now_param: int = 2) -> str:
+    """SQL of the one conditional ``UPDATE`` that claims a use of a standing rule.
+
+    The ``WHERE`` clause re-checks active / expiry / ``max_uses`` under the row lock,
+    so racing claimers cannot exceed ``max_uses``.  Exposed with parameter numbers so
+    the gate can embed the very same statement in a CTE together with the
+    approved-action ``INSERT`` (one statement, hence one atomic unit).
+    """
+    return (
+        "UPDATE approval_rules SET use_count = use_count + 1 "
+        f"WHERE id = ${rule_param} AND active = true "
+        "AND (max_uses IS NULL OR use_count < max_uses) "
+        f"AND (expires_at IS NULL OR expires_at >= ${now_param}) "
+        "RETURNING id"
+    )
+
+
+async def claim_rule_use(
+    conn: Any,
+    rule_id: Any,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Atomically claim one use of a standing rule; False when it cannot be used.
+
+    This is the single counting path for ``approval_rules.use_count``.  A claimed use
+    stays consumed even if the action later fails to execute (an approval was issued).
+    """
+    row = await conn.fetchrow(claim_rule_use_sql(), rule_id, now or datetime.now(UTC))
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------

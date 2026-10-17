@@ -129,8 +129,8 @@ class TestCheckEmailRecipient:
         assert decision.reason == "rule"
         assert decision.rule_id == rule.id
         assert decision.contact_desc == "known non-owner contact"
-        # use_count bump
-        pool.execute.assert_awaited_once()
+        # use_count claimed through the shared helper
+        pool.fetchrow.assert_awaited_once()
 
     async def test_non_owner_without_rule_parks(self) -> None:
         pool = AsyncMock()
