@@ -1572,6 +1572,7 @@ class WhatsAppUserClientConnector:
                     weight=sender_weight,
                     participant_count=envelope["sender"].get("participant_count"),
                     chat_type=envelope["sender"].get("chat_type"),
+                    provider_domain="whatsapp",
                 )
                 if d_result.verdict == "IGNORE":
                     ignore_kind = classify_ignore_kind(d_result)

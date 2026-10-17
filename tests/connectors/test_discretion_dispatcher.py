@@ -513,3 +513,57 @@ async def test_call_unpatched_apply_spend_routing_rules_fails_open_on_mock_pool(
     _, invoke_kwargs = adapter.invoke.call_args
     assert invoke_kwargs["model"] == catalog[1]
     mock_record.assert_awaited_once()
+
+
+async def test_evaluator_withholds_bearer_text_from_prompt_log_and_window(caplog) -> None:
+    """Codes and reset links never reach the dispatcher, the INFO log or later prompts."""
+    import logging
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="FORWARD")
+    evaluator = DiscretionEvaluator(source_name="tg:1", dispatcher=dispatcher)
+
+    with caplog.at_level(logging.INFO):
+        await evaluator.evaluate("Your code is 482913", weight=0.6, provider_domain="example.com")
+        await evaluator.evaluate(
+            "Reset: https://example.com/reset?token=synthetic-reset-token", weight=0.6
+        )
+        await evaluator.evaluate("see you at lunch", weight=0.6)
+
+    prompts = [call.args[0] for call in dispatcher.call.await_args_list]
+    assert "[auth-code withheld: example.com]" in prompts[0]
+    for secret in ("482913", "synthetic-reset-token"):
+        assert all(secret not in prompt for prompt in prompts)
+        assert secret not in caplog.text
+    # The window re-sends the placeholder, not the code, to later evaluations.
+    assert "[auth-code withheld: example.com]" in prompts[2]
+
+    # Detector failure: fixed marker, evaluation continues with the same verdict.
+    with patch("butlers.connectors.discretion.scrub_text", side_effect=RuntimeError("482913")):
+        result = await evaluator.evaluate("Your code is 482913", weight=0.6)
+    assert result.verdict == "FORWARD"
+    assert "[content withheld]" in dispatcher.call.await_args.args[0]
+    assert "482913" not in dispatcher.call.await_args.args[0]
+
+
+async def test_evaluator_bypass_paths_keep_verdicts_and_store_scrubbed_entry() -> None:
+    dispatcher = AsyncMock()
+    evaluator = DiscretionEvaluator(source_name="tg:1", dispatcher=dispatcher)
+
+    by_weight = await evaluator.evaluate("Your code is 482913", weight=1.0)
+    by_channel = await evaluator.evaluate("Your code is 482913", weight=0.1, channel="dashboard")
+
+    assert (by_weight.reason, by_channel.reason) == ("weight-bypass", "channel-bypass")
+    dispatcher.call.assert_not_called()
+    assert all("482913" not in entry.text for entry in evaluator.window.entries)
+    assert len(evaluator.window.entries) == 2
+
+
+async def test_evaluator_leaves_ordinary_numbers_unchanged() -> None:
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="FORWARD")
+    evaluator = DiscretionEvaluator(source_name="tg:1", dispatcher=dispatcher)
+
+    await evaluator.evaluate("Order 482913 total 20.50", weight=0.6)
+
+    assert "Order 482913 total 20.50" in dispatcher.call.await_args.args[0]
