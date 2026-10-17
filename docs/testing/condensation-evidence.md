@@ -136,7 +136,8 @@ as undeclared proof inputs.
 
 The stdlib source consumer examines `tests/` and `roster/*/tests/`, including
 assertions within retained names and their execution structure, parameters, local fixture/helper/marker
-context, class inheritance and ancestral conftests. Renames, moves and deleted
+context, class inheritance and ancestral conftests (an edited, deleted or newly added
+`conftest.py` is context change for every owner below it). Renames, moves and deleted
 production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
