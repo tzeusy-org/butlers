@@ -134,10 +134,15 @@ async def run_startup(daemon: Any) -> None:
     # not cross-contaminate.  Migrations in step 7 will populate butler_logs
     # the first time the schema is provisioned; until then writes will fail
     # quietly and be swallowed by ButlerLogger.
-    from butlers.core.butler_logging import ButlerDBLogHandler, ButlerLogger
+    from butlers.core.butler_logging import ButlerDBLogHandler, ButlerLogger, create_butler_logger
 
     db_log_schema = daemon.config.db_schema or daemon.config.name
-    butler_db_logger = ButlerLogger(pool=pool, schema=db_log_schema)
+    if daemon.config.db_schema is None:
+        butler_db_logger = ButlerLogger(pool=pool, schema=db_log_schema)
+    else:
+        butler_db_logger = create_butler_logger(
+            pool=pool, schema=db_log_schema, owning_schema=daemon.config.db_schema
+        )
     daemon._db_log_handler = ButlerDBLogHandler(
         butler_logger=butler_db_logger,
         butler_name=daemon.config.name,

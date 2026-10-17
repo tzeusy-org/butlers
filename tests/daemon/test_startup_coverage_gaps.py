@@ -806,6 +806,16 @@ class TestStep8cBlobStorageDegradation:
             stack.enter_context(
                 patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())
             )
+            from butlers.core.butler_logging import ButlerLogger as owned_logger
+            from butlers.core.butler_logging import create_butler_logger
+
+            owned_factory = stack.enter_context(
+                patch(
+                    "butlers.core.butler_logging.create_butler_logger",
+                    wraps=create_butler_logger,
+                )
+            )
+
             stack.enter_context(
                 patch(
                     "butlers.core.butler_logging.ButlerDBLogHandler",
@@ -829,6 +839,13 @@ class TestStep8cBlobStorageDegradation:
         if daemon._db_log_handler is not None:
             logging.getLogger().removeHandler(daemon._db_log_handler)
 
+        # REQ-core-telemetry-016: actual startup forwards the configured target,
+        # rather than a diagnostic label or an unqualified fallback.
+        owned_factory.assert_called_once_with(
+            pool=pool, schema="test_butler", owning_schema="test_butler"
+        )
+        owned_logger.assert_called_once_with(pool=pool, schema="test_butler", min_level="INFO")
+        assert owned_logger.return_value._log_table == '"test_butler".butler_logs'
         assert daemon.blob_store is None
         assert "S3 blob storage unavailable; blob operations will fail at runtime" in caplog.text
         assert all(env_fallback is False for _, env_fallback in store.resolve_calls)

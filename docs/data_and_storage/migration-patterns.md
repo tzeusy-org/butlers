@@ -190,6 +190,30 @@ not merely untested. The runtime-attention boundary is the worked example; see t
 
 ## Verification
 
+### Owning daemon logs
+
+`core_266` repairs the configured `butlers.target_schema` log store through a
+new forward revision, preserving historical `core_089` and `core_090`. It
+creates the existing eight-column VARCHAR-compatible shape where absent and
+rejects incompatible columns, defaults, sequence, constraints or index shape.
+Same-target repair is serialized within the migration transaction; different
+targets retain independent stores. A core-only invocation without an owning
+target (including an explicit public target) does not create a public substitute.
+
+The configured daemon logger and selected dashboard reader qualify the owned
+relation. Native writes also verify the existing owning runtime role on the
+acquired connection. Missing own storage or authority keeps the logger's
+visible nonfatal failure and the API's failed-load response; public/sibling
+decoys cannot satisfy these paths. Schema-less legacy callers retain their
+original unqualified behavior. No role, grant or bootstrap privilege is added.
+
+Downgrading this repair deliberately retains the compatible table, indexes,
+sequence and all rows so the previous source can continue to read and write.
+Deleting that append-only store is a separate destructive administrative action.
+The migration supplies no deployment or incident-cause attestation: real role,
+default-ACL, durable readback, decoy, rollback and concurrency evidence must
+come from the owning migrated PostgreSQL test and the applicable hosted gate.
+
 To confirm the migration chain structure described here matches the running system:
 
 ```bash

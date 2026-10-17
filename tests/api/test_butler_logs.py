@@ -65,6 +65,9 @@ def _make_app(rows: list, *, pool_raises: Exception | None = None) -> object:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    # These existing owners model a legacy unscoped database. Native schema
+    # selection is planted explicitly by the owned-storage companion below.
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
@@ -138,6 +141,69 @@ async def test_logs_503_on_db_query_failure() -> None:
     ) as client:
         resp = await client.get("/api/butlers/general/logs")
     assert resp.status_code == 503
+    # REQ-core-telemetry-016: the actual configured manager chooses its owning
+    # schema even when the pool could return a public decoy via search_path.
+    db = app.dependency_overrides[_logs_get_db]()
+    db.schema_for_butler.return_value = "concierge"
+
+    async def missing_own_with_decoy(query, *args):
+        if 'FROM "concierge".butler_logs' in query:
+            raise RuntimeError("synthetic missing own relation")
+        return [_make_row(msg="public decoy")]
+
+    db.pool.return_value.fetch.side_effect = missing_own_with_decoy
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.get("/api/butlers/general/logs")
+        assert missing.status_code == 503
+        db.pool.return_value.fetch.side_effect = None
+        db.pool.return_value.fetch.return_value = [_make_row(msg="owned healthy sentinel")]
+        healthy = await client.get("/api/butlers/general/logs")
+        assert healthy.status_code == 200
+        assert healthy.json()["lines"][0]["msg"] == "owned healthy sentinel"
+        assert 'FROM "concierge".butler_logs' in db.pool.return_value.fetch.call_args.args[0]
+
+    # Actual manager registration distinguishes explicit legacy None from loss
+    # of the original configured binding while its pool remains available.
+    registered = DatabaseManager()
+    pool = AsyncMock()
+    registered._create_pool = AsyncMock(return_value=pool)
+    await registered.add_butler("general", db_name="synthetic", db_schema="concierge")
+
+    async def registered_fetch(query, *args):
+        return [
+            _make_row(
+                msg="own sentinel" if 'FROM "concierge".butler_logs' in query else "public decoy"
+            )
+        ]
+
+    pool.fetch.side_effect = registered_fetch
+    registered_app = create_app()
+    registered_app.dependency_overrides[_logs_get_db] = lambda: registered
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=registered_app), base_url="http://test"
+    ) as client:
+        healthy = await client.get("/api/butlers/general/logs")
+        assert healthy.status_code == 200
+        assert healthy.json()["lines"][0]["msg"] == "own sentinel"
+        del registered._butler_schemas["general"]
+        pool.fetch.reset_mock()
+        missing_binding = await client.get("/api/butlers/general/logs")
+        assert missing_binding.status_code == 503
+        pool.fetch.assert_not_awaited()
+        registered._butler_schemas["general"] = "concierge"
+        restored_binding = await client.get("/api/butlers/general/logs")
+        assert restored_binding.status_code == 200
+        assert restored_binding.json()["lines"][0]["msg"] == "own sentinel"
+        await registered.add_butler("legacy", db_name="synthetic", db_schema=None)
+        pool.fetch.side_effect = None
+        pool.fetch.return_value = []
+        legacy = await client.get("/api/butlers/legacy/logs")
+        assert legacy.status_code == 200
+        assert legacy.json()["lines"] == []
+        registered.require_schema_binding("legacy")
+        assert registered.schema_for_butler("legacy") is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +224,7 @@ async def test_logs_level_filter_passes_correct_levels() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
@@ -189,6 +256,7 @@ async def test_logs_level_filter_info_excludes_debug() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
@@ -233,6 +301,7 @@ async def test_logs_since_filter_passed_to_query() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
@@ -268,6 +337,7 @@ async def test_logs_default_limit_is_100() -> None:
     mock_pool.fetch = _capture_fetch
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
@@ -311,6 +381,7 @@ async def test_logs_large_result_trimmed_by_limit() -> None:
     mock_pool.fetch = _capture_fetch
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
+    mock_db.schema_for_butler.return_value = None
 
     app = create_app()
     app.dependency_overrides[_logs_get_db] = lambda: mock_db
