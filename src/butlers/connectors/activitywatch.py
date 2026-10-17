@@ -943,8 +943,8 @@ async def persist_activity_event(
     # Window titles can carry codes or reset links; the ingest envelope excludes
     # them, so scrub here. On detector failure the evidence write is skipped
     # (never written raw) and nothing is logged from it.
-    # TODO(bu-hxyqq9 follow-up): raw_payload (URL/tab title) is not scrubbed yet; an
-    # existing test pins the raw tokenised URL and needs a contract-evolution authorization.
+    # TODO(bu-506glj): raw_payload (URL/tab title) is not scrubbed yet; an existing test
+    # pins the raw tokenised URL and needs a contract-evolution authorization.
     if window_title is not None:
         try:
             window_title = scrub_text(window_title, provider_domain=browser_domain or "unknown")[0]

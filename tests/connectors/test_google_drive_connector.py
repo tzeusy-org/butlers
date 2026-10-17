@@ -430,10 +430,34 @@ async def test_metadata_cache_save_withholds_code_in_file_name() -> None:
     assert conn.execute.await_args.args[3][_FAKE_FILE_ID]["name"] == "Budget 482913.xlsx"
 
 
-async def test_metadata_cache_save_skips_write_when_detector_fails() -> None:
+async def test_metadata_cache_save_skips_write_when_detector_fails(caplog) -> None:
     from unittest.mock import patch
 
     account, conn = _drive_account_with_cache("Your code is 482913.txt")
     with patch("butlers.connectors.google_drive.scrub_text", side_effect=RuntimeError("482913")):
         await account._save_metadata_cache_to_store()
     conn.execute.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text and "Your code" not in caplog.text
+
+
+async def test_scrubbed_cache_reloaded_after_restart_does_not_fake_a_rename() -> None:
+    """A saved (scrubbed) name reloads and still classifies the unchanged raw name as modified."""
+    from unittest.mock import AsyncMock
+
+    raw_name = "Your code is 482913.txt"
+    account, conn = _drive_account_with_cache(raw_name)
+    await account._save_metadata_cache_to_store()
+    saved = conn.execute.await_args.args[3]
+    assert "482913" not in saved[_FAKE_FILE_ID]["name"]
+
+    restarted, restarted_conn = _drive_account_with_cache("unused")
+    restarted._metadata_cache = {}
+    restarted_conn.fetchrow = AsyncMock(return_value={"settings": {"metadata_cache": saved}})
+    await restarted._load_metadata_cache_from_store()
+    cached = restarted._metadata_cache[_FAKE_FILE_ID]
+
+    change = {"file": {"id": _FAKE_FILE_ID, "name": raw_name, "parents": ["p1"]}}
+    assert _detect_change_type(change, cached) == _CHANGE_TYPE_MODIFIED
+    change["file"]["name"] = "Quarterly plan.txt"
+    assert _detect_change_type(change, cached) == _CHANGE_TYPE_RENAMED

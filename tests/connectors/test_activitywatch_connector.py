@@ -748,7 +748,7 @@ async def test_persist_activity_event_withholds_code_in_window_title() -> None:
     assert pool.fetchval.await_args.args[8] == "Q3 roadmap 482913 draft"
 
 
-async def test_persist_activity_event_skips_write_when_detector_fails() -> None:
+async def test_persist_activity_event_skips_write_when_detector_fails(caplog) -> None:
     from unittest.mock import patch
 
     pool = AsyncMock()
@@ -770,3 +770,5 @@ async def test_persist_activity_event_skips_write_when_detector_fails() -> None:
 
     assert inserted is False
     pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text and "verification code" not in caplog.text

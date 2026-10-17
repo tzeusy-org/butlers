@@ -357,7 +357,7 @@ async def test_persist_location_point_withholds_code_in_free_text_only() -> None
     }
 
 
-async def test_persist_location_point_skips_write_when_detector_fails() -> None:
+async def test_persist_location_point_skips_write_when_detector_fails(caplog) -> None:
     from unittest.mock import patch
 
     pool = AsyncMock()
@@ -375,3 +375,5 @@ async def test_persist_location_point_skips_write_when_detector_fails() -> None:
 
     assert inserted is False
     pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text

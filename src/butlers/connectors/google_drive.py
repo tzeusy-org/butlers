@@ -428,6 +428,14 @@ class _FileMetadata:
 # ---------------------------------------------------------------------------
 
 
+def _comparable_name(name: str) -> str:
+    """Name as the persisted cache would hold it; raw on detector failure (compare only)."""
+    try:
+        return scrub_text(name, provider_domain="google_drive")[0]
+    except Exception:
+        return name
+
+
 def _detect_change_type(
     change: dict[str, Any],
     cached: _FileMetadata | None,
@@ -461,7 +469,9 @@ def _detect_change_type(
     new_parents = file_data.get("parents", cached.parents) or []
     new_shared = file_data.get("shared", cached.shared)
 
-    name_changed = new_name != cached.name
+    # The persisted cache holds scrubbed names, so compare in the scrubbed domain
+    # (scrubbing is idempotent). The raw name is never persisted.
+    name_changed = _comparable_name(new_name) != _comparable_name(cached.name)
     parents_changed = set(new_parents) != set(cached.parents)
     sharing_changed = new_shared != cached.shared
 
