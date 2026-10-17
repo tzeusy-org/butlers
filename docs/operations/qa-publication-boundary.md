@@ -31,6 +31,10 @@ as `publication_held`, and the cooldown gate (`get_recent_attempt`) reports the 
 window. Watchdog timeout, `recover_stale_attempts` and process restart may close the old attempt, but
 the hold lives in the ledger and survives them. Only a recorded reconciliation releases it.
 
+The dashboard's admin retry (`POST /api/healing/attempts/{id}/retry`) skips the cooldown gate, so it
+checks the hold itself (`get_publication_hold`): while the fingerprint is held it answers HTTP 409
+`publication_lineage_held`, inserts no attempt and dispatches no agent.
+
 ## Access and rollback
 
 Only `butler_qa_rw` can insert or update rows: forced row security admits no other writer, because

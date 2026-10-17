@@ -65,6 +65,7 @@ from butlers.core.healing.tracking import (
     VALID_STATUSES,
     get_active_attempt,
     get_attempt,
+    get_publication_hold,
     get_recent_terminal_statuses,
     list_attempts,
     list_dispatch_events,
@@ -476,7 +477,8 @@ async def retry_healing_attempt(
     Rejects with HTTP 409 when the attempt has a non-terminal status (investigating
     or pr_open), since the original investigation is still active.  Also rejects with
     HTTP 409 if a separate active row already exists for the same fingerprint, to avoid
-    a UniqueViolationError.
+    a UniqueViolationError.  Rejects with HTTP 409 (``publication_lineage_held``) while
+    an unresolved publication holds the fingerprint; nothing is inserted or dispatched.
 
     The new attempt is inserted directly with status ``investigating`` and an empty
     session_ids array (the retry is dashboard-triggered, not linked to a failing session).
@@ -511,6 +513,20 @@ async def retry_healing_attempt(
     exception_type: str = original["exception_type"]
     call_site: str = original["call_site"]
     sanitized_msg: str | None = original.get("sanitized_msg")
+
+    # Guard: an unresolved publication (egress started or ambiguous) holds this
+    # fingerprint's lineage.  The retry skips the cooldown gate, so without this check it
+    # would reopen the lineage and re-dispatch an agent that pushes and opens a PR.
+    # Nothing is inserted and nothing is dispatched until the hold is reconciled.
+    if await get_publication_hold(pool, fingerprint):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot retry attempt {attempt_id}: publication_lineage_held. "
+                "An unresolved publication holds this fingerprint; "
+                "reconcile it before retrying."
+            ),
+        )
 
     # Guard: reject if there is already an active row for this fingerprint.
     # This prevents a UniqueViolationError (→ 500) when a prior retry left an
