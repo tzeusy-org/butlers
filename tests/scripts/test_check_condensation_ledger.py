@@ -1807,7 +1807,7 @@ def test_cli_prints_the_real_contract_refusal_category_across_module_identities(
 
     ``python scripts/check_condensation_ledger.py`` loads the ledger as ``__main__`` while
     ``contract_evolution`` imports it again by name, so without the ``sys.modules`` alias in
-    ``main`` its ``EvidenceError`` is a different class and collapses to
+    the ``__main__`` block its ``EvidenceError`` is a different class and collapses to
     ``invalid-structural-evidence``. In-process tests cannot see that.
     """
     root, base, _trusted, _authority, _request, _commit = _contract_repository(tmp_path)

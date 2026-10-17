@@ -210,7 +210,7 @@ The ordinary condensation protocol and its excluded-request observer are unchang
 
 The CLI prints the category of the first refusal, for example
 `{"status": "REFUSED", "category": "missing-protected-contract-authority"}`. Manifest
-and request structure refuse with:
+and request structure categories include:
 
 - Authority lookup: `missing-protected-contract-authority` (no manifest at the
   trusted ref) and `changed-protected-contract-authority` (the candidate's copy
@@ -227,8 +227,9 @@ and request structure refuse with:
 
 Proof execution has its own categories (for example `nonpass-contract-case` and
 `contract-proof-timeout`) that are not listed here. Run as a script, the CLI keeps
-these categories only because `main` aliases `__main__` as `check_condensation_ledger`
-in `sys.modules` before the consumer imports it; a subprocess regression test pins
+these categories only because the script's `if __name__ == "__main__":` block aliases
+`__main__` as `check_condensation_ledger` in `sys.modules` before `main()` runs and the
+consumer imports it; a subprocess regression test pins
 that.
 
 ### CI speed authorization, 2026-10-15
@@ -314,13 +315,17 @@ Refusal categories: `candidate-only-retirement-authority`,
 `missing-retirement-replacement`, `duplicate-retirement-owner-account`, and the
 generic `unproven-test-or-assertion-loss` for everything unlisted.
 
-A manifest that claims the retirement schema but is malformed refuses before any
-loss is matched: `retirement-schema-fields` (missing or extra top-level fields),
-`retirement-authority-identity` (the `id` is not the file stem, or an identity field
-is empty or mistyped), `retirement-owner-record` (a `retired` row or replacement is
-not a `path::qualname` with a hex `base_sha256`, or an owner repeats) and
-`retirement-requirement-record` (a `requirements` row has missing, extra or
-non-hex fields).
+A trusted manifest (one on main) that claims the retirement schema but is malformed
+refuses when `retirement_accounts` consults it, which only happens while unadmitted
+losses remain. Structural categories include `retirement-schema-fields` (missing or
+extra top-level fields), `retirement-authority-identity` (the `id` is not the file
+stem, an identity field is empty or mistyped, or `retired` or `requirements` is empty
+or not a list), `retirement-owner-record` (a `retired` row or replacement is not a
+`path::qualname` with a hex `base_sha256`, or an owner repeats) and
+`retirement-requirement-record` (a `requirements` row has missing, extra or non-hex
+fields). A `retired` row with the wrong keys refuses with `schema-fields`. A malformed
+manifest that only the candidate adds is currently ignored rather than refused
+(follow-up bu-qzyxoy).
 
 The first authorization is
 [`bu-ys9hdx-general-steam-retirement-20261018.json`](../../tests/contract-evolution-authorizations/bu-ys9hdx-general-steam-retirement-20261018.json):
