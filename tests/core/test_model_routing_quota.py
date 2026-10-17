@@ -2,7 +2,7 @@
 
 Covers:
 - QuotaStatus dataclass structure
-- fail-open on DB error; record_token_usage best-effort
+- fail-closed on DB error; record_token_usage best-effort
 - quota: no limits row → fast path allowed=True
 - quota: within limits → allowed=True
 - quota: 24h/30d/exact limit exceeded → allowed=False
