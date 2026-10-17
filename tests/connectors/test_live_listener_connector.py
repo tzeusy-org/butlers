@@ -156,3 +156,31 @@ async def test_process_segment_logs_ids_and_length_not_transcript(caplog) -> Non
     assert any("submitted utterance" in m for m in messages)
     assert all("482913" not in m and "login code" not in m for m in messages)
     assert any(f"chars={len(transcript)}" in m for m in messages)
+
+
+async def test_wyoming_discard_log_has_length_not_transcript(caplog) -> None:
+    """A low-confidence Wyoming transcript is discarded without its text reaching the logs."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from wyoming.asr import Transcript
+
+    from butlers.connectors.live_listener.transcription import WyomingTranscriptionClient
+
+    client = WyomingTranscriptionClient(url="tcp://localhost:10300", mic_name="kitchen")
+    client._writer = MagicMock()
+    client._reader = MagicMock()
+    low_confidence = Transcript(
+        text="my login code is 482913", language="en", context={"confidence": 0.01}
+    ).event()
+
+    with (
+        patch("wyoming.event.async_write_event", new=AsyncMock()),
+        patch("wyoming.event.async_read_event", new=AsyncMock(return_value=low_confidence)),
+        caplog.at_level(logging.DEBUG, logger="butlers.connectors.live_listener.transcription"),
+    ):
+        result = await client._do_transcribe(b"\x00" * 3200)
+
+    assert result is None
+    assert any("discarding result" in record.getMessage() for record in caplog.records)
+    assert "482913" not in caplog.text and "login code" not in caplog.text
