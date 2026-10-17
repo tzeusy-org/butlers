@@ -132,6 +132,27 @@ class TestCheckEmailRecipient:
         # use_count claimed through the shared helper
         pool.fetchrow.assert_awaited_once()
 
+    async def test_exhausted_rule_parks_instead_of_allowing(self) -> None:
+        """bu-s11n0s.17: a matched rule whose use cannot be claimed (exhausted/expired
+        between match and claim) must park, never allow."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)  # claim UPDATE ... RETURNING: no row
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=_standing_rule()),
+            ),
+        ):
+            decision = await check_email_recipient(pool, **_COMMON_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        assert decision.rule_id is None
+
     async def test_non_owner_without_rule_parks(self) -> None:
         pool = AsyncMock()
         session_id = uuid.uuid4()
