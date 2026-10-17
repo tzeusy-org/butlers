@@ -336,6 +336,50 @@ bu-ys9hdx.7, PR #4514). It retires `test_general_butler_toml_has_steam_module` a
 "General Butler Identity and Runtime" block of `openspec/specs/butler-general/spec.md`,
 and requires the two replacement owners that PR adds.
 
+## Authority that has already landed
+
+A pull request's event base (`github.event.pull_request.base.sha`) can predate the
+trusted parent (`HEAD^1`) of the provider's merge checkout. The loss scan keeps that
+event base, so a contract-evolution request or retirement manifest that landed on
+main in between shows up again as a loss. Both consumers treat it as public history
+instead of re-proving it, only from bytes committed at the trusted parent:
+
+- Contract evolution (`_already_landed`): all of these must be identical between the
+  trusted parent and the candidate by Git mode and bytes: the request, its
+  authorization, every retained owner file, every `conftest.py` in each owner's
+  ancestor directories up to the repository root (an added, edited or deleted
+  conftest does not match), and every authorized contract block. These are exactly
+  the inputs `destructive_changes` uses to classify an owner: the owner's own file
+  (shapes, imports, markers, in-file helper context, mode) and ancestral conftest
+  changes, which it attributes to every owner below them. Helper modules, package
+  `__init__.py`, `pyproject.toml` and `uv.lock` are not loss inputs, so they are not
+  compared; ordinary CI runs the owners against them. The owners are then admitted
+  without a fresh proof and without holding the candidate's unrelated delta to the
+  request. If the candidate touched any compared input, or the request or
+  authorization is candidate-only or edited, the ordinary fresh proof applies and
+  refuses as before.
+- Retirement: when every manifest owner is already absent from the trusted parent
+  and the candidate (`_retired_in_public_history`), the base owner hash and the
+  governing-requirement bindings are not re-checked against the older event base.
+  Owners still present at the trusted parent keep the full checks.
+
+A loss the candidate introduces is never covered by this: it is not a manifest or
+request owner, or one of the compared inputs differs from the trusted parent, so it
+stays in the ordinary account. The shortcut does not look at the CI event: it applies
+whenever the trusted bytes already carry the authority and every compared input is
+identical, including a `merge_group` run, where it can only matter if the base
+predates the landing. The contract shortcut needs an explicit trusted ref, so a local
+run without `--ci-event` (which resolves `origin/main` itself) skips it and uses the
+fresh proof; the retirement shortcut does not need one and applies locally too.
+
+Trade-off: identity is trusted-versus-candidate, not candidate-versus-the-authorization's
+recorded `inputs[].after` bytes. A public edit to a named owner after landing therefore
+stays admitted for a stale-base pull request instead of re-refusing it every time main
+legitimately touches that owner. Every normal path to main runs this guard on a fresh
+base, so the edit was itself gated when it landed. Retirement needs no conftest comparison: a manifest owner that
+is absent from the candidate is classified `removed-or-moved`, which no conftest
+attribution can override.
+
 ## Retained owners with additive changes
 
 The additive route below preserves the original contract. Intentional replacement

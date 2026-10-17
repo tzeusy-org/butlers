@@ -37,6 +37,7 @@ from pathlib import Path
 import asyncpg
 
 from butlers.core.git_custody import CustodyUnavailable, branch_exclusion
+from butlers.core.git_env import PUSH_COMMAND_ARGS, isolated_git_env
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,8 @@ async def _run_git(
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE if capture_stderr else asyncio.subprocess.DEVNULL,
+            # The shared .git is agent-writable: no daemon secrets, no planted hooks/commands.
+            env=isolated_git_env(),
             start_new_session=True,
         )
     )
@@ -454,6 +457,7 @@ async def remove_healing_worktree(
             if delete_remote:
                 rc, _, stderr = await _run_git(
                     "push",
+                    *PUSH_COMMAND_ARGS,
                     "origin",
                     "--delete",
                     branch_name,

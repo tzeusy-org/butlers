@@ -520,6 +520,57 @@ def bounded(seconds):
             )
 
 
+def _already_landed(
+    root: Path, trusted: str, path: str, request: dict, request_record: dict
+) -> bool:
+    """True only when trusted public bytes already carry this request and its authorization.
+
+    Every comparison is against bytes committed at *trusted*, never a candidate claim: the
+    request file, the authorization, each retained owner file, and each authorized contract
+    block must be identical between the trusted parent and the candidate. Anything else (a
+    candidate-only request, an edited authorization, an owner or contract the candidate
+    touched) returns False and falls through to the fresh proof.
+    """
+    try:
+        if record_at(root, trusted, path) != {k: request_record[k] for k in ("mode", "sha256")}:
+            return False
+        name = AUTHORIZATIONS + request["authorization"] + ".json"
+        authority_record = record_at(root, trusted, name)
+        if authority_record is None or current_record(root, name) != authority_record:
+            return False
+        authority = ledger._strict_json_body(ledger.committed_body(root, trusted, name).decode())
+        if (
+            authority.get("schema") != AUTH_SCHEMA
+            or authority.get("id") != request["authorization"]
+        ):
+            return False
+        if {row["before"] for row in authority["owners"]} != set(request["owners"]):
+            return False
+        for owner in request["owners"]:
+            owner_path = owner.split("::", 1)[0]
+            trusted_owner = record_at(root, trusted, owner_path)
+            if trusted_owner is None or current_record(root, owner_path) != trusted_owner:
+                return False
+            # destructive_changes attributes an ancestor conftest.py change to every owner
+            # below it, so an added, edited or deleted ancestor conftest is not public history.
+            for parent in PurePosixPath(owner_path).parents:
+                context = (parent / "conftest.py").as_posix()
+                if record_at(root, trusted, context) != current_record(root, context):
+                    return False
+        for row in authority["contracts"]:
+            target = root / ledger.public_path(row["path"])
+            if target.is_symlink() or not target.is_file():
+                return False
+            if requirement_digest(target.read_text(), row["id"]) != row["after_sha256"]:
+                return False
+            trusted_text = ledger.committed_body(root, trusted, row["path"]).decode()
+            if requirement_digest(trusted_text, row["id"]) != row["after_sha256"]:
+                return False
+    except (ledger.EvidenceError, KeyError, TypeError, ValueError, UnicodeError, AttributeError):
+        return False
+    return True
+
+
 def fresh_accounts(
     root: Path, base: str, trusted: str, losses: dict, directory: Path, *, reports=None
 ) -> set[str]:
@@ -533,6 +584,14 @@ def fresh_accounts(
         request = ledger.strict_json(root / path)
         validate_request(request)
         if not set(request["owners"]) & set(losses):
+            continue
+        if trusted is not None and _already_landed(root, trusted, path, request, request_record):
+            # The loss is public history: the trusted parent already admitted this exact
+            # request and nothing it covers has changed since. Do not re-prove it against a
+            # stale event base, and do not hold this PR's unrelated delta to the request.
+            if admitted & set(request["owners"]):
+                raise ledger.EvidenceError("duplicate-contract-owner-account")
+            admitted.update(request["owners"])
             continue
         started = time.monotonic()
         with bounded(request["timeout_s"]):
@@ -708,6 +767,24 @@ def _retirement_manifest(body: bytes, name: str) -> dict | None:
     return value
 
 
+def _retired_in_public_history(root: Path, trusted: str, owners: dict, current: dict) -> bool:
+    """True when every manifest owner is absent from both the trusted parent and the candidate."""
+    for owner in owners:
+        if owner in current:
+            return False
+        path = owner.split("::", 1)[0]
+        try:
+            body = ledger.committed_body(root, trusted, path).decode()
+        except (ledger.EvidenceError, UnicodeError):
+            continue  # The whole file is gone from the trusted parent.
+        try:
+            if owner in ledger.test_shapes(path, body):
+                return False
+        except (SyntaxError, ValueError):
+            return False
+    return True
+
+
 def retirement_accounts(
     root: Path, base: str, trusted: str | None, losses: dict, current: dict, *, reports=None
 ) -> set[str]:
@@ -732,9 +809,14 @@ def retirement_accounts(
             raise ledger.EvidenceError("changed-protected-retirement-authority")
         if admitted & set(owners):
             raise ledger.EvidenceError("duplicate-retirement-owner-account")
+        # Owners already absent from the trusted parent were retired by public history that
+        # this manifest gated. A base older than the manifest's own cannot re-litigate them.
+        landed = _retired_in_public_history(root, trusted, owners, current)
         for owner, row in owners.items():
             if losses.get(owner) != "removed-or-moved":
                 raise ledger.EvidenceError("retired-owner-not-wholly-removed")
+            if landed:
+                continue
             path, qualname = owner.split("::", 1)
             try:
                 old = ledger.committed_body(root, base, path).decode()
@@ -743,7 +825,7 @@ def retirement_accounts(
                 digest = None
             if digest != row["base_sha256"]:
                 raise ledger.EvidenceError("stale-retired-owner-hash")
-        for row in manifest["requirements"]:
+        for row in [] if landed else manifest["requirements"]:
             before = requirement_digest_or_none(
                 (
                     ledger.committed_body(root, base, row["path"]).decode()
