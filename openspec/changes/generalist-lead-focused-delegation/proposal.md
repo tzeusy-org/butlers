@@ -20,7 +20,7 @@ is the design.
 
 ## What Changes
 
-- Every reasoning session becomes a lead or depth-1 child invocation of an
+- Every lead and child reasoning session becomes an invocation of an
   admitted goal. Switchboard, moved into its own process, hosts admission, the
   goal ledger, the goal runner and the capability broker. Message
   classification and route dispatch are removed. Engineering executors and
@@ -32,6 +32,11 @@ is the design.
   third-party content, including through tainted stored records, gates
   consequential effects. Domains verify a single-use, audience-bound,
   broker-signed assertion before any model-reachable handler runs.
+- Brokered web research (proposed RFC 0038 D20) runs in a separate research
+  profile within the goal, with provider-hosted search only, no broker grant,
+  provider-only egress, exposure-selected live/cached mode, budget reservations
+  and third-party results. The owner approved the direction; the finished
+  amendment PR and its doctrine detail still require owner approval.
 - Budgets, effect ledger, approvals, Stop and fenced recovery are goal-level.
 - Two owner rules bind every goal: communication with anyone other than the
   owner needs owner approval (per event or by an owner-created standing rule),
@@ -106,7 +111,13 @@ Doctrine (`about/heart-and-soul/`, with a D19 pointer in
 (supersession headers), v1 scope and success criteria, the dashboard (rebuilt
 around goals and regions by the D19 change), Switchboard's manifesto at
 cutover, every domain butler's session spawning, every LLM-presentable tool's
-metadata, deployment (session host, `butlers-control` and the second
+metadata, deployment (session host, the proposed D20 research host,
+`butlers-control` and the second
 process-bound deployment control key), and calendar writes that invite
 non-owner attendees, which become approval-gated. No runtime code changes in
 this change's documentation stage.
+
+D20 excludes browser automation, computer use, logged-in browsing, forms, web
+writes, purchases, runtime fetch tools, new general public-internet egress and
+research on non-Codex runtimes in version 1. The separate model, credential and
+spend-cap owner gate, default-off dark build and switch-release gates remain.
