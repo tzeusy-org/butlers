@@ -1796,6 +1796,21 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # Mirrored writes reserve both closure pairs before taking fact-row
+            # locks. Reciprocal writers must share one lock order, not first lock
+            # their respective forward pair and then wait on each other's inverse.
+            _inverse_predicate: str | None = None
+            _gap_closure_allowed = True
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
+                if _registry_row.get("is_symmetric"):
+                    _inverse_predicate = predicate
+                else:
+                    _inverse_predicate = _registry_row.get("inverse_of")
+                if _inverse_predicate is not None:
+                    _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
+                        conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
+                    )
+
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
             # active rows regardless of predicate_registry.is_temporal.
@@ -1938,14 +1953,15 @@ async def store_fact(
 
             # An owner question this fact answers moves to `answerable` in this same
             # transaction (bu-q7vx1q.9), so a rolled-back write never answers a gap.
-            await knowledge_gaps.close_matching_gaps(
-                conn,
-                entity_id=entity_id,
-                predicate=predicate,
-                ref=f"fact:{fact_id}",
-                value=content,
-                authority=authority,
-            )
+            if _gap_closure_allowed:
+                await knowledge_gaps.close_matching_gaps(
+                    conn,
+                    entity_id=entity_id,
+                    predicate=predicate,
+                    ref=f"fact:{fact_id}",
+                    value=content,
+                    authority=authority,
+                )
 
             if entity_id is not None and object_entity_id is not None:
                 # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
@@ -1982,14 +1998,6 @@ async def store_fact(
             # Requires mem_025 migration to be applied (inverse_of and is_symmetric
             # columns must exist on predicate_registry).
             if _registry_row is not None and entity_id is not None and object_entity_id is not None:
-                _inverse_predicate: str | None = None
-                _is_symmetric = _registry_row.get("is_symmetric") or False
-                _inverse_of = _registry_row.get("inverse_of")
-                if _is_symmetric:
-                    _inverse_predicate = predicate
-                elif _inverse_of:
-                    _inverse_predicate = _inverse_of
-
                 if _inverse_predicate is not None:
                     # Compute the inverse fact's idempotency key when applicable.
                     _inv_idem_key: str | None = None
@@ -2081,6 +2089,18 @@ async def store_fact(
                             embedding_model_version=embedding_engine.model_name,
                             authority=authority,
                         )
+                        # Cite the newly active inverse itself, with its swapped
+                        # value and the original server stamp. A temporal skip
+                        # never enters this path and cannot heal a stranded gap.
+                        if _gap_closure_allowed:
+                            await knowledge_gaps.close_matching_gaps(
+                                conn,
+                                entity_id=object_entity_id,
+                                predicate=_inverse_predicate,
+                                ref=f"fact:{_inv_fact_id}",
+                                value=_inv_content,
+                                authority=authority,
+                            )
                         # The mirrored fact is itself a canonical edge-fact row
                         # (entity_id/object_entity_id both set by construction
                         # above) -- it gets its own projected edge under its
