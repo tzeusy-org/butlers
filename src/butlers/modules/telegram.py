@@ -439,9 +439,7 @@ class TelegramModule(Module):
         response_status: int | None = None
         try:
             validated_reply_markup = validate_telegram_reply_markup(reply_markup)
-            await require_permission(
-                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-            )
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
             url = f"{self._base_url()}/sendMessage"
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
@@ -522,9 +520,7 @@ class TelegramModule(Module):
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
@@ -547,9 +543,7 @@ class TelegramModule(Module):
 
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         return await remove_telegram_inline_keyboard(
             self._get_client(),
             self._base_url(),

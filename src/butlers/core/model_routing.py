@@ -230,6 +230,9 @@ class QuotaStatus:
         Total tokens consumed in the 30-day rolling window.
     limit_30d:
         Configured 30d token budget, or ``None`` if unlimited.
+    unavailable:
+        True when the quota state could not be read.  ``allowed`` is then False:
+        unreadable spend state is a refusal, never an implicit unlimited budget.
     """
 
     allowed: bool
@@ -237,6 +240,7 @@ class QuotaStatus:
     limit_24h: int | None
     usage_30d: int
     limit_30d: int | None
+    unavailable: bool = False
 
 
 class TierQuotaExhausted(Exception):
@@ -324,6 +328,11 @@ class SpendRoutingResult:
 # both in sync if this text ever changes.
 CEILING_DENIAL_REASON_PREFIX = "Monthly spend ceiling reached"
 
+# Recorded when the ceiling or spend state could not be read (bu-svqpzo.3). The
+# spawn is refused, but no ceiling was reached, so this deliberately does NOT
+# start with ``CEILING_DENIAL_REASON_PREFIX`` and never produces a fleet halt.
+CEILING_UNAVAILABLE_REASON_PREFIX = "Monthly spend ceiling unavailable"
+
 # Recorded on a ``public.model_dispatch_attempts`` row (outcome
 # ``breaker_open_override``) when an operator spend rule routes to a model whose
 # dispatch-outcome circuit breaker is open (bu-14j0m, decision (b): honor the
@@ -361,6 +370,10 @@ class CeilingStatus:
         Invoked attempts for which the runtime yielded no parseable token usage.
         These are excluded from ``mtd_usd`` and surfaced separately so the
         measured subtotal cannot impersonate a complete total.
+    unavailable:
+        True when the ceiling or spend state could not be read.  ``allowed`` is
+        then False: unreadable spend state is a refusal, never an implicit
+        "no ceiling".
     """
 
     allowed: bool
@@ -368,6 +381,7 @@ class CeilingStatus:
     ceiling_usd: float | None
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
     unmeasurable_attempts: int = 0
+    unavailable: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2902,9 +2916,10 @@ async def check_token_quota(
     ``QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)``
     without querying the ledger.
 
-    Fail-open: if the DB query fails for any reason (timeout, missing partition,
-    connection error), returns ``allowed=True`` and logs a warning.  The quota
-    guardrail must never become a single point of failure.
+    Fail-closed: if the DB query fails for any reason (timeout, missing partition,
+    connection error), returns ``allowed=False, unavailable=True`` and logs an
+    error.  Callers skip the candidate; an unreadable budget is not an unlimited one.
+    A readable entry with no limits row remains unlimited.
 
     Parameters
     ----------
@@ -2957,12 +2972,19 @@ async def check_token_quota(
         )
 
     except Exception:
-        logger.warning(
-            "check_token_quota failed for catalog_entry_id=%s; failing open (allowed=True)",
+        logger.error(
+            "check_token_quota unavailable for catalog_entry_id=%s; failing closed (allowed=False)",
             catalog_entry_id,
             exc_info=True,
         )
-        return _unlimited
+        return QuotaStatus(
+            allowed=False,
+            usage_24h=0,
+            limit_24h=None,
+            usage_30d=0,
+            limit_30d=None,
+            unavailable=True,
+        )
 
 
 def price_ledger_usage_rows(
@@ -3056,9 +3078,9 @@ async def price_mtd_from_ledger(
     show e.g. 92% of ceiling while spawns were already being denied.
 
     Unlike ``check_monthly_ceiling``, this raises on any DB or pricing
-    failure instead of failing open — each caller applies its own semantics
-    on top (the spawn gate fails open so a ledger outage never wedges spawns;
-    the dashboard reports a degraded envelope so a ledger outage never
+    failure instead of returning a status — each caller applies its own
+    semantics on top (the spawn gate fails closed so a ledger outage refuses
+    spawns; the dashboard reports a degraded envelope so a ledger outage never
     renders as a fabricated $0 MTD).
 
     Parameters
@@ -3089,9 +3111,9 @@ async def check_monthly_ceiling(
     Fast path: when no ceiling row exists (or it is non-positive), the spawn is
     unconditionally allowed and the ledger is not queried.
 
-    Fail-open: if any DB query or pricing computation fails, returns
-    ``allowed=True`` and logs a warning.  Like the token-quota guardrail, the
-    ceiling check must never become a single point of failure that wedges spawns.
+    Fail-closed: if any DB query or pricing computation fails, returns
+    ``allowed=False, unavailable=True`` and logs an error.  Like the token-quota
+    guardrail, unreadable spend state is a refusal, not "no ceiling configured".
 
     Parameters
     ----------
@@ -3125,11 +3147,11 @@ async def check_monthly_ceiling(
         )
 
     except Exception:
-        logger.warning(
-            "check_monthly_ceiling failed; failing open (allowed=True)",
+        logger.error(
+            "check_monthly_ceiling unavailable; failing closed (allowed=False)",
             exc_info=True,
         )
-        return _unlimited
+        return CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)
 
 
 async def record_token_usage(

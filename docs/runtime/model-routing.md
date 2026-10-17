@@ -212,7 +212,7 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 ### Quota Check
 
-`check_token_quota(pool, catalog_entry_id)` returns a `QuotaStatus` dataclass with `allowed`, `usage_24h`, `limit_24h`, `usage_30d`, and `limit_30d`. The check uses a CTE-based single round-trip query. A fast path skips the ledger query when no limits row exists. The check is **fail-open**: database errors return `allowed=True`. The quota guardrail must never block all sessions.
+`check_token_quota(pool, catalog_entry_id)` returns a `QuotaStatus` dataclass with `allowed`, `usage_24h`, `limit_24h`, `usage_30d`, and `limit_30d`. The check uses a CTE-based single round-trip query. A fast path skips the ledger query when no limits row exists. The check is **fail-closed**: a database error returns `allowed=False` with `unavailable=True`, because an unreadable budget is not an unlimited one. The spawner and discretion dispatcher record a `quota_skip` attempt (`Token quota unavailable for catalog entry ...`) and continue their same-tier candidate loop. `check_monthly_ceiling()` follows the same rule: an unreadable ceiling or spend state refuses the spawn (`Monthly spend ceiling unavailable`) without producing a fleet halt, since no ceiling was reached. A readable entry with no limits row, or a readable absent ceiling, still allows.
 
 ### Token Usage Recording
 
