@@ -560,6 +560,47 @@ being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
 
+Admission routes for a PR that changes non-Python inputs (bu-ihitkl). Evidence
+basis: the no-loss split was confirmed by running `scripts/check_condensation_ledger.py`
+against scratch trees; the contract-evolution statements are read from
+`contract_evolution.authorize` and `contract_evolution.retirement_accounts` as of this
+change, with `authorize` also run against the merged bu-q1hzqn and bu-2hlwhh
+manifests (it accepted both; refusals were probed on the bu-q1hzqn tree). A full
+contract-evolution replay was not completed. The refusal
+`changed-non-python-dependency-needs-independent-runtime-proof` belongs to the
+survivor-evidence route only (`production_dependencies`, reached from
+`verify_ledger` and the producer); the contract-evolution route does not call it.
+
+- **Split a no-loss PR.** The guard demands evidence only for source loss, so a PR
+  that retains every test and changes only documentation, OpenSpec files, a
+  `pyproject.toml` marker line or an executed data or shell file passes with
+  `losses: 0`. Removing those paths from a PR that does lose or restructure tests
+  leaves the same `unproven-test-or-assertion-loss` refusal, so the split moves the
+  non-Python concern but never admits the loss itself.
+- **Contract-evolution manifest (retained-owner changes).** `authorize` admits every
+  changed path, whatever its type, when the protected manifest lists it as an exact
+  `inputs` record. The merged bu-q1hzqn manifest lists changed
+  `.github/ci-test-weights.json`, workflow YAML and docs; the merged bu-2hlwhh
+  manifest lists changed docs and an OpenSpec change spec. It refuses an unlisted
+  changed path (`unapproved-contract-runtime-input`), a listed path edited after the
+  manifest merged (`stale-authorized-source-or-context`), any change to
+  `pyproject.toml` or `uv.lock`
+  (`changed-environment-needs-independent-installed-tools`), and a cited requirement
+  block that does not exist on the comparison base (`missing-contract-block`, or
+  `git-source-unavailable` when the spec file itself is new) or does not change in
+  the PR (`stale-or-unchanged-authorized-contract`). The amended requirement
+  therefore stays in the PR that changes the tests; do not split it out.
+- **Governing retirement (whole-owner removals).** `retirement_accounts` admits owners
+  that are wholly removed, under trusted manifest bytes and a changed bound
+  requirement (see "Governing retirement" above). It is the route for whole-owner
+  removals.
+- **Neither route.** A retained-owner loss PR (a retained test changed or
+  restructured) that carries no changed existing requirement block, or that needs a
+  changed environment input in the same PR, is not admitted by the contract-evolution
+  route, and the survivor-evidence route refuses the same inputs. Land the environment
+  change in a separate no-loss PR first, or file a spec-first amendment of
+  REQ-testing-053; do not add an exemption.
+
 The finite Python worker still refuses any runtime read of an excluded request,
 including a caught audit refusal. Its descendant event is evidence of execution,
 not evidence that the child could not read the input. A metadata-bearing child
