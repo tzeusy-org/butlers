@@ -149,6 +149,11 @@ _PUBLICATION_HOLD_EXISTS_SQL = """
 """
 
 
+#: Public name of the hold predicate (binds the fingerprint as ``$1``) for callers that fold
+#: it into their own INSERT, so no caller re-derives the held stages.
+PUBLICATION_HOLD_EXISTS_SQL = _PUBLICATION_HOLD_EXISTS_SQL
+
+
 class PublicationLineageHeld(RuntimeError):
     """A fresh attempt was refused because an unresolved publication holds the lineage."""
 
