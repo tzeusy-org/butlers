@@ -223,11 +223,11 @@
       "path": "frontend/src/api/types.ts",
       "before": {
         "mode": "100644",
-        "sha256": "5b300acb61e5c8d2cf7a8dd1767031147d352221ca0c619e04e867d4ccd672a0"
+        "sha256": "6a429f61700d2273eab075ff5a85a71c1e6d3a7fe6401a45873687991bada3df"
       },
       "after": {
         "mode": "100644",
-        "sha256": "d6e004941a0abb923aa9ad52cb889d79bf367ff09593e66acc3ceb7773ece43e"
+        "sha256": "aebaeb525c5bf7540d64dacbc412ac4034840d36547463e970c578a28a53ba18"
       }
     },
     {
