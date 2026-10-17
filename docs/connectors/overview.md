@@ -235,10 +235,17 @@ Payloads, replay/drop decisions, status and other columns are unchanged;
 this is not a claim that every payload or producer log is free of secrets, and it does not produce
 an authentication artifact.
 
+`record()` also scrubs the buffered `full_payload` envelope (the shared `scrub_envelope` that
+connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
+carry typed placeholders; a detector failure withholds that text without changing the row's status.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview
 contract; unresolved durable and vendor boundaries remain unknown.
+
+The discretion evaluator scrubs message text before its context window, prompt, log line and
+dispatcher call, so the discretion model sees the same typed placeholders ingest persists.
 
 `scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
 job or migration. The CLI defaults to dry run and requires an explicit existing database target and
@@ -259,6 +266,11 @@ is UNKNOWN and retains the previous cursor. Restart using both `--resume-time` a
 repeat the cutoff from the beginning: placeholders are idempotent. Retention deletions are not reversed
 or extended. Backdated rows inserted behind a cursor by an old writer require a new complete pass.
 A dry run is not a stable-snapshot or applied-repair claim.
+
+Evidence stores follow the same rule: OwnTracks `raw_payload` strings, Google Drive cached file
+names and the ActivityWatch `window_title` column are scrubbed before the write, and a detector
+failure skips that evidence write instead of storing raw text. One gap remains: ActivityWatch
+`raw_payload` still stores the raw window title, URL and tab title until `bu-506glj` lands.
 
 ## Related Pages
 

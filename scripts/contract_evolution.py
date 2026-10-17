@@ -7,6 +7,7 @@ ordinary branch/mutation survivor protocol remains the authority for other loss.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -26,6 +27,8 @@ AUTHORIZATIONS = "tests/contract-evolution-authorizations/"
 REQUESTS = "tests/contract-evolution-requests/"
 AUTH_SCHEMA = "contract-evolution-authorization/v1"
 REQUEST_SCHEMA = "contract-evolution-request/v1"
+RETIREMENT_SCHEMA = "governing-retirement-authorization/v1"
+_REQUIREMENT_ID = re.compile(r"REQ-(?:[a-z0-9]+-)+[0-9]+")
 # Actual execution bodies must also be independently authorized source inputs.
 MACHINERY = {
     "scripts/contract_evolution.py",
@@ -517,6 +520,57 @@ def bounded(seconds):
             )
 
 
+def _already_landed(
+    root: Path, trusted: str, path: str, request: dict, request_record: dict
+) -> bool:
+    """True only when trusted public bytes already carry this request and its authorization.
+
+    Every comparison is against bytes committed at *trusted*, never a candidate claim: the
+    request file, the authorization, each retained owner file, and each authorized contract
+    block must be identical between the trusted parent and the candidate. Anything else (a
+    candidate-only request, an edited authorization, an owner or contract the candidate
+    touched) returns False and falls through to the fresh proof.
+    """
+    try:
+        if record_at(root, trusted, path) != {k: request_record[k] for k in ("mode", "sha256")}:
+            return False
+        name = AUTHORIZATIONS + request["authorization"] + ".json"
+        authority_record = record_at(root, trusted, name)
+        if authority_record is None or current_record(root, name) != authority_record:
+            return False
+        authority = ledger._strict_json_body(ledger.committed_body(root, trusted, name).decode())
+        if (
+            authority.get("schema") != AUTH_SCHEMA
+            or authority.get("id") != request["authorization"]
+        ):
+            return False
+        if {row["before"] for row in authority["owners"]} != set(request["owners"]):
+            return False
+        for owner in request["owners"]:
+            owner_path = owner.split("::", 1)[0]
+            trusted_owner = record_at(root, trusted, owner_path)
+            if trusted_owner is None or current_record(root, owner_path) != trusted_owner:
+                return False
+            # destructive_changes attributes an ancestor conftest.py change to every owner
+            # below it, so an added, edited or deleted ancestor conftest is not public history.
+            for parent in PurePosixPath(owner_path).parents:
+                context = (parent / "conftest.py").as_posix()
+                if record_at(root, trusted, context) != current_record(root, context):
+                    return False
+        for row in authority["contracts"]:
+            target = root / ledger.public_path(row["path"])
+            if target.is_symlink() or not target.is_file():
+                return False
+            if requirement_digest(target.read_text(), row["id"]) != row["after_sha256"]:
+                return False
+            trusted_text = ledger.committed_body(root, trusted, row["path"]).decode()
+            if requirement_digest(trusted_text, row["id"]) != row["after_sha256"]:
+                return False
+    except (ledger.EvidenceError, KeyError, TypeError, ValueError, UnicodeError, AttributeError):
+        return False
+    return True
+
+
 def fresh_accounts(
     root: Path, base: str, trusted: str, losses: dict, directory: Path, *, reports=None
 ) -> set[str]:
@@ -530,6 +584,14 @@ def fresh_accounts(
         request = ledger.strict_json(root / path)
         validate_request(request)
         if not set(request["owners"]) & set(losses):
+            continue
+        if trusted is not None and _already_landed(root, trusted, path, request, request_record):
+            # The loss is public history: the trusted parent already admitted this exact
+            # request and nothing it covers has changed since. Do not re-prove it against a
+            # stale event base, and do not hold this PR's unrelated delta to the request.
+            if admitted & set(request["owners"]):
+                raise ledger.EvidenceError("duplicate-contract-owner-account")
+            admitted.update(request["owners"])
             continue
         started = time.monotonic()
         with bounded(request["timeout_s"]):
@@ -598,6 +660,216 @@ def fresh_accounts(
         if admitted & set(request["owners"]):
             raise ledger.EvidenceError("duplicate-contract-owner-account")
         admitted.update(request["owners"])
+    return admitted
+
+
+def _requirement_span(text: str, key: str) -> tuple[int, int] | None:
+    """Locate one literal requirement block by `ID:` or by its exact heading text."""
+    if _REQUIREMENT_ID.fullmatch(key):
+        return requirement_blocks(text).get(key)
+    headings, offset, fence = [], 0, None
+    for line in text.splitlines(keepends=True):
+        delimiter = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line.rstrip("\r\n"))
+        if fence is not None:
+            if (
+                delimiter
+                and delimiter[1][0] == fence[0]
+                and len(delimiter[1]) >= fence[1]
+                and not delimiter[2].strip()
+            ):
+                fence = None
+        elif delimiter:
+            fence = delimiter[1][0], len(delimiter[1])
+        elif re.match(r"^#{1,3} ", line):
+            headings.append((offset, line.rstrip("\r\n")))
+        offset += len(line)
+    wanted = "### Requirement: " + key
+    spans = [
+        (start, headings[index + 1][0] if index + 1 < len(headings) else len(text))
+        for index, (start, line) in enumerate(headings)
+        if line == wanted
+    ]
+    if len(spans) > 1:
+        raise ledger.EvidenceError("ambiguous-contract-block")
+    return spans[0] if spans else None
+
+
+def requirement_digest_or_none(text: str | None, key: str) -> str | None:
+    span = None if text is None else _requirement_span(text, key)
+    return None if span is None else hashlib.sha256(text[span[0] : span[1]].encode()).hexdigest()
+
+
+def owner_body_sha256(text: str, qualname: str) -> str | None:
+    """Hash one test owner's own source (decorators included), not its file."""
+    tree = ast.parse(text)
+    body, node = tree.body, None
+    for part in qualname.split("::"):
+        node = next(
+            (
+                n
+                for n in body
+                if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.name == part
+            ),
+            None,
+        )
+        if node is None:
+            return None
+        body = node.body
+    first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+    lines = text.splitlines(keepends=True)[first - 1 : node.end_lineno]
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def _retirement_manifest(body: bytes, name: str) -> dict | None:
+    """Parse one manifest; None unless it claims the retirement schema."""
+    try:
+        value = ledger._strict_json_body(body.decode())
+    except (ledger.EvidenceError, UnicodeError):
+        return None
+    if not isinstance(value, dict) or value.get("schema") != RETIREMENT_SCHEMA:
+        return None
+    required = {"schema", "id", "bead", "authority", "retired", "requirements"}
+    if not required <= set(value) <= required | {"replacements"}:
+        raise ledger.EvidenceError("retirement-schema-fields")
+    if (
+        value["id"] != name[len(AUTHORIZATIONS) : -len(".json")]
+        or not all(isinstance(value[k], str) and value[k] for k in ("id", "bead", "authority"))
+        or not isinstance(value["retired"], list)
+        or not value["retired"]
+        or not isinstance(value["requirements"], list)
+        or not value["requirements"]
+        or not isinstance(value.get("replacements", []), list)
+    ):
+        raise ledger.EvidenceError("retirement-authority-identity")
+    for row in value["retired"]:
+        ledger.fields(row, {"owner", "base_sha256", "reason"})
+        if (
+            not all(isinstance(v, str) and v for v in row.values())
+            or "::" not in row["owner"]
+            or not ledger.HEX.fullmatch(row["base_sha256"])
+        ):
+            raise ledger.EvidenceError("retirement-owner-record")
+    if len({row["owner"] for row in value["retired"]}) != len(value["retired"]):
+        raise ledger.EvidenceError("retirement-owner-record")
+    for row in value["requirements"]:
+        if not isinstance(row, dict) or not {"path", "requirement", "before_sha256"} <= set(row):
+            raise ledger.EvidenceError("retirement-requirement-record")
+        if set(row) - {"path", "requirement", "before_sha256", "after_sha256"} or not all(
+            isinstance(v, str) and v for v in row.values()
+        ):
+            raise ledger.EvidenceError("retirement-requirement-record")
+        ledger.public_path(row["path"])
+        if not all(ledger.HEX.fullmatch(row[k]) for k in row if k.endswith("_sha256")):
+            raise ledger.EvidenceError("retirement-requirement-record")
+    if not all(isinstance(owner, str) and "::" in owner for owner in value.get("replacements", [])):
+        raise ledger.EvidenceError("retirement-owner-record")
+    return value
+
+
+def _retired_in_public_history(root: Path, trusted: str, owners: dict, current: dict) -> bool:
+    """True when every manifest owner is absent from both the trusted parent and the candidate."""
+    for owner in owners:
+        if owner in current:
+            return False
+        path = owner.split("::", 1)[0]
+        try:
+            body = ledger.committed_body(root, trusted, path).decode()
+        except (ledger.EvidenceError, UnicodeError):
+            continue  # The whole file is gone from the trusted parent.
+        try:
+            if owner in ledger.test_shapes(path, body):
+                return False
+        except (SyntaxError, ValueError):
+            return False
+    return True
+
+
+def retirement_accounts(
+    root: Path, base: str, trusted: str | None, losses: dict, current: dict, *, reports=None
+) -> set[str]:
+    """Admit whole-owner retirement only under manifest bytes from the trusted ref."""
+    if trusted is None:
+        try:
+            trusted = ledger.git(root, "rev-parse", "origin/main")
+        except ledger.EvidenceError:
+            return set()  # No protected public source exists, so nothing can be admitted.
+    listed = ledger.git(root, "ls-tree", "-r", "--name-only", "-z", trusted, "--", AUTHORIZATIONS)
+    trusted_names = {n for n in listed.split("\0") if n.endswith(".json")}
+    admitted: set[str] = set()
+    for name in sorted(trusted_names):
+        manifest = _retirement_manifest(ledger.committed_body(root, trusted, name), name)
+        if manifest is None:
+            continue
+        owners = {row["owner"]: row for row in manifest["retired"]}
+        if not set(owners) & set(losses):
+            continue  # Historical authority with no current loss is inert.
+        authority_record = record_at(root, trusted, name)
+        if current_record(root, name) != authority_record:
+            raise ledger.EvidenceError("changed-protected-retirement-authority")
+        if admitted & set(owners):
+            raise ledger.EvidenceError("duplicate-retirement-owner-account")
+        # Owners already absent from the trusted parent were retired by public history that
+        # this manifest gated. A base older than the manifest's own cannot re-litigate them.
+        landed = _retired_in_public_history(root, trusted, owners, current)
+        for owner, row in owners.items():
+            if losses.get(owner) != "removed-or-moved":
+                raise ledger.EvidenceError("retired-owner-not-wholly-removed")
+            if landed:
+                continue
+            path, qualname = owner.split("::", 1)
+            try:
+                old = ledger.committed_body(root, base, path).decode()
+                digest = owner_body_sha256(old, qualname)
+            except (ledger.EvidenceError, SyntaxError, ValueError):
+                digest = None
+            if digest != row["base_sha256"]:
+                raise ledger.EvidenceError("stale-retired-owner-hash")
+        for row in [] if landed else manifest["requirements"]:
+            before = requirement_digest_or_none(
+                (
+                    ledger.committed_body(root, base, row["path"]).decode()
+                    if record_at(root, base, row["path"])
+                    else None
+                ),
+                row["requirement"],
+            )
+            if before != row["before_sha256"]:
+                raise ledger.EvidenceError("stale-retirement-requirement")
+            target = root / ledger.public_path(row["path"])
+            after = requirement_digest_or_none(
+                target.read_text() if target.is_file() and not target.is_symlink() else None,
+                row["requirement"],
+            )
+            if after == row["before_sha256"]:
+                raise ledger.EvidenceError("unchanged-retirement-requirement")
+            if "after_sha256" in row and after != row["after_sha256"]:
+                raise ledger.EvidenceError("mismatched-retirement-requirement")
+        if any(owner not in current for owner in manifest.get("replacements", [])):
+            raise ledger.EvidenceError("missing-retirement-replacement")
+        admitted |= set(owners)
+        if reports is not None:
+            reports.append(
+                {
+                    "manifest": manifest["id"],
+                    "manifest_sha256": authority_record["sha256"],
+                    "admitted_owner_count": len(owners),
+                    "base": ledger.git(root, "rev-parse", base),
+                    "public_authority": ledger.git(root, "rev-parse", trusted),
+                }
+            )
+    # A candidate-supplied retirement manifest is never authority.
+    for path in ledger.tracked_paths(root):
+        if not path.startswith(AUTHORIZATIONS) or not path.endswith(".json"):
+            continue
+        if path in trusted_names or not (root / path).is_file():
+            continue
+        try:
+            claimed = _retirement_manifest((root / path).read_bytes(), path)
+        except ledger.EvidenceError:
+            claimed = {"retired": []}
+        if claimed and {row["owner"] for row in claimed["retired"]} & set(losses):
+            raise ledger.EvidenceError("candidate-only-retirement-authority")
     return admitted
 
 

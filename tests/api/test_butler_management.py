@@ -465,85 +465,33 @@ async def test_get_prompt_history_ordered_desc(app):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/butlers/{name}/tools
+# Retired tool-grant routes (bu-svqpzo.4)
 # ---------------------------------------------------------------------------
 
 
-async def test_get_butler_tools_returns_list(app):
-    """GET /tools returns tool grants for the butler."""
-    rows = [
-        {"tool_name": "log.tail", "description": "Tail logs", "allowed": True, "scope": "all"},
-        {"tool_name": "shell.exec", "description": "Exec shell", "allowed": False, "scope": None},
-    ]
-    pool = _make_pool(fetch_return=rows)
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/butlers/qa/tools")
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert len(data) == 2
-    names = [t["name"] for t in data]
-    assert "log.tail" in names
-    assert "shell.exec" in names
-
-
-async def test_get_butler_tools_empty(app):
-    """Returns empty list when no tools configured."""
-    pool = _make_pool(fetch_return=[])
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/butlers/qa/tools")
-
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/butlers/{name}/tools/{tool}
-# ---------------------------------------------------------------------------
-
-
-async def test_put_butler_tool_upserts_and_audits(app):
-    """PUT /tools/{tool} upserts the row and calls audit.append."""
-    updated_row = _make_record(
-        {
-            "tool_name": "log.tail",
-            "description": "Tail logs",
-            "allowed": False,
-            "scope": None,
-        }
-    )
-    pool = _make_pool(fetchrow_return=updated_row)
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/api/butlers/qa/tools", None),
+        ("PUT", "/api/butlers/qa/tools/log.tail", {"allowed": False}),
+    ],
+)
+async def test_retired_tool_grant_routes_return_404(app, method, path, payload):
+    """The unenforced per-butler tool-grant routes are gone and touch no state."""
+    pool = _make_pool()
+    app.dependency_overrides[_get_db_manager] = lambda: _make_db(pool)
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     with patch(
         "butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock
     ) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.put(
-                "/api/butlers/qa/tools/log.tail",
-                json={"allowed": False, "actor": "owner"},
-            )
+            resp = await client.request(method, path, json=payload)
 
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["allowed"] is False
-    assert data["name"] == "log.tail"
-
-    mock_audit.assert_called_once()
-    call_kwargs = mock_audit.call_args
-    assert call_kwargs.args[2] == "butler.tool_set"
-    assert call_kwargs.kwargs["target"] == "qa.log.tail"
-    assert "allowed=False" in call_kwargs.kwargs["note"]
+    assert resp.status_code == 404
+    pool.fetch.assert_not_awaited()
+    pool.fetchrow.assert_not_awaited()
+    mock_audit.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -733,39 +681,6 @@ async def test_put_prompt_ignores_caller_supplied_actor(app):
     assert persisted_updated_by == authenticated_principal()
 
     # Audit entry: append(conn, actor, action, ...).
-    assert mock_audit.call_args.args[1] == authenticated_principal()
-
-
-async def test_put_tool_ignores_caller_supplied_actor(app):
-    """A forged ``actor`` must not reach ``butler_tools.updated_by`` or the audit."""
-    updated_row = _make_record(
-        {
-            "tool_name": "log.tail",
-            "description": "Tail logs",
-            "allowed": False,
-            "scope": None,
-        }
-    )
-    pool = _make_pool(fetchrow_return=updated_row)
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
-
-    with patch(
-        "butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock
-    ) as mock_audit:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.put(
-                "/api/butlers/qa/tools/log.tail",
-                json={"allowed": False, "actor": _FORGED_ACTOR},
-            )
-
-    assert resp.status_code == 200
-
-    # Persisted row: INSERT binds ($1 name, $2 tool, $3 allowed, $4 scope, $5 updated_by).
-    persisted_updated_by = pool.fetchrow.await_args.args[5]
-    assert persisted_updated_by == authenticated_principal()
-
     assert mock_audit.call_args.args[1] == authenticated_principal()
 
 

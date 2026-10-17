@@ -962,6 +962,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         scope: str,
         question: str,
         target: str | None = None,
+        system_tool: str | None = None,
+        system_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """QUESTION TOOL — call this for a dashboard question with an
         identifiable owning butler or scope.
@@ -978,6 +980,29 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 history.
             target: Required when scope="domain" — the butler whose domain
                 owns the answer. Omit for scope="system".
+            system_tool: Existing Concierge read tool for scope="system":
+                dashboard_read_fleet_status, dashboard_read_butler_detail(butler),
+                dashboard_read_sessions_recent(limit, cursor, butler, only_errors),
+                dashboard_read_session_detail(session_id),
+                dashboard_read_sessions_aggregate(since_days),
+                dashboard_read_sessions_trigger_breakdown(since_days),
+                dashboard_read_fleet_errors_recent(limit, since_days),
+                dashboard_read_fleet_search(limit, butler, trigger_source, model,
+                error_class, status), dashboard_read_timeline_recent(limit, cursor,
+                only_errors), dashboard_read_butler_activity(butler, limit),
+                dashboard_read_spend_summary(period: today/week/month),
+                dashboard_read_spend_daily(days),
+                dashboard_read_spend_top_sessions(limit, since_days),
+                dashboard_read_spend_breakdown_by_butler(since_days),
+                dashboard_read_spend_breakdown_by_model(since_days), or
+                dashboard_read_insight_delivery_state. Use spend_daily(days=2)
+                for yesterday; cite the date actually returned. These tools
+                expose operational metadata only, never prompts or domain data.
+            system_args: Only the selected read tool's named arguments. On
+                success, write a final answer grounded solely in returned data;
+                retain estimates, missing/unpriced usage, dates and limits.
+                The pipeline persists that answer with the returned source.
+
         """
         if scope not in ("domain", "system"):
             return {
@@ -1023,15 +1048,18 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "answer"
 
         if scope == "system":
-            # Concierge / dashboard_read tools do not exist yet (bu-0ynlk.3) —
-            # fall back to an honest decline rather than guessing or routing.
-            return await _dashboard_cannot_answer(
+            from butlers.core_tools._dashboard_system_answer import read_system_answer
+
+            return await read_system_answer(
+                pool=pool,
+                route=_switchboard_route,
+                source_butler=butler_name,
                 routing_ctx=_routing_ctx,
-                question_summary=question,
-                scope_checked=["system"],
-                reason=(
-                    "System-scope questions are not yet supported (no Concierge tools available)."
-                ),
+                question=question,
+                tool_name=system_tool,
+                tool_args=system_args,
+                decline=_dashboard_cannot_answer,
+                validate_read_arguments=ctx.daemon._validate_dashboard_read_arguments,
             )
 
         if not isinstance(target, str) or not target.strip():
@@ -1153,7 +1181,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     ) -> dict[str, Any]:
         """Shared dead-letter + honest-decline implementation for
         ``cannot_answer`` and ``answer_question``'s scope="system" fallback
-        (Concierge not yet available — bu-0ynlk.3).
+        when a Concierge read cannot supply grounded evidence.
         """
         from butlers.core.dashboard_turns import claim_dead_letter, mark_terminal
         from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter

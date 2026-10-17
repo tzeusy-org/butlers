@@ -208,6 +208,30 @@ The execution supervisor must still establish bounded cleanup of every owned
 descendant, including nested sessions, on success, failure and interruption.
 The ordinary condensation protocol and its excluded-request observer are unchanged.
 
+The CLI prints the category of the first refusal, for example
+`{"status": "REFUSED", "category": "missing-protected-contract-authority"}`. Manifest
+and request structure categories include:
+
+- Authority lookup: `missing-protected-contract-authority` (no manifest at the
+  trusted ref) and `changed-protected-contract-authority` (the candidate's copy
+  differs from the trusted bytes).
+- Identity and review record: `contract-request-identity`,
+  `contract-request-population-or-bound`, `contract-authority-identity` and
+  `missing-contract-review-record`.
+- Owner population: `incomplete-authorized-owner-population`,
+  `contract-evolution-is-retained-owner-only` and `missing-retained-contract-owner`.
+- Contract blocks: `ambiguous-or-self-authorizing-contract`,
+  `stale-or-unchanged-authorized-contract` and `unmapped-changed-contract`.
+- Input records: `stale-authorized-source-or-context` and
+  `unapproved-contract-runtime-input`.
+
+Proof execution has its own categories (for example `nonpass-contract-case` and
+`contract-proof-timeout`) that are not listed here. Run as a script, the CLI keeps
+these categories only because the script's `if __name__ == "__main__":` block aliases
+`__main__` as `check_condensation_ledger` in `sys.modules` before `main()` runs and the
+consumer imports it; a subprocess regression test pins
+that.
+
 ### CI speed authorization, 2026-10-15
 
 The first scoped authorization is
@@ -250,6 +274,111 @@ publication. Retaining obsolete queue-coverage literals would contradict the
 approved cadence change; their replacement obligations live in the actual
 covered workflow and these executing controls. No assertion count or manifest
 hash substitutes for the fresh old/new runs.
+
+## Governing retirement
+
+REQ-testing-053 admits the deletion or rename-away of a test owner only with body
+and case continuity "or genuine governing retirement authority with a protected
+survivor account". Contract evolution cannot do this (it retains every owner and
+case), and a retired expectation has no honest survivor, so the required consumer
+has a third account: `governing-retirement-authorization/v1`. It follows the same
+trust shape as contract evolution, by the owner's 2026-10-15 answer.
+
+A manifest lives under `tests/contract-evolution-authorizations/` and lands in a
+separate protected main PR before any candidate consumes it. Fields:
+
+- `schema`, `id` (the file stem), `bead`, `authority`: provenance text only; it
+  grants nothing by itself.
+- `retired`: `{owner, base_sha256, reason}` rows. `owner` is `path::qualname`.
+  `base_sha256` hashes the owner's own source (decorators included, nothing else
+  in the file) at the event base, so unrelated edits do not stale the manifest.
+- `requirements`: `{path, requirement, before_sha256, after_sha256?}` rows binding
+  the governing spec block, keyed by its `ID:` or, when it has none, by its exact
+  `### Requirement:` heading text. Each block must hash to `before_sha256` at the
+  event base and must differ or be absent at HEAD; when `after_sha256` is given it
+  must match exactly (optional so a manifest can land before its product PR).
+- `replacements` (optional): owners that must exist in the candidate. Ordinary CI
+  runs them; this mode never executes retired owners.
+
+`retirement_accounts` in `scripts/contract_evolution.py` runs after ledger clusters
+and contract evolution. It reads manifests only from the trusted ref and requires
+the candidate copy to equal the trusted bytes. Every owner a manifest names must be
+a whole-owner loss (`removed-or-moved`); anything else, and any unlisted loss, keeps
+its ordinary survivor or contract-evolution account. A manifest whose owners have no
+current loss is inert. A healthy admission reports `retirement_accounts` (manifest
+id, trusted sha256, admitted owner count, base and public authority).
+
+Refusal categories: `candidate-only-retirement-authority`,
+`changed-protected-retirement-authority`, `retired-owner-not-wholly-removed`,
+`stale-retired-owner-hash`, `stale-retirement-requirement`,
+`unchanged-retirement-requirement`, `mismatched-retirement-requirement`,
+`missing-retirement-replacement`, `duplicate-retirement-owner-account`, and the
+generic `unproven-test-or-assertion-loss` for everything unlisted.
+
+A trusted manifest (one on main) that claims the retirement schema but is malformed
+refuses when `retirement_accounts` consults it, which only happens while unadmitted
+losses remain. Structural categories include `retirement-schema-fields` (missing or
+extra top-level fields), `retirement-authority-identity` (the `id` is not the file
+stem, an identity field is empty or mistyped, or `retired` or `requirements` is empty
+or not a list), `retirement-owner-record` (a `retired` row or replacement is not a
+`path::qualname` with a hex `base_sha256`, or an owner repeats) and
+`retirement-requirement-record` (a `requirements` row has missing, extra or non-hex
+fields). A `retired` row with the wrong keys refuses with `schema-fields`. A malformed
+manifest that only the candidate adds is currently ignored rather than refused
+(follow-up bu-qzyxoy).
+
+The first authorization is
+[`bu-ys9hdx-general-steam-retirement-20261018.json`](../../tests/contract-evolution-authorizations/bu-ys9hdx-general-steam-retirement-20261018.json):
+General no longer loads Steam (owner decision 2026-10-14, epic bu-ys9hdx; bead
+bu-ys9hdx.7, PR #4514). It retires `test_general_butler_toml_has_steam_module` and
+`test_general_steam_config_is_empty_dict` of `TestButlerTomlSteamConfig` in
+`roster/lifestyle/tests/test_lifestyle_steam_integration.py`, bound to the
+"General Butler Identity and Runtime" block of `openspec/specs/butler-general/spec.md`,
+and requires the two replacement owners that PR adds.
+
+## Authority that has already landed
+
+A pull request's event base (`github.event.pull_request.base.sha`) can predate the
+trusted parent (`HEAD^1`) of the provider's merge checkout. The loss scan keeps that
+event base, so a contract-evolution request or retirement manifest that landed on
+main in between shows up again as a loss. Both consumers treat it as public history
+instead of re-proving it, only from bytes committed at the trusted parent:
+
+- Contract evolution (`_already_landed`): all of these must be identical between the
+  trusted parent and the candidate by Git mode and bytes: the request, its
+  authorization, every retained owner file, every `conftest.py` in each owner's
+  ancestor directories up to the repository root (an added, edited or deleted
+  conftest does not match), and every authorized contract block. These are exactly
+  the inputs `destructive_changes` uses to classify an owner: the owner's own file
+  (shapes, imports, markers, in-file helper context, mode) and ancestral conftest
+  changes, which it attributes to every owner below them. Helper modules, package
+  `__init__.py`, `pyproject.toml` and `uv.lock` are not loss inputs, so they are not
+  compared; ordinary CI runs the owners against them. The owners are then admitted
+  without a fresh proof and without holding the candidate's unrelated delta to the
+  request. If the candidate touched any compared input, or the request or
+  authorization is candidate-only or edited, the ordinary fresh proof applies and
+  refuses as before.
+- Retirement: when every manifest owner is already absent from the trusted parent
+  and the candidate (`_retired_in_public_history`), the base owner hash and the
+  governing-requirement bindings are not re-checked against the older event base.
+  Owners still present at the trusted parent keep the full checks.
+
+A loss the candidate introduces is never covered by this: it is not a manifest or
+request owner, or one of the compared inputs differs from the trusted parent, so it
+stays in the ordinary account. The shortcut does not look at the CI event: it applies
+whenever the trusted bytes already carry the authority and every compared input is
+identical, including a `merge_group` run, where it can only matter if the base
+predates the landing. The contract shortcut needs an explicit trusted ref, so a local
+run without `--ci-event` (which resolves `origin/main` itself) skips it and uses the
+fresh proof; the retirement shortcut does not need one and applies locally too.
+
+Trade-off: identity is trusted-versus-candidate, not candidate-versus-the-authorization's
+recorded `inputs[].after` bytes. A public edit to a named owner after landing therefore
+stays admitted for a stale-base pull request instead of re-refusing it every time main
+legitimately touches that owner. Every normal path to main runs this guard on a fresh
+base, so the edit was itself gated when it landed. Retirement needs no conftest comparison: a manifest owner that
+is absent from the candidate is classified `removed-or-moved`, which no conftest
+attribution can override.
 
 ## Retained owners with additive changes
 

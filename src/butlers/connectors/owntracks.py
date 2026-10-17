@@ -85,6 +85,7 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from butlers.ingestion_bearer_scrub import scrub_evidence_json
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
@@ -846,6 +847,11 @@ async def persist_location_point(
     """
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
     ts = datetime.fromtimestamp(tst, tz=UTC)
+    try:
+        raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
+    except Exception:
+        logger.warning("owntracks: bearer scrub failed; evidence write skipped")
+        return False
 
     result = await pool.fetchval(
         f"""

@@ -105,6 +105,29 @@ None. The contacts module is a leaf module.
   (`ContactsSyncRuntime`; `trigger_immediate_sync()` is the poller trigger).
 - Rollout: `[modules.contacts]` with `provider = "google"` on general, health and relationship;
   deliberately absent from switchboard (routing plane) and messenger (delivery plane).
+- Telegram absence detection is part of the shared sync engine's completion path, so polling and
+  `contacts_sync_now` use the same guard before successful state persistence. It requires an explicit
+  complete-full-fetch receipt after all pages and local contact applications finish. Incremental sync
+  never infers absence, including an empty unchanged-hash result; the current Telegram incremental
+  implementation still returns the full list even when its hash is unchanged.
+- A full empty list refuses deletion even if its hash matches. A loss strictly greater than half the
+  pre-cycle active Telegram links also refuses: `max_shrink_fraction` defaults to `0.5`, is finite in
+  `[0, 1)`, and accepts equality. This allows ordinary individual removals while parking substantial
+  list loss; it is an implementation sanity parameter, not permission to delete entities or facts.
+  Refusals log `contact_sync_absence_refused` with a bounded reason and counts. Safe positive work
+  and an otherwise successful cursor may persist when only absence inference is refused.
+- Accepted absence marks only the configured account's active Telegram source links, preserving
+  entities, Telegram handles and Google/other-provider links. `contact_sync_deleted_source` records
+  new transitions after commit. Absence changes, affected version-cache eviction and successful
+  cursor/state save share one hosting transaction. Earlier per-contact positive commits survive a
+  later failure and are replayable; remote owner calls remain outside that transaction. Ordinary
+  logs are not a durable outbox and do not promise exactly-once emission after a crash.
+- Same-account manual/poll cycles serialize. Persistent state and absent-source baseline checks
+  refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
+  progress independently. Reappearance bypasses an unchanged etag/fingerprint cache when its exact
+  source anchor is inactive, retains that still-live entity anchor and uses the existing upsert to
+  clear `deleted_at`; inactive links do not become generally routable. No schema/grant change or
+  automatic retry is introduced. See the canonical [completeness guard](../../openspec/specs/module-contacts/spec.md).
 - Backfill never auto-merges an ambiguous name match. A provider overwrites only the fields it owns
   in the provenance map; locally edited fields are preserved.
 - Migration `contacts_001` adds the `contacts_source_links.local_contact_id` FK only when

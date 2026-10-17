@@ -1117,3 +1117,26 @@ async def test_live_path_dm_never_bypasses_via_group_size(
     dispatcher.call.assert_awaited_once()
     connector._submit_to_ingest.assert_not_called()
     connector._filtered_event_buffer.record.assert_called_once()
+
+
+async def test_live_discretion_passes_aggressive_hint_for_service_sender(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A bare 6-digit code from 777000 is withheld before the discretion LLM sees it."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+    connector._participant_count_cache["100"] = (2, time.monotonic())
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._process_message(
+        _make_message(msg_id=30, chat_id=100, sender_id=777000, text="123456")
+    )
+
+    dispatcher.call.assert_awaited_once()
+    assert "123456" not in dispatcher.call.await_args.args[0]

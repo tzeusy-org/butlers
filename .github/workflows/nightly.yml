@@ -308,6 +308,26 @@ jobs:
           DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
             -t "butlers-app:${GIT_SHA}" .
 
+      - name: Allow unprivileged user namespaces for Bubblewrap (runner host setting)
+        # bu-3kyyyy: ubuntu-24.04 hosts (what ubuntu-latest now is) set
+        # kernel.apparmor_restrict_unprivileged_userns=1, which denies the
+        # capabilities an unprivileged process needs to write a uid map in a new
+        # user namespace, even when the container runs with
+        # --security-opt apparmor=unconfined. That surfaces as
+        # "bwrap: setting up uid map: Permission denied". This job passed on
+        # ubuntu-22.04 (no such sysctl) and has failed on every ubuntu-24.04
+        # run. The readbacks below record the value before and after, so the
+        # cause stays visible in the log. This relaxes only this CI host; the
+        # sandbox itself is unchanged and still refuses to run when it cannot
+        # create its namespaces (no unsandboxed fallback).
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns || echo "sysctl not present"
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            sysctl kernel.apparmor_restrict_unprivileged_userns
+          fi
+          uname -r
+
       - name: Exact-image Bubblewrap sandbox proof
         env:
           BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
