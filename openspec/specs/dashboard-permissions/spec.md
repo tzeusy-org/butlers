@@ -91,6 +91,10 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.
 
+ID: REQ-dashboard-permissions-001
+Source: bu-8ptawc owner data export correction; v1 owner data-export promise
+Scope: v1-mandatory
+
 #### Scenario: Encrypted export
 - **WHEN** `POST /api/data/export {scope}` is called with `scope ∈ {all, memory, audit, config}` (`full` accepted as an alias of `all`)
 - **THEN** the response is `ApiResponse[ExportResult]` with `signed_url` valid for 60 minutes and `expires_at`
