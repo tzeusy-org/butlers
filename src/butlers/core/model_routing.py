@@ -55,6 +55,7 @@ For a given ``butler_name`` and ``complexity_tier``:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import enum
 import json
@@ -489,6 +490,65 @@ breaker_open AS (
 ALLOWANCE_DEFAULT_WINDOW = timedelta(hours=1)
 ALLOWANCE_OUTCOME = "allowance_exhausted"
 ALLOWANCE_ACCOUNT_KEY_SQL = "COALESCE(mc.allowance_account, mc.runtime_type)"
+ALLOWANCE_CAPTURE_TIMEOUT_S = 5.0
+
+
+@dataclasses.dataclass(frozen=True)
+class AllowanceAttemptContext:
+    """Database-clock evidence captured before one provider invocation.
+
+    An absent observed rejection never authorizes clearing a later exhaustion.
+    This context is local to the attempt; it is neither persisted nor replayed.
+    """
+
+    account_key: str
+    started_at: datetime
+    observed_rejection_at: datetime | None
+
+
+_ALLOWANCE_CAPTURE_SQL = f"""
+SELECT {ALLOWANCE_ACCOUNT_KEY_SQL} AS account_key,
+       clock_timestamp() AS started_at,
+       CASE WHEN pas.state = 'exhausted' THEN pas.updated_at END AS observed_rejection_at
+FROM public.model_catalog mc
+LEFT JOIN public.provider_allowance_states pas
+    ON pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
+WHERE mc.id = $1
+"""
+
+
+async def capture_allowance_attempt(
+    pool: asyncpg.Pool, catalog_entry_id: uuid.UUID
+) -> AllowanceAttemptContext | None:
+    """Bound account/rejection capture to five seconds; failure cannot block invocation.
+
+    Use PostgreSQL's wall clock, not the application clock or transaction-start
+    ``now()``. Missing or malformed evidence disables this attempt's clear only.
+    Cancellation propagates so a pending owner Stop still prevents invocation.
+    """
+    try:
+        async with asyncio.timeout(ALLOWANCE_CAPTURE_TIMEOUT_S):
+            row = await pool.fetchrow(_ALLOWANCE_CAPTURE_SQL, catalog_entry_id)
+        if row is None:
+            return None
+        key, started, observed = (
+            row["account_key"],
+            row["started_at"],
+            row["observed_rejection_at"],
+        )
+        if not isinstance(key, str) or not key:
+            return None
+        if not isinstance(started, datetime) or started.utcoffset() is None:
+            return None
+        if observed is not None and (
+            not isinstance(observed, datetime) or observed.utcoffset() is None
+        ):
+            return None
+        return AllowanceAttemptContext(key, started, observed)
+    except Exception:
+        logger.warning("Provider allowance attempt capture unavailable")
+        return None
+
 
 _ALLOWANCE_BLOCKED_CTE = f"""
 allowance_blocked AS (
@@ -503,13 +563,14 @@ allowance_blocked AS (
 
 
 # Upsert for one exhausted account.  GREATEST keeps the latest-known reset when
-# concurrent rejections race; ``first_seen_at`` survives repeats; a repeat only
-# refreshes the causing attempt id.  ``reset_source`` follows whichever reset won.
+# concurrent rejections race; ``first_seen_at`` survives repeats; a repeat
+# refreshes the causing attempt id and rejection fence. ``reset_source`` follows
+# whichever reset won. Wall-clock writes cannot inherit an earlier BEGIN time.
 # $1 account_key, $2 reset_at, $3 reset_source, $4 attempt id (nullable).
 _ALLOWANCE_EXHAUST_SQL = """
 INSERT INTO public.provider_allowance_states
-    (account_key, state, reset_at, reset_source, last_rejection_attempt_id)
-VALUES ($1, 'exhausted', $2, $3, $4)
+    (account_key, state, reset_at, reset_source, last_rejection_attempt_id, updated_at)
+VALUES ($1, 'exhausted', $2, $3, $4, clock_timestamp())
 ON CONFLICT (account_key) DO UPDATE SET
     reset_source = CASE
         WHEN public.provider_allowance_states.state = 'exhausted'
@@ -529,18 +590,24 @@ ON CONFLICT (account_key) DO UPDATE SET
     END,
     state = 'exhausted',
     last_rejection_attempt_id = EXCLUDED.last_rejection_attempt_id,
-    updated_at = now()
+    updated_at = clock_timestamp()
 """
 
-# A success on an account proves it is usable: clear only an exhausted row, and
-# only when the success is newer than the recorded rejection.  $1 catalog entry.
+# A successful attempt may clear only the rejection it observed BEFORE invocation,
+# strictly older than that database-clock start. A later rejection, equal timestamp,
+# or changed catalog account remains exhausted. $1 entry, $2 account, $3 start,
+# $4 observed rejection; the row-lock recheck makes the whole decision one UPDATE.
 _ALLOWANCE_CLEAR_SQL = f"""
 UPDATE public.provider_allowance_states pas
-SET state = 'available', reset_at = NULL, reset_source = 'unknown', updated_at = now()
+SET state = 'available', reset_at = NULL, reset_source = 'unknown', updated_at = clock_timestamp()
 FROM public.model_catalog mc
 WHERE mc.id = $1
+  AND {ALLOWANCE_ACCOUNT_KEY_SQL} = $2
+  AND pas.account_key = $2
   AND pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
   AND pas.state = 'exhausted'
+  AND pas.updated_at < $3
+  AND pas.updated_at = $4
 """
 
 
@@ -579,14 +646,31 @@ async def mark_allowance_exhausted(
     return effective_reset
 
 
-async def clear_allowance_exhaustion(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> None:
-    """Mark the account behind a successful attempt available (no-op when not exhausted)."""
+async def clear_allowance_exhaustion(
+    pool: asyncpg.Pool,
+    catalog_entry_id: uuid.UUID,
+    *,
+    attempt_context: AllowanceAttemptContext | None = None,
+) -> None:
+    """Clear an unchanged, strictly older rejection observed by this successful attempt.
+
+    Missing capture, no observed rejection, changed account or a newer rejection
+    is a no-op. Completion time and causing-attempt IDs cannot establish ordering.
+    """
+    if attempt_context is None or attempt_context.observed_rejection_at is None:
+        return
     try:
-        status = await pool.execute(_ALLOWANCE_CLEAR_SQL, catalog_entry_id)
+        status = await pool.execute(
+            _ALLOWANCE_CLEAR_SQL,
+            catalog_entry_id,
+            attempt_context.account_key,
+            attempt_context.started_at,
+            attempt_context.observed_rejection_at,
+        )
     except Exception:
         logger.warning("Failed to clear provider allowance exhaustion", exc_info=True)
         return
-    if status.endswith(" 0"):
+    if status != "UPDATE 1":
         return
     clear_routing_decision_cache()
 

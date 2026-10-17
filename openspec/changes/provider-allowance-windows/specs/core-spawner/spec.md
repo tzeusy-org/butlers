@@ -8,7 +8,15 @@ the provider account's allowance state to `exhausted` with the parsed reset
 (`reset_source='default_window'`). The upsert SHALL keep the latest-known reset, SHALL NOT
 shorten a parsed reset with a default-window guess, and SHALL be best-effort: a write
 failure SHALL NOT raise out of failover handling. A successful attempt SHALL clear an
-exhausted state on its account.
+exhausted state on its account only when it observed that same rejection before invocation,
+the rejection is strictly older than its database-clock start, and the catalog entry still
+names the captured account. Missing capture, an equal timestamp, or a subsequent rejection
+SHALL leave the state unchanged. Every failover or cold retry SHALL capture its own context.
+
+#### Scenario: An in-flight success cannot clear a later rejection
+- **WHEN** an attempt begins, a later rejection exhausts its account, and the attempt succeeds
+- **THEN** the later rejection SHALL remain exhausted with its reset and provenance unchanged
+- **AND** a success begun strictly after the unchanged rejection SHALL clear it best-effort
 
 #### Scenario: Usage limit fails over to a different account in one attempt
 - **WHEN** attempt 1 fails with a usage-limit rejection
