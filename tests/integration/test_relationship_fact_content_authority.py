@@ -2334,11 +2334,31 @@ async def test_lost_rule_claim_parks_an_assertion_the_owner_can_still_execute(en
     snapshot = dict(
         await env.rel.fetchrow("SELECT * FROM relationship.approval_rules WHERE id=$1", rule_id)
     )
-    # The rule was usable when the gate matched it, and is spent by the time of the claim.
-    await env.rel.execute(
-        "UPDATE relationship.approval_rules SET max_uses=1, use_count=1 WHERE id=$1", rule_id
-    )
     monkeypatch.setattr(gate_module, "match_standing_rule", lambda *_args, **_kwargs: snapshot)
+
+    # The rule must still be usable when the gate admits it and prepares the assertion; it is
+    # spent between preparation and the claim, which is the window the release repairs.
+    from butlers.tools.relationship import fact_authority as rule_authority
+
+    real_prepare = rule_authority.prepare_rule_assertion
+    prepared_decisions: list[str | None] = []
+
+    async def prepare_then_spend(pool, prepared_action_id, tool_args, prepared_rule_id):
+        prepared = await real_prepare(pool, prepared_action_id, tool_args, prepared_rule_id)
+        prepared_decisions.append(
+            await env.rel.fetchval(
+                "SELECT decision_report->>'confirmation_source' "
+                "FROM relationship.fact_approval_context WHERE action_id=$1",
+                prepared_action_id,
+            )
+        )
+        await env.rel.execute(
+            "UPDATE relationship.approval_rules SET max_uses=1, use_count=1 WHERE id=$1",
+            prepared_rule_id,
+        )
+        return prepared
+
+    monkeypatch.setattr(rule_authority, "prepare_rule_assertion", prepare_then_spend)
 
     async def handler(**values):
         values["subject"] = uuid.UUID(values["subject"])
@@ -2361,13 +2381,26 @@ async def test_lost_rule_claim_parks_an_assertion_the_owner_can_still_execute(en
         )
     assert parked["status"] == "pending_approval"
     action_id = uuid.UUID(parked["action_id"])
+    # The standing-rule path really ran: preparation committed a standing_rule decision, the
+    # claim lost, and the gate parked the action as exhausted rather than as unmatched.
+    assert prepared_decisions == ["standing_rule"]
     assert (
         await env.rel.fetchval(
-            "SELECT decision_report FROM relationship.fact_approval_context WHERE action_id=$1",
+            "SELECT event_metadata->>'reason' FROM relationship.approval_events "
+            "WHERE action_id=$1 AND event_type='action_queued'",
             action_id,
         )
-        is None
+        == "standing rule exhausted"
     )
+    context = await env.rel.fetchrow(
+        "SELECT decision_report FROM relationship.fact_approval_context WHERE action_id=$1",
+        action_id,
+    )
+    assert context is not None and context["decision_report"] is None
+    parked_args = await env.rel.fetchval(
+        "SELECT tool_args FROM pending_actions WHERE id=$1", action_id
+    )
+    assert parked_args["approval_action_id"] == str(action_id)
 
     async with _owner_app(env) as (client, _service, headers):
 
