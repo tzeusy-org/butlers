@@ -176,10 +176,12 @@ def downgrade() -> None:
         f"""
         DO $$
         BEGIN
-            IF to_regclass('{_TABLE}') IS NOT NULL AND EXISTS (
-                SELECT 1 FROM {_TABLE} WHERE stage IN {_HOLD_STAGES}
-            ) THEN
-                RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+            -- Nested so the table reference is only planned once the table is known to exist
+            -- (a single AND would be planned, and fail, on a partial-chain replay).
+            IF to_regclass('{_TABLE}') IS NOT NULL THEN
+                IF EXISTS (SELECT 1 FROM {_TABLE} WHERE stage IN {_HOLD_STAGES}) THEN
+                    RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+                END IF;
             END IF;
         END
         $$

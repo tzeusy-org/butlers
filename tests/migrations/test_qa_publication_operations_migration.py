@@ -229,8 +229,11 @@ def test_bootstrap_rerun_keeps_qa_only_writes_and_forced_rls(
 def test_stage_and_order_cannot_disagree(db_url: str, attempt_id: uuid.UUID) -> None:
     engine = create_engine(db_url)
     try:
+        # FORCE RLS refuses a non-QA row before any CHECK runs, so insert as the QA role to
+        # prove the constraints themselves.
         with pytest.raises(DBAPIError, match="ck_qa_publication_operations_stage"):
             with engine.begin() as conn:
+                conn.exec_driver_sql("SET ROLE butler_qa_rw")
                 conn.exec_driver_sql(
                     f"""
                     INSERT INTO {_TABLE}
@@ -240,6 +243,7 @@ def test_stage_and_order_cannot_disagree(db_url: str, attempt_id: uuid.UUID) -> 
                 )
         with pytest.raises(DBAPIError, match="ck_qa_publication_operations_kind"):
             with engine.begin() as conn:
+                conn.exec_driver_sql("SET ROLE butler_qa_rw")
                 conn.exec_driver_sql(
                     f"""
                     INSERT INTO {_TABLE}
