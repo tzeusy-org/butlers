@@ -91,6 +91,10 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.
 
+ID: REQ-dashboard-permissions-001
+Source: bu-8ptawc owner data export correction; v1 owner data-export promise
+Scope: v1-mandatory
+
 #### Scenario: Encrypted export
 - **WHEN** `POST /api/data/export {scope}` is called with `scope ∈ {all, memory, audit, config}` (`full` accepted as an alias of `all`)
 - **THEN** the response is `ApiResponse[ExportResult]` with `signed_url` valid for 60 minutes and `expires_at`
@@ -100,11 +104,12 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 #### Scenario: Every export scope yields its real data
 - **WHEN** the signed URL for a given `scope` is downloaded
 - **THEN** the archive contains the actual data for that scope, never an empty/near-empty file behind a success response:
-  - `memory` → the memory module's facts/rules/episodes data
+  - `memory` → the facts/rules/episodes data of every butler that runs the memory module, one file per butler and table named `<butler>_memory_<table>.ndjson`, each read from that butler's own memory schema
   - `audit` → `public.audit_log`
   - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
   - `all` → the union of every scope above
 - **AND** a scope that resolves to zero rows is reported as such (explicit empty marker), but a *known* scope MUST NOT silently map to "no tables" — the export must cover the data the scope name promises.
+- **AND** when no registered butler has a memory schema, the `memory` and `all` exports fail with HTTP 500 and an explicit message instead of returning an archive without memory data.
 
 #### Scenario: Wipe feature disabled
 - **WHEN** the `/settings/permissions` page renders
