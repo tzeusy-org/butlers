@@ -435,7 +435,6 @@ import type {
   ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
-  ButlerTool,
   MemoryAccess,
   KillRequest,
   KillResponse,
@@ -6767,11 +6766,6 @@ export function getButlerPromptHistory(
   return apiFetch<PaginatedResponse<PromptVersion>>(
     `/butlers/${name}/prompt/history${qs ? `?${qs}` : ""}`,
   );
-}
-
-/** GET /api/butlers/{name}/tools — list tool grants. */
-export function getButlerTools(name: string): Promise<ApiResponse<ButlerTool[]>> {
-  return apiFetch<ApiResponse<ButlerTool[]>>(`/butlers/${name}/tools`);
 }
 
 /** GET /api/butlers/{name}/memory-access — memory tier access metadata. */
