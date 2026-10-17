@@ -76,6 +76,11 @@ class TestSignalCoverage:
         result = await _get_signal([])
         assert result is None
 
+    async def test_focused_suppresses_within_max_hold(self):
+        """bu-fz56hh: a focus block holds routine delivery like a meeting."""
+        result = await _get_signal([_signal("focused", set_at=_NOW - timedelta(hours=1))])
+        assert result == "focused"
+
 
 class TestMaxHoldTTL:
     """A signal that has been continuously active longer than its own
@@ -112,6 +117,10 @@ class TestMaxHoldTTL:
         """The comparison is strict less-than: a signal exactly at its cap no
         longer suppresses (matches quiet-hours' end-exclusive convention)."""
         result = await _get_signal([_signal("meeting", set_at=_NOW - timedelta(hours=2))])
+        assert result is None
+
+    async def test_focused_beyond_four_hour_max_hold_stops_suppressing(self):
+        result = await _get_signal([_signal("focused", set_at=_NOW - timedelta(hours=5))])
         assert result is None
 
 
@@ -157,6 +166,15 @@ class TestPrecedence:
             ]
         )
         assert result == "meeting"
+
+    async def test_dnd_outranks_focused_which_outranks_meeting(self):
+        both = [
+            _signal("meeting", set_at=_NOW - timedelta(minutes=10)),
+            _signal("focused", set_at=_NOW - timedelta(minutes=10)),
+        ]
+        assert await _get_signal(both) == "focused"
+        dnd = _signal("dnd", set_at=_NOW - timedelta(minutes=10))
+        assert await _get_signal([*both, dnd]) == "dnd"
 
 
 class TestFailOpen:
@@ -303,6 +321,18 @@ class TestComputeCatchupDeliverAt:
         )
 
         assert result == set_at + timedelta(hours=hours)
+
+    def test_focused_signal_uses_set_at_plus_four_hours(self):
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        set_at = _NOW - timedelta(minutes=30)
+        result = _compute_catchup_deliver_at(
+            suppression_signal="focused",
+            policy=None,
+            context_signal_set_at=set_at,
+            now=_NOW,
+        )
+        assert result == set_at + timedelta(hours=4)
 
     def test_context_signal_without_a_set_at_fails_open_to_none(self):
         """The catch-up's own re-resolution of the context signal (see
