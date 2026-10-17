@@ -45,6 +45,15 @@ The core chain runs once per butler schema over one shared table, so only the la
 raises and each held operation needs a manual, recorded reconciliation first. Rows are never deleted
 automatically.
 
+Migration `core_267` makes the database enforce what the writer would otherwise only promise. A CHECK
+(`ck_qa_publication_operations_exact_reconciliation`) allows a reconciled row only as `resource_found`
+naming exactly the bound `expected_object_id`, or `resource_absent` naming no object, and refuses a
+reconciliation on any other row. A BEFORE UPDATE trigger (`qa_publication_operations_guard`) refuses a
+stage regression or same-order rewrite (for example `ambiguous` to `succeeded`), any change to a
+reconciled row, and any change to the attempt binding, kind, `binding_digest`, `request_digest` or
+`expected_object_id`. It fires for every role. As for `core_266`, only the last schema to leave
+`core_267` removes the shared trigger, function and constraint.
+
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and
 publication stays disabled until it lands.
