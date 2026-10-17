@@ -67,6 +67,9 @@ def harden_git_env(env: dict[str, str]) -> dict[str, str]:
         ("credential.helper", ""),
         ("core.sshCommand", "ssh"),
         ("core.askPass", "/bin/false"),
+        # Origin is https; ext:: and git:// (core.gitProxy) transports run commands or dial out.
+        ("protocol.ext.allow", "never"),
+        ("protocol.git.allow", "never"),
     ]
     hardened["GIT_CONFIG_NOSYSTEM"] = "1"
     hardened["GIT_CONFIG_GLOBAL"] = "/dev/null"

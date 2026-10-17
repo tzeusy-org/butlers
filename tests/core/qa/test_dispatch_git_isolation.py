@@ -343,3 +343,29 @@ async def test_head_lookup_is_pinned_to_the_stored_repository_from_a_neutral_cwd
     args = spawn.call_args.args
     assert args[args.index("--repo") + 1] == "org/repo"
     assert Path(spawn.call_args.kwargs["cwd"]) != tmp_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["ext", "gitproxy"])
+async def test_main_refresh_never_runs_planted_ext_or_git_proxy_transport(
+    tmp_path: Path, transport: str
+):
+    repo_root, _work, _markers = _repository(tmp_path)
+    marker = tmp_path / f"{transport}.marker"
+    script = tmp_path / f"{transport}.sh"
+    script.write_text(f"#!/bin/sh\necho ran >> {marker}\nexit 1\n")
+    script.chmod(0o755)
+    if transport == "ext":
+        _git(repo_root, "remote", "set-url", "origin", f"ext::{script}")
+        _git(repo_root, "config", "protocol.ext.allow", "always")  # Off by default; plantable.
+    else:
+        _git(repo_root, "remote", "set-url", "origin", "git://127.0.0.1:1/x.git")
+        _git(repo_root, "config", "core.gitProxy", str(script))
+
+    subprocess.run(["git", "fetch", "origin"], cwd=repo_root, capture_output=True)
+    assert marker.exists()  # Control: the unhardened fetch runs the planted command.
+    marker.unlink()
+
+    with pytest.raises(qa_dispatch.MainRefreshError):
+        await qa_dispatch._refresh_main_commit(repo_root)
+    assert not marker.exists()

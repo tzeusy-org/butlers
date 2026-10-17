@@ -46,14 +46,19 @@ step sequence of each, consult the `patrol-operations` skill.
   dispatcher keeps the token only for read-only PR-status polling, which addresses
   the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the
   shared `repo_root` that agents can write (`.git/hooks`, `.git/config`), so it holds
-  no token. Git subprocesses in that clone run through `butlers.core.git_env`: an
-  allowlisted environment (no daemon secrets) plus command-line config that neutralises
-  hooks, fsmonitor, credential helpers, `core.sshCommand` and `core.askPass`. This covers
-  the main refresh, the worktree create/remove/reap helpers and the managed-clone refresh.
-  Residual, not covered: the follow-up and main-refresh fetches, whose argv retained tests
-  pin, so a planted `remote.origin.uploadpack` is not neutralised there (they hold no
-  secrets); `url.*.insteadOf` and `filter.*` config; and the self-healing `git push` path.
-  This does not activate the publisher or change live credentials.
+  no token. These dispatcher git paths run through `butlers.core.git_env` (an
+  allowlisted environment with no daemon secrets, plus command-line config that
+  neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass`
+  and the `ext::` and `git://` transports): the main refresh, follow-up fetch/worktree
+  preparation, the worktree create/remove/reap helpers and the managed-clone refresh.
+  Residual, not covered: (a) `_capture_commit_diff_snapshot` runs `git diff` with the
+  full daemon environment, so a planted `diff.external` runs with daemon secrets
+  (bu-mc01y5.13); (b) `_detect_no_op_branch` runs `git log` unhardened with the agent
+  environment, which holds no secrets; (c) the follow-up and main-refresh fetches, whose
+  argv retained tests pin, so a planted `remote.origin.uploadpack` is not neutralised
+  there (they hold no secrets); (d) `url.*.insteadOf` and `filter.*` config; (e) the
+  self-healing `git push` path (bu-uhaiq7). This does not activate the publisher or
+  change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First
