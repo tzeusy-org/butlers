@@ -29,6 +29,20 @@ Do not use bd's built-in `issue_type: decision`. It is an ADR-style template for
 made (`--validate` demands `## Decision` / `## Rationale` / `## Alternatives Considered`). Decision
 beads keep their normal type, usually `task`, and carry the `decision` label.
 
+### Gating work on a decision
+
+- Assign the decision bead to the owner and gate each dependent with a real edge:
+  `bd dep add <gated-bead> <decision-bead>`. An `owner-gated` label alone gates nothing: an open,
+  unassigned bead with that label still appears in `bd ready` and the fleet can claim it.
+- Do not put the `decision` label on `[HOLD]` release gates or on owner action and authorization
+  beads ("run the live drill", "authorize the cutover"). The Decision Desk closes a decision bead
+  when the owner picks any option, so a "not yet" answer would close it and unblock its dependents.
+  Keep those as owner-assigned tasks; an owner action with no blocker uses manual `blocked` status.
+- Write options that make sense on their own ("B: keep disabled"), never bare letters: the owner
+  answers from Telegram or the dashboard without the description.
+- Before filing, check that the question is still open: `git log origin/main --grep <id>`, merged
+  spec text, and recorded owner answers often settle it already.
+
 ## Linter
 
 `scripts/lint_decision_beads.py` checks every `decision`-labelled bead for the four properties:
