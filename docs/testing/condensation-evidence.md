@@ -332,7 +332,15 @@ request owner, or one of the compared inputs differs from the trusted parent, so
 stays in the ordinary account. The shortcut does not look at the CI event: it applies
 whenever the trusted bytes already carry the authority and every compared input is
 identical, including a `merge_group` run, where it can only matter if the base
-predates the landing. Retirement needs no conftest comparison: a manifest owner that
+predates the landing. The contract shortcut needs an explicit trusted ref, so a local
+run without `--ci-event` (which resolves `origin/main` itself) skips it and uses the
+fresh proof; the retirement shortcut does not need one and applies locally too.
+
+Trade-off: identity is trusted-versus-candidate, not candidate-versus-the-authorization's
+recorded `inputs[].after` bytes. A public edit to a named owner after landing therefore
+stays admitted for a stale-base pull request instead of re-refusing it every time main
+legitimately touches that owner. Every normal path to main runs this guard on a fresh
+base, so the edit was itself gated when it landed. Retirement needs no conftest comparison: a manifest owner that
 is absent from the candidate is classified `removed-or-moved`, which no conftest
 attribution can override.
 
