@@ -18,7 +18,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
+from fastapi import HTTPException
 
+from butlers.api.db import DatabaseManager
 from butlers.api.routers.data_ops import _build_export_zip, _memory_export_entries
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -26,26 +28,21 @@ from butlers.testing.migration import create_migrated_test_db, migration_db_name
 docker_available = shutil.which("docker") is not None
 
 
-class _FakeDb:
-    """Minimal DatabaseManager surface used by the export."""
+def _manager(pools, schemas, memory_butlers):
+    """A REAL DatabaseManager (not a double) so the property/method seam is exercised.
 
-    def __init__(self, pools, schemas, memory_butlers):
-        self._pools = pools
-        self._schemas = schemas
-        self._memory_butlers = memory_butlers
-
-    def butler_names(self):
-        return list(self._pools)
-
-    def butlers_with_module(self, name):
-        assert name == "memory"
-        return self._memory_butlers
-
-    def memory_schema_for_butler(self, name):
-        return self._schemas[name]
-
-    def pool(self, name):
-        return self._pools[name]
+    ``butler_names`` is a property on the real manager; a double that defines it as a
+    method hid a TypeError that made the production export 500.
+    """
+    db = DatabaseManager()
+    for name, pool in pools.items():
+        db._pools[name] = pool
+        db._butler_schemas[name] = schemas[name]
+        db._butler_memory_schema_overrides[name] = None
+    if memory_butlers is not None:
+        for name in pools:
+            db._butler_modules[name] = frozenset({"memory"} if name in memory_butlers else set())
+    return db
 
 
 def _pool(rows):
@@ -60,7 +57,7 @@ def _files(zip_bytes: bytes) -> dict[str, str]:
 
 
 def test_memory_entries_are_per_butler_schema_qualified_and_skip_non_memory():
-    db = _FakeDb(
+    db = _manager(
         {"general": _pool([]), "health": _pool([]), "messenger": _pool([])},
         {"general": "general", "health": "health_mem", "messenger": "messenger"},
         ["general", "health"],
@@ -78,13 +75,21 @@ def test_memory_entries_are_per_butler_schema_qualified_and_skip_non_memory():
     assert not any("memory." in e[1] for e in entries)
 
 
-def test_memory_entries_fall_back_to_all_butlers_without_module_metadata():
-    db = _FakeDb({"general": _pool([])}, {"general": "general"}, None)
+def test_memory_entries_use_all_butlers_without_module_metadata_via_real_property():
+    db = _manager({"general": _pool([])}, {"general": "general"}, None)
     assert {e[2] for e in _memory_export_entries(db)} == {"general"}
 
 
+def test_memory_entries_fail_fast_on_empty_roster():
+    with pytest.raises(HTTPException) as exc:
+        _memory_export_entries(_manager({}, {}, None))
+    assert exc.value.status_code == 500
+    with pytest.raises(HTTPException):
+        _memory_export_entries(_manager({"messenger": _pool([])}, {"messenger": "m"}, []))
+
+
 def test_memory_entries_reject_unsafe_schema_identifier():
-    db = _FakeDb({"general": _pool([])}, {"general": 'x"; DROP SCHEMA y; --'}, ["general"])
+    db = _manager({"general": _pool([])}, {"general": 'x"; DROP SCHEMA y; --'}, ["general"])
     with pytest.raises(ValueError):
         _memory_export_entries(db)
 
@@ -92,7 +97,7 @@ def test_memory_entries_reject_unsafe_schema_identifier():
 async def test_memory_scope_queries_each_butlers_own_pool_not_memory_schema():
     general = _pool([{"id": "g1", "embedding": [0.1]}])
     health = _pool([{"id": "h1"}])
-    db = _FakeDb(
+    db = _manager(
         {"general": general, "health": health},
         {"general": "general", "health": "health"},
         ["general", "health"],
@@ -110,7 +115,7 @@ async def test_memory_scope_queries_each_butlers_own_pool_not_memory_schema():
 
 
 async def test_all_scope_includes_memory_per_butler_plus_static_scopes():
-    db = _FakeDb({"general": _pool([])}, {"general": "general"}, ["general"])
+    db = _manager({"general": _pool([])}, {"general": "general"}, ["general"])
     files = _files(await _build_export_zip(db.pool("general"), "all", db=db))
     assert "general_memory_rules.ndjson" in files
     assert "public_audit_log.ndjson" in files
@@ -150,7 +155,7 @@ class TestMemoryExportRealSchemas:
         with pytest.raises(asyncpg.UndefinedTableError):
             await pools["alpha"].fetch("SELECT * FROM memory.facts")
 
-        db = _FakeDb(pools, {"alpha": "alpha", "beta": "beta"}, ["alpha", "beta"])
+        db = _manager(pools, {"alpha": "alpha", "beta": "beta"}, ["alpha", "beta"])
         files = _files(await _build_export_zip(pools["alpha"], "memory", db=db))
 
         for butler in ("alpha", "beta"):

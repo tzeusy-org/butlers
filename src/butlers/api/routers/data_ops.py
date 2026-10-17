@@ -117,10 +117,10 @@ _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # excluded from serialisation — they are large binary/generated columns that
 # would bloat the archive and are not useful for human-readable exports.
 _SCOPE_MAP: dict[str, list[tuple[str, str]]] = {
-    # Unqualified templates: memory tables live in each butler's own schema, never in a
-    # shared ``memory`` schema.  The real export expands these per butler through
-    # ``_memory_export_entries``; the unqualified form is only used when the manager
-    # exposes no butler roster (it then resolves via the pool's search_path).
+    # Relation templates only: memory tables live in each butler's own schema, never in a
+    # shared ``memory`` schema, and are never queried from here.  The export expands the
+    # scope per butler through ``_memory_export_entries`` (schema-qualified, run on that
+    # butler's own pool).
     "memory": [
         (f"memory.{rel}", f"SELECT * FROM {rel} ORDER BY created_at") for rel in _MEMORY_RELATIONS
     ],
@@ -440,12 +440,6 @@ async def export_data(
 # ---------------------------------------------------------------------------
 
 
-def _has_butler_roster(db: object) -> bool:
-    """True when the manager reports a non-empty list of registered butlers."""
-    names = db.butler_names()  # type: ignore[attr-defined]
-    return isinstance(names, list) and bool(names)
-
-
 def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
     """Return ``(display_name, query, butler_name)`` for every butler's memory tables.
 
@@ -456,7 +450,13 @@ def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
     """
     butlers = db.butlers_with_module("memory")  # type: ignore[attr-defined]
     if butlers is None:
-        butlers = db.butler_names()  # type: ignore[attr-defined]
+        butlers = db.butler_names  # type: ignore[attr-defined]
+    if not butlers:
+        # A known scope must never silently map to no tables.
+        raise HTTPException(
+            status_code=500,
+            detail="Export failed: no butler with a memory schema is registered",
+        )
     entries: list[tuple[str, str, str]] = []
     for butler in butlers:
         schema = db.memory_schema_for_butler(butler)  # type: ignore[attr-defined]
@@ -470,7 +470,7 @@ def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
     return entries
 
 
-async def _build_export_zip(pool: object, scope: str, db: object | None = None) -> bytes:
+async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
     """Build a deflate-compressed ZIP of NDJSON exports for *scope*.
 
     Each table in the scope becomes one ``.ndjson`` file inside the ZIP.
@@ -500,7 +500,7 @@ async def _build_export_zip(pool: object, scope: str, db: object | None = None) 
     # (display_name, query, butler whose pool runs it; None = the caller's pool)
     table_entries: list[tuple[str, str, str | None]] = []
     for scope_name in scope_names:
-        if scope_name == "memory" and db is not None and _has_butler_roster(db):
+        if scope_name == "memory":
             table_entries.extend(_memory_export_entries(db))
         else:
             table_entries.extend((n, q, None) for n, q in _SCOPE_MAP[scope_name])
