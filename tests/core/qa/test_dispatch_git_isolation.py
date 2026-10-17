@@ -16,7 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.git_env import isolated_git_env
+from butlers.core.healing import worktree as healing_worktree
 from butlers.core.qa import dispatch as qa_dispatch
+from butlers.core.qa import repo_clone
 
 pytestmark = pytest.mark.unit
 
@@ -129,7 +132,7 @@ async def test_followup_prep_runs_no_planted_hook_and_never_holds_the_token(tmp_
     assert seen_env
     for env in seen_env:
         assert _TOKEN not in json.dumps(env)
-        assert "GIT_ASKPASS" not in env and "GH_TOKEN" not in env
+        assert env["GIT_ASKPASS"] == "/bin/false" and "GH_TOKEN" not in env
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
 
 
@@ -192,3 +195,151 @@ async def test_pr_polling_keeps_the_token_but_not_the_shared_git_directory(tmp_p
     env = spawn.call_args.kwargs["env"]
     assert env["GH_TOKEN"] == _TOKEN
     assert env["GIT_CONFIG_KEY_0"] == "core.hooksPath" and env["GIT_CONFIG_VALUE_0"] == "/dev/null"
+
+
+@pytest.mark.asyncio
+async def test_main_refresh_neutralises_planted_commands_and_hides_daemon_secrets(
+    tmp_path: Path, monkeypatch
+):
+    """A core.sshCommand planted in .git/config never executes in the main refresh."""
+    repo_root, work, markers = _repository(tmp_path)
+    _advance(work, "one")
+    monkeypatch.setenv("GH_TOKEN", _TOKEN)
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+
+    ssh = tmp_path / "ssh.sh"
+    ssh.write_text(
+        f'#!/bin/sh\necho "${{DATABASE_URL}}|${{GH_TOKEN}}" >> {tmp_path / "ssh.marker"}\nexit 1\n'
+    )
+    ssh.chmod(0o755)
+    _git(repo_root, "config", "core.sshCommand", str(ssh))
+
+    # Control: the unhardened daemon environment really runs the planted command.
+    _git(repo_root, "remote", "add", "remote-ssh", "ssh://git@127.0.0.1:1/x.git")
+    subprocess.run(["git", "fetch", "remote-ssh"], cwd=repo_root, capture_output=True)
+    assert (tmp_path / "ssh.marker").exists()
+    (tmp_path / "ssh.marker").unlink()
+    _clear(markers)
+    _advance(work, "two")
+
+    commit = await qa_dispatch._refresh_main_commit(repo_root)
+
+    assert commit == _git(work, "rev-parse", "main")
+    _git(repo_root, "remote", "set-url", "origin", "ssh://git@127.0.0.1:1/x.git")
+    with pytest.raises(qa_dispatch.MainRefreshError):
+        await qa_dispatch._refresh_main_commit(repo_root)
+    assert not (tmp_path / "ssh.marker").exists()
+
+
+def test_isolated_git_env_carries_no_secrets_and_no_credential_helper(tmp_path: Path, monkeypatch):
+    repo_root, _work, _markers = _repository(tmp_path)
+    for name in ("GH_TOKEN", "DATABASE_URL", "ANTHROPIC_API_KEY", "BUTLERS_DB_PASSWORD"):
+        monkeypatch.setenv(name, "secret-value")
+    env = isolated_git_env()
+    assert "secret-value" not in json.dumps(env)
+    # A planted local credential.helper is reset by the command-line config.
+    subprocess.run(
+        ["git", "credential", "fill"],
+        cwd=repo_root,
+        input="protocol=https\nhost=example.invalid\n\n",
+        capture_output=True,
+        text=True,
+        env={**env, "GIT_ASKPASS": "/bin/false"},
+    )
+    assert not (tmp_path / "credential.marker").exists()
+    subprocess.run(
+        ["git", "credential", "fill"],
+        cwd=repo_root,
+        input="protocol=https\nhost=example.invalid\n\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": env["PATH"], "GIT_TERMINAL_PROMPT": "0", "HOME": str(tmp_path)},
+    )
+    assert (tmp_path / "credential.marker").exists()  # Control: unhardened git runs the helper.
+
+
+@pytest.mark.asyncio
+async def test_healing_worktree_helpers_run_no_planted_hook_or_secret(tmp_path: Path, monkeypatch):
+    """create/remove of QA worktrees run git under the isolated environment."""
+    repo_root, _work, markers = _repository(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", _TOKEN)
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+    seen_env: list[dict[str, str]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        seen_env.append(dict(kwargs["env"]))
+        return await real_exec(*args, **kwargs)
+
+    with patch.object(healing_worktree.asyncio, "create_subprocess_exec", side_effect=spy):
+        path, branch = await healing_worktree.create_healing_worktree(
+            repo_root, "general", "b" * 64, prefix="qa", base_ref="main"
+        )
+        await healing_worktree.remove_healing_worktree(repo_root, branch)
+
+    assert not path.exists()
+    assert not any(marker.exists() for marker in markers.values())
+    assert seen_env
+    for env in seen_env:
+        assert "GH_TOKEN" not in env and "DATABASE_URL" not in env
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_managed_clone_git_runs_no_planted_hook_or_secret(tmp_path: Path, monkeypatch):
+    repo_root, work, markers = _repository(tmp_path)
+    _advance(work, "one")
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+    upload = tmp_path / "uploadpack.sh"
+    upload.write_text(
+        f'#!/bin/sh\necho "${{DATABASE_URL}}" >> {tmp_path / "uploadpack.marker"}\n'
+        'exec git-upload-pack "$@"\n'
+    )
+    upload.chmod(0o755)
+    _git(repo_root, "config", "remote.origin.uploadpack", str(upload))
+    _git(repo_root, "fetch", "-q", "origin")  # Control: the planted command runs unhardened.
+    assert (tmp_path / "uploadpack.marker").read_text().startswith("postgres://daemon:secret")
+    (tmp_path / "uploadpack.marker").unlink()
+    _clear(markers)
+    _advance(work, "two")
+
+    seen_env: list[dict[str, str]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        seen_env.append(dict(kwargs["env"]))
+        return await real_exec(*args, **kwargs)
+
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value={"repo_url": str(tmp_path / "origin.git")})
+    pool.execute = AsyncMock()
+    managed = repo_clone.ManagedRepoClone(pool, clone_dir=repo_root)
+    with patch.object(repo_clone.asyncio, "create_subprocess_exec", side_effect=spy):
+        await managed.refresh()
+
+    pool.execute.assert_any_await(
+        "UPDATE public.qa_repo_config "
+        "SET last_synced_at = now(), last_sync_error = NULL, updated_at = now()"
+    )
+    assert _git(repo_root, "rev-parse", "HEAD") == _git(work, "rev-parse", "main")
+    assert not (tmp_path / "uploadpack.marker").exists()
+    assert not any(marker.exists() for marker in markers.values())
+    for env in seen_env:
+        assert "DATABASE_URL" not in env and "GH_TOKEN" not in env
+
+
+@pytest.mark.asyncio
+async def test_head_lookup_is_pinned_to_the_stored_repository_from_a_neutral_cwd(tmp_path: Path):
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b'[{"number": 7, "url": "u"}]', b""))
+    proc.returncode = 0
+    with patch.object(qa_dispatch.asyncio, "create_subprocess_exec", return_value=proc) as spawn:
+        found = await qa_dispatch._resolve_pr_by_head(tmp_path, _BRANCH, {}, repo="org/repo")
+        unpinned = await qa_dispatch._resolve_pr_by_head(tmp_path, _BRANCH, {})
+
+    assert found == ("u", 7)
+    assert unpinned == (None, None)
+    assert spawn.call_count == 1
+    args = spawn.call_args.args
+    assert args[args.index("--repo") + 1] == "org/repo"
+    assert Path(spawn.call_args.kwargs["cwd"]) != tmp_path

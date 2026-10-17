@@ -46,8 +46,13 @@ step sequence of each, consult the `patrol-operations` skill.
   dispatcher keeps the token only for read-only PR-status polling, which addresses
   the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the
   shared `repo_root` that agents can write (`.git/hooks`, `.git/config`), so it holds
-  no token. Every dispatcher git subprocess gets `harden_git_env()` (command-line
-  `core.hooksPath=/dev/null`, `core.fsmonitor=false`, empty `credential.helper`).
+  no token. Git subprocesses in that clone run through `butlers.core.git_env`: an
+  allowlisted environment (no daemon secrets) plus command-line config that neutralises
+  hooks, fsmonitor, credential helpers, `core.sshCommand` and `core.askPass`. This covers
+  the main refresh, the worktree create/remove/reap helpers and the managed-clone refresh.
+  Residual, not covered: the follow-up and main-refresh fetches, whose argv retained tests
+  pin, so a planted `remote.origin.uploadpack` is not neutralised there (they hold no
+  secrets); `url.*.insteadOf` and `filter.*` config; and the self-healing `git push` path.
   This does not activate the publisher or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 

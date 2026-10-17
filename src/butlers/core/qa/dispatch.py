@@ -62,6 +62,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.git_env import harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.healing.dispatch import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
@@ -581,32 +582,6 @@ def _git_askpass_script() -> Path:
     return script_path
 
 
-def harden_git_env(env: dict[str, str], *, isolate_credentials: bool = True) -> dict[str, str]:
-    """Return *env* with command-line git config that agent-writable config cannot override.
-
-    QA worktrees are linked worktrees of ``repo_root``, so an agent can write the shared
-    ``.git/hooks`` and ``.git/config``.  Command-line config (``GIT_CONFIG_COUNT``) wins over
-    every file scope, so hooks, fsmonitor and (by default) credential helpers planted there
-    never run in a dispatcher git subprocess.  The remaining file-scoped config (for example
-    ``url.*.insteadOf``) is why the token also stays out of these subprocesses where possible.
-    """
-    hardened = dict(env)
-    settings = [("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false")]
-    if isolate_credentials:
-        settings.append(("credential.helper", ""))
-        hardened["GIT_CONFIG_NOSYSTEM"] = "1"
-        hardened["GIT_CONFIG_GLOBAL"] = "/dev/null"
-    # Ambient command-line entries (trusted deployment config) are kept unless isolating.
-    start = 0
-    if not isolate_credentials and env.get("GIT_CONFIG_COUNT", "").isdecimal():
-        start = int(env["GIT_CONFIG_COUNT"])
-    hardened["GIT_CONFIG_COUNT"] = str(start + len(settings))
-    for index, (key, value) in enumerate(settings, start):
-        hardened[f"GIT_CONFIG_KEY_{index}"] = key
-        hardened[f"GIT_CONFIG_VALUE_{index}"] = value
-    return hardened
-
-
 def build_git_auth_env(
     gh_token: str | None, *, base_env: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -830,26 +805,35 @@ async def _resolve_pr_by_head(
     repo_root: Path,
     branch_name: str,
     env: dict[str, str],
+    *,
+    repo: str | None = None,
 ) -> tuple[str | None, int | None]:
     """Look up an open PR by head branch using ``gh pr list``.
 
     Returns ``(pr_url, pr_number)`` if exactly one open PR is found for the
-    given head branch, ``(None, None)`` otherwise.
+    given head branch, ``(None, None)`` otherwise.  *repo* (``owner/name``) is passed as
+    ``--repo`` and the command runs from a neutral cwd, so the agent-writable ``repo_root``
+    ``.git`` cannot steer the token-bearing lookup to another repository.  Without a repo
+    the lookup fails closed.
     """
     import json as _json
 
+    if not repo:
+        return None, None
     try:
         proc = await asyncio.create_subprocess_exec(
             "gh",
             "pr",
             "list",
+            "--repo",
+            repo,
             "--head",
             branch_name,
             "--state",
             "open",
             "--json",
             "number,url",
-            cwd=str(repo_root),
+            cwd=tempfile.gettempdir(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
@@ -1626,7 +1610,9 @@ async def _create_qa_pr(
             pr_url,
             attempt_id,
         )
-        fallback_url, fallback_number = await _resolve_pr_by_head(repo_root, branch_name, env)
+        fallback_url, fallback_number = await _resolve_pr_by_head(
+            repo_root, branch_name, env, repo=owner_repo
+        )
         if fallback_number is not None:
             pr_url = fallback_url or pr_url
             pr_number = fallback_number
@@ -2466,8 +2452,10 @@ async def check_open_pr_statuses(
             # polling when repair succeeds; transition to failed deterministically
             # when it does not.
             if pr_branch_name:
+                # Address the repository stored with the attempt, never the shared .git.
+                pr_repo = re.match(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/\d+", pr_url)
                 repaired_url, repaired_number = await _resolve_pr_by_head(
-                    repo_root, pr_branch_name, env
+                    repo_root, pr_branch_name, env, repo=pr_repo.group(1) if pr_repo else None
                 )
                 if repaired_number is not None:
                     logger.info(
@@ -2999,6 +2987,7 @@ async def _dispatch_pr_review_followup(
         # Materialize the exact remote-tracking ref that the worktree command
         # anchors below. A branch-only fetch can leave only FETCH_HEAD behind.
         remote_refspec = f"+refs/heads/{followup_branch}:refs/remotes/origin/{followup_branch}"
+        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
         fetch_rc, fetch_out = await _run_git_here("fetch", "origin", remote_refspec)
         if fetch_rc != 0:
             logger.warning(
@@ -3305,6 +3294,7 @@ async def _refresh_main_commit(repo_root: Path) -> str:
     """Fetch canonical main and return a verified immutable commit identity."""
     output = b""
     for args in (
+        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
         ("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
         ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
     ):
@@ -3316,8 +3306,8 @@ async def _refresh_main_commit(repo_root: Path) -> str:
                 cwd=str(repo_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                # Keep ambient fetch auth, but never run agent-planted hooks or fsmonitor.
-                env=harden_git_env(dict(os.environ), isolate_credentials=False),
+                # Allowlisted env, no credentials: agent-writable config cannot run code here.
+                env=isolated_git_env(),
             )
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode != 0:
