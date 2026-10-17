@@ -79,13 +79,48 @@ readonly RESTORE_DRILL_ENABLED
 # replicas. BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 overrides (non-live DB only).
 if [ "$BUTLERS_MODE" = "prod" ]; then K8S_NAMESPACE=butlers; else K8S_NAMESPACE=butlers-dev; fi
 if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/dev/null; then
-  K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy butlers-up \
-    -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
-  if [ -n "$K8S_REPLICAS" ] && [ "$K8S_REPLICAS" != "0" ]; then
-    echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
-    echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
-    echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+  # Local configuration inspection requires no cluster connection. A standalone
+  # host without a selected context can use Compose; invalid configuration or
+  # any failed probe against a configured context cannot establish ownership.
+  if ! K8S_CONTEXT=$(timeout 10 kubectl config view -o 'jsonpath={.current-context}' 2>/dev/null); then
+    echo "ERROR: Cannot establish Kubernetes ownership: local configuration inspection failed." >&2
     exit 1
+  fi
+  if [ -n "$K8S_CONTEXT" ]; then
+    K8S_DEPLOYMENTS=(butlers-up)
+    K8S_REPLICA_TEMPLATE='present {{.spec.replicas}}'
+    K8S_REPLICA_PATTERN='^present ([0-9]+)$'
+    if [ "$BUTLERS_MODE" = "dev" ]; then
+      K8S_DEPLOYMENTS+=(butlers-control)
+      # Desired zero is insufficient while the old staged pods still exist.
+      # A Deployment not yet reconciled may legitimately lack observed replicas.
+      K8S_REPLICA_TEMPLATE+=' {{if eq .status.replicas nil}}0{{else}}{{.status.replicas}}{{end}}'
+      K8S_REPLICA_PATTERN='^present ([0-9]+) ([0-9]+)$'
+    fi
+    for K8S_DEPLOYMENT in "${K8S_DEPLOYMENTS[@]}"; do
+      if ! K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy "$K8S_DEPLOYMENT" \
+        --ignore-not-found -o "go-template=${K8S_REPLICA_TEMPLATE}" 2>/dev/null); then
+        echo "ERROR: Cannot establish Kubernetes ownership for ${K8S_DEPLOYMENT} (namespace ${K8S_NAMESPACE}); query failed." >&2
+        exit 1
+      fi
+      # Only a successful --ignore-not-found query can establish absence. The
+      # marker distinguishes an existing object with missing/invalid metadata.
+      [ -n "$K8S_REPLICAS" ] || continue
+      if ! [[ "$K8S_REPLICAS" =~ $K8S_REPLICA_PATTERN ]]; then
+        echo "ERROR: Cannot establish Kubernetes ownership for ${K8S_DEPLOYMENT} (namespace ${K8S_NAMESPACE}); invalid replica metadata." >&2
+        exit 1
+      fi
+      K8S_REPLICA_COUNTS=("${BASH_REMATCH[@]:1}")
+      for K8S_REPLICA_COUNT in "${K8S_REPLICA_COUNTS[@]}"; do
+        if ! [[ "$K8S_REPLICA_COUNT" =~ ^0+$ ]]; then
+          echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
+          echo "  Active workload: ${K8S_DEPLOYMENT}." >&2
+          echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
+          echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+          exit 1
+        fi
+      done
+    done
   fi
 fi
 
@@ -463,6 +498,18 @@ CMD=(docker compose -f docker-compose.yml)
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   CMD+=(-f docker-compose.restore-drill.yml)
 fi
+# Source-selected dev topology only. Production retains the unsplit service
+# and its process-local capacity five; no environment-file profile selection.
+if [ "$BUTLERS_MODE" = "dev" ]; then
+  CMD+=(-f docker-compose.control-stage.yml)
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-control
+  PROFILES+=(control-stage)
+  if [ "$HOTRELOAD_OPT" = "true" ]; then
+    PROFILES+=(control-stage-hotreload)
+  fi
+else
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-up
+fi
 if [ "$OBSERVABILITY" = "true" ]; then
   CMD+=(-f docker-compose.observability.yml)
 fi
@@ -480,7 +527,10 @@ SCALE_ARGS=()
 for p in "${PROFILES[@]}"; do
   if [ "$p" = "hotreload" ]; then
     SCALE_ARGS+=(--scale butlers-up=0 --scale dashboard-api=0)
-    echo "Hotreload: scaling down butlers-up and dashboard-api (replaced by *-hotreload variants)"
+    if [ "$BUTLERS_MODE" = "dev" ]; then
+      SCALE_ARGS+=(--scale butlers-control=0)
+    fi
+    echo "Hotreload: replacing baked services with the selected hotreload variants"
   fi
 done
 

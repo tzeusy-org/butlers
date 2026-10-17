@@ -84,7 +84,8 @@ def cli() -> None:
     default=DEFAULT_BUTLERS_DIR,
     help="Directory containing butler configs",
 )
-def up(only: tuple[str, ...], butlers_dir: Path) -> None:
+@click.option("--exclude", multiple=True, help="Exclude butlers (repeatable or comma-separated)")
+def up(only: tuple[str, ...], butlers_dir: Path, exclude: tuple[str, ...]) -> None:
     """Start all butler daemons (or filtered by --only)."""
     # Flatten: support both --only a --only b and --only a,b
     only = tuple(name.strip() for entry in only for name in entry.split(",") if name.strip())
@@ -100,6 +101,11 @@ def up(only: tuple[str, ...], butlers_dir: Path) -> None:
         if missing:
             click.echo(f"Butler(s) not found: {', '.join(sorted(missing))}")
             sys.exit(1)
+
+    excluded = {name.strip() for entry in exclude for name in entry.split(",") if name.strip()}
+    configs = {name: path for name, path in configs.items() if name not in excluded}
+    if not configs:
+        raise click.ClickException("No butlers remain after exclusions")
 
     # Check for port conflicts before starting any butler
     conflicts = _check_port_conflicts(configs)
@@ -127,6 +133,24 @@ def run(config_path: Path) -> None:
     """Start a single butler daemon from a config directory."""
     click.echo(f"Starting butler from {config_path}")
     asyncio.run(_start_single(config_path))
+
+
+@cli.command()
+@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE"]), required=True)
+@click.option(
+    "--config", "config_path", type=click.Path(exists=True, path_type=Path), required=True
+)
+@click.option(
+    "--session-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind session refusal port to this operator/deployment-selected interface",
+)
+def control(profile: str, config_path: Path, session_host: str) -> None:
+    """Run Switchboard separately, without any goal signing key or broker."""
+    from butlers.control import run_control
+
+    asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
 
 
 @cli.command("list")

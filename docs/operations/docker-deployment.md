@@ -19,9 +19,11 @@ Butlers runs as a set of containers defined in the repository-root
 shared PostgreSQL database** (external to Compose, reached over the network) in
 which every butler owns its own schema; the butler daemon, the dashboard API,
 and the external-connector services all connect to it. There are **no per-butler
-containers** and **no local containerized Postgres** -- a single `butlers-up`
-container runs every butler in the roster, and the database lives on a remote
-host configured via `.env.dev` / `.env.prod`.
+containers** and **no local containerized Postgres**. Production keeps every
+butler in one `butlers-up` process. The prepared dev stage separates Switchboard
+into `butlers-control` and excludes it from the domain process, reserving one
+plus four session slots. The database lives on a remote host configured via
+`.env.dev` / `.env.prod`.
 
 The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
 Node.js 22 + the LLM runtime CLIs + `uv`).
@@ -44,7 +46,7 @@ sets the per-mode host ports, and configures Tailscale serve:
 same machine at once. For production **redeploys**, prefer `butlers deploy` over
 any direct Compose lifecycle command -- see [Production Deploys](#production-deploys-butlers-deploy).
 
-Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
+Ordinary dev uses the base file plus `docker-compose.control-stage.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
 privileged boundary in dev, pass `--with-restore-drill` after completing its
 operator bootstrap. Its selection is explicit: finding a configured secret does
@@ -52,9 +54,12 @@ not turn it on. `--prod` and `butlers deploy` always select the protected
 topology and fail closed when its prerequisites are missing.
 
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
-runs base-only `down --remove-orphans` before it starts the base stack. That
+runs the ordinary dev configuration's `down --remove-orphans` before startup. That
 removes the former relay and executor rather than leaving privileged services
-running as orphans. Keep passing `--with-restore-drill` on later dev launches
+running as orphans. For an ordinary unsplit Compose model, base-only `down --remove-orphans`
+performs that cleanup without evaluating protected configuration. The staged dev launcher
+includes the base and control-stage files instead; it still excludes the protected
+restore-drill fragment during ordinary cleanup. Keep passing `--with-restore-drill` on later dev launches
 when the protected services must remain enabled.
 
 ## Read-only protected-topology inspection
@@ -107,8 +112,13 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
-- **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
+- **Dev runs Switchboard in `butlers-control` and domains in `butlers-up`.**
+  The launcher selects `docker-compose.control-stage.yml` (Compose >=2.24.4),
+  starts exactly one control/domain pair, and partitions the existing session
+  budget as 1+4. Control publishes the unchanged Switchboard service port;
+  domains use `butlers up --exclude switchboard`. The production launcher omits
+  the overlay and retains the original unsplit process with default capacity five.
+  Each keeps per-CLI runtime state in named volumes and runs
   `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
   mounts only the runtime-probe verifier keyring, never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
@@ -132,8 +142,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
   the `audio` profile.
 - **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
-- **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
-  volume-mount `src/` for live edits.
+- **`--hotreload`** swaps in `butlers-up-hotreload`, `dashboard-api-hotreload` and,
+  in dev only, `butlers-control-hotreload`. The launcher scales the corresponding
+  baked processes to zero; it never runs two reservations for the same role.
+  These services volume-mount `src/` for live edits. See [the stage contract,
+  session network and rollback](../architecture/key-absent-control.md).
 
 ## Production Deploys (`butlers deploy`)
 

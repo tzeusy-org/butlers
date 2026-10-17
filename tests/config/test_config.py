@@ -470,7 +470,7 @@ def test_validate_approval_config_flags_ungated_chat_reachable_write_tool():
 # ---------------------------------------------------------------------------
 
 
-def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
+def test_messenger_and_switchboard_and_memory_config(tmp_path: Path, monkeypatch):
     """Messenger requires delivery module; switchboard URL defaults; memory module parses."""
     with pytest.raises(ConfigError, match="requires at least one delivery module"):
         load_config(_write_toml(tmp_path, '[butler]\nname = "messenger"\nport = 41104\n'))
@@ -496,6 +496,27 @@ def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
     legacy_toml = '[butler]\nname = "legacy"\nport = 8202\n\n[butler.memory]\nenabled = true\n'
     cfg_legacy = load_config(_write_toml(tmp_path, legacy_toml))
     assert "memory" not in cfg_legacy.modules
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    explicit = '[butler]\nname = "general"\nport = 41101\n[butler.switchboard]\nurl = "{}"\n'
+    for configured, expected in (
+        ("http://localhost:41100/mcp?keep=yes", "http://butlers-control:41100/mcp?keep=yes"),
+        ("http://localhost:41100/sse", "http://butlers-control:41100/sse"),
+        ("https://remote.invalid:8443/custom?q=1", "https://remote.invalid:8443/custom?q=1"),
+        ("http://localhost:49999/custom", "http://localhost:49999/custom"),
+        ("http://127.0.0.1:41100/mcp", "http://127.0.0.1:41100/mcp"),
+    ):
+        cfg = load_config(_write_toml(tmp_path, explicit.format(configured)))
+        assert cfg.switchboard_url == expected
+    monkeypatch.delenv("SWITCHBOARD_MCP_URL")
+    monkeypatch.delenv("BUTLERS_HOST")
+    assert (
+        load_config(
+            _write_toml(tmp_path, explicit.format("http://localhost:41100/mcp"))
+        ).switchboard_url
+        == "http://localhost:41100/mcp"
+    )
 
 
 # ---------------------------------------------------------------------------

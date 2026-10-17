@@ -15,7 +15,8 @@ fix this page. The port map below is the one other docs link to.
 ```mermaid
 graph TB
     subgraph Host["Deployment Host (docker compose)"]
-        UP["butlers-up<br/>all roster daemons, one port each"]
+        UP["butlers-up<br/>domain daemons, one port each"]
+        CONTROL["butlers-control (dev stage)<br/>Switchboard :41100 / session :41199"]
         subgraph ConnProcs["Connector containers"]
             Conn["connector-* (one per external channel)"]
         end
@@ -31,7 +32,8 @@ graph TB
     PG["PostgreSQL (external, POSTGRES_HOST)"]
     OTel["OTel Collector -> Tempo / Prometheus"]
 
-    Conn -- "MCP" --> UP
+    Conn -- "MCP :41100" --> CONTROL
+    CONTROL -- "domain MCP" --> UP
     OBS -- "GET /internal/control-plane/identity" --> UP
     API -- "SQL" --> PG
     UP -- "SQL" --> PG
@@ -40,8 +42,14 @@ graph TB
     UP -- "OTLP" --> OTel
 ```
 
-`butlers up` runs every roster butler in one container; each butler still
-serves its own FastMCP endpoint on its own port. Connectors run as separate
+Dev KEY_ABSENT_STAGE runs Switchboard in `butlers-control` and domains in
+`butlers-up` (`butlers up --exclude switchboard`). Each daemon retains its MCP
+port. Exactly one control process reserves one session slot and one domain
+process reserves four, preserving the owner total of five without changing the
+process-local semaphore. Helm production and the production Compose launcher
+remain unsplit at five. The dev Compose overlay and Helm `butlersControl.enabled`
+select this topology; see [stage boundaries and pending live proof](../../docs/architecture/key-absent-control.md).
+The refusal-only session listener is separate from service health. Connectors run as separate
 containers and submit ingress to the Switchboard over MCP. There is no
 `postgres` service: the database is external and reached through
 `POSTGRES_HOST` / `POSTGRES_PORT`. The one-shot `migrations` service must
@@ -104,7 +112,7 @@ stacks can run side by side. Inside the containers the ports are always the prod
 
 | Service | Prod | Dev |
 |---|---|---|
-| Switchboard MCP (`butlers-up`) | 41100 | 42100 |
+| Switchboard MCP (`butlers-control` in dev stage; `butlers-up` unsplit) | 41100 | 42100 |
 | Dashboard API | 41200 | 42200 |
 | Frontend (Vite dev server, `frontend-dev`) | 41173 | 42173 |
 | OwnTracks webhook | 40086 | 42086 |
@@ -113,6 +121,7 @@ stacks can run side by side. Inside the containers the ports are always the prod
 
 | Service | Port | Notes |
 |---|---|---|
+| Control session stage | 41199 | Internal only; fixed GET /health 503, other routes refused; no host port |
 | PostgreSQL | `POSTGRES_PORT` (default 5432) | External host; not a Compose service |
 | MinIO API | 9000 | S3-compatible blob storage, `127.0.0.1` only |
 | MinIO Console | 9001 | Web UI for MinIO, `127.0.0.1` only |

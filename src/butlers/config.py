@@ -13,6 +13,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
+
+from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 
 # Default trusted callers for route.execute authz.
 DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
@@ -866,6 +869,13 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # unless this butler IS the switchboard.
     if switchboard_url is None and name != "switchboard":
         switchboard_url = os.environ.get("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+    if switchboard_url is not None:
+        # Roster TOMLs explicitly describe the colocated canonical endpoint.
+        # Resolve it once before notify, reconnect and fact-authority consumers
+        # receive the config. Explicit remote/custom endpoints remain literal.
+        endpoint = urlparse(switchboard_url)
+        if (endpoint.hostname or "").lower() == "localhost" and endpoint.port == 41100:
+            switchboard_url = resolve_cross_container_mcp_url(switchboard_url)
 
     # --- [butler.security] sub-section ---
     security_section = butler_section.get("security", {})

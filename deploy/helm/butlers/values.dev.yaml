@@ -48,3 +48,7 @@ beadsExport:
   credentialBwsKeys:
     user: BUTLERS_RUNTIME_BEADS_DOLT_USER
     password: BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD
+
+# Current service traffic moves to its own process; session health refuses (503).
+butlersControl:
+  enabled: true

@@ -226,6 +226,17 @@ class TestUpCommand:
         assert "gamma" in result.output
         assert result.output.count("beta") == 0
 
+        excluded = runner.invoke(
+            cli, ["up", "--dir", str(multi_butler_dir), "--exclude", "alpha,gamma"]
+        )
+        assert excluded.exit_code == 0
+        assert "Starting 1 butler(s): beta" in excluded.output
+        empty = runner.invoke(
+            cli, ["up", "--dir", str(multi_butler_dir), "--exclude", "alpha,beta,gamma"]
+        )
+        assert empty.exit_code != 0
+        assert "No butlers remain" in empty.output
+
     def test_up_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
         monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(butler_config_dir)])

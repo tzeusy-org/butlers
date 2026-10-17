@@ -72,12 +72,12 @@ class ButlerConnectionInfo:
     def sse_url(self) -> str:
         """SSE endpoint URL for this butler's MCP server.
 
-        In Docker, the dashboard runs in a separate container from butlers-up.
-        Set BUTLERS_HOST to the butlers-up service name (e.g. "butlers-up") so
-        the dashboard can reach butler MCP servers across the Docker network.
+        BUTLERS_HOST names the domain container. SWITCHBOARD_MCP_URL selects
+        the separate control service when that topology is enabled.
         """
-        host = os.environ.get("BUTLERS_HOST", "localhost")
-        return f"http://{host}:{self.port}/sse"
+        from butlers.core.mcp_urls import resolve_cross_container_mcp_url
+
+        return resolve_cross_container_mcp_url(f"http://localhost:{self.port}/sse")
 
 
 class ButlerNotFoundError(KeyError):
