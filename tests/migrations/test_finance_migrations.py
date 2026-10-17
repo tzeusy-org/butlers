@@ -890,3 +890,69 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
         )
         == "quarterly"
     )
+
+
+# ---------------------------------------------------------------------------
+# finance_017 — subscriptions.{cancellation_url_source,status_source}
+# ---------------------------------------------------------------------------
+
+_MIGRATION_017 = _FINANCE_MIGRATIONS / "017_subscription_cancellation_provenance.py"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSubscriptionCancellationProvenanceMigration:
+    """Integration tests for finance_017: owner/extracted field provenance."""
+
+    @pytest.mark.integration
+    async def test_upgrade_backfills_existing_rows_as_extracted(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        pool = subscriptions_pool
+        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
+        await pool.execute(
+            """
+            INSERT INTO subscriptions (
+                service, amount, currency, frequency, next_renewal, status, cancellation_url,
+                metadata
+            )
+            VALUES ('Adobe', 599, 'USD', 'yearly', '2026-10-01', 'active',
+                    'https://adobe.example/cancel',
+                    '{"expected_signal_source": {"producer": "owner",
+                                                 "producer_endpoint_identity": null}}')
+            """
+        )
+
+        await _apply(pool, _load_migration("finance_017", _MIGRATION_017), "upgrade")
+
+        row = await pool.fetchrow(
+            "SELECT cancellation_url_source, status_source FROM subscriptions"
+        )
+        assert dict(row) == {"cancellation_url_source": "extracted", "status_source": "extracted"}
+
+    @pytest.mark.integration
+    async def test_sources_are_constrained_and_downgrade_drops_them(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        pool = subscriptions_pool
+        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
+        mod = _load_migration("finance_017", _MIGRATION_017)
+        await _apply(pool, mod, "upgrade")
+
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                """
+                INSERT INTO subscriptions (
+                    service, amount, currency, frequency, next_renewal, status, status_source
+                )
+                VALUES ('Adobe', 599, 'USD', 'yearly', '2026-10-01', 'active', 'trusted')
+                """
+            )
+
+        await _apply(pool, mod, "downgrade")
+
+        cols = await pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'subscriptions' "
+            "  AND column_name IN ('cancellation_url_source', 'status_source')"
+        )
+        assert cols == []

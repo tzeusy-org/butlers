@@ -31,7 +31,9 @@ from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
+from butlers.tools.finance.cancellation_door import registrable_domain
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
+from butlers.tools.finance.expected_signals import signal_source_from_metadata
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
@@ -1268,9 +1270,13 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         sub_rows = await conn.fetch(
             """
             SELECT id, service, amount, currency, next_renewal,
-                   cancellation_url, notice_period_days, cancel_by
+                   status, cancellation_url, cancellation_url_source, status_source,
+                   notice_period_days, cancel_by, metadata
             FROM finance.subscriptions
-            WHERE status = 'active'
+            -- An owner-set cancelled/paused status silences the warning; one reported by
+            -- an extracted write must not (bu-svqpzo.10), so it warns and asks to confirm.
+            WHERE (status = 'active'
+                   OR (status IN ('cancelled', 'paused') AND status_source = 'extracted'))
               AND frequency = 'yearly'
               AND next_renewal >= $1
               AND next_renewal <= $2
@@ -1312,6 +1318,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         cancellation_url = row["cancellation_url"]
         notice_period_days = row["notice_period_days"]
         cancel_by = row["cancel_by"]
+        # A door written by anything but an owner-attested session is never a live link.
+        door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
+        door_domain = None if door_verified else registrable_domain(cancellation_url)
+        # Email origin is only known from the last writer's attested signal source.
+        from_email = (
+            getattr(signal_source_from_metadata(row["metadata"]), "producer", None)
+            == "connector:gmail"
+        )
+        reporter = "An email" if from_email else "An unverified source"
 
         ledger_row = ledger_by_key.get((sub_id, renewal_date))
         if ledger_row is not None:
@@ -1354,10 +1369,23 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 f"warning can reach you in time to act."
             )
         else:
+            if door_verified:
+                door_text = cancellation_url
+            elif door_domain is None:
+                door_text = "an unrecognised link (not verified)"
+            elif from_email:
+                door_text = f"{door_domain} (link from an email, not verified)"
+            else:
+                door_text = f"{door_domain} (link from an unverified source, not verified)"
             message = (
                 f"{renewal_clause}. Cancel by {cancel_by.isoformat()} "
                 f"({days_remaining_to_act} day{'s' if days_remaining_to_act != 1 else ''} left) "
-                f"at {cancellation_url} to avoid this charge."
+                f"at {door_text} to avoid this charge."
+            )
+        if row["status"] != "active":
+            message += (
+                f" {reporter} reported this as {row['status']}; "
+                f"confirm the subscription status with Butlers."
             )
         if price_change_amount is not None:
             message += (
@@ -1384,7 +1412,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # bu-8cdl1.10 slice 3: cancellation-door fields so this
                 # insight carries the door + days-remaining-to-act, not just
                 # the amount.
-                "cancellation_url": cancellation_url,
+                # An unverified door carries no URL, only its display domain.
+                "cancellation_url": cancellation_url if door_verified else None,
+                "cancellation_domain": door_domain,
+                "door_verified": door_verified,
+                "reported_status": row["status"] if row["status"] != "active" else None,
                 "notice_period_days": notice_period_days,
                 "cancel_by": cancel_by.isoformat() if cancel_by else None,
                 "warn_by": warn_by.isoformat() if warn_by else None,
