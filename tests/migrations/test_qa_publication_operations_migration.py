@@ -9,6 +9,7 @@ on each run, so the durable fence is forced row security keyed to the QA role.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import shutil
 import uuid
@@ -20,8 +21,11 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
+from alembic import command
+from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
     create_migrated_test_db,
+    create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
@@ -251,5 +255,64 @@ def test_stage_and_order_cannot_disagree(db_url: str, attempt_id: uuid.UUID) -> 
                     VALUES ('{attempt_id}', 'merge_pr', 'bound', 1, '{_DIGEST}', '{_DIGEST}')
                     """
                 )
+    finally:
+        engine.dispose()
+
+
+def test_core_266_shared_table_survives_all_but_the_last_schema_downgrade(
+    postgres_container,
+) -> None:
+    """The core chain runs once per butler schema over the shared public table (K1)."""
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    attempt = uuid.uuid4()
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.healing_attempts "
+                    "(id, fingerprint, butler_name, status, severity, exception_type, call_site) "
+                    "VALUES (:id, :fp, 'qa', 'investigating', 2, 'E', 'x:y')"
+                ),
+                {"id": attempt, "fp": uuid.uuid4().hex * 2},
+            )
+        _insert_as(url, "butler_qa_rw", attempt)
+        _update_as_qa(
+            url,
+            f"UPDATE {_TABLE} SET stage = 'ambiguous', stage_order = 3, result = 'ambiguous' "
+            f"WHERE attempt_id = '{attempt}'",
+        )
+
+        # The first schema to leave core_266 keeps the shared table: the other schema's head
+        # code still queries it, and the unresolved hold is not what stops this downgrade.
+        command.downgrade(general, "core_265")
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is not None
+            held = conn.exec_driver_sql(
+                f"SELECT count(*) FROM {_TABLE} WHERE attempt_id = '{attempt}'"
+            ).scalar_one()
+        assert held == 1
+
+        # The last schema runs the hold check, then drops the table.
+        with pytest.raises(DBAPIError, match="unresolved publication hold"):
+            command.downgrade(switchboard, "core_265")
+        _update_as_qa(
+            url,
+            f"UPDATE {_TABLE} SET stage = 'reconciled', stage_order = 4, "
+            f"reconciliation = 'resource_absent', reconciled_at = now() "
+            f"WHERE attempt_id = '{attempt}'",
+        )
+        command.downgrade(switchboard, "core_265")
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is None
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is not None
     finally:
         engine.dispose()
