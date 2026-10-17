@@ -11,7 +11,6 @@ Verifies:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -440,6 +439,20 @@ def test_record_scrubs_payload_and_error_detail() -> None:
     assert payload["event"]["external_event_id"] == "msg-001"
     assert (row[7], row[8]) == ("validation_error", "error")
 
+    # Non-native leaves are scrubbed as the text they are persisted as.
+    odd = _bearer_payload("hello")
+    odd["payload"]["raw"] = {"blob": b"Your code is 482913", "tags": {"Your code is 482913"}}
+    buf.record(
+        external_message_id="odd",
+        source_channel="email",
+        sender_identity="sender@example.com",
+        subject_or_preview=None,
+        filter_reason="validation_error",
+        full_payload=odd,
+    )
+    assert "482913" not in str(buf._rows[-1][9])
+    buf._rows.pop()
+
     # Telegram 777000 service sender: a bare code is withheld (aggressive path).
     buf.record(
         external_message_id="auth",
@@ -453,6 +466,8 @@ def test_record_scrubs_payload_and_error_detail() -> None:
 
 
 def test_record_keeps_ordinary_numbers_byte_identical() -> None:
+    import json
+
     payload = _bearer_payload("Invoice 482913 total 20.50")
     payload["payload"]["raw"] = {"body": "Invoice 482913 total 20.50"}
     expected = json.loads(json.dumps(payload))
@@ -490,6 +505,22 @@ def test_record_detector_failure_withholds_text_without_changing_status() -> Non
     assert row[10] == "[withheld: bearer scrub unavailable]"
     assert row[9]["event"]["external_event_id"] == "msg-001"
     assert (row[7], row[8]) == ("validation_error", "error")
+
+    # The fallback is total: a non-mapping payload value is withheld, not raised.
+    broken = _bearer_payload("Your code is 482913")
+    broken["payload"] = "Your code is 482913"
+    with patch(
+        "butlers.connectors.filtered_event_buffer.scrub_envelope", side_effect=RuntimeError("x")
+    ):
+        buf.record(
+            external_message_id="broken",
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview=None,
+            filter_reason="validation_error",
+            full_payload=broken,
+        )
+    assert "482913" not in str(buf._rows[-1][9])
 
 
 def _stored(channel: str, provider: str, thread: str | None, raw: dict, **split: str) -> dict:

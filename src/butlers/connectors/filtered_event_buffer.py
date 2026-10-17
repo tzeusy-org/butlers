@@ -349,7 +349,10 @@ def _scrub_stored_event(
         # Callers pass envelope dicts; a legacy string shape has no envelope to scrub.
         return full_payload, error_detail
     try:
-        payload, _ = scrub_envelope(full_payload)
+        # Normalize to JSON primitives first so non-native leaves (bytes, sets,
+        # objects) are scrubbed as the text they will be persisted as.
+        normalized = json.loads(json.dumps(full_payload, default=str))
+        payload, _ = scrub_envelope(normalized)
         if "payload" not in full_payload:
             # scrub_envelope materialises an empty payload; keep the row shape as-is.
             payload.pop("payload", None)
@@ -363,13 +366,18 @@ def _scrub_stored_event(
         return payload, error
     except Exception:
         logger.warning("filtered event bearer scrub failed; withholding payload text")
-        inner = dict(full_payload.get("payload") or {})
-        for key in ("normalized_text", "raw"):
-            if inner.get(key) is not None:
-                inner[key] = _WITHHELD if key == "normalized_text" else {}
         withheld = dict(full_payload)
         if "payload" in full_payload:
-            withheld["payload"] = inner
+            inner = full_payload["payload"]
+            if isinstance(inner, Mapping):
+                # Keep sibling keys; withhold the two text-bearing fields.
+                inner = dict(inner)
+                for key in ("normalized_text", "raw"):
+                    if inner.get(key) is not None:
+                        inner[key] = _WITHHELD if key == "normalized_text" else {}
+                withheld["payload"] = inner
+            elif inner is not None:
+                withheld["payload"] = {}
         return withheld, (None if error_detail is None else _WITHHELD)
 
 
