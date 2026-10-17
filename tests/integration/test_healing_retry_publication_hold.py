@@ -140,7 +140,7 @@ async def test_retry_of_a_held_fingerprint_is_refused_with_no_insert_or_dispatch
     response = await client.retry(attempt_id)
 
     assert response.status_code == 409
-    assert "publication_lineage_held" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "publication_lineage_held"
     assert await _attempt_count(api_pool, fingerprint) == 1
     client.dispatch.assert_not_awaited()
     client.mcp.get_client.assert_not_awaited()
