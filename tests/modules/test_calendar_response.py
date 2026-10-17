@@ -493,6 +493,18 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
     )
     coordinator = module._response_coordinator
 
+    # This existing software carrier isolates local command/approval semantics.
+    # The migrated two-owner case below the integration root proves peer fences.
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def local_claim(target):
+        async with pool.acquire() as connection, connection.transaction():
+            yield connection, {"target_key": target}
+
+    monkeypatch.setattr(module._response_fence, "claim", local_claim)
+    monkeypatch.setattr(module._response_fence, "check_peers", AsyncMock())
+
     async def park(connection, **kwargs):
         pool.pending[kwargs["action_id"]] = {
             "tool_name": kwargs["tool_name"],
@@ -731,3 +743,46 @@ async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(
     db.pool.fetchrow.side_effect = None
     db.pool.fetchrow.return_value = {"granted": True}
     assert (await module._verified_response_account())["entity_id"] == str(entity_id)
+
+
+async def test_response_fence_requires_complete_historical_owner_census(tmp_path):
+    # Spec: REQ-module-calendar-029. Configuration absence is never evidence
+    # that a disabled owner has no unresolved historical attempt.
+    from types import SimpleNamespace
+
+    from butlers.modules.calendar_response_fence import (
+        CalendarResponseFence,
+        ResponseFenceUnavailable,
+    )
+
+    fence = CalendarResponseFence(SimpleNamespace(_butler_name="messenger"))
+    fence.wire(tmp_path, None)
+    roster = tmp_path / "roster"
+    for name in ("messenger", "relationship"):
+        directory = roster / name
+        directory.mkdir(parents=True)
+        (directory / "butler.toml").write_text(
+            f'[butler]\nname="{name}"\n[modules.calendar]\nresponse_enabled=false\n'
+        )
+    fence._check_inventory()
+    outsider = roster / "other"
+    outsider.mkdir()
+    (outsider / "butler.toml").write_text(
+        '[butler]\nname="other"\n[modules.calendar]\nresponse_enabled=true\n'
+    )
+    with pytest.raises(ResponseFenceUnavailable):
+        fence._check_inventory()
+    (outsider / "butler.toml").write_text(
+        '[butler]\nname="other"\n[modules.calendar]\nresponse_enabled="true"\n'
+    )
+    with pytest.raises(ResponseFenceUnavailable):
+        fence._check_inventory()
+    (outsider / "butler.toml").unlink()
+    (roster / "relationship" / "butler.toml").unlink()
+    with pytest.raises(ResponseFenceUnavailable):
+        fence._check_inventory()
+    # Malformed requests and missing roster evidence reveal no payloads.
+    assert await fence.status({"target_key": "private"}) == {"status": "unavailable"}
+    await fence.close()
+    with pytest.raises(ResponseFenceUnavailable):
+        fence._check_inventory()

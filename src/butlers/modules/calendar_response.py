@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.approvals.park import park_pending_action
+from butlers.modules.calendar_response_fence import ResponseFenceUnavailable
 
 
 class CalendarResponseError(RuntimeError):
@@ -481,9 +482,8 @@ class CalendarResponseCoordinator:
             return {"error": "response_preparation_unavailable"}
 
     async def _claim(self, command_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any] | None:
-        lock_key = int.from_bytes(bytes.fromhex(payload["target_key"])[:8], "big", signed=True)
-        async with self.pool.acquire() as connection, connection.transaction():
-            await connection.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
+        fence = self.module._response_fence
+        async with fence.claim(payload["target_key"]) as (connection, request):
             row = await connection.fetchrow(_COMMAND_SQL + " FOR UPDATE", command_id)
             current = _object(row["action_payload"])
             if (
@@ -506,6 +506,7 @@ class CalendarResponseCoordinator:
             )
             if unresolved:
                 raise CalendarResponseError("response_target_uncertain")
+            await fence.check_peers(request)
             await connection.execute(
                 "UPDATE calendar_action_log SET action_payload=action_payload || "
                 "$2::jsonb,updated_at=now() WHERE id=$1",
@@ -681,6 +682,9 @@ class CalendarResponseCoordinator:
             result["projection_available"] = True
             await self._finish(command_id, "applied", result)
             return result
+        except ResponseFenceUnavailable as exc:
+            # Preserve the durable phase. Retry rechecks it, including commit ambiguity.
+            return {"error": str(exc)}
         except CalendarResponseError as exc:
             if admitted_command_id is not None:
                 try:
