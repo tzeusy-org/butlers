@@ -244,6 +244,9 @@ source inventory, connector stores, inbox readers and synthetic seam evidence. I
 full-payload, replay, logging and legacy-row findings are separate from this preview
 contract; unresolved durable and vendor boundaries remain unknown.
 
+The discretion evaluator scrubs message text before its context window, prompt, log line and
+dispatcher call, so the discretion model sees the same typed placeholders ingest persists.
+
 `scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
 job or migration. The CLI defaults to dry run and requires an explicit existing database target and
 operator identity through the normal database environment helpers. It never provisions credentials
