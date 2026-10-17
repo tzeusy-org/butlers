@@ -184,8 +184,20 @@ async def semantic_search(
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-    if False:  # PROOF COMMIT: CTE branch disabled to show the ANN test fails without it.
-        sql = ""
+    if extra:
+        # A filtered vector leg must be exact.  Served from the HNSW index, the filter
+        # would apply after at most ``hnsw.ef_search`` nearest candidates and silently
+        # drop matching rows ranked below them.  The materialized CTE cannot use the ANN
+        # index, so the ordering is exact over exactly the filtered rows.
+        sql = f"""
+            WITH candidates AS MATERIALIZED (
+                SELECT * FROM {table} {where}
+            )
+            SELECT *, 1 - (embedding <=> $1) AS similarity
+            FROM candidates
+            ORDER BY embedding <=> $1
+            LIMIT ${param_idx}
+        """
     else:
         sql = f"""
             SELECT *, 1 - (embedding <=> $1) AS similarity
