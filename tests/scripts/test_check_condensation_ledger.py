@@ -1929,3 +1929,35 @@ def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(
         ledger.verify(
             root, landed if fresh_base else base, [], contract_directory=output, trusted=landed
         )
+
+
+_SKIPPING_CONFTEST = (
+    "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip_all():\n    pytest.skip('x')\n"
+)
+
+
+@pytest.mark.parametrize("location", ["conftest.py", "tests/conftest.py"])
+def test_added_ancestor_conftest_is_attributed_to_every_owner_below_it(tmp_path, location):
+    """bu-0jd93j: a conftest.py absent at base but added by the candidate is new fixture context."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / location).write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a skipping ancestor conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert losses
+    assert set(losses.values()) == {"ancestral-fixture-context-change"}
+    assert all(node.startswith("tests/test_owner.py::") for node in losses)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [])
+
+
+def test_added_conftest_without_owners_below_it_changes_nothing(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "unrelated").mkdir()
+    (root / "unrelated/conftest.py").write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a conftest above no owner")
+
+    assert ledger.destructive_changes(root, base) == {}
