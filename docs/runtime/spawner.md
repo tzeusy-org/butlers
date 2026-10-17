@@ -274,8 +274,11 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
   turns red); any successful spawn writes `true`, so the banner heals after re-auth.
 - Codex stages per-invocation `HOME` roots under `~/.codex/.tmp` (the CLI fails with `codex_home`
   under `/tmp`).
-- QA dispatch needs `gh` in `Dockerfile.base` to open its PR, pushes over HTTPS with `GH_TOKEN` and
-  `gh auth setup-git` (no SSH agent in the sandbox), and branches from a freshly fetched
+- QA agent sessions receive no GitHub credential (`build_agent_env()`: no `GH_TOKEN`, no git
+  credential variable), and automated publication (push / PR create) fails closed with
+  `publication_unavailable` until the isolated publisher lands. The dispatcher alone keeps the
+  token for PR-status polling and fetch/worktree preparation (`gh` in `Dockerfile.base`). QA
+  branches from a freshly fetched
   verified immutable `origin/main` commit via the worktree `base_ref`. Failed fetch or
   resolution refuses before creation/spawn, with categorical error and attempt/base-SHA
   preparation receipt. Existing follow-up head bindings remain unchanged. Review follow-up backoff uses
