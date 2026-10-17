@@ -134,14 +134,14 @@ The system SHALL provide an `is_user_in_context(pool, signal_type, min_confidenc
 - **THEN** `is_user_in_context(pool, "meeting", min_confidence=0.2)` returns `True`
 
 ### Requirement: Set Context Signal
-The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field marks the start of the current activation: it SHALL be reset to the current time when the value changes, the row was superseded, or the row had expired, and SHALL be kept on an unchanged re-assertion of an active row. `expires_at` SHALL be refreshed on every assertion, so the TTL is measured from the latest assertion. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
+The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field marks the start of the current activation: it SHALL be reset to the current time when the value changes, the row was superseded, or the row had expired, and SHALL be kept on an unchanged re-assertion of an active row. This keep rule applies to every signal type except `dnd`: for `dnd`, `set_context` delegates to the canonical gateway `public.context_dnd_mutate`, which resets `set_at` on every assertion. `expires_at` SHALL be refreshed on every assertion, so the TTL is measured from the latest assertion. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
 
 #### Scenario: New signal created
 - **WHEN** no existing signal exists for the `(signal_type, set_by_butler)` pair
 - **THEN** a new row is inserted with the provided values
 
 #### Scenario: Existing signal updated
-- **WHEN** a signal already exists for the `(signal_type, set_by_butler)` pair
+- **WHEN** a signal already exists for the `(signal_type, set_by_butler)` pair and `set_context()` is called with a different value
 - **THEN** the existing row is updated with new `value`, `expires_at`, `confidence`, `metadata`, and `superseded_at = NULL`, and `set_at` is reset to the current time because the value changed
 
 #### Scenario: Unchanged active signal re-asserted
