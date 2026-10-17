@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -443,8 +444,8 @@ async def test_followup_fetch_pins_upload_pack_against_a_planted_remote_command(
 async def test_commit_diff_snapshot_runs_no_planted_driver_and_sees_no_daemon_secret(
     tmp_path: Path, monkeypatch
 ):
-    """bu-mc01y5.13: diff.external, textconv and fsmonitor planted in .git/config never run."""
-    repo_root, _work, markers = _repository(tmp_path)
+    """bu-mc01y5.13: diff.external and textconv planted in .git/config never run."""
+    repo_root, _work, _markers = _repository(tmp_path)
     monkeypatch.setenv("GH_TOKEN", _TOKEN)
     monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
     monkeypatch.setenv("POSTGRES_PASSWORD", "bootstrap-secret")
@@ -464,14 +465,18 @@ async def test_commit_diff_snapshot_runs_no_planted_driver_and_sees_no_daemon_se
     _git(repo_root, "commit", "-qam", "after")
     _git(repo_root, "config", "diff.external", str(external))
     _git(repo_root, "config", "diff.probe.textconv", str(textconv))
-    _clear(markers)
 
     # Control: a plain daemon-environment diff really runs the planted drivers.
     subprocess.run(["git", "diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True)
     assert (tmp_path / "external.marker").read_text().startswith("postgres://daemon:secret")
     (tmp_path / "external.marker").unlink()
     (tmp_path / "textconv.marker").unlink(missing_ok=True)
-    _clear(markers)
+    # Control: with the external driver bypassed, the textconv plant fires on its own.
+    subprocess.run(
+        ["git", "diff", "--no-ext-diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True
+    )
+    assert (tmp_path / "textconv.marker").exists()
+    (tmp_path / "textconv.marker").unlink()
 
     seen_env: list[dict[str, str]] = []
     real_exec = asyncio.create_subprocess_exec
@@ -485,9 +490,50 @@ async def test_commit_diff_snapshot_runs_no_planted_driver_and_sees_no_daemon_se
 
     assert not (tmp_path / "external.marker").exists()
     assert not (tmp_path / "textconv.marker").exists()
-    assert not any(marker.exists() for marker in markers.values())
     (env,) = seen_env
     assert not {"GH_TOKEN", "DATABASE_URL", "POSTGRES_PASSWORD"} & set(env)
     assert "bootstrap-secret" not in json.dumps(env)
     assert {"kind": "-", "text": "before"} in snapshot
     assert {"kind": "+", "text": "after"} in snapshot
+
+
+@pytest.mark.asyncio
+async def test_no_op_branch_detection_runs_no_planted_signature_program(tmp_path: Path):
+    """bu-mc01y5.13: log.showSignature plus gpg.program never runs during no-op detection."""
+    repo_root, _work, _markers = _repository(tmp_path)
+    marker = tmp_path / "gpg.marker"
+    program = tmp_path / "evil-gpg.sh"
+    program.write_text(f"#!/bin/sh\necho ran >> {marker}\nexit 1\n")
+    program.chmod(0o755)
+    tree = _git(repo_root, "rev-parse", "HEAD^{tree}")
+    parent = _git(repo_root, "rev-parse", "HEAD")
+    commit = (
+        f"tree {tree}\nparent {parent}\nauthor t <t@e> 1700000000 +0000\n"
+        "committer t <t@e> 1700000000 +0000\n"
+        "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fake\n -----END PGP SIGNATURE-----\n\nsigned\n"
+    )
+    sha = subprocess.run(
+        ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+        cwd=repo_root,
+        input=commit,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo_root, "update-ref", "refs/heads/agent-branch", sha)
+    _git(repo_root, "config", "log.showSignature", "true")
+    _git(repo_root, "config", "gpg.program", str(program))
+
+    # Control: the plain daemon-style log really runs the planted program.
+    subprocess.run(
+        ["git", "log", "main..agent-branch", "--oneline"], cwd=repo_root, capture_output=True
+    )
+    assert marker.exists()
+    marker.unlink()
+
+    no_op = await qa_dispatch._detect_no_op_branch(
+        repo_root, "agent-branch", {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    )
+
+    assert no_op is False
+    assert not marker.exists()

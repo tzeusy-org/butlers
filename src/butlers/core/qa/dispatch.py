@@ -784,12 +784,15 @@ async def _detect_no_op_branch(
         proc = await asyncio.create_subprocess_exec(
             "git",
             "log",
+            # A planted ``log.showSignature`` with ``gpg.program`` would otherwise run the
+            # program for any commit carrying a ``gpgsig`` header.
+            "--no-show-signature",
             f"{base}..{branch_name}",
             "--oneline",
             cwd=str(repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            env=env,
+            env=harden_git_env(env),
         )
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
