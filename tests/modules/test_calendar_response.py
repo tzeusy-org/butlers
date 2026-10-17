@@ -786,3 +786,61 @@ async def test_response_fence_requires_complete_historical_owner_census(tmp_path
     await fence.close()
     with pytest.raises(ResponseFenceUnavailable):
         fence._check_inventory()
+
+
+async def test_response_fence_resolves_switchboard_client_at_claim_time(tmp_path):
+    # Spec: REQ-module-calendar-029. The heartbeat loop replaces
+    # daemon.switchboard_client on reconnect, so the fence must not keep the
+    # startup snapshot: a closed or absent client would refuse every response
+    # until restart.
+    from types import SimpleNamespace
+
+    from butlers.modules.calendar_response_fence import (
+        CalendarResponseFence,
+        ResponseFenceUnavailable,
+    )
+
+    roster = tmp_path / "roster"
+    for name in ("messenger", "relationship"):
+        (roster / name).mkdir(parents=True)
+        (roster / name / "butler.toml").write_text(
+            f'[butler]\nname="{name}"\n[modules.calendar]\nresponse_enabled=false\n'
+        )
+    request = {
+        "protocol": "calendar-response-fence.v1",
+        "request_id": "r1",
+        "target_key": "a" * 64,
+    }
+
+    class Transport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call_tool(self, name, arguments):
+            self.calls += 1
+            return SimpleNamespace(
+                is_error=False, data={"result": {**arguments["args"]["request"], "status": "clear"}}
+            )
+
+    daemon = SimpleNamespace(switchboard_client=None)
+    fence = CalendarResponseFence(SimpleNamespace(_butler_name="messenger"))
+    fence.wire(tmp_path, None, client_getter=lambda: daemon.switchboard_client)
+
+    # Unreachable Switchboard at wire time: refuse (retryable), never raise a raw error.
+    with pytest.raises(ResponseFenceUnavailable):
+        async with fence.claim("a" * 64):
+            pass
+    with pytest.raises(ResponseFenceUnavailable):
+        await fence.check_peers(request)
+
+    # A client that appears later clears through the new client.
+    first = Transport()
+    daemon.switchboard_client = first
+    await fence.check_peers(request)
+    assert first.calls == 1
+
+    # A reconnect swaps the attribute; the next probe uses the replacement.
+    second = Transport()
+    daemon.switchboard_client = second
+    await fence.check_peers(request)
+    assert (first.calls, second.calls) == (1, 1)

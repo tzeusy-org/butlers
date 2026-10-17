@@ -12,6 +12,7 @@ import json
 import re
 import tomllib
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ class CalendarResponseFence:
     def __init__(self, module: Any) -> None:
         self.module = module
         self._client: Any = None
+        self._client_getter: Callable[[], Any] | None = None
         self._roster = Path(__file__).resolve().parents[3] / "roster"
         self._database: Database | None = None
         self._pool: Any = None
@@ -66,9 +68,31 @@ class CalendarResponseFence:
         self._claim_slot = asyncio.Semaphore(1)
         self._closed = False
 
-    def wire(self, repo_root: Path, client: Any) -> None:
+    def wire(
+        self,
+        repo_root: Path,
+        client: Any,
+        *,
+        client_getter: Callable[[], Any] | None = None,
+    ) -> None:
         self._roster = Path(repo_root) / "roster"
         self._client = client
+        self._client_getter = client_getter
+
+    def _current_client(self) -> Any:
+        """Resolve the Switchboard client at use time.
+
+        The daemon's heartbeat loop replaces ``switchboard_client`` on reconnect and
+        it is ``None`` while the Switchboard is unreachable, so a startup snapshot
+        would refuse every response until restart. An unresolved client keeps the
+        fail-closed, retryable path.
+        """
+        if self._client_getter is None:
+            return self._client
+        try:
+            return self._client_getter()
+        except Exception:
+            return None
 
     def _check_inventory(self) -> None:
         if self.module._butler_name not in RESPONSE_FENCE_OWNERS or self._closed:
@@ -128,7 +152,7 @@ class CalendarResponseFence:
         try:
             async with asyncio.timeout(_COORDINATION_TIMEOUT), self._claim_slot:
                 self._check_inventory()
-                if self._client is None or not _HEX_DIGEST.fullmatch(target):
+                if self._current_client() is None or not _HEX_DIGEST.fullmatch(target):
                     raise ResponseFenceUnavailable("response_fence_unavailable")
                 pool = await self._get_pool()
                 async with pool.acquire() as connection:
@@ -158,10 +182,13 @@ class CalendarResponseFence:
             raise ResponseFenceUnavailable("response_fence_unavailable") from None
 
     async def check_peers(self, request: dict[str, Any]) -> None:
+        client = self._current_client()
+        if client is None:
+            raise ResponseFenceUnavailable("response_fence_unavailable")
         for owner in RESPONSE_FENCE_OWNERS:
             if owner == self.module._butler_name:
                 continue
-            response = await self._client.call_tool(
+            response = await client.call_tool(
                 "route",
                 {
                     "target_butler": owner,

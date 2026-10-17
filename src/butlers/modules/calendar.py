@@ -3249,10 +3249,21 @@ class CalendarModule(Module):
         return {"calendar_respond": self._response_coordinator}
 
     def wire_runtime(
-        self, spawner: Any, repo_root: Path, *, switchboard_client: Any = None
+        self,
+        spawner: Any,
+        repo_root: Path,
+        *,
+        switchboard_client: Any = None,
+        switchboard_client_getter: Callable[[], Any] | None = None,
     ) -> None:
-        """Use only the daemon-supplied Switchboard transport for owning fence reads."""
-        self._response_fence.wire(repo_root, switchboard_client)
+        """Use only the daemon-supplied Switchboard transport for owning fence reads.
+
+        The getter resolves the live client at claim time, so a heartbeat reconnect
+        is picked up without re-wiring; ``switchboard_client`` is the static fallback.
+        """
+        self._response_fence.wire(
+            repo_root, switchboard_client, client_getter=switchboard_client_getter
+        )
 
     def set_response_approval_ready(self, ready: bool) -> None:
         self._response_ready = ready
