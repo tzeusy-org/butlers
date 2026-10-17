@@ -235,6 +235,10 @@ Payloads, replay/drop decisions, status and other columns are unchanged;
 this is not a claim that every payload or producer log is free of secrets, and it does not produce
 an authentication artifact.
 
+`record()` also scrubs the buffered `full_payload` envelope (the shared `scrub_envelope` that
+connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
+carry typed placeholders; a detector failure withholds that text without changing the row's status.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview
