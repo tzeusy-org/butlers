@@ -162,6 +162,7 @@ class TestImportTransactionsToolRegistration:
             "check that the fake data_import module is injected correctly"
         )
 
+        assert "import_transactions_from_file" not in mcp.tools
         sig = inspect.signature(mcp.tools["import_transactions"])
         params = list(sig.parameters.keys())
 
@@ -216,12 +217,18 @@ class TestImportTransactionsToolRegistration:
             account_id="acct-123",
             currency="EUR",
             dry_run=True,
+            delimiter=";",
+            date_format="%d/%m/%Y",
+            amount_sign="positive_debit",
         )
 
         call_kwargs = fake_data_import.import_transactions.call_args.kwargs
         assert call_kwargs.get("account_id") == "acct-123"
         assert call_kwargs.get("currency") == "EUR"
         assert call_kwargs.get("dry_run") is True
+        assert call_kwargs.get("delimiter") == ";"
+        assert call_kwargs.get("date_format") == "%d/%m/%Y"
+        assert call_kwargs.get("amount_sign") == "positive_debit"
 
     async def test_import_transactions_column_map_parsed_from_json(self):
         """column_map JSON string is parsed to dict before forwarding."""
@@ -269,3 +276,228 @@ class TestModuleBaseSignature:
         assert "blob_store" in sig.parameters
         param = sig.parameters["blob_store"]
         assert param.default is None
+
+
+class TestImportParsingOptions:
+    async def test_semicolon_day_first_positive_debit_import(self):
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock(
+            return_value=(
+                "\ufeffDate;Merchant;Amount\n04/03/2024;Café;12.50\n05/03/2024;Refund;-2.00\n".encode(
+                    "utf-8"
+                )
+            )
+        )
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchval = AsyncMock(return_value=False)
+        pool.execute = AsyncMock()
+        result = await import_transactions(
+            pool,
+            blob,
+            "s3://bucket/statement.csv",
+            currency="SGD",
+            delimiter=";",
+            date_format="%d/%m/%Y",
+            amount_sign="positive_debit",
+        )
+        assert (result["imported"], result["errors"]) == (2, 0)
+        calls = pool.execute.call_args_list
+        assert calls[0].args[2] == datetime(2024, 3, 4, tzinfo=UTC)
+        assert calls[0].args[3] == "Café"
+        assert calls[0].args[5:8] == (Decimal("12.50"), "SGD", "debit")
+        assert calls[1].args[5:8] == (Decimal("2.00"), "SGD", "credit")
+
+    async def test_invalid_options_rejected_before_blob_read(self):
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock()
+        for options in (
+            {"delimiter": "ab"},
+            {"delimiter": ""},
+            {"delimiter": 1},
+            {"amount_sign": "unknown"},
+            {"date_format": "%Q"},
+            {"date_format": "%Y/%Y"},
+            {"date_format": ""},
+            {"date_format": 1},
+            {"amount_sign": "split_cols", "column_map": {"debit": "Paid"}},
+        ):
+            pool = MagicMock()
+            result = await import_transactions(pool, blob, "ref", **options)
+            assert pool.mock_calls == []
+            assert result["status"] == "validation_error", options
+            assert result["error"]
+        blob.get.assert_not_awaited()
+
+    async def test_split_column_overrides_through_blob_import(self):
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob = MagicMock()
+        blob.get = AsyncMock(
+            return_value=(b"When|Payee|Paid|Received\n2024-01-15|Cafe|5|\n2024-01-16|Refund||2\n")
+        )
+        pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)
+        result = await import_transactions(
+            pool,
+            blob,
+            "ref",
+            dry_run=True,
+            delimiter="|",
+            amount_sign="split_cols",
+            column_map={"date": "When", "merchant": "Payee", "debit": "Paid", "credit": "Received"},
+        )
+        assert result["parsed"] == 2
+        assert [row["merchant"] for row in result["preview"]] == ["Cafe", "Refund"]
+        assert [row["direction"] for row in result["preview"]] == ["debit", "credit"]
+        assert [row["amount"] for row in result["preview"]] == ["5", "2"]
+
+        # A signed override must restore Amount even when split headers coexist.
+        blob.get = AsyncMock(
+            return_value=(b"Date,Merchant,Amount,Debit,Credit\n2024-01-15,Cafe,5,5,\n")
+        )
+        for convention, direction in (("positive_debit", "debit"), ("negative_debit", "credit")):
+            result = await import_transactions(
+                pool,
+                blob,
+                "ref",
+                dry_run=True,
+                amount_sign=convention,
+            )
+            assert (result["total"], result["parsed"], result["parse_errors"]) == (1, 1, 0)
+            assert result["preview"][0]["direction"] == direction
+            assert result["preview"][0]["amount"] == "5"
+        # When the override has no signed column, expose the mapping problem.
+        blob.get = AsyncMock(return_value=b"Date,Merchant,Debit,Credit\n2024-01-15,Cafe,5,\n")
+        result = await import_transactions(
+            pool, blob, "ref", dry_run=True, amount_sign="positive_debit"
+        )
+        assert result["parse_errors"] == 1
+        assert "column_map" in result["error_details"][0]["reason"]
+
+
+class TestImportOutputBounds:
+    async def test_error_samples_and_blob_failures_have_finite_output(self):
+        import json
+
+        from butlers.tools.finance.data_import import import_transactions
+
+        # Reviewer's 200KB single-row counterexample, plus repeated errors and
+        # characters that expand under JSON escaping, all at the public boundary.
+        cell = '"\\\u0001é' * 2500
+        headers = ["Date", "Merchant", "Amount", *("Extra" + str(i) + cell for i in range(20))]
+        import csv
+        import io
+
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(headers)
+        for _ in range(60):
+            writer.writerow(["not-a-date" + cell, "Cafe", "5", *([cell] * 20)])
+        blob = MagicMock()
+        blob.get = AsyncMock(return_value=stream.getvalue().encode())
+        pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)
+        for dry_run, date_format in ((True, "%Y-%m-%d"), (False, "%Y-%m-%d"), (True, None)):
+            result = await import_transactions(
+                pool,
+                blob,
+                "ref",
+                dry_run=dry_run,
+                date_format=date_format,
+            )
+            assert len(json.dumps(result).encode()) <= 32768
+            assert result["output_truncated"] is True
+            assert result["truncation"]["strings_truncated"] > 0
+            if date_format:
+                assert result.get("parse_errors", result.get("errors")) == 60
+                assert result["truncation"]["error_details_omitted"] > 0
+                assert result["error_details"]
+                assert len(json.dumps(result["error_details"]).encode()) <= 8192
+                for error in result["error_details"]:
+                    assert len(json.dumps(error).encode()) <= 2048
+                    assert len(error.get("raw", {})) <= 8
+                    assert all(len(key) <= 64 for key in error.get("raw", {}))
+                    assert len(error["reason"]) <= 256
+                    assert error["truncated"] is True
+            else:
+                assert result["status"] == "error"
+                assert result["date_samples"]
+                assert all(len(sample) <= 256 for sample in result["date_samples"])
+        blob.get = AsyncMock(side_effect=RuntimeError(cell))
+        result = await import_transactions(pool, blob, cell)
+        assert len(json.dumps(result).encode()) <= 32768
+        assert len(result["error"]) <= 256
+        assert len(result["storage_ref"]) <= 256
+        assert result["output_truncated"] is True
+
+    async def test_preview_and_summary_limits_do_not_change_imported_cells(self):
+        import csv
+        import io
+        import json
+
+        from butlers.tools.finance.data_import import import_transactions
+
+        merchant = "merchant" + 'é"\\' * 1000
+        category = "category" + 'é"\\' * 500
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(["Date", "Merchant", "Amount", "Category", "Description"])
+        for i in range(60):
+            writer.writerow(["2024-01-15", merchant, "5", category + str(i), merchant + " detail"])
+        blob = MagicMock()
+        blob.get = AsyncMock(return_value=stream.getvalue().encode())
+        pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+        for dry_run in (True, False):
+            result = await import_transactions(
+                pool,
+                blob,
+                "ref",
+                dry_run=dry_run,
+                column_map={
+                    "merchant": "Merchant",
+                    "category": "Category",
+                    "description": "Description",
+                },
+            )
+            assert len(json.dumps(result).encode()) <= 32768
+            assert result["output_truncated"] is True
+            assert result["truncation"]["strings_truncated"] > 0
+            if dry_run:
+                assert result["parsed"] == 60
+                assert 0 < len(result["preview"]) <= 10
+                assert len(json.dumps(result["preview"]).encode()) <= 8192
+                assert all(len(json.dumps(row).encode()) <= 2048 for row in result["preview"])
+                assert result["truncation"]["preview_rows_omitted"] >= 50
+                assert all(len(row["merchant"]) <= 256 for row in result["preview"])
+                assert all(row["truncated"] for row in result["preview"])
+                assert all(row["is_duplicate"] is False for row in result["preview"])
+                assert all(
+                    set(("posted_at", "amount", "currency", "direction", "category")) <= row.keys()
+                    for row in result["preview"]
+                )
+                pool.execute.assert_not_awaited()
+            else:
+                assert result["imported"] == 60
+                assert len(result["categories_used"]) <= 50
+                assert result["truncation"]["categories_used_omitted"] > 0
+        insert_calls = [
+            call
+            for call in pool.execute.call_args_list
+            if "INSERT INTO transactions" in call.args[0]
+        ]
+        assert len(insert_calls) == 60
+        assert all(call.args[3] == merchant.title() for call in insert_calls)
+        assert all(call.args[4] == merchant + " detail" for call in insert_calls)
+        assert all(call.args[9]["raw_merchant"] == merchant for call in insert_calls)
+        assert all(call.args[8].startswith(category) for call in insert_calls)

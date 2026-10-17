@@ -38,7 +38,7 @@ For detailed parameter tables, invoke the `tool-reference` skill.
 
 ### Intelligence Feature Guidelines
 
-- **Insufficient data handling**: When any intelligence tool returns `status="insufficient_data"`, inform the user about the minimum data requirements and suggest using the `historical-data-import` skill if no historical import has been performed. Never fabricate analytics results for sparse data.
+- **Insufficient data handling**: When any intelligence tool returns `status="insufficient_data"`, inform the user about the minimum data requirements and suggest using the `transaction-csv-extraction` skill if no historical import has been performed. Never fabricate analytics results for sparse data.
 - **Post-transaction intelligence hook**: After recording a transaction with `record_transaction`, check whether the merchant matches any detected recurring patterns using `detect_recurring`. If a `large_transaction` alert is configured and the amount exceeds the threshold, surface the flag in your response to the user.
 - **Proactive trend context**: When the user asks about spending in a category, include trend context (comparison to prior month via `spending_trends`) alongside the direct answer. If budget targets exist for that category, include budget utilization from `budget_status`.
 - **Merchant mapping discipline**: Merchant category mappings are stored in `finance.merchant_mappings` (via `learn_merchant_categories`), NOT as memory facts. Budget targets live in `finance.budgets`. Account balance snapshots live in `finance.balance_snapshots`. Use the dedicated tools; do not store these in the memory fact layer.
@@ -105,8 +105,7 @@ calls the registered handler directly with no ephemeral LLM session:
 ### Reference and Import Skills
 
 - **`tool-reference`**: Detailed parameter documentation for all finance butler MCP tools
-- **`transaction-csv-extraction`**: Parse a CSV export from a bank or card statement and bulk-ingest transactions via `bulk_record_transactions`
-- **`historical-data-import`**: Multi-format bank CSV import with format detection, deduplication, progress reporting, and post-import baseline computation
+- **`transaction-csv-extraction`**: Preview and import bank or card CSV attachments through `import_transactions` using `storage_ref`, parsing options, and owner confirmation
 - **`memory-classification`**: Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`**: `notify()` required parameters and intent usage
 - **`butler-memory`**: Entity resolution protocol before storing memory facts
