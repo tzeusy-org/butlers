@@ -127,6 +127,9 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "executed": "✅ Approved",
     "rejected": "❌ Rejected",
     "expired": "⏰ Expired",
+    "changed_since_shown": (
+        "⚠️ Changed since shown. Nothing was executed; open the dashboard to review the new call."
+    ),
 }
 
 
@@ -1398,6 +1401,8 @@ class TelegramBotConnector:
                     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
                 },
             )
+            if response.status_code == 409 and "changed since shown" in response.text:
+                return "changed_since_shown"
             if response.status_code >= 400:
                 return None
             payload = response.json()

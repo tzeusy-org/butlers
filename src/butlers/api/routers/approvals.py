@@ -86,6 +86,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
+from butlers.modules.approvals.previews import args_digest
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
@@ -3082,6 +3083,38 @@ async def approve_approval(
     )
 
 
+# Shared with the Telegram connector, which matches it to answer the tap honestly.
+APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+
+
+async def _require_presented_call_unchanged(
+    conn: Any, action_id: UUID, stored_tool_args: Any
+) -> None:
+    """Refuse an approval whose stored call differs from any call a card showed.
+
+    Every presented card records the digest of the call it rendered
+    (``approval_delivery_presentations.args_digest``).  Approving with a card
+    outstanding for a different call would execute something the owner did not
+    see, so the tap executes nothing (security.md § Approval Gates).  Actions
+    that were never presented with a digest are unaffected.
+    """
+    presented = await conn.fetch(
+        """
+        SELECT DISTINCT p.args_digest
+          FROM approval_delivery_presentations AS p
+          JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+         WHERE i.action_id = $1 AND p.args_digest IS NOT NULL
+        """,
+        action_id,
+    )
+    if not isinstance(presented, list | tuple):
+        return
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    current = args_digest(raw if isinstance(raw, dict) else None)
+    if any(row["args_digest"] != current for row in presented):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
+
 async def approve_owning_action(
     *,
     parsed_id: UUID,
@@ -3106,11 +3139,15 @@ async def approve_owning_action(
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
     async with target_pool.acquire() as conn, conn.transaction():
+        # The row lock makes the presented-digest check below atomic with the
+        # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1"
-            + (" FOR UPDATE" if expected_tool_args is not None else ""),
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
+
+        if action_row is not None and not edits:
+            await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
 
         if expected_tool_args is not None:
             if (

@@ -174,6 +174,34 @@ recorded failure or uncertain delivery remains visible even for a prepared actio
   withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
   Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
 
+## Approval cards show the exact stored call
+
+The owner push for a single parked action (Telegram) renders the call itself, not
+the assistant's description of it. A per-tool preview registry
+(`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
+fact lines: for email and Gmail sends every To, Cc and Bcc address, the subject
+and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
+text. The assistant's `why`, `blast_radius` and `reversibility` sit under
+"Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
+span rendered in code formatting so it stays literal after the transport's HTML
+escaping. "Started by" names the owning butler (and marks prepared actions).
+
+Approve and Reject are offered only when the whole call is shown and the card
+fits about 3,500 characters. Otherwise the card says why and offers Open only:
+no registered preview, an argument the preview cannot show (for example
+attachments or a reply markup), a recipient that cannot be enumerated, a body
+with backticks, an over-budget call, or an `administer` or protected or
+consequential tool. Register a preview with `register_preview(tool, renderer,
+effect_class=...)`; an unregistered tool is Open only by design.
+
+Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
+stored call) on its `approval_delivery_presentations` row. An approval takes the
+action's row lock and refuses with 409 "changed since shown" if any presented
+digest differs from the stored call; a Telegram tap then edits the message to say
+nothing was executed. Approvals that apply dashboard edits are the owner's
+explicit change and skip the check. Rows presented before migration 018 carry no
+digest and are not checked.
+
 ## Related Pages
 
 - [Module System](module-system.md)
