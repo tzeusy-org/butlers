@@ -104,12 +104,33 @@ def test_core_258_bootstrap_replay_leaves_tables_visible_to_the_migration_login(
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     asyncio.run(run_migrations(db_url, chain="core"))
-    inventory = (
-        "SELECT string_agg(table_schema || '.' || table_name, ',' ORDER BY 1) FROM"
-        " information_schema.tables WHERE table_name LIKE 'metric\\_%'"
+    # An aggregate's ORDER BY 1 is a constant, not an output-column ordinal.
+    # Bootstrap recreates the tables, so their catalog input order can change.
+    aggregate = (
+        "SELECT string_agg(table_schema || '.' || table_name, ','"
+        " ORDER BY table_schema, table_name) FROM "
     )
+    inventory = aggregate + " information_schema.tables WHERE table_name LIKE 'metric\\_%'"
     before = _scalar(db_url, inventory)
     assert before == "public.metric_baselines,public.metric_deviation_episodes"
+
+    # Real SQL controls isolate ordering from table visibility or grants.
+    forward = "('public', 'metric_baselines'), ('public', 'metric_deviation_episodes')"
+    reverse = "('public', 'metric_deviation_episodes'), ('public', 'metric_baselines')"
+    for rows in (forward, reverse):
+        source = f"(VALUES {rows}) AS fixture(table_schema, table_name)"
+        assert _scalar(db_url, aggregate + source) == before
+    legacy = (
+        "SELECT string_agg(table_schema || '.' || table_name, ',' ORDER BY 1) FROM "
+        f"(VALUES {reverse}) AS fixture(table_schema, table_name)"
+    )
+    assert _scalar(db_url, legacy) == "public.metric_deviation_episodes,public.metric_baselines"
+
+    ordinary_login = (
+        "SELECT NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication"
+        " FROM pg_roles WHERE rolname = current_user"
+    )
+    assert _scalar(db_url, ordinary_login) is True
 
     bootstrap = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), ["core"]
@@ -119,3 +140,6 @@ def test_core_258_bootstrap_replay_leaves_tables_visible_to_the_migration_login(
     command.upgrade(bootstrap, "core_258")
 
     assert _scalar(db_url, inventory) == before
+    assert _scalar(db_url, ordinary_login) is True
+    for table in ("metric_baselines", "metric_deviation_episodes"):
+        assert _scalar(db_url, f"SELECT count(*) FROM public.{table}") == 0
