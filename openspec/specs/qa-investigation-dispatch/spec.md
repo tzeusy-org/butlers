@@ -110,7 +110,7 @@ Each investigation SHALL run in a dedicated git worktree branched off latest `ma
 - **AND** the local branch is deleted if no PR was created
 
 ### Requirement: Investigation Agent Sandbox
-Investigation agents SHALL operate in a sandboxed environment without GitHub publication credentials and with no access to publisher or butler runtime secrets. Agent sessions (initial investigation and PR-review follow-up) SHALL hold no GitHub credential, and automated publication (branch push and PR creation) SHALL be unavailable until the isolated publisher lands.
+Investigation agents SHALL operate in a sandboxed environment without GitHub publication credentials and with no access to publisher or butler runtime secrets.
 
 ID: REQ-qa-investigation-dispatch-001
 Source: owner-adopted QA publication contract 90d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9; RFC0015
@@ -118,7 +118,7 @@ Scope: v1-mandatory
 
 #### Scenario: Agent environment
 - **WHEN** the investigation agent is spawned in a worktree
-- **THEN** only the trusted dispatcher may resolve `BUTLERS_QA_GH_TOKEN`; investigation and follow-up agents receive no `GH_TOKEN`, git credential helper variable or other GitHub credential
+- **THEN** only the trusted deterministic publisher may resolve `BUTLERS_QA_GH_TOKEN`; investigation agents receive no GitHub credential or generic publication capability
 - **AND** if configured, the QA staffer resolves `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` and injects them as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so non-interactive `git commit` does not depend on per-worktree `git config`
 - **AND** the agent's environment contains only: `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
@@ -138,7 +138,7 @@ Scope: v1-mandatory
 - **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
 
 #### Scenario: GitHub credentials from secrets store
-- **WHEN** the isolated publisher needs to create a PR
+- **WHEN** the QA staffer needs to create a PR
 - **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)
 - **AND** the token is scoped to: branch push + PR creation + PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat
