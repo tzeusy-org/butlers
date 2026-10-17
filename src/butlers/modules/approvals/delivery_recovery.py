@@ -476,39 +476,23 @@ class ApprovalDeliveryRepository:
                     # Never persist a NULL digest for a card: without a cached render
                     # (a fenced re-claim in a new process) bind the locked current call.
                     rendered_digest = rendered_digest or current_digest
-                # A binary may run before approvals_018 is applied (rollout order); the
-                # handoff then proceeds without a digest column to write.
-                has_digest_column = await connection.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                         WHERE table_schema = current_schema()
-                           AND table_name = 'approval_delivery_presentations'
-                           AND column_name = 'args_digest'
-                    )
-                    """
-                )
-                digest_assignment = (
-                    "args_digest = COALESCE($6, args_digest)," if has_digest_column else ""
-                )
-                digest_params = (rendered_digest,) if has_digest_column else ()
                 row = await connection.fetchrow(
-                    f"""
+                    """
                     UPDATE approval_delivery_presentations
                        SET state = 'handoff_started', attempt_count = attempt_count + 1,
                            claim_expires_at = clock_timestamp() + make_interval(secs => $5),
-                           {digest_assignment}
+                           args_digest = COALESCE($6, args_digest),
                            updated_at = clock_timestamp()
                      WHERE id = $1 AND presentation_generation = $2
                        AND claim_token = $3 AND claim_fence = $4 AND state = 'claimed'
                     RETURNING attempt_count, updated_at
-                    """,  # noqa: S608 - fixed fragment, no caller input
+                    """,
                     claim.presentation_id,
                     claim.presentation_generation,
                     claim.claim_token,
                     claim.claim_fence,
                     float(self._lease_seconds),
-                    *digest_params,
+                    rendered_digest,
                 )
                 if row is None:
                     return False

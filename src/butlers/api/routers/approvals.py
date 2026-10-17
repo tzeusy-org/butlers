@@ -3102,18 +3102,6 @@ async def _require_presented_call_unchanged(
     the call the dashboard displayed.  Actions never presented with a digest are
     unaffected.
     """
-    has_digest_column = await conn.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.columns
-             WHERE table_schema = current_schema()
-               AND table_name = 'approval_delivery_presentations'
-               AND column_name = 'args_digest'
-        )
-        """
-    )
-    if has_digest_column is False:
-        return  # approvals_018 not applied: no card digest was ever recorded
     presented = await conn.fetch(
         """
         SELECT DISTINCT p.args_digest

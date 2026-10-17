@@ -17,12 +17,8 @@ _ARGS = {"to": "dana@x.com", "subject": "Hi", "body": "Hello"}
 
 
 class _Conn:
-    def __init__(self, *, has_column: Any = True, presented: Any = ()) -> None:
-        self._has_column = has_column
+    def __init__(self, *, presented: Any = ()) -> None:
         self._presented = presented
-
-    async def fetchval(self, *_args: Any) -> Any:
-        return self._has_column
 
     async def fetch(self, *_args: Any) -> Any:
         return self._presented
@@ -47,10 +43,6 @@ async def test_non_list_presented_rows_fail_closed() -> None:
     with pytest.raises(HTTPException) as caught:
         await _check(_Conn(presented=object()))
     assert caught.value.status_code == 409
-
-
-async def test_schema_without_digest_column_is_unaffected() -> None:
-    await _check(_Conn(has_column=False, presented=object()))
 
 
 @pytest.mark.parametrize("authenticated", [True, False])
