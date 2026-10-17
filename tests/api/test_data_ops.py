@@ -66,6 +66,21 @@ def _make_db(pool: AsyncMock) -> MagicMock:
     return db
 
 
+def _make_roster_db(pool: AsyncMock) -> DatabaseManager:
+    """A real DatabaseManager whose only registered butler is a memory butler.
+
+    The memory/all export scopes build their tables from the manager's butler
+    roster (bu-8ptawc), so these cases use the real manager seam rather than a
+    ``MagicMock(spec=DatabaseManager)`` that would silently pick a different path.
+    """
+    db = DatabaseManager()
+    db._pools["switchboard"] = pool
+    db._butler_schemas["switchboard"] = "switchboard"
+    db._butler_memory_schema_overrides["switchboard"] = None
+    db._butler_modules["switchboard"] = frozenset({"memory"})
+    return db
+
+
 @pytest.fixture(scope="module")
 def app():
     return create_app()
@@ -304,7 +319,7 @@ async def test_download_memory_scope_returns_encrypted_zip_with_memory_tables(ap
             [{"id": "e1", "butler": "general", "content": "Session log entry"}],
         ]
     )
-    db = _make_db(pool)
+    db = _make_roster_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-memory"
@@ -315,15 +330,23 @@ async def test_download_memory_scope_returns_encrypted_zip_with_memory_tables(ap
 
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
-    assert "memory_facts.ndjson" in files
-    assert "memory_rules.ndjson" in files
-    assert "memory_episodes.ndjson" in files
+    assert "switchboard_memory_facts.ndjson" in files
+    assert "switchboard_memory_rules.ndjson" in files
+    assert "switchboard_memory_episodes.ndjson" in files
 
-    facts = [json.loads(line) for line in files["memory_facts.ndjson"].splitlines() if line]
+    facts = [
+        json.loads(line) for line in files["switchboard_memory_facts.ndjson"].splitlines() if line
+    ]
     assert facts[0]["predicate"] == "name"
-    rules = [json.loads(line) for line in files["memory_rules.ndjson"].splitlines() if line]
+    rules = [
+        json.loads(line) for line in files["switchboard_memory_rules.ndjson"].splitlines() if line
+    ]
     assert "politely" in rules[0]["content"]
-    episodes = [json.loads(line) for line in files["memory_episodes.ndjson"].splitlines() if line]
+    episodes = [
+        json.loads(line)
+        for line in files["switchboard_memory_episodes.ndjson"].splitlines()
+        if line
+    ]
     assert episodes[0]["butler"] == "general"
 
 
@@ -343,7 +366,7 @@ async def test_download_all_scope_includes_all_tables(app):
             [{"id": "p1", "butler": "general"}],
         ]
     )
-    db = _make_db(pool)
+    db = _make_roster_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-all"
@@ -355,9 +378,9 @@ async def test_download_all_scope_includes_all_tables(app):
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
     expected_files = {
-        "memory_facts.ndjson",
-        "memory_rules.ndjson",
-        "memory_episodes.ndjson",
+        "switchboard_memory_facts.ndjson",
+        "switchboard_memory_rules.ndjson",
+        "switchboard_memory_episodes.ndjson",
         "public_audit_log.ndjson",
         "public_runtime_config.ndjson",
         "public_model_catalog.ndjson",
@@ -375,7 +398,7 @@ async def test_download_full_alias_same_as_all(app):
     """scope=full (alias for all) returns the same 7-table set as scope=all."""
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 1}])
-    db = _make_db(pool)
+    db = _make_roster_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-full"
@@ -439,7 +462,7 @@ async def test_download_skip_columns_excludes_embeddings(app):
             }
         ]
     )
-    db = _make_db(pool)
+    db = _make_roster_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-skip-cols"
@@ -450,7 +473,7 @@ async def test_download_skip_columns_excludes_embeddings(app):
 
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
-    facts_content = files["memory_facts.ndjson"]
+    facts_content = files["switchboard_memory_facts.ndjson"]
     row = json.loads(facts_content.strip())
     # Retained columns
     assert row["id"] == "f1"
@@ -882,7 +905,7 @@ async def test_download_bytes_are_encrypted_not_plaintext(app, scope):
     sentinel = "SENTINEL_PLAINTEXT_MARKER_permission.set"
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 1, "action": sentinel, "actor": "owner"}])
-    db = _make_db(pool)
+    db = _make_roster_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     url = _make_download_url(f"test-enc-{scope}", scope)
