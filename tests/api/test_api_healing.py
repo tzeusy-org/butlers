@@ -384,3 +384,46 @@ async def test_retry_rejects_non_terminal_attempt():
         resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
 
     assert resp.status_code == 409
+
+
+async def test_retry_refuses_a_fingerprint_held_by_an_unresolved_publication():
+    """A held lineage is not reopened by the admin retry: no insert, no dispatch (bu-gv2x2t)."""
+    mgr = _make_mcp_manager(butler_names=["general"])
+    app, mock_pool = _build_app(fetchval_result=True, mcp_manager=mgr)
+    mock_pool.fetchrow = AsyncMock(side_effect=[_MockRecord(_make_attempt_row(status="failed"))])
+    spy = AsyncMock()
+    app.dependency_overrides[_get_dispatch_fn] = lambda: spy
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "publication_lineage_held"
+    assert mock_pool.fetchrow.await_count == 1  # only the original lookup; nothing inserted
+    spy.assert_not_awaited()
+    mgr.get_client.assert_not_awaited()
+
+
+async def test_retry_whose_insert_is_suppressed_by_a_new_hold_is_the_same_409():
+    """A hold appearing after the early check inserts nothing and answers the same 409."""
+    mgr = _make_mcp_manager(butler_names=["general"])
+    app, mock_pool = _build_app(mcp_manager=mgr)  # early check sees no hold
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[_MockRecord(_make_attempt_row(status="failed")), None, None]
+    )
+    spy = AsyncMock()
+    app.dependency_overrides[_get_dispatch_fn] = lambda: spy
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "publication_lineage_held"
+    sql = mock_pool.fetchrow.await_args_list[-1].args[0]
+    assert "qa_publication_operations" in sql  # the hold predicate is part of the INSERT
+    spy.assert_not_awaited()
+    mgr.get_client.assert_not_awaited()

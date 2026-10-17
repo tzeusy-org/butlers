@@ -61,10 +61,12 @@ from butlers.api.deps import (
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.tracking import (
+    PUBLICATION_HOLD_EXISTS_SQL,
     TERMINAL_STATUSES,
     VALID_STATUSES,
     get_active_attempt,
     get_attempt,
+    get_publication_hold,
     get_recent_terminal_statuses,
     list_attempts,
     list_dispatch_events,
@@ -189,6 +191,20 @@ def _shared_pool(db: DatabaseManager):
             status_code=503,
             detail="Shared database pool is not available",
         )
+
+
+def _publication_lineage_held(attempt_id: uuid.UUID) -> HTTPException:
+    """The structured 409 for a retry refused by an unresolved publication hold."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "publication_lineage_held",
+            "message": (
+                f"Cannot retry attempt {attempt_id}: an unresolved publication holds this "
+                "fingerprint. Reconcile it before retrying."
+            ),
+        },
+    )
 
 
 def _row_to_attempt(row: dict[str, Any]) -> HealingAttempt:
@@ -476,7 +492,8 @@ async def retry_healing_attempt(
     Rejects with HTTP 409 when the attempt has a non-terminal status (investigating
     or pr_open), since the original investigation is still active.  Also rejects with
     HTTP 409 if a separate active row already exists for the same fingerprint, to avoid
-    a UniqueViolationError.
+    a UniqueViolationError.  Rejects with HTTP 409 (``publication_lineage_held``) while
+    an unresolved publication holds the fingerprint; nothing is inserted or dispatched.
 
     The new attempt is inserted directly with status ``investigating`` and an empty
     session_ids array (the retry is dashboard-triggered, not linked to a failing session).
@@ -512,6 +529,13 @@ async def retry_healing_attempt(
     call_site: str = original["call_site"]
     sanitized_msg: str | None = original.get("sanitized_msg")
 
+    # Guard: an unresolved publication (egress started or ambiguous) holds this
+    # fingerprint's lineage.  The retry skips the cooldown gate, so without this check it
+    # would reopen the lineage and re-dispatch an agent that pushes and opens a PR.
+    # Nothing is inserted and nothing is dispatched until the hold is reconciled.
+    if await get_publication_hold(pool, fingerprint):
+        raise _publication_lineage_held(attempt_id)
+
     # Guard: reject if there is already an active row for this fingerprint.
     # This prevents a UniqueViolationError (→ 500) when a prior retry left an
     # investigating row for the same fingerprint.
@@ -534,6 +558,8 @@ async def retry_healing_attempt(
     # (not create_or_join_attempt which is novelty-aware).
     # The retry semantics intentionally skip the cooldown gate — it's admin-initiated.
     try:
+        # The hold predicate is folded into the INSERT (as create_or_join_attempt does), so
+        # a hold that appears after the early check above still inserts nothing.
         new_row = await pool.fetchrow(
             """
             INSERT INTO public.healing_attempts (
@@ -541,7 +567,11 @@ async def retry_healing_attempt(
                 exception_type, call_site, sanitized_msg, session_ids,
                 workflow_deadline_at
             )
-            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, '{}', now() + INTERVAL '60 minutes')
+            SELECT $1::text, $2::text, 'investigating', $3::integer, $4::text, $5::text,
+                   $6::text, '{}'::uuid[], now() + INTERVAL '60 minutes'
+            WHERE NOT ("""
+            + PUBLICATION_HOLD_EXISTS_SQL
+            + """)
             RETURNING id, fingerprint, status
             """,
             fingerprint,
@@ -556,7 +586,9 @@ async def retry_healing_attempt(
         raise HTTPException(status_code=500, detail="Failed to create retry attempt")
 
     if new_row is None:
-        raise HTTPException(status_code=500, detail="Retry insert returned no row")
+        # The only filter on the INSERT is the publication hold: a hold appeared after the
+        # early check and the statement inserted nothing.
+        raise _publication_lineage_held(attempt_id)
 
     new_attempt_id: uuid.UUID = new_row["id"]
 
