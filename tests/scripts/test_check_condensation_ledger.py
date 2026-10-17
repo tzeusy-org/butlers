@@ -1608,3 +1608,356 @@ def test_contract_evolution_refuses_request_changed_after_controller_parse(tmp_p
         ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
     # Exact protected request bytes reject a later valid request before execution.
     assert not (output / "contract-0/receipt.json").exists()
+
+
+_STEAM_TESTS = (
+    "import pytest\n\n\n"
+    "class TestSteam:\n"
+    "    @pytest.mark.unit\n"
+    "    def test_has_steam(self):\n        assert 'steam' in ('steam',)\n\n"
+    "    def test_empty_config(self):\n        assert {} == {}\n\n\n"
+    "def test_unrelated():\n    assert True\n"
+)
+_STEAM_AFTER = "import pytest\n\n\ndef test_unrelated():\n    assert True\n"
+_STEAM_SPEC = (
+    "### Requirement: Steam Module\nGeneral SHALL load steam.\n\n### Requirement: Other\nx\n"
+)
+_STEAM_SPEC_AFTER = _STEAM_SPEC.replace("SHALL load", "SHALL NOT load")
+_RETIRED = (
+    "tests/test_steam.py::TestSteam::test_has_steam",
+    "tests/test_steam.py::TestSteam::test_empty_config",
+)
+
+
+def _commit_all(root, message):
+    ledger.git(root, "add", ".")
+    ledger.git(
+        root,
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        message,
+    )
+    return ledger.git(root, "rev-parse", "HEAD")
+
+
+def _retirement_repository(tmp_path, *, mutate=None, trusted_manifest=True):
+    """Real Git history: reviewed base, protected manifest commit, candidate untouched."""
+    import contract_evolution as evolution
+
+    root = _repository(tmp_path)
+    (root / "tests/test_steam.py").write_text(_STEAM_TESTS)
+    (root / "spec.md").write_text(_STEAM_SPEC)
+    base = _commit_all(root, "reviewed base")
+    manifest = {
+        "schema": evolution.RETIREMENT_SCHEMA,
+        "id": "example-retirement",
+        "bead": "example.1",
+        "authority": "owner decision, provenance only",
+        "retired": [
+            {
+                "owner": owner,
+                "base_sha256": evolution.owner_body_sha256(_STEAM_TESTS, owner.split("::", 1)[1]),
+                "reason": "Steam is no longer a General module.",
+            }
+            for owner in _RETIRED
+        ],
+        "requirements": [
+            {
+                "path": "spec.md",
+                "requirement": "Steam Module",
+                "before_sha256": evolution.requirement_digest_or_none(_STEAM_SPEC, "Steam Module"),
+                "after_sha256": evolution.requirement_digest_or_none(
+                    _STEAM_SPEC_AFTER, "Steam Module"
+                ),
+            }
+        ],
+    }
+    if mutate:
+        mutate(manifest)
+    path = root / evolution.AUTHORIZATIONS / "example-retirement.json"
+    path.parent.mkdir(parents=True)
+    if trusted_manifest:
+        path.write_text(json.dumps(manifest))
+    else:
+        (root / "note.txt").write_text("protected public history without the manifest\n")
+    trusted = _commit_all(root, "protected retirement authority")
+    if not trusted_manifest:
+        path.write_text(json.dumps(manifest))
+    return root, base, trusted, path
+
+
+def _retire(root, *, extra=""):
+    (root / "tests/test_steam.py").write_text(_STEAM_AFTER + extra)
+    (root / "spec.md").write_text(_STEAM_SPEC_AFTER)
+    return _commit_all(root, "candidate retirement")
+
+
+def test_retirement_admits_exact_whole_owners_only_from_trusted_manifest(tmp_path):
+    """REQ-testing-053: protected retirement authority admits exactly the named owners."""
+    root, base, trusted, path = _retirement_repository(tmp_path)
+    _retire(root)
+    result = ledger.verify(root, base, [], trusted=trusted)
+    (account,) = result["retirement_accounts"]
+    assert result["status"] == "PASS" and result["losses"] == 2
+    assert account["manifest"] == "example-retirement"
+    assert account["admitted_owner_count"] == 2
+    assert (
+        account["manifest_sha256"]
+        == ledger.input_record(root, path.relative_to(root).as_posix())["sha256"]
+    )
+    assert account["public_authority"] == trusted
+
+
+def test_historical_retirement_manifest_is_inert_without_a_current_loss(tmp_path):
+    """REQ-testing-053: a protected manifest with no matching loss changes nothing."""
+    root, base, trusted, _ = _retirement_repository(tmp_path)
+    result = ledger.verify(root, base, [], trusted=trusted)
+    assert result["status"] == "PASS" and "retirement_accounts" not in result
+
+
+def test_retirement_cannot_be_claimed_by_candidate_or_edited_authority(tmp_path):
+    """REQ-testing-053: candidate-only or altered manifests never authorize loss."""
+    root, base, trusted, path = _retirement_repository(tmp_path / "only", trusted_manifest=False)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="candidate-only-retirement-authority"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, path = _retirement_repository(tmp_path / "edited")
+    path.write_text(path.read_text().replace("no longer", "never"))
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="changed-protected-retirement-authority"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_leaves_unlisted_and_partial_losses_unproven(tmp_path):
+    """REQ-testing-053: only whole named owners retire; every other loss keeps its account."""
+    root, base, trusted, _ = _retirement_repository(tmp_path / "extra")
+    (root / "tests/test_owner.py").write_text(
+        (root / "tests/test_owner.py").read_text().replace("    assert value in (1,2)\n", "")
+    )
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, _ = _retirement_repository(tmp_path / "partial")
+    (root / "spec.md").write_text(_STEAM_SPEC_AFTER)
+    (root / "tests/test_steam.py").write_text(
+        _STEAM_AFTER + "\n\nclass TestSteam:\n    def test_empty_config(self):\n        pass\n"
+    )
+    _commit_all(root, "candidate keeps a hollowed owner")
+    with pytest.raises(ledger.EvidenceError, match="retired-owner-not-wholly-removed"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate", "category"),
+    [
+        (
+            "stale",
+            lambda m: m["requirements"][0].update(before_sha256="0" * 64),
+            "stale-retirement",
+        ),
+        (
+            "wrong",
+            lambda m: m["requirements"][0].update(after_sha256="1" * 64),
+            "mismatched-retirement",
+        ),
+        ("owner", lambda m: m["retired"][0].update(base_sha256="2" * 64), "stale-retired-owner"),
+    ],
+)
+def test_retirement_refuses_stale_or_mismatched_bindings(tmp_path, name, mutate, category):
+    """REQ-testing-053: base hashes and requirement blocks must match exactly."""
+    root, base, trusted, _ = _retirement_repository(tmp_path / name, mutate=mutate)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match=category):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_requires_the_governing_requirement_to_have_moved(tmp_path):
+    """REQ-testing-053: an unchanged governing block cannot retire any test."""
+    root, base, trusted, _ = _retirement_repository(tmp_path)
+    (root / "tests/test_steam.py").write_text(_STEAM_AFTER)
+    _commit_all(root, "candidate deletes tests without the governing change")
+    with pytest.raises(ledger.EvidenceError, match="unchanged-retirement-requirement"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_replacements_must_exist_in_the_candidate(tmp_path):
+    """REQ-testing-053: named replacement owners are required beside the retirement."""
+    replacement = "tests/test_steam.py::test_excludes_steam"
+
+    def add(manifest):
+        manifest["replacements"] = [replacement]
+
+    root, base, trusted, _ = _retirement_repository(tmp_path / "missing", mutate=add)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="missing-retirement-replacement"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, _ = _retirement_repository(tmp_path / "present", mutate=add)
+    _retire(root, extra="\n\ndef test_excludes_steam():\n    assert True\n")
+    assert ledger.verify(root, base, [], trusted=trusted)["status"] == "PASS"
+
+
+def test_cli_prints_the_real_contract_refusal_category_across_module_identities(tmp_path):
+    """bu-rf37wu: run as a script, an imported consumer's refusal keeps its own category.
+
+    ``python scripts/check_condensation_ledger.py`` loads the ledger as ``__main__`` while
+    ``contract_evolution`` imports it again by name, so without the ``sys.modules`` alias in
+    the ``__main__`` block its ``EvidenceError`` is a different class and collapses to
+    ``invalid-structural-evidence``. In-process tests cannot see that.
+    """
+    root, base, _trusted, _authority, _request, _commit = _contract_repository(tmp_path)
+    # The protected ref predates the authorization, so the candidate request has no authority.
+    ledger.git(root, "update-ref", "refs/remotes/origin/main", base)
+    proc = subprocess.run(
+        [sys.executable, str(Path(ledger.__file__)), "--repo-root", str(root), "--base", base],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout) == {
+        "status": "REFUSED",
+        "category": "missing-protected-contract-authority",
+    }
+
+
+def test_stale_base_pr_is_not_forced_through_an_already_landed_contract_request(tmp_path):
+    """bu-1bxczh: a request the trusted parent already carries is public history."""
+    root, base, authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/test_unrelated.py").write_text("def test_unrelated():\n    assert True\n")
+    (root / "docs.md").write_text("an unrelated pull request change\n")
+    _commit_all(root, "unrelated pull request delta")
+    output = tmp_path / "proofs"
+    output.mkdir()
+
+    result = ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+
+    assert result["status"] == "PASS" and result["losses"] == 1
+    assert "contract_evolution_proofs" not in result
+    # A request only the candidate carries is still consumed as a fresh proof: the unrelated
+    # delta is not covered by the request, so it is still refused exactly as before.
+    with pytest.raises(ledger.EvidenceError, match="unapproved-contract-runtime-input"):
+        ledger.verify(root, base, [], contract_directory=output, trusted=authorized)
+
+
+def test_stale_base_does_not_launder_a_pull_request_change_to_a_landed_request_owner(tmp_path):
+    """bu-1bxczh: touching a covered owner after it landed gets no landed-request shortcut."""
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    owner = root / "tests/test_owner.py"
+    owner.write_text(owner.read_text() + "\n# the pull request edits the covered owner\n")
+    _commit_all(root, "pull request edits a covered owner")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+    # A landed authorization whose bytes the candidate edited is never trusted either.
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path / "edit")
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    authorization = root / "tests/contract-evolution-authorizations/example-change.json"
+    authorization.write_text(authorization.read_text().replace("Owner", "Someone"))
+    _commit_all(root, "candidate edits the landed authorization")
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+
+
+def _landed_retirement(tmp_path, *, extra_loss=False):
+    """A retirement the trusted parent already carries, with a base older than its own."""
+    root, base, _manifest_commit, _path = _retirement_repository(
+        tmp_path,
+        mutate=lambda m: m["retired"][0].update(base_sha256="2" * 64),
+    )
+    _retire(root)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    (root / "docs.md").write_text("an unrelated pull request change\n")
+    if extra_loss:
+        owner = root / "tests/test_owner.py"
+        owner.write_text(owner.read_text().replace("    assert value in (1,2)\n", ""))
+    _commit_all(root, "pull request delta")
+    return root, base, landed
+
+
+def test_stale_base_pr_is_not_forced_through_an_already_landed_retirement(tmp_path):
+    """bu-1bxczh: public-history retirement is not re-litigated against an older base."""
+    root, base, landed = _landed_retirement(tmp_path)
+    result = ledger.verify(root, base, [], trusted=landed)
+    (account,) = result["retirement_accounts"]
+    assert result["status"] == "PASS" and account["admitted_owner_count"] == 2
+
+
+def test_stale_base_still_counts_a_loss_the_pull_request_introduces(tmp_path):
+    """bu-1bxczh: landed authority never covers a loss the candidate adds beside it."""
+    root, base, landed = _landed_retirement(tmp_path, extra_loss=True)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [], trusted=landed)
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+@pytest.mark.parametrize("fresh_base", [False, True])
+def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(
+    tmp_path, monkeypatch, change, fresh_base
+):
+    """bu-1bxczh: a conftest.py change is attributed to every owner below it."""
+    real_repository = _repository
+
+    def repository_with_conftest(path):
+        root = real_repository(path)
+        (root / "tests/conftest.py").write_text("import pytest\n")
+        return root
+
+    monkeypatch.setattr(sys.modules[__name__], "_repository", repository_with_conftest)
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    monkeypatch.undo()
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    conftest = root / "tests/conftest.py"
+    if change == "edit":
+        conftest.write_text(
+            "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip():\n    pytest.skip()\n"
+        )
+    else:
+        conftest.unlink()
+    _commit_all(root, "pull request changes only the ancestor conftest")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(
+            root, landed if fresh_base else base, [], contract_directory=output, trusted=landed
+        )
+
+
+_SKIPPING_CONFTEST = (
+    "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip_all():\n    pytest.skip('x')\n"
+)
+
+
+@pytest.mark.parametrize("location", ["conftest.py", "tests/conftest.py"])
+def test_added_ancestor_conftest_is_attributed_to_every_owner_below_it(tmp_path, location):
+    """bu-0jd93j: a conftest.py absent at base but added by the candidate is new fixture context."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / location).write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a skipping ancestor conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert losses
+    assert set(losses.values()) == {"ancestral-fixture-context-change"}
+    assert all(node.startswith("tests/test_owner.py::") for node in losses)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [])
+
+
+def test_added_conftest_without_owners_below_it_changes_nothing(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "unrelated").mkdir()
+    (root / "unrelated/conftest.py").write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a conftest above no owner")
+
+    assert ledger.destructive_changes(root, base) == {}

@@ -815,17 +815,17 @@ The routing log tab (switchboard-only) SHALL show inter-butler request routing a
 - **THEN** Previous/Next pagination controls are shown with page count
 
 ### Requirement: Butler Detail Page — Dispatch Fold-In
-The existing `/butlers/{name}` detail page SHALL fold in the `ButlersExpanded` design, with sections for fallback chain, system prompt, tools, memory access, activity, and kill switch.
+The existing `/butlers/{name}` detail page SHALL fold in the `ButlersExpanded` design, with sections for fallback chain, system prompt, memory access, activity, and kill switch.
 
 #### Scenario: Page structure post-fold-in
 - **WHEN** a user navigates to `/butlers/{name}`
 - **THEN** the page renders the existing tab archetype plus, on the "Configuration" or equivalently-named tab, sections in this order:
   - **§1 Identity & routing** — fallback chain (primary + ordered fallbacks; `+ add fallback` link), schedule, `$/day ceiling`, approvals policy, timeout, concurrency.
   - **§2 System prompt** — serif prompt body, mono caption (`tokens · NNN · last edit · <actor>`), links `history · N versions →` and `diff vs vN-1 →`.
-  - **§3 Tools & integrations** — table of `tool · description · scope · on` rows with toggles.
-  - **§4 Memory access** — three tiles for short / mid / long term, each with read/write badges.
-  - **§5 Activity** — 24h stripe-chart (sessions per hour).
-  - **§6 Kill switch** — `kill switch · 30s grace →` link.
+  - **§3 Memory access** — three tiles for short / mid / long term, each with read/write badges.
+  - **§4 Activity** — 24h stripe-chart (sessions per hour).
+  - **§5 Kill switch** — `kill switch · 30s grace →` link.
+- **AND** the page SHALL NOT present per-tool grants or toggles, because nothing enforces them; registered tools appear in the MCP tab and the Tool surface panel.
 
 #### Scenario: Kill switch with grace
 - **WHEN** a user clicks the kill switch link
@@ -849,18 +849,6 @@ The dashboard SHALL expose CRUD over a butler's system prompt with version histo
 #### Scenario: Prompt history list
 - **WHEN** `GET /api/butlers/{name}/prompt/history?limit=20` is called
 - **THEN** the response is `PaginatedResponse[PromptVersion]` ordered `version DESC`, defaulting to the most recent 20 versions.
-
-### Requirement: Tools & Scope API
-The dashboard SHALL expose per-butler tool grants and scopes.
-
-#### Scenario: Read tools
-- **WHEN** `GET /api/butlers/{name}/tools` is called
-- **THEN** the response is `ApiResponse[ButlerTool[]]` with `name`, `description`, `allowed: bool`, `scope: str | null`.
-
-#### Scenario: Update a tool grant
-- **WHEN** `PUT /api/butlers/{name}/tools/{tool} {allowed: bool, scope?: str}` is called
-- **THEN** the grant is updated atomically
-- **AND** `audit.append("butler.tool", target=f"{name}.{tool}", note=f"allowed={allowed}")` is invoked.
 
 ### Requirement: Memory Access Tiles API
 The dashboard SHALL expose per-butler memory tier access.
@@ -1261,6 +1249,6 @@ as an owner overlay, or modify roster/manifesto content.
   System sections, and every tab body.
 - `src/butlers/api/routers/butlers.py`, `butler_management.py`,
   `butler_logs.py`, and `sessions.py` (under `src/butlers/api/routers/`):
-  butler record, prompt and tool management, log, and session analytics
+  butler record, prompt management, log, and session analytics
   endpoints.
 - Reuses `audit.append()` from dashboard-audit-log on every dispatch mutation.

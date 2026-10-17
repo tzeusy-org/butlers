@@ -36,3 +36,9 @@ episode that must still be active, or a registered zero-LLM probe such as financ
 A candidate with no premise behaves as before. Probes live in
 `roster/switchboard/tools/insight/premises.py`; producers pass `premise=` to
 `propose_insight_candidate`.
+
+The origin of a candidate is never chosen by a session. Producers outside Switchboard
+(deterministic jobs and tools) call the Python function and pass their own fixed
+`origin_butler`. The Switchboard MCP tool has no `origin_butler` parameter: sessions get
+the registering daemon's origin, `switchboard`, and a butler-scoped (four-segment) dedup key
+must name it.

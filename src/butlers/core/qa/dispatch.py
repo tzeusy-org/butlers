@@ -62,12 +62,14 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.git_env import harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.healing.dispatch import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
+    PublicationLineageHeld,
     count_active_attempts,
     create_dispatch_event,
     create_or_join_attempt,
@@ -594,7 +596,7 @@ def build_git_auth_env(
     else:
         env.pop("GIT_ASKPASS", None)
         env.pop(_GIT_AUTH_TOKEN_ENV_VAR, None)
-    return env
+    return harden_git_env(env)
 
 
 _AUTH_ERROR_MARKERS: tuple[str, ...] = (
@@ -804,26 +806,35 @@ async def _resolve_pr_by_head(
     repo_root: Path,
     branch_name: str,
     env: dict[str, str],
+    *,
+    repo: str | None = None,
 ) -> tuple[str | None, int | None]:
     """Look up an open PR by head branch using ``gh pr list``.
 
     Returns ``(pr_url, pr_number)`` if exactly one open PR is found for the
-    given head branch, ``(None, None)`` otherwise.
+    given head branch, ``(None, None)`` otherwise.  *repo* (``owner/name``) is passed as
+    ``--repo`` and the command runs from a neutral cwd, so the agent-writable ``repo_root``
+    ``.git`` cannot steer the token-bearing lookup to another repository.  Without a repo
+    the lookup fails closed.
     """
     import json as _json
 
+    if not repo:
+        return None, None
     try:
         proc = await asyncio.create_subprocess_exec(
             "gh",
             "pr",
             "list",
+            "--repo",
+            repo,
             "--head",
             branch_name,
             "--state",
             "open",
             "--json",
             "number,url",
-            cwd=str(repo_root),
+            cwd=tempfile.gettempdir(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
@@ -1600,7 +1611,9 @@ async def _create_qa_pr(
             pr_url,
             attempt_id,
         )
-        fallback_url, fallback_number = await _resolve_pr_by_head(repo_root, branch_name, env)
+        fallback_url, fallback_number = await _resolve_pr_by_head(
+            repo_root, branch_name, env, repo=owner_repo
+        )
         if fallback_number is not None:
             pr_url = fallback_url or pr_url
             pr_number = fallback_number
@@ -2418,7 +2431,10 @@ async def check_open_pr_statuses(
     if not rows:
         return counts
 
-    env = build_sandbox_env(gh_token)
+    env = harden_git_env(build_sandbox_env(gh_token))
+    # gh addresses the PR by URL from a neutral cwd, so it never resolves the repository
+    # through the agent-writable shared .git of repo_root.
+    neutral_cwd = tempfile.gettempdir()
 
     for row in rows:
         attempt_id: uuid.UUID = row["id"]
@@ -2437,8 +2453,10 @@ async def check_open_pr_statuses(
             # polling when repair succeeds; transition to failed deterministically
             # when it does not.
             if pr_branch_name:
+                # Address the repository stored with the attempt, never the shared .git.
+                pr_repo = re.match(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/\d+", pr_url)
                 repaired_url, repaired_number = await _resolve_pr_by_head(
-                    repo_root, pr_branch_name, env
+                    repo_root, pr_branch_name, env, repo=pr_repo.group(1) if pr_repo else None
                 )
                 if repaired_number is not None:
                     logger.info(
@@ -2535,10 +2553,10 @@ async def check_open_pr_statuses(
                     "gh",
                     "pr",
                     "view",
-                    str(pr_number),
+                    pr_url or str(pr_number),
                     "--json",
                     json_fields,
-                    cwd=str(repo_root),
+                    cwd=neutral_cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
@@ -2949,10 +2967,11 @@ async def _dispatch_pr_review_followup(
         )
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build authenticated git env for all branch-prep subprocesses so that
-        # private HTTPS remotes don't reject fetch/worktree commands before the
-        # agent even runs.
-        git_prep_env = build_git_auth_env(gh_token)
+        # Branch-prep git runs in repo_root, whose shared .git an earlier agent may have
+        # written (hooks, config).  It therefore never holds the GitHub token: the env is
+        # token-free and hardened, so a private remote fails the fetch closed (publication
+        # is unavailable anyway) instead of exposing the token to agent-written config.
+        git_prep_env = build_git_auth_env(None)
 
         async def _run_git_here(*args: str) -> tuple[int, str]:
             proc = await asyncio.create_subprocess_exec(
@@ -2969,6 +2988,7 @@ async def _dispatch_pr_review_followup(
         # Materialize the exact remote-tracking ref that the worktree command
         # anchors below. A branch-only fetch can leave only FETCH_HEAD behind.
         remote_refspec = f"+refs/heads/{followup_branch}:refs/remotes/origin/{followup_branch}"
+        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
         fetch_rc, fetch_out = await _run_git_here("fetch", "origin", remote_refspec)
         if fetch_rc != 0:
             logger.warning(
@@ -3275,6 +3295,7 @@ async def _refresh_main_commit(repo_root: Path) -> str:
     """Fetch canonical main and return a verified immutable commit identity."""
     output = b""
     for args in (
+        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
         ("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
         ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
     ):
@@ -3286,6 +3307,8 @@ async def _refresh_main_commit(repo_root: Path) -> str:
                 cwd=str(repo_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                # Allowlisted env, no credentials: agent-writable config cannot run code here.
+                env=isolated_git_env(),
             )
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode != 0:
@@ -3473,17 +3496,32 @@ async def dispatch_qa_investigation(
         # Use a synthetic session_id since QA dispatch has no session_id.
         synthetic_session_id = uuid.uuid4()
 
-        attempt_id, is_new = await create_or_join_attempt(
-            pool=pool,
-            fingerprint=fp,
-            butler_name=finding.source_butler,
-            severity=finding.severity,
-            exception_type=finding.exception_type,
-            call_site=finding.call_site,
-            session_id=synthetic_session_id,
-            sanitized_msg=finding.event_summary,
-            qa_patrol_id=patrol_id,
-        )
+        try:
+            attempt_id, is_new = await create_or_join_attempt(
+                pool=pool,
+                fingerprint=fp,
+                butler_name=finding.source_butler,
+                severity=finding.severity,
+                exception_type=finding.exception_type,
+                call_site=finding.call_site,
+                session_id=synthetic_session_id,
+                sanitized_msg=finding.event_summary,
+                qa_patrol_id=patrol_id,
+                enforce_publication_hold=True,
+            )
+        except PublicationLineageHeld:
+            # An unresolved publication holds this lineage (REQ-qa-publication-
+            # authority-006): no attempt row exists, so nothing needs cleanup.
+            logger.warning("QA dispatch held: ambiguous publication for fingerprint=%s", fp[:12])
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "publication_held")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="qa", decision="publication_held"
+                )
+            return QaDispatchResult(accepted=False, fingerprint=fp, reason="publication_held")
 
         if not is_new:
             logger.debug("QA dispatch skipped: already investigating fingerprint=%s", fp[:12])

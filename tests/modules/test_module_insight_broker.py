@@ -202,3 +202,78 @@ class TestSwitchboardButlerToml:
         assert schedule.cron == "15,45 6-11 * * *"
         assert schedule.dispatch_mode == ScheduleDispatchMode.JOB
         assert schedule.job_name == "insight_delivery_cycle"
+
+
+# ---------------------------------------------------------------------------
+# Category 5: server-derived origin (bu-svqpzo.7)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE: dict[str, Any] = {
+    "priority": 60,
+    "category": "bill",
+    "dedup_key": "bill:hsbc:2026-10",
+    "message": "synthetic insight",
+    "expires_at": "2026-11-01T00:00:00Z",
+}
+
+
+class TestProposeInsightCandidateOrigin:
+    """A session cannot choose which butler an insight candidate claims to come from."""
+
+    @pytest.fixture
+    async def server(self, module):
+        from fastmcp import FastMCP
+
+        mcp = FastMCP("origin-test")
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock()
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            new=AsyncMock(return_value={"status": "accepted", "reason": "queued"}),
+        ) as propose:
+            await module.register_tools(mcp=mcp, config={}, db=fake_db, butler_name="switchboard")
+            yield mcp, propose
+
+    async def test_schema_has_no_origin_and_the_call_stamps_the_registering_butler(self, server):
+        mcp, propose = server
+        tool = await mcp.get_tool("propose_insight_candidate")
+        assert "origin_butler" not in tool.parameters["properties"]
+
+        result = await mcp.call_tool("propose_insight_candidate", _CANDIDATE)
+
+        assert result.structured_content["status"] == "accepted"
+        propose.assert_awaited_once()
+        assert propose.await_args.kwargs["origin_butler"] == "switchboard"
+
+    async def test_a_supplied_origin_never_reaches_the_shared_function(self, server):
+        mcp, propose = server
+        try:
+            await mcp.call_tool(
+                "propose_insight_candidate", {**_CANDIDATE, "origin_butler": "finance"}
+            )
+        except Exception:  # noqa: BLE001 - validation failure is an acceptable outcome
+            pass
+
+        origins = [call.kwargs["origin_butler"] for call in propose.await_args_list]
+        assert "finance" not in origins
+        assert set(origins) <= {"switchboard"}
+
+    async def test_foreign_butler_scoped_key_is_refused_and_cross_butler_key_is_accepted(
+        self, server
+    ):
+        mcp, propose = server
+
+        refused = await mcp.call_tool(
+            "propose_insight_candidate", {**_CANDIDATE, "dedup_key": "finance:bill:hsbc:2026-10"}
+        )
+        assert refused.structured_content["status"] == "error"
+        propose.assert_not_awaited()
+
+        own = await mcp.call_tool(
+            "propose_insight_candidate",
+            {**_CANDIDATE, "dedup_key": "switchboard:bill:hsbc:2026-10"},
+        )
+        cross = await mcp.call_tool("propose_insight_candidate", _CANDIDATE)
+        assert own.structured_content["status"] == "accepted"
+        assert cross.structured_content["status"] == "accepted"
+        assert propose.await_count == 2

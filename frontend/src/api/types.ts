@@ -8887,14 +8887,6 @@ export interface PromptUpdateRequest {
   prompt: string;
 }
 
-/** A tool grant entry for a butler. */
-export interface ButlerTool {
-  name: string;
-  description: string | null;
-  allowed: boolean;
-  scope: string | null;
-}
-
 /** Memory tier access metadata for a butler. */
 export interface MemoryAccess {
   read: ("short" | "mid" | "long")[];
