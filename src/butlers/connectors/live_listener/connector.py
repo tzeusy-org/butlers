@@ -538,10 +538,10 @@ class LiveListenerConnector:
 
         self._mic_states[mic].transcription_healthy = True
         logger.info(
-            "live-listener: transcription mic=%s confidence=%.2f text=%r",
+            "live-listener: transcription mic=%s confidence=%.2f chars=%d",
             mic,
             result.confidence,
-            result.text,
+            len(result.text),
         )
 
         # Computed once here (from the immutable speech segment) and reused by
@@ -686,9 +686,9 @@ class LiveListenerConnector:
         ll_metrics.observe_e2e_latency(e2e_elapsed)
 
         logger.debug(
-            "live-listener: submitted utterance mic=%s text=%r e2e=%.3fs",
+            "live-listener: submitted utterance mic=%s chars=%d e2e=%.3fs",
             mic,
-            result.text[:60],
+            len(result.text),
             e2e_elapsed,
         )
 
