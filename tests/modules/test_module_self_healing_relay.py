@@ -297,3 +297,15 @@ class TestWireRuntime:
         mod = SelfHealingModule()
         mod.wire_runtime(MagicMock(), "/repo")
         assert mod._switchboard_client is None
+
+
+async def test_concierge_declared_qa_scope_preserves_error_relay():
+    client, route_calls = _make_call_tool_mock()
+    mod = _make_module(switchboard_client=client)
+    mod._butler_name = "concierge"
+    result = await mod._handle_report_error(**_report_error_args())
+    assert result["accepted"] is True
+    assert len(route_calls) == 1
+    assert route_calls[0]["target_butler"] == "qa"
+    assert route_calls[0]["tool_name"] == "report_finding"
+    assert route_calls[0]["args"]["source_butler"] == "concierge"

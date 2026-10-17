@@ -92,3 +92,67 @@ def test_script_does_not_import_the_butlers_package() -> None:
     """The bridge image has asyncpg and this file, not ``butlers``."""
     source = (REPO_ROOT / "scripts" / "beads_decision_applier.py").read_text()
     assert "import butlers" not in source and "from butlers" not in source
+
+
+def _fake_bd_probe(tmp_path: Path, show_stdout: str, probe_stdout: str, probe_rc: int) -> Path:
+    script = tmp_path / "bd-probe"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"with open({str(tmp_path / 'calls')!r}, 'a') as calls:\n"
+        "    calls.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "print('Warning: host dolt.internal unreachable', file=sys.stderr)\n"
+        "if sys.argv[1] == 'show':\n"
+        f"    print({show_stdout!r})\n"
+        "    sys.exit(1)\n"
+        f"print({probe_stdout!r})\n"
+        f"sys.exit({probe_rc})\n"
+    )
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.parametrize("show_stdout", ["not json", '{"error": "broken bead"}'])
+def test_failed_show_with_healthy_probe_is_bead_unreadable(tmp_path: Path, show_stdout) -> None:
+    """REQ-owner-decision-desk-002: a healthy tracker isolates a failed show."""
+    summary = {"total_issues": 2, "open_issues": 1, "in_progress_issues": 0, "closed_issues": 1}
+    binary = _fake_bd_probe(tmp_path, show_stdout, json.dumps({"summary": summary}), 0)
+
+    with pytest.raises(applier_mod.BeadUnreadable) as error:
+        applier_mod.BdTracker(str(binary)).show("bu-x")
+
+    assert str(error.value) == ""
+    assert (tmp_path / "calls").read_text().splitlines() == [
+        "show bu-x --json",
+        "stats --json --no-activity",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("probe_stdout", "probe_rc"),
+    [
+        ("not json", 0),
+        ("{}", 0),
+        (
+            '{"summary":{"total_issues":true,"open_issues":0,"in_progress_issues":0,"closed_issues":0}}',
+            0,
+        ),
+        (
+            '{"summary":{"total_issues":1,"open_issues":1,"in_progress_issues":0,"closed_issues":0}}',
+            1,
+        ),
+    ],
+)
+def test_failed_show_requires_a_valid_successful_health_probe(
+    tmp_path: Path, probe_stdout, probe_rc
+) -> None:
+    binary = _fake_bd_probe(tmp_path, '{"error":"broken bead"}', probe_stdout, probe_rc)
+
+    with pytest.raises(applier_mod.TrackerUnavailable) as error:
+        applier_mod.BdTracker(str(binary)).show("bu-x")
+
+    assert str(error.value) == ""
+    assert (tmp_path / "calls").read_text().splitlines() == [
+        "show bu-x --json",
+        "stats --json --no-activity",
+    ]

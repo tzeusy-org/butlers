@@ -252,6 +252,18 @@ def scrub_json(
     return walk(value), found
 
 
+def scrub_evidence_json(value: Any, *, provider_domain: str = "unknown") -> Any:
+    """Scrub a JSON-like evidence value; returns ``value`` itself when nothing was withheld.
+
+    The value is JSON-normalized first (``default=str``) so non-native leaves are
+    scrubbed as the text they would be stored as.  Raises on detector failure so
+    the caller can skip the evidence write rather than store raw text.
+    """
+    normalized = json.loads(json.dumps(value, default=str))
+    scrubbed, hits = scrub_json(normalized, provider_domain=provider_domain)
+    return scrubbed if hits else value
+
+
 def scrub_stored_record(
     raw_payload: Mapping[str, Any], normalized_text: str
 ) -> tuple[dict[str, Any], str, list[BearerArtifact]]:
@@ -274,10 +286,16 @@ def scrub_stored_record(
         result["payload"], json_hits = scrub_json(
             raw_payload["payload"], provider_domain=domain, aggressive=aggressive
         )
+    content_hits: list[BearerArtifact] = []
+    # Legacy writers store the message text at the top level as ``content``.
+    if isinstance(raw_payload.get("content"), str):
+        result["content"], content_hits = scrub_text(
+            raw_payload["content"], provider_domain=domain, aggressive=aggressive
+        )
     new_text, text_hits = scrub_text(normalized_text, provider_domain=domain, aggressive=aggressive)
     # The payload subtree embeds normalized_text, so one artifact can hit in both;
     # count the text hits (or the raw-only hits) once.
-    return result, new_text, text_hits or json_hits
+    return result, new_text, text_hits or json_hits or content_hits
 
 
 def scrub_filtered_preview(

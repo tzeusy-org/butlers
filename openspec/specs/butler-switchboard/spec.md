@@ -19,6 +19,13 @@ The Switchboard SHALL maintain a registry of all agents (butlers and staffers) a
 - **THEN** the Switchboard SHALL route the request to the staffer as it does today
 - **AND** this routing path is not affected by the user-message classification exclusion
 
+#### Scenario: Runtime sessions cannot use the generic routing proxy
+- **WHEN** a runtime session calls the registered generic `route` MCP tool with a runtime session id bound by the existing request middleware (from the query locator or an admitted invocation header)
+- **THEN** the wrapper SHALL return `{"error": "route_refused_for_session", "retryable": false}` before contacting any target or applying caller-supplied stale/quarantine overrides
+- **AND** it SHALL log the refused session id at WARNING and declare the tool not LLM-presentable
+- **AND** daemon callers with no runtime session context SHALL retain existing routing behavior and stale/quarantine eligibility gates
+- **AND** Switchboard's direct in-process `route()` calls SHALL remain unchanged, including calls made within a session context
+
 #### Scenario: Staffer registration includes type
 - **WHEN** a staffer registers with the Switchboard at startup
 - **THEN** the registration payload SHALL include `type = "staffer"`
@@ -213,8 +220,8 @@ calling `route_to_butler`: Lane A (data statement/correction) or Lane B
 (bug/system report). Bug/system reports SHALL NEVER be routed to a domain
 butler. The remaining two lanes are Lane C (action request) and Lane D
 (question); Lane D SHALL be answered either via `answer_question` (a
-domain butler answers from its own tools, or the system-scope fallback
-dead-letters until Concierge system-scope tools exist) or via
+domain butler answers from its own tools, or a direct Switchboard MCP
+call reads an existing Concierge system-scope tool under RFC 0030) or via
 `cannot_answer` (dead-letters directly); neither Lane D tool SHALL ever
 route to a domain butler for an ordinary write, and `cannot_answer` SHALL
 NEVER file a QA bug report.
@@ -257,11 +264,20 @@ NEVER file a QA bug report.
 - **THEN** the tool SHALL fail closed with `reason="dashboard_context_required"`
 - **AND** it SHALL NOT route a butler, capture a dead letter, or create a conversation reply
 
+#### Scenario: Lane D — a system-scope question uses Concierge read tools
+
+- **WHEN** the classification session calls `answer_question(scope="system", question, system_tool, system_args)` selecting an existing `dashboard_read_*` tool
+- **THEN** Switchboard SHALL make a bounded, permission-checked MCP tool call to Concierge and return its source-attributed read evidence to that same classification session
+- **AND** it SHALL NOT dispatch `route.execute`, route a user message to Concierge, spawn a Concierge LLM session, or consult a domain butler
+- **AND** the classification session SHALL answer only from returned evidence, preserving estimates, unpriced usage, dates and limits
+- **AND** the pipeline SHALL persist the final answer with the returned `source.ref` and `source.as_of`, settle the dashboard turn without overriding Stop, and leave conversation-wide `routed_butler` unset
+
 #### Scenario: Lane D — a system-scope question falls back to the honest-decline dead-letter path
 
 - **WHEN** the classification session calls `answer_question(scope="system", question)` and no Concierge system-scope answering tool is available
 - **THEN** `answer_question` SHALL NOT route to any domain butler
 - **AND** it SHALL dead-letter the request with `failure_category="unanswerable"` and persist an in-thread `conversation_reply` naming what was checked, via the same shared path `cannot_answer` uses
+- **AND** a missing/invalid read selector or arguments, permission denial, timeout, or missing source attribution SHALL use this same honest-decline path
 
 #### Scenario: Lane D — cannot_answer dead-letters directly and never files a bug report or domain route
 

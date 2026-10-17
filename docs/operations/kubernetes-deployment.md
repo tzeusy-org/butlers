@@ -323,30 +323,75 @@ sessions against the same database.
 
 ## Security posture differences from compose
 
-- `dashboard-api` runs `privileged` (`dashboardApi.privileged`). Compose grants the dashboard's
-  Bubblewrap login sandbox an unmasked `/proc` plus a custom seccomp profile; Kubernetes can only
-  express that with user namespaces (`hostUsers: false` + `procMount: Unmasked` + a node-installed
-  `Localhost` seccomp profile). Setting `privileged: false` keeps AppArmor unconfined but breaks
-  dashboard-driven CLI login.
+### Accepted dashboard API posture
 
-  **Dropping `privileged` is not viable on the current node.** Probe run in `butlers-dev`
-  (2026-10-03; server v1.36.5+k3s1, node kernel 5.15.0-194-generic, containerd overlayfs
-  snapshotter; throwaway pod from the app image mounting a local-path PVC, a dummy Secret and an
-  emptyDir, running a Bubblewrap bootstrap with `--unshare-user/-pid/-ipc/-uts --as-pid-1 --tmpfs /
-  --proc /proc --dev /dev`; probe resources deleted afterwards):
+The owner accepted the existing k3s `dashboardApi.privileged: true` posture on
+2026-10-04 (`bu-hkjj9y`, option A). It retains dashboard-driven Bubblewrap CLI
+login. The [shared chart values](../../deploy/helm/butlers/values.yaml) already
+set this value to `true`; the dev and prod overlays inherit it, and the
+[dashboard API template](../../deploy/helm/butlers/templates/dashboard-api.yaml)
+applies it only to the `dashboard-api` application container. No chart value
+change is needed to record this decision.
 
-  | Variant | Result |
-  | --- | --- |
-  | `hostUsers:false` + `procMount: Unmasked` + seccomp `Localhost` + AppArmor Unconfined | Admitted (`--dry-run=server` ok), pod stuck `ContainerCreating` |
-  | Same, seccomp `Unconfined` (control separating profile from userns) | Same failure |
-  | `privileged: true` (control) | Bubblewrap bootstrap passes, PVC/Secret/emptyDir mounts usable |
+This is the accepted legacy dashboard login posture. It does not waive Compose's
+deployment constraints, change credential custody or approval authority, or
+relax the separate session-host and invocation-isolation requirements in
+[RFC 0038, D3](../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md#d3-session-sandbox).
+The goal-runtime cutover remains separate work.
 
-  Failure event (both userns variants, so the cause is user namespaces, not the seccomp profile):
-  `failed to create containerd container: snapshotter "overlayfs" doesn't support idmap mounts on
-  this host, configure slow_chown ...`. Pod user namespaces need idmapped-mount support in the
-  snapshotter, which needs a newer kernel (overlayfs idmap arrives around 6.3). The Localhost
-  seccomp profile was not exercised, so whether it is installed on the node is unknown and
-  owner-supplied. Revisit after a kernel upgrade; until then keep `privileged: true`. Alternatives
-  (a dedicated sandbox sidecar, or accepting `privileged`) are tracked as a follow-up.
-- The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet. It only ran
-  when the launcher had passwordless sudo.
+### Configured compensating controls and their limits
+
+The following controls are present in repository configuration. Their deployment
+and effectiveness have not been re-verified by recording this decision.
+
+| Control | Configured behavior | Limit |
+| --- | --- | --- |
+| Host ingress restriction | With `hostIngress.restrict: true` (the shared default), the [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
+| NodePort source preservation | The dashboard NodePort Service uses `externalTrafficPolicy: Local`, preserving client source IPs for the configured ingress/proxy checks. Tailscale Serve is the documented HTTPS entry point. | Source preservation and the intended proxy path do not prove the live firewall, Serve configuration, or protection of every node address. Network membership does not identify the owner. |
+| Dashboard owner authentication | The [dev overlay](../../deploy/helm/butlers/values.dev.yaml) enables the chart's canonical origin, RP ID and trusted-proxy configuration. The [owner-authentication boundary](../identity_and_secrets/dashboard-owner-auth.md) independently checks dashboard request authority. | The [prod overlay](../../deploy/helm/butlers/values.prod.yaml) has `dashboardAuth.enabled: false` and does not supply that browser configuration. Do not infer live enrollment, working proxy attribution, or prod passkey protection from the chart; optional API-key provisioning is separate. |
+| Declared mounts | The dashboard template declares its PVC and Secret mounts, with backups and the runtime-probe signing-key mount read-only. It declares no Docker socket or `hostPath` mount. | Read-only mounts and application authentication do not contain a privileged container compromise or protect the host from an escape. They do not replace the CLI sandbox's existing isolation and credential-handling requirements. |
+
+The accepted posture retains broad privilege in the dashboard API container.
+Ingress restriction, HTTPS and dashboard authentication reduce ordinary network
+exposure; they do not establish a host-security boundary for that container.
+The host remains trusted under the [security model](../../about/heart-and-soul/security.md#threat-boundaries).
+Neither this decision nor the historical compatibility probe proves current
+sandbox isolation, credential isolation, or node hardening.
+
+### Historical compatibility probe
+
+Dropping `privileged` failed on the node probed in `butlers-dev` on 2026-10-03.
+That dated evidence reported server v1.36.5+k3s1, kernel
+5.15.0-194-generic and the containerd overlayfs snapshotter. A throwaway pod from
+the app image mounted a local-path PVC, a dummy Secret and an emptyDir and ran
+a Bubblewrap bootstrap with `--unshare-user/-pid/-ipc/-uts --as-pid-1 --tmpfs /
+--proc /proc --dev /dev`. Probe resources were deleted afterwards.
+
+| Variant | Result |
+| --- | --- |
+| `hostUsers:false` + `procMount: Unmasked` + seccomp `Localhost` + AppArmor Unconfined | Admitted (`--dry-run=server` ok), pod stuck `ContainerCreating` |
+| Same, seccomp `Unconfined` (control separating profile from userns) | Same failure |
+| `privileged: true` (control) | Bubblewrap bootstrap passes, PVC/Secret/emptyDir mounts usable |
+
+Both userns variants reported the same failure event:
+`failed to create containerd container: snapshotter "overlayfs" doesn't support idmap mounts on
+this host, configure slow_chown ...`. This distinguished the observed
+user-namespace/idmapped-mount failure from the seccomp profile. The Localhost
+seccomp profile was not exercised; its presence on the node remains unknown
+from this probe. The historical follow-up identified a newer kernel (overlayfs
+idmap around 6.3) as a possible prerequisite, not proof that an upgrade would
+make the complete alternative work. These are dated probe facts, not a current
+node inventory.
+
+Option A is accepted. A dedicated sandbox sidecar or a userns mode was not
+selected by that decision. Any later posture change needs its own authorization
+and current compatibility evidence; this documentation update authorizes no
+re-probe, kernel change, provisioning or rollout.
+
+### Egress gap
+
+The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet.
+It only ran when the launcher had passwordless sudo. The host-ingress policy
+above does not supply that parity; the separate tracker-egress policy does not
+provide the general private-network allowlist either. Egress parity remains
+tracked in `bu-viat6h.6`.

@@ -1424,13 +1424,15 @@ CLOCK_GATED_CALLEES: frozenset[str] = frozenset(
 )
 
 # Precedence when more than one signal is active: dnd (owner's explicit hard
-# stop) wins, then meeting, sleeping, traveling in that order. This is a
+# stop) wins, then focused (the owner's explicit focus block, which the
+# calendar producer publishes instead of meeting), meeting, sleeping,
+# traveling in that order. This is a
 # broker-local extension of the dnd/sleeping-only suppression set in
 # butlers.core.attention_ledger — that shared set is also consumed by
 # decision digests, secrets-lifecycle notifications, and fleet-halt/model-
 # breaker escalations, none of which should start holding on meeting/
 # traveling just because the insight broker now does.
-_CONTEXT_SUPPRESSING_SIGNALS = ("dnd", "meeting", "sleeping", "traveling")
+_CONTEXT_SUPPRESSING_SIGNALS = ("dnd", "focused", "meeting", "sleeping", "traveling")
 
 # Max duration a given signal may hold routine insight delivery, independent
 # of the signal's own (much longer) context-bus TTL — e.g. ``traveling`` can
@@ -1441,6 +1443,7 @@ _CONTEXT_SUPPRESSING_SIGNALS = ("dnd", "meeting", "sleeping", "traveling")
 # signal, or quiet hours, may still apply).
 _CONTEXT_MAX_HOLD: dict[str, timedelta] = {
     "dnd": timedelta(hours=4),
+    "focused": timedelta(hours=4),
     "meeting": timedelta(hours=2),
     "sleeping": timedelta(hours=10),
     "traveling": timedelta(hours=6),
@@ -1521,7 +1524,7 @@ _DAILY_HOLD_FALLBACK_UTC_HOUR = 11
 
 def _daily_hold_fallback_reached(now: datetime) -> bool:
     """True once the hard fallback deadline for a held daily digest has
-    passed — past this point, dnd/meeting/sleeping/quiet_hours suppression
+    passed — past this point, dnd/focused/meeting/sleeping/quiet_hours suppression
     is bypassed so the digest is not silently skipped for the whole day.
 
     Deliberately NOT bypassed for ``traveling`` — see the ``daily_hold_mode``
@@ -1981,7 +1984,7 @@ async def delivery_cycle(
             fallback deadline below) — a home-life digest is not useful
             mid-trip, so a travel day skips/defers rather than eventually
             firing anyway;
-          - otherwise (dnd/meeting/sleeping/quiet_hours), suppression is
+          - otherwise (dnd/focused/meeting/sleeping/quiet_hours), suppression is
             bypassed once :func:`_daily_hold_fallback_reached` returns True
             for ``now`` — the hard fallback deadline — so a held digest is
             never silently skipped for the entire day just because the
@@ -2160,7 +2163,7 @@ async def delivery_cycle(
         elif daily_hold_mode and _suppression_signal == "traveling":
             # Slice 5 travel-day skip/defer: a routine home-life digest is
             # not useful mid-trip, so a travel day fully defers the digest —
-            # unlike dnd/meeting/sleeping/quiet_hours below, this is never
+            # unlike dnd/focused/meeting/sleeping/quiet_hours below, this is never
             # force-delivered by the hard fallback deadline. Each windowed
             # tick re-checks; once `traveling` clears (or its own slice-2
             # max-hold TTL lapses), a later tick the same day can still

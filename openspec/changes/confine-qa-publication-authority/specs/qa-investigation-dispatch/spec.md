@@ -46,6 +46,12 @@ Scope: v1-mandatory
 - **AND** that helper directory contains a local `AGENTS.md` override that disables unrelated repo-level workflow instructions such as `bd` usage, generic session-close rules, or self-managed PR/push steps
 - **AND** the helper directory exposes the repo roots needed for normal QA commands (`src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, `uv.lock`) so repo-relative validation commands still work unchanged
 
+#### Scenario: Publication unavailable without an isolated publisher
+- **WHEN** an investigation agent succeeds with commits, or a follow-up agent finishes on an open PR
+- **THEN** no `git push` and no `gh pr create` runs, and there is no fallback that restores token injection
+- **AND** the investigation transitions to `failed` with reason `publication_unavailable`; a follow-up records the same reason in `last_follow_up_error` and the PR is left unchanged
+- **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
+
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR
 - **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)

@@ -24,6 +24,22 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
+      "job": "inventory",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 35,
+      "retry_extra_s": 0,
+      "state": "provisional; extracted producer retains complete former guards35min envelope; named current calibration pending",
+      "sample_source": "bu-q1hzqn.1 extraction from guards; no independent inventory whole-job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 180,
+      "review_policy": "Retain the complete35min former producer job cap rather than infer a shorter collection/setup floor. Frozen editable repair and full UV recovery remain. No stable p95 or timing gain is established by this source move.",
+      "installed_timeout_minutes": 35
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
       "job": "guards",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
@@ -260,6 +276,26 @@
       "installed_timeout_minutes": 30
     },
     {
+      "workflow": ".github/workflows/nightly.yml",
+      "job": "quarantined",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 30,
+      "retry_extra_s": 0,
+      "state": "provisional; new job (bu-w4c1iw), no healthy p95 proof; bounded by 640 s UV setup envelope plus the three quarantined tests' 300 s item timeouts",
+      "sample_source": "none; hosted unit-lane test durations from run 38575001916 attempt 8 (242.9 s, 172.6 s, 168.2 s under xdist)",
+      "retained_original_candidate_minutes": 30,
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "review_conservative_before_only_candidate_minutes": null,
+      "review_setup_placement": "mirrors exact-image-sandbox setup plus the check-unit strace install",
+      "review_policy": "candidate only; remeasure after first healthy nightly runs",
+      "reviewed_job_name": "quarantined",
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "installed_timeout_minutes": 30
+    },
+    {
       "workflow": ".github/workflows/release.yml",
       "job": "release",
       "existing_timeout_minutes": null,
@@ -278,26 +314,6 @@
       "reviewed_job_name": "release",
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 30
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "coverage",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
-      "p95_s": null,
-      "candidate_timeout_minutes": 13,
-      "state": "provisional copiedold checkreport/setup envelope; currentcheck beforep9564; independentreport calibration afterM2; additional3minutes provisional frozen-dependency cold-setup reserve, not measured current p95",
-      "sample_source": "before10 oldcheck durations only; not newcoverageproof",
-      "retained_original_candidate_minutes": 5,
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "review_conservative_before_only_candidate_minutes": null,
-      "review_provisional_calculation": "ceil((2*old_check_report_job_p95_64+640)/60)=13; not observed new coverage job timing; extra cold setup revisited before install",
-      "review_setup_placement": "UV before lock and frozen sync before Python consumers; guards adds this setup in M1; coverage copies old check setup in M2",
-      "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
-      "reviewed_job_name": "coverage (new)",
-      "additional_provisional_cold_dependency_allowance_s": 180,
-      "installed_timeout_minutes": 16
     },
     {
       "workflow": ".github/workflows/migration-chain-main.yml",
@@ -415,6 +431,82 @@
       "installed_timeout_minutes": 60,
       "diagnostic_execution_bound_s": 1800,
       "review_policy": "Existing 25 watchdogs unchanged. New isolated job covers 640s UV installer + 640s frozen preparation + 1800s whole diagnostic + 520s checkout/cleanup/artifact reserve; actual healthy duration/calibration remains unknown."
+    },
+    {
+      "workflow": ".github/workflows/ci-coverage.yml",
+      "job": "coverage-inventory",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 35,
+      "retry_extra_s": 0,
+      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
+      "sample_source": ".github/workflows/ci.yml inventory complete watchdog; no independent owned coverage job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 180,
+      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
+      "installed_timeout_minutes": 35
+    },
+    {
+      "workflow": ".github/workflows/ci-coverage.yml",
+      "job": "coverage-shards",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 36,
+      "retry_extra_s": 0,
+      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
+      "sample_source": ".github/workflows/ci.yml check-integration complete watchdog; no independent owned coverage job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
+      "installed_timeout_minutes": 36,
+      "expanded_timeout_minutes": {
+        "unit": 28,
+        "integration": 36
+      }
+    },
+    {
+      "workflow": ".github/workflows/ci-coverage.yml",
+      "job": "coverage-preflight",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 27,
+      "retry_extra_s": 0,
+      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
+      "sample_source": ".github/workflows/ci.yml check-preflight complete watchdog; no independent owned coverage job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
+      "installed_timeout_minutes": 27
+    },
+    {
+      "workflow": ".github/workflows/ci-coverage.yml",
+      "job": "coverage-report",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 16,
+      "retry_extra_s": 0,
+      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
+      "sample_source": ".github/workflows/ci.yml coverage complete watchdog; no independent owned coverage job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 180,
+      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
+      "installed_timeout_minutes": 16
+    },
+    {
+      "workflow": ".github/workflows/ci-latency.yml",
+      "job": "observe",
+      "installed_timeout_minutes": 6,
+      "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
+      "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
+      "p95_s": null
     }
   ],
   "tests": [
@@ -758,6 +850,29 @@
       "reviewed_job_name": "check-integration-5",
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 36
+    }
+  ],
+  "retired_jobs": [
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "coverage",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 13,
+      "state": "provisional copiedold checkreport/setup envelope; currentcheck beforep9564; independentreport calibration afterM2; additional3minutes provisional frozen-dependency cold-setup reserve, not measured current p95",
+      "sample_source": "before10 oldcheck durations only; not newcoverageproof",
+      "retained_original_candidate_minutes": 5,
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "review_conservative_before_only_candidate_minutes": null,
+      "review_provisional_calculation": "ceil((2*old_check_report_job_p95_64+640)/60)=13; not observed new coverage job timing; extra cold setup revisited before install",
+      "review_setup_placement": "UV before lock and frozen sync before Python consumers; guards adds this setup in M1; coverage copies old check setup in M2",
+      "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
+      "reviewed_job_name": "coverage (new)",
+      "additional_provisional_cold_dependency_allowance_s": 180,
+      "installed_timeout_minutes": 16,
+      "retired_reason": "Reporting moved to ci-coverage.yml after authentic full covered PR assurance run 38672598762; original provisional bound/provenance retained, no current calibration claim."
     }
   ]
 }

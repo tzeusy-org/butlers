@@ -3258,34 +3258,25 @@ class CalendarModule(Module):
         self._response_ready = ready
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
-        metadata = {}
+        # Sensitivities only: presentation fields come from the central inventory,
+        # and a partial declaration fails the daemon's catalog check at startup.
+        metadata: dict[str, ToolMeta] = {}
         if self._butler_name in RESPONSE_FENCE_OWNERS:
             metadata["calendar_response_fence_status"] = ToolMeta(
-                canonical_name="calendar_response_fence_status",
-                module_name="calendar",
-                group_name="direct",
-                llm_presentable=False,
                 arg_sensitivities={"request": True},
             )
         if not self.canonical_approval_preparers():
             return metadata
-        metadata.update(
-            {
-                "calendar_respond": ToolMeta(
-                    canonical_name="calendar_respond",
-                    module_name="calendar",
-                    group_name="core",
-                    arg_sensitivities={
-                        "_write": True,
-                        "entry_id": True,
-                        "response_status": True,
-                        "request_id": True,
-                        "send_updates": True,
-                        "_command_id": True,
-                        "_command_digest": True,
-                    },
-                )
-            }
+        metadata["calendar_respond"] = ToolMeta(
+            arg_sensitivities={
+                "_write": True,
+                "entry_id": True,
+                "response_status": True,
+                "request_id": True,
+                "send_updates": True,
+                "_command_id": True,
+                "_command_digest": True,
+            },
         )
         return metadata
 
@@ -9470,11 +9461,13 @@ class CalendarModule(Module):
         update, or delete calendar events. A cell flipped to granted=false blocks
         the write outright via :class:`PermissionDenied` (an authorization
         decision). Mirrors the spawn gate: consult the matrix at the decision
-        point, before any provider write. require_permission fails open, so a DB
-        error never wedges calendar writes.
+        point, before any provider write. Unavailable permission state refuses before
+        any calendar write.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
-        await require_permission(pool, self._butler_name, CALENDAR_WRITE_PERMISSION)
+        await require_permission(
+            pool, self._butler_name, CALENDAR_WRITE_PERMISSION, fail_closed=True
+        )
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:
@@ -9708,8 +9701,7 @@ class CalendarModule(Module):
         calendar tools, so it must consult the matrix itself. Reuses the same
         :meth:`_require_calendar_write_permission` helper the MCP tools use, so a
         butler with ``calendar.write`` revoked cannot create events via this
-        sibling path. require_permission fails open, so a DB error never wedges
-        calendar writes.
+        sibling path. Unavailable permission state refuses before calendar writes.
         """
         if self._provider is None:
             return

@@ -353,7 +353,10 @@ function NavGroup({
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className={`absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
+              className={
+                // eslint-disable-next-line no-restricted-syntax -- Named Sidebar chevron: 120ms linear rotation.
+                `absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`
+              }
               aria-hidden="true"
             >
               <path d="m9 18 6-6-6-6" />
@@ -895,7 +898,10 @@ function MobileNavGroup({
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`shrink-0 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
+          className={
+            // eslint-disable-next-line no-restricted-syntax -- Named Sidebar chevron: 120ms linear rotation.
+            `shrink-0 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`
+          }
           aria-hidden="true"
         >
           <path d="m9 18 6-6-6-6" />

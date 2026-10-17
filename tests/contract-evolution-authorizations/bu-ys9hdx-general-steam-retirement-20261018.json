@@ -1,0 +1,30 @@
+{
+  "schema": "governing-retirement-authorization/v1",
+  "id": "bu-ys9hdx-general-steam-retirement-20261018",
+  "bead": "bu-ys9hdx.7",
+  "authority": "Owner decision 2026-10-14 (run-18, epic bu-ys9hdx): General Steam removed, Lifestyle is the sole Steam butler. Implementation PR #4514 (head 79e8a0bb4f1ec68e82b3e3bde4aa04eb2f0dc6a5). Provenance text grants no admission; only these exact trusted manifest bytes and the bound hashes do.",
+  "retired": [
+    {
+      "owner": "roster/lifestyle/tests/test_lifestyle_steam_integration.py::TestButlerTomlSteamConfig::test_general_butler_toml_has_steam_module",
+      "base_sha256": "59251ac9123c2c32c8dce6b5859c068f3956fc6702882854a1b37376d087d2d1",
+      "reason": "General no longer loads the Steam module; Lifestyle is the sole Steam butler (owner decision 2026-10-14, epic bu-ys9hdx)."
+    },
+    {
+      "owner": "roster/lifestyle/tests/test_lifestyle_steam_integration.py::TestButlerTomlSteamConfig::test_general_steam_config_is_empty_dict",
+      "base_sha256": "a093fb9594f3bbb2aae3d914cbe5999351788b26a3ed741181f273b36c5e23fc",
+      "reason": "General no longer loads the Steam module; Lifestyle is the sole Steam butler (owner decision 2026-10-14, epic bu-ys9hdx)."
+    }
+  ],
+  "requirements": [
+    {
+      "path": "openspec/specs/butler-general/spec.md",
+      "requirement": "General Butler Identity and Runtime",
+      "before_sha256": "e22758835ec4fb6b4469f8801db48d2f282596fe7938af165fbc2677537962f5",
+      "after_sha256": "db8f4530208dce2d6bbef002a54590ecec453a3a7ce75fcb626fe80d4d82ef28"
+    }
+  ],
+  "replacements": [
+    "roster/lifestyle/tests/test_lifestyle_steam_integration.py::TestButlerTomlSteamConfig::test_general_butler_toml_excludes_steam_module",
+    "roster/lifestyle/tests/test_lifestyle_steam_integration.py::TestButlerTomlSteamConfig::test_lifestyle_is_the_only_roster_that_loads_steam"
+  ]
+}

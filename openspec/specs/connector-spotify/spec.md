@@ -70,6 +70,13 @@ The connector SHALL emit one context-start event per listening context when play
 - **WHEN** active playback continues past `SPOTIFY_DIGEST_INTERVAL_S` (default 3600)
 - **THEN** the connector SHALL emit a `spotify.listening_digest` event (`external_event_id = "spotify:digest:<digest_start_ms>"`) summarizing the tracks accumulated since the context start or previous digest
 
+#### Scenario: No digest without new tracks
+
+- **WHEN** the digest interval has elapsed but no new track has started since the previous digest (one long track is still playing)
+- **THEN** the connector SHALL NOT emit a `spotify.listening_digest` event
+- **AND** the next digest SHALL become due as soon as a new track starts, reporting only the tracks started since the previous digest
+- **AND** a session's first digest SHALL include the track that started the session
+
 #### Scenario: Repeated poll with same track
 
 - **WHEN** consecutive polls return the same track ID

@@ -131,6 +131,9 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
         }
     )
 
+    assert by_name["route"].module_name == "switchboard"
+    assert by_name["route"].llm_presentable is False
+
 
 async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
     daemon = ButlerDaemon(

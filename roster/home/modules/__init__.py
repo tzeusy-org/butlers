@@ -44,9 +44,11 @@ from butlers.modules.approvals.execution_context import get_approval_execution_c
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 from .actuation import (
+    DATA_TARGET_SELECTORS,
     ActuationRisk,
-    classify_actuation,
+    effective_actuation_risk,
     rollback_hint,
+    snapshot_actuation_arguments,
     target_entity_ids,
     verify_post_condition,
 )
@@ -531,6 +533,10 @@ class HomeAssistantModule(Module):
                 Optional target specification (entity_id, area_id, device_id).
             data:
                 Optional service-specific data payload.
+
+            Automatic reversible calls require explicit same-domain entities
+            and allowlisted typed data. Bulk, unknown-data and unknown-unit
+            calls park for exact owner approval; data cannot override target.
             """
             return await module._call_service(
                 domain=domain, service=service, target=target, data=data
@@ -1716,6 +1722,9 @@ class HomeAssistantModule(Module):
                 "alphanumeric characters and underscores."
             )
 
+        # Bind the same detached JSON command through classification, approval,
+        # persistence and transport before the first suspension point.
+        target, data = snapshot_actuation_arguments(target, data)
         client = self._get_client()
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -1723,15 +1732,13 @@ class HomeAssistantModule(Module):
                 "Home Assistant actuation refused: durable receipt storage is unavailable"
             )
 
-        payload: dict[str, Any] = {}
-        # Merge data first so that the explicit target argument always wins if
-        # data happens to also carry a "target" key.
-        if data is not None:
-            payload.update(data)
-        if target is not None:
-            payload["target"] = target
-
-        risk = classify_actuation(domain, service)
+        units = {
+            entity_id: self._entity_cache[entity_id].attributes.get("temperature_unit")
+            for entity_id in target_entity_ids(target)
+            if entity_id in self._entity_cache
+        }
+        effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
+        risk = effective.risk
         approval_context = get_approval_execution_context(
             tool_name="ha_call_service",
             tool_args={"domain": domain, "service": service, "target": target, "data": data},
@@ -1751,6 +1758,7 @@ class HomeAssistantModule(Module):
                 data=data,
                 risk=risk,
                 session_id=session_id,
+                why=effective.approval_reason,
             )
             return {
                 "status": "pending_approval",
@@ -1758,6 +1766,14 @@ class HomeAssistantModule(Module):
                 "risk": risk.value,
                 "message": f"{domain}.{service} requires explicit owner approval",
             }
+
+        # Approval permits the exact command; it does not choose precedence
+        # between two target sources or authorize silently dropping either one.
+        if target is not None and DATA_TARGET_SELECTORS.intersection(data or {}):
+            raise ValueError("Home Assistant actuation refused: ambiguous target sources")
+        payload: dict[str, Any] = dict(data) if data is not None else {}
+        if target is not None:
+            payload["target"] = target
 
         if approval_context is not None:
             prior_effect_possible = await pool.fetchrow(
@@ -2057,6 +2073,7 @@ class HomeAssistantModule(Module):
         data: dict[str, Any] | None,
         risk: ActuationRisk,
         session_id: uuid.UUID | None,
+        why: str | None = None,
     ) -> uuid.UUID:
         """Park a consequential call through the approvals module's sole choke point."""
         if not approvals_hooks.is_approval_parking_available(pool):
@@ -2064,12 +2081,7 @@ class HomeAssistantModule(Module):
 
         action_id = uuid.uuid4()
         now = datetime.now(UTC)
-        tool_args = json.loads(
-            json.dumps(
-                {"domain": domain, "service": service, "target": target, "data": data},
-                default=str,
-            )
-        )
+        tool_args = {"domain": domain, "service": service, "target": target, "data": data}
         await approvals_hooks.park_pending_action(
             pool,
             action_id=action_id,
@@ -2079,7 +2091,7 @@ class HomeAssistantModule(Module):
             requested_at=now,
             expires_at=now + timedelta(hours=24),
             session_id=session_id,
-            why=f"{domain}.{service} crosses the physical-world {risk.value} boundary",
+            why=why or f"{domain}.{service} crosses the physical-world {risk.value} boundary",
             evidence=[],
             blast_radius="self",
             reversibility="irreversible" if risk is ActuationRisk.PROTECTED else "compensable",

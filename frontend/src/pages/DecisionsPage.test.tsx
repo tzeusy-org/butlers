@@ -338,6 +338,14 @@ describe("DecisionsPage -- recorded intent state (bu-ckkpz.3)", () => {
     }
   });
 
+  it("shows superseded history without mutation controls", () => {
+    const html = renderWithIntent(intent({ status: "superseded" }));
+    expect(html).toContain('data-status="superseded"');
+    expect(html).toContain("Previous choice superseded after reopening: Keep paused.");
+    expect(html).not.toContain("Awaiting application");
+    expect(html).not.toMatch(/<button[^>]*>[^<]*(Choose|Apply|Retry|Approve|Close)/);
+  });
+
   it("names unreadable intent state instead of implying no choice was recorded", () => {
     mockDecisions([decision({ id: "bu-choice" })], {
       decisions_available: true,

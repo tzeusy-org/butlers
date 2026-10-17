@@ -13,10 +13,14 @@ raises ``UndefinedTableError``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -139,6 +143,212 @@ class _HaClient:
                 "last_updated": "2026-09-03T00:00:00Z",
             }
         )
+
+
+class _RecordingHaClient(_HaClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bodies: list[tuple[str, object]] = []
+        self.get_paths: list[str] = []
+
+    async def post(self, path: str, *, json: object) -> _Response:
+        self.bodies.append((path, deepcopy(json)))
+        return await super().post(path, json=json)
+
+    async def get(self, path: str) -> _Response:
+        self.get_paths.append(path)
+        return await super().get(path)
+
+
+@pytest.fixture
+async def registered_home_actuation(home_pool):
+    """Real migrated storage/executor, registered original tool, scripted HA only."""
+    db = _Db(home_pool)
+    approvals = ApprovalsModule()
+    await approvals.on_startup({}, db)
+    home = HomeAssistantModule()
+    tools = {}
+    mcp = MagicMock()
+    mcp.tool.side_effect = lambda *a, **kw: lambda fn: tools.setdefault(fn.__name__, fn)
+    await home.register_tools(mcp, {}, db, "home")
+    client = _RecordingHaClient()
+    home._client = client
+
+    async def execute(tool_name, args):
+        assert tool_name == "ha_call_service"
+        return await tools[tool_name](**args)
+
+    approvals.set_tool_executor(execute)
+    try:
+        yield SimpleNamespace(
+            home=home, approvals=approvals, client=client, tool=tools["ha_call_service"]
+        )
+    finally:
+        await approvals.on_shutdown()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [{"area_id": "fixture_area"}, {"device_id": "fixture_device"}, {"entity_id": "all"}],
+    ids=["switch_area", "switch_device", "switch_all"],
+)
+@pytest.mark.asyncio(loop_scope="session")
+async def test_promoted_bulk_approved_replay_has_one_physical_attempt(
+    home_pool, registered_home_actuation, target
+):
+    case = registered_home_actuation
+    args = {"domain": "switch", "service": "turn_off", "target": target, "data": None}
+    session_id = uuid.uuid4()
+    token = set_current_runtime_session_id(str(session_id))
+    try:
+        parked = await case.tool(**args)
+    finally:
+        reset_current_runtime_session_id(token)
+    action_id = uuid.UUID(parked["action_id"])
+    pending = await home_pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action_id)
+    assert pending["tool_args"] == args
+    assert pending["session_id"] == session_id
+    assert "target_not_explicit_entities" in pending["why"]
+    assert case.client.post_calls == 0
+    assert case.client.get_paths == []
+
+    approved = await case.approvals._approve_action(
+        str(action_id), actor={"type": "human", "id": "owner", "authenticated": True}
+    )
+    assert approved["status"] == "approved"  # No guessed readback of a bulk scope.
+    assert case.client.bodies == [("/api/services/switch/turn_off", {"target": target})]
+    assert case.client.get_paths == []
+    receipt = await home_pool.fetchrow(
+        "SELECT * FROM ha_command_log WHERE approval_id = $1", action_id
+    )
+    assert receipt["status"] == "unverified"
+    assert receipt["risk"] == "consequential"
+    assert receipt["actor"] == "human:owner"
+    assert receipt["session_id"] == session_id
+    assert receipt["requested_state"] == args
+    assert receipt["observed_state"] == {}
+    assert get_approval_execution_context() is None
+    await case.approvals._dispatch_approved_action_by_id(str(action_id))
+    assert case.client.post_calls == 1
+    assert (
+        await home_pool.fetchval(
+            "SELECT count(*) FROM ha_command_log WHERE approval_id = $1", action_id
+        )
+        == 1
+    )
+    event_rows = await home_pool.fetch(
+        "SELECT payload FROM public.domain_events WHERE event_type = 'home.actuation_executed'"
+    )
+    # The shared publisher/codec can return serialized JSON, as in the existing
+    # protected-call test. Decode before matching this exact attempt, never latest.
+    event_payloads = [
+        json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        for row in event_rows
+    ]
+    matching_events = [
+        payload
+        for payload in event_payloads
+        if isinstance(payload, dict) and payload.get("attempt_id") == str(receipt["attempt_id"])
+    ]
+    assert len(matching_events) == 1
+    assert matching_events[0] == {
+        "attempt_id": str(receipt["attempt_id"]),
+        "domain": "switch",
+        "service": "turn_off",
+        "risk": "consequential",
+        "status": "unverified",
+        "attention_required": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("domain", "service", "target", "data", "reason"),
+    [
+        ("light", "turn_off", None, {"entity_id": "all"}, "data_target_selector"),
+        (
+            "light",
+            "turn_on",
+            {"entity_id": "light.fixture"},
+            {"unlisted_setting": 1},
+            "unlisted_data_key",
+        ),
+        (
+            "climate",
+            "set_temperature",
+            {"entity_id": "climate.fixture"},
+            {"temperature": 35},
+            "temperature_type_or_comfort_bounds",
+        ),
+    ],
+    ids=["data_entity_all", "unknown_key", "climate_35_C"],
+)
+@pytest.mark.asyncio(loop_scope="session")
+async def test_promoted_action_reason_and_exact_args_roundtrip(
+    home_pool, registered_home_actuation, domain, service, target, data, reason
+):
+    from butlers.modules._roster_home import CachedEntity
+
+    case = registered_home_actuation
+    case.home._entity_cache["climate.fixture"] = CachedEntity(
+        entity_id="climate.fixture", state="heat", attributes={"temperature_unit": "°C"}
+    )
+    args = {"domain": domain, "service": service, "target": target, "data": data}
+    parked = await case.tool(**args)
+    assert parked["status"] == "pending_approval"
+    action_id = uuid.UUID(parked["action_id"])
+    # A separate acquisition reads the actual committed JSONB, not a mock's kwargs.
+    async with home_pool.acquire() as connection:
+        pending = await connection.fetchrow(
+            "SELECT tool_args, why FROM pending_actions WHERE id = $1", action_id
+        )
+    assert pending["tool_args"] == args
+    assert reason in pending["why"]
+    assert case.client.bodies == []
+    assert case.client.get_paths == []
+    assert (
+        await home_pool.fetchval(
+            "SELECT count(*) FROM ha_command_log WHERE approval_id = $1", action_id
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_promoted_approval_dispatch_sends_once(
+    home_pool, registered_home_actuation
+):
+    case = registered_home_actuation
+    args = {
+        "domain": "switch",
+        "service": "turn_off",
+        "target": {"area_id": "fixture_area"},
+        "data": None,
+    }
+    parked = await case.tool(**args)
+    action_id = uuid.UUID(parked["action_id"])
+    await home_pool.execute(
+        "UPDATE pending_actions SET status = 'approved', decided_by = 'human:owner' WHERE id = $1",
+        action_id,
+    )
+    results = await asyncio.gather(
+        case.approvals._dispatch_approved_action_by_id(str(action_id)),
+        case.approvals._dispatch_approved_action_by_id(str(action_id)),
+    )
+    assert len(results) == 2
+    assert case.client.bodies == [
+        ("/api/services/switch/turn_off", {"target": {"area_id": "fixture_area"}})
+    ]
+    assert case.client.get_paths == []
+    assert (
+        await home_pool.fetchval(
+            "SELECT count(*) FROM ha_command_log WHERE approval_id = $1", action_id
+        )
+        == 1
+    )
+    assert (
+        await home_pool.fetchval("SELECT tool_args FROM pending_actions WHERE id = $1", action_id)
+        == args
+    )
 
 
 async def _seed_item(

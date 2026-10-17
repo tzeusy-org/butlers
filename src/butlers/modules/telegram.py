@@ -24,7 +24,7 @@ from butlers.core.channel_reactions import (
     REACTION_IN_PROGRESS,
     REACTION_SUCCESS,
 )
-from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
+from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
 from butlers.modules.base import Module
 from butlers.telegram_api import (
     TelegramReplyMarkupValidationError,
@@ -69,6 +69,8 @@ def _telegram_send_failure_category(exc: BaseException) -> str:
         return "telegram_provider_response_invalid"
     if isinstance(exc, TelegramReplyMarkupValidationError):
         return "telegram_reply_markup_invalid"
+    if isinstance(exc, PermissionUnavailable):
+        return "telegram_permission_unavailable"
     if type(exc).__name__ == "PermissionDenied":
         return "telegram_permission_denied"
     return "telegram_internal_error"
@@ -430,14 +432,16 @@ class TelegramModule(Module):
         Reuses the same ``notify`` capability the notify() gate enforces rather
         than introducing a parallel ``telegram.send`` key (no migration needed).
         Mirrors the spawn gate: consult the matrix at the decision point before
-        any Telegram traffic. require_permission fails open, so a DB error never
-        wedges delivery.
+        any Telegram traffic. Unavailable permission state raises a transient error
+        before delivery.
         """
         audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
         response_status: int | None = None
         try:
             validated_reply_markup = validate_telegram_reply_markup(reply_markup)
-            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            await require_permission(
+                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+            )
             url = f"{self._base_url()}/sendMessage"
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
@@ -471,6 +475,11 @@ class TelegramModule(Module):
                 )
         except Exception as exc:
             failure_category = _telegram_send_failure_category(exc)
+            if isinstance(exc, PermissionUnavailable):
+                logger.error("Telegram sendMessage blocked: category=%s", failure_category)
+                # The guard already logged this refusal. An audit retry through the
+                # unavailable pool could expose the raw DB traceback in its fallback log.
+                raise
             logger.error(
                 "Telegram sendMessage failed: category=%s status=%s chat_id=%r",
                 failure_category,
@@ -513,7 +522,9 @@ class TelegramModule(Module):
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        await require_permission(
+            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+        )
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
@@ -536,7 +547,9 @@ class TelegramModule(Module):
 
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        await require_permission(
+            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+        )
         return await remove_telegram_inline_keyboard(
             self._get_client(),
             self._base_url(),

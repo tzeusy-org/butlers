@@ -564,8 +564,53 @@
               "command_flags",
               "measurement_root",
               "artifact",
-              "coverage_artifact"
-            ]
+              "coverage_artifact",
+              "runtime_environment",
+              "runtime_directory"
+            ],
+            "properties": {
+              "runtime_environment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "TMPDIR",
+                  "PYTEST_DEBUG_TEMPROOT",
+                  "tempfile_root"
+                ],
+                "properties": {
+                  "TMPDIR": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "PYTEST_DEBUG_TEMPROOT": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tempfile_root": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "runtime_directory": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "device",
+                  "inode"
+                ],
+                "properties": {
+                  "device": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "inode": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
           }
         }
       }

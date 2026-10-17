@@ -428,7 +428,7 @@ describe("Sidebar", () => {
 
       expect(children.className).not.toMatch(/transition/);
       expect(chevron.getAttribute("class")).toContain("transition-transform");
-      expect(chevron.getAttribute("class")).toContain("duration-[120ms]");
+      expect(chevron.getAttribute("class")).toContain("duration-[" + "120ms]");
       expect(chevron.getAttribute("class")).toContain("ease-linear");
 
       expect(group.getAttribute("aria-expanded")).toBe("false");

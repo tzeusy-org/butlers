@@ -190,6 +190,15 @@ _EXPECTED_DASHBOARD_READ_TOOLS = {
 }
 
 
+async def test_concierge_outbound_scope_preserves_only_qa_error_relay():
+    from butlers.config import ButlerType, load_config
+
+    config = load_config(_REPO_ROOT / "roster" / "concierge")
+    assert config.type is ButlerType.STAFFER
+    assert config.permissions.cross_butler_access == ["qa"]
+    assert set(config.modules) == {"dashboard_read", "self_healing"}
+
+
 class TestRosterIntegration:
     async def test_registers_complete_dashboard_read_surface_with_source_envelopes(
         self, fleet_db_url, admin_pool, concierge_db
