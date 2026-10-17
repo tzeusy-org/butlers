@@ -299,6 +299,78 @@ class TestApprovalRulesArgConstraintsRoundtrip:
 class TestExecutionResultRoundtrip:
     """Every execution_result writer must store a native dict, not a string."""
 
+    async def test_calendar_same_action_concurrent_dispatch_uses_database_row_lock(
+        self, approvals_full_pool, monkeypatch
+    ) -> None:
+        from butlers.modules.calendar_approval import calendar_approval_args
+
+        tool_name = "calendar_toggle_butler_event"
+        args = calendar_approval_args(tool_name, event_id="event", enabled=False)
+        action_id = await _insert_pending_action(
+            approvals_full_pool, tool_name=tool_name, tool_args=args
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        # Distinct local locks model separate owning executor processes. Only
+        # the real PostgreSQL row lock may serialize these dispatches.
+        async def independent_process_lock(_action_id):
+            return asyncio.Lock()
+
+        monkeypatch.setattr(executor_mod, "_get_execution_lock", independent_process_lock)
+
+        async def handler(**kwargs):
+            assert get_approval_execution_context(tool_name=tool_name, tool_args=kwargs) is not None
+            calls.append(kwargs)
+            started.set()
+            await release.wait()
+            return {"status": "updated"}
+
+        tasks = []
+        try:
+            tasks.append(
+                asyncio.create_task(
+                    executor_mod.execute_approved_action(
+                        approvals_full_pool,
+                        action_id,
+                        tool_name,
+                        args,
+                        handler,
+                    )
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=5)
+            tasks.append(
+                asyncio.create_task(
+                    executor_mod.execute_approved_action(
+                        approvals_full_pool,
+                        action_id,
+                        tool_name,
+                        args,
+                        handler,
+                    )
+                )
+            )
+            async with asyncio.timeout(5):
+                while not await approvals_full_pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    "WHERE datname=current_database() AND wait_event_type='Lock' "
+                    "AND wait_event='transactionid' "
+                    "AND query LIKE '%FROM pending_actions WHERE id = $1 FOR UPDATE%')"
+                ):
+                    await asyncio.sleep(0.01)
+            assert not tasks[1].done() and len(calls) == 1
+            release.set()
+            outcomes = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            assert outcomes[0].success and outcomes[0].to_dict() == outcomes[1].to_dict()
+            assert len(calls) == 1
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def test_executor_execute_approved_action_roundtrips_as_dict(
         self, approvals_full_pool
     ) -> None:

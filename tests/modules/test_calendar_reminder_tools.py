@@ -9,6 +9,7 @@ unit-level (no live DB required).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -16,7 +17,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.modules.approvals.execution_context import (
+    ApprovalExecutionContext,
+    approval_tool_args_digest,
+    reset_approval_execution_context,
+    set_approval_execution_context,
+)
 from butlers.modules.calendar import SOURCE_KIND_INTERNAL_REMINDERS, CalendarModule
+from butlers.modules.calendar_approval import calendar_approval_args
 
 pytestmark = pytest.mark.unit
 
@@ -480,16 +488,35 @@ class TestCreateButlerReminder:
             source_hint="butler_reminder",
             entity_ids=[entity_id],
         )
-        toggled = await mcp.tools["calendar_toggle_butler_event"](
+
+        async def approved_call(tool_name, **args):
+            token = set_approval_execution_context(
+                ApprovalExecutionContext(
+                    action_id=uuid.uuid4(),
+                    session_id=None,
+                    actor="owner",
+                    tool_name=tool_name,
+                    tool_args_digest=approval_tool_args_digest(
+                        calendar_approval_args(tool_name, **args)
+                    ),
+                    authorized_task=asyncio.current_task(),
+                )
+            )
+            try:
+                return await mcp.tools[tool_name](**args)
+            finally:
+                reset_approval_execution_context(token)
+
+        toggled = await approved_call(
+            "calendar_toggle_butler_event",
             event_id=created["event_id"],
             enabled=False,
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
-        deleted = await mcp.tools["calendar_delete_butler_event"](
+        deleted = await approved_call(
+            "calendar_delete_butler_event",
             event_id=created["event_id"],
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
 
         assert updated["status"] == "updated"

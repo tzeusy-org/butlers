@@ -180,8 +180,13 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
   `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
-  delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
-  `calendar_toggle_butler_event(..., _approval_bypass=True)` (`src/butlers/modules/calendar.py`).
+  delete/toggle resume only under the approvals executor's task-bound context for the exact
+  tool and canonical public argument digest. Session arguments cannot assert approval.
+- The eight approval-aware calendar mutation tools share one canonical argument builder with
+  the executor. Newly parked calls include every public parameter and its defaults; ISO
+  datetime values round-trip through JSON and are restored before mutation logic. A matching
+  executor context resumes a pending workspace mutation without parking it again. Thresholds,
+  ordinary request-id idempotency and provider recurrence semantics remain unchanged.
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single
   `calendar_force_sync(queue=true)`, answering `202`. The module persists and serialises the command
