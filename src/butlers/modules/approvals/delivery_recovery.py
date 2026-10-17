@@ -346,7 +346,11 @@ class ApprovalDeliveryRepository:
         )
         if row is not None:
             tool_args = _as_tool_args(row["tool_args"])
-            self._rendered_digests[_claim_key(claim)] = args_digest(tool_args)
+            if claim.presentation_mode == "single":
+                # One entry per presentation: a re-claim supersedes any abandoned render.
+                for stale in [k for k in self._rendered_digests if k[0] == claim.presentation_id]:
+                    del self._rendered_digests[stale]
+                self._rendered_digests[_claim_key(claim)] = args_digest(tool_args)
             return DirectRenderSubject(
                 action={
                     "tool_args": tool_args,
@@ -393,6 +397,8 @@ class ApprovalDeliveryRepository:
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""
         self._validate_reason(reason_code)
+        # A retried claim re-renders under a new fence; its old digest is stale.
+        self._rendered_digests.pop(_claim_key(claim), None)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 current = await connection.fetchrow(
@@ -451,38 +457,58 @@ class ApprovalDeliveryRepository:
                 if not eligible:
                     return False
                 rendered_digest = self._rendered_digests.pop(_claim_key(claim), None)
-                if rendered_digest is not None:
-                    # The action row is locked: the stored call can no longer change
-                    # between this check and the digest write below.
-                    current_args = await connection.fetchval(
-                        """
-                        SELECT pa.tool_args
-                          FROM approval_delivery_presentations AS p
-                          JOIN approval_delivery_intents AS i ON i.id = p.intent_id
-                          JOIN pending_actions AS pa ON pa.id = i.action_id
-                         WHERE p.id = $1
-                        """,
-                        claim.presentation_id,
-                    )
-                    if args_digest(_as_tool_args(current_args)) != rendered_digest:
-                        return False
-                row = await connection.fetchrow(
+                current_args = await connection.fetchval(
                     """
+                    SELECT pa.tool_args
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1
+                    """,
+                    claim.presentation_id,
+                )
+                # The action row is locked: the stored call can no longer change
+                # between this check and the digest write below.
+                current_digest = args_digest(_as_tool_args(current_args))
+                if rendered_digest is not None and current_digest != rendered_digest:
+                    return False
+                if claim.presentation_mode == "single":
+                    # Never persist a NULL digest for a card: without a cached render
+                    # (a fenced re-claim in a new process) bind the locked current call.
+                    rendered_digest = rendered_digest or current_digest
+                # A binary may run before approvals_018 is applied (rollout order); the
+                # handoff then proceeds without a digest column to write.
+                has_digest_column = await connection.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                         WHERE table_schema = current_schema()
+                           AND table_name = 'approval_delivery_presentations'
+                           AND column_name = 'args_digest'
+                    )
+                    """
+                )
+                digest_assignment = (
+                    "args_digest = COALESCE($6, args_digest)," if has_digest_column else ""
+                )
+                digest_params = (rendered_digest,) if has_digest_column else ()
+                row = await connection.fetchrow(
+                    f"""
                     UPDATE approval_delivery_presentations
                        SET state = 'handoff_started', attempt_count = attempt_count + 1,
                            claim_expires_at = clock_timestamp() + make_interval(secs => $5),
-                           args_digest = COALESCE($6, args_digest),
+                           {digest_assignment}
                            updated_at = clock_timestamp()
                      WHERE id = $1 AND presentation_generation = $2
                        AND claim_token = $3 AND claim_fence = $4 AND state = 'claimed'
                     RETURNING attempt_count, updated_at
-                    """,
+                    """,  # noqa: S608 - fixed fragment, no caller input
                     claim.presentation_id,
                     claim.presentation_generation,
                     claim.claim_token,
                     claim.claim_fence,
                     float(self._lease_seconds),
-                    rendered_digest,
+                    *digest_params,
                 )
                 if row is None:
                     return False

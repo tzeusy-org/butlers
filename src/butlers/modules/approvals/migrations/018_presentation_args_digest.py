@@ -10,6 +10,10 @@ action row lock when the handoff starts and compared at approve time, so a tap
 whose stored call has since changed executes nothing.  The RFC 0023
 ``presentation_key`` and the HMAC callback token are unchanged.  Rows presented
 before this revision (and digest/collapsed presentations) keep ``NULL``.
+
+Downgrade drops the column, which would destroy the only record of which call each
+card showed, so it refuses (like approvals_015) while any presentation carries a
+digest.  Presentations that never recorded one lose nothing.
 """
 
 from __future__ import annotations
@@ -29,4 +33,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = current_schema()
+                   AND table_name = 'approval_delivery_presentations'
+                   AND column_name = 'args_digest'
+            ) THEN
+                LOCK TABLE approval_delivery_presentations IN ACCESS EXCLUSIVE MODE;
+                IF EXISTS (
+                    SELECT 1 FROM approval_delivery_presentations
+                     WHERE args_digest IS NOT NULL
+                ) THEN
+                    RAISE EXCEPTION '%',
+                        'Cannot downgrade approvals_018 while approval delivery '
+                        || 'presentation evidence exists';
+                END IF;
+            END IF;
+        END
+        $$
+        """
+    )
     op.execute("ALTER TABLE approval_delivery_presentations DROP COLUMN IF EXISTS args_digest")

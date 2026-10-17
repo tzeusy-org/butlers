@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -88,10 +89,28 @@ def _action_id(action: Mapping[str, Any]) -> uuid.UUID:
         raise ValueError("approval push action id must be a UUID") from exc
 
 
+# Unicode categories that can hide, reorder or forge text: controls (C0/C1), format
+# characters (bidi overrides, zero-width joiners, BOM) and lone surrogates.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+def _unsafe_char(ch: str) -> bool:
+    return ch != "\n" and unicodedata.category(ch) in _UNSAFE_CATEGORIES
+
+
+def _has_unsafe_chars(value: str) -> bool:
+    return any(_unsafe_char(ch) for ch in value)
+
+
+def _utf16_units(text: str) -> int:
+    """Telegram measures message length in UTF-16 code units, not code points."""
+    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
 def _dossier_value(value: Any) -> str:
     if value is None:
         return "unspecified"
-    normalized = str(value).strip()
+    normalized = "".join(ch for ch in str(value) if not _unsafe_char(ch)).strip()
     return normalized or "unspecified"
 
 
@@ -104,7 +123,7 @@ def approval_dashboard_url(
     return f"{_dashboard_base_url(dashboard_base_url)}/approvals/{action_id}"
 
 
-# Telegram caps a message at 4,096 characters; the card keeps headroom for the
+# Telegram caps a message at 4,096 UTF-16 code units; the card keeps headroom for the
 # "[butler]" prefix the Messenger adds and for HTML escaping of the whole text.
 CARD_FIT_BUDGET = 3500
 _CLAIM_MAX_CHARS = 300
@@ -171,7 +190,11 @@ def render_approval_card(
         f"Review: {action_url}",
     )
 
-    if preview is not None and not any("`" in f.value for f in preview.facts):
+    if preview is not None and any(
+        "`" in f.value or _has_unsafe_chars(f.value) for f in preview.facts
+    ):
+        reason = "Cannot be shown exactly here"
+    elif preview is not None:
         lines = [f"Approval needed: {preview.title}"]
         for fact in preview.facts:
             value = defang_urls(fact.value)
@@ -180,11 +203,9 @@ def render_approval_card(
             else:
                 lines.append(f"{fact.label}: {_span(value)}")
         message = "\n".join((*lines, *tail))
-        if len(message) <= CARD_FIT_BUDGET:
+        if _utf16_units(message) <= CARD_FIT_BUDGET:
             return ApprovalCard(message=message, offer_decision=True)
         reason = "Too long to show here"
-    elif preview is not None:
-        reason = "Cannot be shown exactly here"
     else:
         reason = "No exact preview for this tool"
 

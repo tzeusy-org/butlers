@@ -835,6 +835,19 @@ async def _park_presented_email(approval_pool, monkeypatch: pytest.MonkeyPatch) 
     assert parked["status"] == "pending_approval"
     action_id = UUID(parked["action_id"])
 
+    # Admission schedules the presentation from the owner's quiet-hours policy, so
+    # whether it is claimable depends on the wall clock; make it due now.
+    scheduled = await approval_pool.execute(
+        """
+        UPDATE approval_delivery_presentations AS p
+           SET not_before = clock_timestamp(), next_attempt_at = clock_timestamp()
+          FROM approval_delivery_intents AS i
+         WHERE i.id = p.intent_id AND i.action_id = $1 AND p.state = 'ready'
+        """,
+        action_id,
+    )
+    assert scheduled == "UPDATE 1", "admission must leave one ready direct presentation"
+
     repository = ApprovalDeliveryRepository(approval_pool)
     claim = await repository.claim_next()
     assert claim is not None

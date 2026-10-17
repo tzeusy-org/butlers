@@ -137,12 +137,16 @@ def _recipients(args: Mapping[str, Any], key: str, *, required: bool) -> str | N
     return ", ".join(i.strip() for i in items)
 
 
+# Gate metadata (the model-written dossier) is rendered separately as claims.
+_DOSSIER_KEYS = frozenset({"_why", "_blast_radius", "_reversibility", "_evidence"})
+
+
 def _reject_unshown(
     args: Mapping[str, Any], shown: frozenset[str], ignorable: frozenset[str] = frozenset()
 ) -> None:
     """Every non-empty argument must be shown (or provably irrelevant to the effect)."""
     for key, value in args.items():
-        if key in shown or key in ignorable or key.startswith("_"):
+        if key in shown or key in ignorable or key in _DOSSIER_KEYS:
             continue
         if value not in (None, "", [], {}):
             raise PreviewError(f"argument {key!r} is not shown by this preview")
@@ -204,7 +208,6 @@ def _notify_preview(args: Mapping[str, Any]) -> CallPreview:
 
 
 register_preview("email_send_message", _email_preview)
-register_preview("gmail_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
 register_preview("whatsapp_send_message", _whatsapp_preview)
 register_preview("notify", _notify_preview)

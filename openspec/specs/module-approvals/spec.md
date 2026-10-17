@@ -693,17 +693,22 @@ rendered inert. The "Started by" line SHALL come from server rows, not from
 message text. The card SHALL offer Approve and Reject only when the whole stored
 call is shown and fits within about 3,500 rendered characters; in every other
 case it SHALL offer Open only: no registered preview, a renderer error, an
-argument or recipient the preview cannot enumerate, an over-budget call, and any
-tool whose effect class is `administer` or protected or consequential actuation.
+argument or recipient the preview cannot enumerate, a shown value containing a C0/C1
+control character (other than a newline) or a Unicode format character, an
+over-budget call, and any tool whose effect class is `administer` or protected or
+consequential actuation. The budget SHALL be measured in UTF-16 code units.
 The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
 
 Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
 (sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
 pending action's row lock when the handoff starts. If the stored call no longer
-matches the rendered digest, the handoff SHALL NOT start. An approval without
-edits SHALL take the pending action's row lock and refuse with HTTP 409 "changed
-since shown" when any recorded presentation digest differs from the digest of
-the stored call, executing nothing.
+matches the rendered digest, the handoff SHALL NOT start, and a card SHALL NOT be
+handed off with a NULL digest. A connector-authenticated card decision SHALL take
+the pending action's row lock and refuse with HTTP 409 "changed since shown" when
+any recorded presentation digest differs from the digest of the stored call,
+executing nothing; a dashboard approval binds to the call the dashboard displayed
+and does not use that check. Downgrading the migration that adds the digest column
+SHALL refuse while any presentation carries a digest.
 
 #### Scenario: Email card shows the call
 

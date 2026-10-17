@@ -49,7 +49,7 @@ def _message(envelope: dict[str, Any]) -> str:
     return envelope["delivery"]["message"]
 
 
-@pytest.mark.parametrize("tool_name", ["email_send_message", "gmail_send_message"])
+@pytest.mark.parametrize("tool_name", ["email_send_message"])
 def test_email_card_lists_every_recipient_and_full_body(tool_name: str) -> None:
     body = "Thursday at 3pm works.\n\nSee you then,\nTze"
     envelope = _envelope(
@@ -171,3 +171,77 @@ def test_args_digest_is_canonical_and_content_sensitive() -> None:
     )
     assert previews.args_digest({"a": 1}) != previews.args_digest({"a": 2})
     assert len(previews.args_digest({})) == 64
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("body", "See: \x00PH4\x00 end"),  # would collide with the transport's placeholders
+        ("to", "dana@x.com‮"),  # bidi override reorders the rendered recipient
+        ("subject", "Re:​Thursday"),  # zero-width space hides a difference
+        ("body", "tab\tand\x1bescape"),
+    ],
+)
+def test_control_or_format_characters_get_open_only(field: str, value: str) -> None:
+    args = {"to": "dana@x.com", "subject": "Hi", "body": "Hello", field: value}
+    envelope = _envelope("email_send_message", args)
+
+    assert _verbs(envelope) == ["open_dashboard"]
+    assert "Approve and Reject are not offered" in _message(envelope)
+    assert "\x00" not in _message(envelope)
+    assert "‮" not in _message(envelope)
+
+
+def test_newlines_in_a_body_still_render() -> None:
+    envelope = _envelope(
+        "email_send_message", {"to": "dana@x.com", "subject": "Hi", "body": "a\n\nb"}
+    )
+
+    assert _verbs(envelope) == ["approve", "reject", "open_dashboard"]
+
+
+def test_controls_in_model_written_claims_are_stripped() -> None:
+    envelope = _envelope(
+        "email_send_message",
+        {"to": "dana@x.com", "subject": "Hi", "body": "Hello"},
+        why="ok\x00PH0\x00‮",
+    )
+
+    claims = _message(envelope).split("Assistant says", 1)[1]
+    assert "\x00" not in claims and "‮" not in claims
+
+
+def test_fit_budget_counts_utf16_code_units_not_code_points() -> None:
+    # 3,000 emoji are 3,000 code points but 6,000 UTF-16 units: over Telegram's limit.
+    envelope = _envelope(
+        "email_send_message",
+        {"to": "dana@x.com", "subject": "Hi", "body": "\U0001f600" * 3000},
+    )
+
+    assert len(_message(envelope)) < 4096  # the code-point count would have fit
+    assert _verbs(envelope) == ["open_dashboard"]
+    assert "Too long to show here" in _message(envelope)
+
+
+def test_underscore_prefixed_keys_are_not_a_blanket_exemption() -> None:
+    args = {"to": "dana@x.com", "subject": "Hi", "body": "Hello", "_bcc": ["eve@evil.test"]}
+
+    assert _verbs(_envelope("email_send_message", args)) == ["open_dashboard"]
+
+
+def test_dossier_keys_are_still_ignored_by_the_preview() -> None:
+    args = {
+        "to": "dana@x.com",
+        "subject": "Hi",
+        "body": "Hello",
+        "_why": "w",
+        "_blast_radius": "contact",
+        "_reversibility": "irreversible",
+        "_evidence": [],
+    }
+
+    assert _verbs(_envelope("email_send_message", args)) == ["approve", "reject", "open_dashboard"]
+
+
+def test_gmail_send_message_has_no_preview() -> None:
+    assert previews.resolve_call_preview("gmail_send_message", {"to": "a@x.com"}) is None

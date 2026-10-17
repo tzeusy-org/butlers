@@ -3080,6 +3080,7 @@ async def approve_approval(
         target_pool=target_pool,
         db_mgr=db_mgr,
         mcp_mgr=mcp_mgr,
+        check_presented_digests=callback_authenticated,
     )
 
 
@@ -3090,14 +3091,29 @@ APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was
 async def _require_presented_call_unchanged(
     conn: Any, action_id: UUID, stored_tool_args: Any
 ) -> None:
-    """Refuse an approval whose stored call differs from any call a card showed.
+    """Refuse a card tap whose stored call differs from any call a card showed.
 
     Every presented card records the digest of the call it rendered
-    (``approval_delivery_presentations.args_digest``).  Approving with a card
-    outstanding for a different call would execute something the owner did not
-    see, so the tap executes nothing (security.md § Approval Gates).  Actions
-    that were never presented with a digest are unaffected.
+    (``approval_delivery_presentations.args_digest``).  A connector-authenticated
+    tap carries only the action id, so it cannot say which card it came from;
+    tapping while any card for a different call is outstanding would execute
+    something that card did not show, so the tap executes nothing (security.md
+    § Approval Gates).  Dashboard approvals do not use this check: they bind to
+    the call the dashboard displayed.  Actions never presented with a digest are
+    unaffected.
     """
+    has_digest_column = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'approval_delivery_presentations'
+               AND column_name = 'args_digest'
+        )
+        """
+    )
+    if has_digest_column is False:
+        return  # approvals_018 not applied: no card digest was ever recorded
     presented = await conn.fetch(
         """
         SELECT DISTINCT p.args_digest
@@ -3108,7 +3124,7 @@ async def _require_presented_call_unchanged(
         action_id,
     )
     if not isinstance(presented, list | tuple):
-        return
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
     raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
     current = args_digest(raw if isinstance(raw, dict) else None)
     if any(row["args_digest"] != current for row in presented):
@@ -3125,6 +3141,7 @@ async def approve_owning_action(
     db_mgr: DatabaseManager,
     mcp_mgr: MCPClientManager,
     expected_tool_args: dict[str, Any] | None = None,
+    check_presented_digests: bool = False,
 ) -> ApiResponse[ApprovalAction]:
     """Shared verified decision/audit/dispatch on an already selected owner.
 
@@ -3146,7 +3163,7 @@ async def approve_owning_action(
             parsed_id,
         )
 
-        if action_row is not None and not edits:
+        if action_row is not None and check_presented_digests:
             await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
 
         if expected_tool_args is not None:
