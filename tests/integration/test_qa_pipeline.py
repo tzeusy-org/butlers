@@ -192,7 +192,14 @@ class TestFullPatrolCycle:
         # Watchdog was scheduled
         assert len(task_registry) == 1
         assert [call.args for call in mock_exec.await_args_list] == [
-            ("git", "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+            (
+                "git",
+                "fetch",
+                "--upload-pack=git-upload-pack",
+                "--no-tags",
+                "origin",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ),
             ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
         ]
         mock_worktree.assert_awaited_once_with(

@@ -486,10 +486,13 @@ async def test_capture_commit_diff_snapshot_runs_git_diff_against_worktree(tmp_p
         str(tmp_path),
         "diff",
         "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
         "HEAD~1..HEAD",
         "--unified=3",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=ANY,
     )
     assert snapshot == [
         {"kind": "meta", "text": "diff --git a/a.py b/a.py"},
@@ -1262,9 +1265,10 @@ async def test_dispatch_pr_review_followup_materializes_remote_ref_before_worktr
     assert "last_follow_up_at" in call_sql
 
     fetch_call, worktree_call = create_process.await_args_list
-    assert fetch_call.args[:4] == (
+    assert fetch_call.args[:5] == (
         "git",
         "fetch",
+        "--upload-pack=git-upload-pack",
         "origin",
         f"+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}",
     )
@@ -1315,6 +1319,7 @@ async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_
     create_process.assert_awaited_once_with(
         "git",
         "fetch",
+        "--upload-pack=git-upload-pack",
         "origin",
         "+refs/heads/qa/general/abcdef:refs/remotes/origin/qa/general/abcdef",
         cwd="/tmp/repo",

@@ -52,6 +52,11 @@ Scope: v1-mandatory
 - **AND** the investigation transitions to `failed` with reason `publication_unavailable`; a follow-up records the same reason in `last_follow_up_error` and the PR is left unchanged
 - **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
 
+#### Scenario: Dispatcher git subprocesses in the shared clone are isolated
+- **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)
+- **THEN** the subprocess runs with an allowlisted environment that carries no butler runtime secret, and command-line git config that neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass` and the `ext::` and `git://` transports
+- **AND** named-remote fetches pin `--upload-pack=git-upload-pack` and the commit diff snapshot passes `--no-ext-diff --no-textconv` and no-op branch detection passes `--no-show-signature`, so agent-planted `.git/config` commands and drivers never execute
+
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR
 - **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)

@@ -55,7 +55,8 @@ def allowlisted_git_env(source: dict[str, str] | None = None) -> dict[str, str]:
 def harden_git_env(env: dict[str, str]) -> dict[str, str]:
     """Return *env* with command-line git config that agent-writable config cannot override.
 
-    Neutralised: hooks, fsmonitor, credential helpers and ``core.sshCommand``/``core.askPass``.
+    Neutralised: hooks, fsmonitor, credential helpers, ``core.sshCommand``/``core.askPass`` and
+    the ``ext::`` and ``git://`` transports (``protocol.ext.allow``/``protocol.git.allow``).
     System and global config are disabled.  Remaining file-scoped config (for example
     ``url.*.insteadOf`` or ``filter.*``) is why callers must keep the GitHub token out of git
     subprocesses.
