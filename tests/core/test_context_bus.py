@@ -356,3 +356,34 @@ class TestContextBusIntegration:
 
         assert await is_user_in_context(pool, "traveling") is True
         assert await is_user_in_context(pool, "traveling", min_confidence=0.95) is False
+
+    async def test_unchanged_reassertion_keeps_set_at(self, pool):
+        """bu-r9mlu3: re-asserting an unchanged active signal keeps set_at, refreshes expires_at;
+        a changed value or a superseded row restarts set_at."""
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+        past = datetime.now(UTC) - timedelta(hours=7)
+        await pool.execute(
+            "UPDATE public.user_context SET set_at = $1, expires_at = $1 + interval '1 hour' "
+            "WHERE signal_type = 'traveling' AND set_by_butler = 'travel'",
+            past,
+        )
+
+        sql = (
+            "SELECT set_at, expires_at FROM public.user_context "
+            "WHERE signal_type = 'traveling' AND set_by_butler = 'travel'"
+        )
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+        row = await pool.fetchrow(sql)
+        assert row["set_at"] == past
+        assert row["expires_at"] > datetime.now(UTC)
+
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="other")
+        assert (await pool.fetchrow(sql))["set_at"] > past + timedelta(hours=6)
+
+        await pool.execute(
+            "UPDATE public.user_context SET set_at = $1, superseded_at = now() "
+            "WHERE signal_type = 'traveling' AND set_by_butler = 'travel'",
+            past,
+        )
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="other")
+        assert (await pool.fetchrow(sql))["set_at"] > past + timedelta(hours=6)
