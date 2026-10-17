@@ -260,6 +260,10 @@ repeat the cutoff from the beginning: placeholders are idempotent. Retention del
 or extended. Backdated rows inserted behind a cursor by an old writer require a new complete pass.
 A dry run is not a stable-snapshot or applied-repair claim.
 
+Evidence stores follow the same rule: OwnTracks `raw_payload` strings, Google Drive cached file
+names and ActivityWatch `window_title` are scrubbed before the write, and a detector failure skips
+that evidence write instead of storing raw text.
+
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema

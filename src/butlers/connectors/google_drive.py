@@ -62,6 +62,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.google_credentials import resolve_google_credentials
+from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.metrics_registry import get_or_create_counter, get_or_create_gauge
 from butlers.oauth_token_payload import (
@@ -1280,9 +1281,17 @@ class GDriveAccountLoop:
             return
         try:
             cache_data: dict[str, Any] = {}
+            try:
+                names = {
+                    file_id: scrub_text(entry.name, provider_domain="google_drive")[0]
+                    for file_id, entry in self._metadata_cache.items()
+                }
+            except Exception:
+                logger.warning("Drive: bearer scrub failed; metadata cache write skipped")
+                return
             for file_id, entry in self._metadata_cache.items():
                 cache_data[file_id] = {
-                    "name": entry.name,
+                    "name": names[file_id],
                     "mime_type": entry.mime_type,
                     "parents": entry.parents,
                     "shared": entry.shared,

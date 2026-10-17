@@ -395,3 +395,45 @@ def test_drive_manager_heartbeat_preserves_degraded_source_error() -> None:
         "degraded",
         "code=503, message=Backend Error",
     )
+
+
+def _drive_account_with_cache(name: str) -> tuple[GDriveAccountLoop, Any]:
+    from unittest.mock import AsyncMock, MagicMock
+
+    config = GDriveAccountConfig(
+        email=_FAKE_EMAIL,
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        switchboard_mcp_url="http://switchboard.test/mcp",
+    )
+    account = GDriveAccountLoop(_FAKE_EMAIL, config)
+    conn = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    account._cursor_pool = MagicMock()
+    account._cursor_pool.acquire.return_value = ctx
+    account._metadata_cache = {_FAKE_FILE_ID: _make_cached(name=name)}
+    return account, conn
+
+
+async def test_metadata_cache_save_withholds_code_in_file_name() -> None:
+    account, conn = _drive_account_with_cache("Your code is 482913.txt")
+    await account._save_metadata_cache_to_store()
+    saved = conn.execute.await_args.args[3][_FAKE_FILE_ID]
+    assert "482913" not in saved["name"]
+    assert saved["mime_type"] == "text/plain" and saved["parents"] == ["p1"]
+
+    account, conn = _drive_account_with_cache("Budget 482913.xlsx")
+    await account._save_metadata_cache_to_store()
+    assert conn.execute.await_args.args[3][_FAKE_FILE_ID]["name"] == "Budget 482913.xlsx"
+
+
+async def test_metadata_cache_save_skips_write_when_detector_fails() -> None:
+    from unittest.mock import patch
+
+    account, conn = _drive_account_with_cache("Your code is 482913.txt")
+    with patch("butlers.connectors.google_drive.scrub_text", side_effect=RuntimeError("482913")):
+        await account._save_metadata_cache_to_store()
+    conn.execute.assert_not_awaited()

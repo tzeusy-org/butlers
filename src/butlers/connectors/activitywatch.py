@@ -120,6 +120,7 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
@@ -939,6 +940,17 @@ async def persist_activity_event(
     """
     idempotency_key = f"activitywatch:{machine_id}:{bucket_id}:{ts.isoformat()}"
     browser_domain = _safe_browser_hostname(browser_domain)
+    # Window titles can carry codes or reset links; the ingest envelope excludes
+    # them, so scrub here. On detector failure the evidence write is skipped
+    # (never written raw) and nothing is logged from it.
+    # TODO(bu-hxyqq9 follow-up): raw_payload (URL/tab title) is not scrubbed yet; an
+    # existing test pins the raw tokenised URL and needs a contract-evolution authorization.
+    if window_title is not None:
+        try:
+            window_title = scrub_text(window_title, provider_domain=browser_domain or "unknown")[0]
+        except Exception:
+            logger.warning("activitywatch: bearer scrub failed; evidence write skipped")
+            return False
 
     result = await pool.fetchval(
         f"""

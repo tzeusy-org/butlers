@@ -252,6 +252,18 @@ def scrub_json(
     return walk(value), found
 
 
+def scrub_evidence_json(value: Any, *, provider_domain: str = "unknown") -> Any:
+    """Scrub a JSON-like evidence value; returns ``value`` itself when nothing was withheld.
+
+    The value is JSON-normalized first (``default=str``) so non-native leaves are
+    scrubbed as the text they would be stored as.  Raises on detector failure so
+    the caller can skip the evidence write rather than store raw text.
+    """
+    normalized = json.loads(json.dumps(value, default=str))
+    scrubbed, hits = scrub_json(normalized, provider_domain=provider_domain)
+    return scrubbed if hits else value
+
+
 def scrub_stored_record(
     raw_payload: Mapping[str, Any], normalized_text: str
 ) -> tuple[dict[str, Any], str, list[BearerArtifact]]:
