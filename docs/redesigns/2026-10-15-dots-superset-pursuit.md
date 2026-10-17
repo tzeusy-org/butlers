@@ -6,7 +6,7 @@ A non-standard-lens run of the JARVIS pursuit, aimed at the owner's goal: Butler
 
 Naming: the run's working files, workflow name and some bead notes written during the run call it "pursuit run 19". The ledger already had a run 19 (QA remediation, `bu-6a9xxw`), so this is run 20.
 
-[Structured evidence](2026-10-15-dots-superset-pursuit-data.json)
+Structured evidence: `git show 3df72ae7c552:docs/redesigns/2026-10-15-dots-superset-pursuit-data.json` (the file left the tree under the two-newest-runs retention rule when run 22 landed).
 
 ## Decision in view
 
@@ -206,5 +206,5 @@ The lenses left 121 notes on existing beads. While the run was in flight the coo
 
 - Orchestration: 21 agents in 10 batches (two per batch, three in the last), about 55 minutes apart, never more than three in flight. Deep-design and critic briefs were written from the durable harvest mid-run. Workflow run ids are in `orchestration.workflow_runs`; zero agent errors. Models: opus/high for every agent.
 - Agents were read-only except for scratch files outside the tree; evidence comes from `rg`, file reads, `git log` and the Dots study. No test suite, DB or live stack was run, so costs and payoffs are estimates; each owning bead measures its own outcome.
-- Access: `jq '.audits["<lens>"]' docs/redesigns/2026-10-15-dots-superset-pursuit-data.json`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
+- Access: `git show 3df72ae7c552:docs/redesigns/2026-10-15-dots-superset-pursuit-data.json | jq '.audits["<lens>"]'`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
 - Retention: this PR removes `2026-10-13-simplification-pursuit-data.json` from the tree per the two-newest-runs rule; read it with `git show b747a55a530364d987fb37457c343193e9362fe7:docs/redesigns/2026-10-13-simplification-pursuit-data.json`.

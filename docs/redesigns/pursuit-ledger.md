@@ -32,6 +32,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
 | 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
 | 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
+| 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
 
 ## Tier history
 
@@ -447,3 +448,11 @@ Architecture-first lens from the Dots diff matrix. Gate bu-276pli remains owner-
 13. Owner delivery ledger and surface selector: one subject, many presentations, one acknowledgement and one signed token behind deliver(); a presence-aware deterministic selector; a 'Why?' door on every presentation (bu-dhloi1.13)
 14. Capability self-model with no silent failures: depends_on in the catalog, one health reducer read by broker, runner, admission and /status, a model-free cause line with one-tap retry for failed owner asks, and an outside witness off the cluster (bu-dhloi1.14)
 15. Egress plane: default-deny egress for every workload, one declared egress profile per workload in git, and a shared hostname-allowlisting gateway (bu-dhloi1.15)
+
+### 22 (backlog optimization) (2026-10-16) · epic bu-1mbyoa
+
+Backlog lens, run concurrently with run 21 (working files and bead labels call it run 21): 36 groomer agents worked all 669 live beads so the fleet can dispatch them, with no product surface tiered. Dead claims went from 239 to 0, packet-complete beads from 294 to 549, and claimable packet-complete beads from about 19 to 143. 106 raw owner asks were condensed into 19 convention decision beads. The rules this run learned landed in `AGENTS.md` and `docs/operations/decision-beads.md`. Gate bu-l25s6i remains owner-held.
+
+1. Backlog graph lint: a read-only check for graph states that hide or strand work (bu-1mbyoa.1)
+2. Weekly decision digest raises one attention row when the graph lint finds defects (bu-1mbyoa.2)
+3. Reconcile graph hygiene against the live backlog (gen-1) (bu-1mbyoa.3)

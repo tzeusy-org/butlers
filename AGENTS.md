@@ -299,7 +299,21 @@ worktree.
 - `bd worktree create <path> --branch X` branches from the current HEAD: reset new worktrees to
   `origin/main`, and review worktrees to the PR head.
 - `bd close` rejects a bead with an open downstream `blocks`; for an already-finished
-  original/review pair pass `--force`.
+  original/review pair pass `--force`. It also refuses a bead assigned to another actor even with
+  `--actor`: unassign first with `--if-assignee <who> --assignee ''`.
+- Graph states that hide or strand work (backlog pursuit run 22 found hundreds):
+  - A parent holding a `blocks` edge on its own child is blocked by it, and `bd ready` then hides
+    every child. A leaf blocked by its own epic deadlocks. Parents finish when their children close.
+  - An open `task` or `feature` with live children shows in `bd ready` as claimable: make it an epic.
+  - `blocked` status needs a real `blocks` edge (or an owner action assigned to the owner); a
+    hand-set `blocked` with no edge strands the bead once everyone forgets why.
+  - Owner gates: see `docs/operations/decision-beads.md` § Gating work on a decision.
+- Release a dead coordinator's claim with a guard, never `--force` (bd rejects `--force` together
+  with `--if-assignee`): `bd update <id> --if-assignee '<actor>' --assignee ''`, adding
+  `--if-status in_progress --status open` for an abandoned in-progress bead.
+- Pass your own `--actor` (or set `BEADS_ACTOR`). bd otherwise falls back to `git user.name`, and an
+  agent running under the owner's git identity makes its claims look like the owner's, which every
+  other agent then treats as off-limits.
 - Coordinators arm their own CI watcher with a short grace period; workers go dormant during the
   ~25 minute CI run, so finish the merge and cleanup tail yourself if the PR is still open.
 - The PR-reviewer worker may move a branch into its own worktree: run `git worktree list` before
