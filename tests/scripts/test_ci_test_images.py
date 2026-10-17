@@ -301,6 +301,8 @@ def test_preload_timeout_reaps_only_its_owned_process_group(tmp_path):
     pid = int(pid_file.read_text())
     # A terminated orphan may briefly be a zombie awaiting the host's reaper;
     # it cannot remain a running pipe holder or extend this invocation's bound.
+    # Its pipes close before the kernel finishes its exit, so observe that end.
+    assert _terminates_within(pid, seconds=5)
     assert not _process_is_running(pid)
     assert os.getpid() != pid
     healthy = images.run([sys.executable, "-c", "print('healthy-owned-child')"], timeout=2)
@@ -365,3 +367,12 @@ def _process_is_running(pid):
     except (FileNotFoundError, ProcessLookupError):
         return False
     return state not in {"Z", "X"}
+
+
+def _terminates_within(pid, *, seconds):
+    # Only observes a process the helper already signalled; it never signals,
+    # retries or extends the helper's own unchanged timeout.
+    deadline = time.monotonic() + seconds
+    while _process_is_running(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return not _process_is_running(pid)

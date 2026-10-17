@@ -15,6 +15,13 @@ read them there. The semantics that matter:
 
 - **Deselected by default:** `addopts` carries `-m 'not nightly and not bench and not perf'` and
   ignores `tests/benchmarks`, so those tests run only when asked for with `-m`.
+- **Quarantined tests are deselected by node, not by marker.** `addopts` also loads
+  `-p tests.quarantine`, which deselects the flaky tests listed in `tests/quarantine.json`; see
+  [Flaky-Test Quarantine](quarantine.md).
+- **Leaked butler DB log handlers are detached after every test.** `addopts` also loads
+  `-p tests.log_isolation`, whose autouse fixture removes any `ButlerDBLogHandler` a test
+  attached to the root logger (for example by running `run_startup` without shutting the daemon
+  down). Handlers that were already attached when the test started stay.
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.
@@ -197,20 +204,23 @@ Tests can use this to skip gracefully when Docker is not installed.
   permission, and malformed verdict/classifier/planner evidence fails closed.
 - Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
   recovery policy and frozen dev synchronization. Their command scopes match the former
-  preflight commands and local `make check-guards`. Exact-once manifests, collected budgets,
-  smoke/release cmd/SHA/duration/status/skips and sanitized artifacts stay in preflight.
-  Required check contains only the verdict step. The independent non-required `coverage`
-  job waits directly for all ten successful merge-group shards, reads each raw CoverageData
+  preflight commands and local `make check-guards`. Fresh collection and both budgets belong
+  to early inventory; exact-once manifests, smoke/release cmd/SHA/duration/status/skips and
+  sanitized artifacts stay in preflight. Required check contains only the verdict step.
+  The independent owned `coverage-report` job waits for fresh inventory, all eleven covered
+  shards and complete-identity preflight, reads each raw CoverageData
   database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
   complete measured source population and compatible tracing, then combines and publishes
-  the existing report and badge. Missing, empty, corrupt, stale or mismatched inputs fail
+  the report; only scheduled/manual main success may update the badge. Missing, empty,
+  corrupt, stale or mismatched inputs fail
   reporting before publication. Coverage reporting never changes required test verdicts.
-- Heavy shards receive exact `CI_COVERAGE=1` on merge-group and `0` on PRs. The standalone
+- Protected merge-group and ordinary PR heavy shards receive exact `CI_COVERAGE=0`;
+  the owned daily/manual and pipeline-PR coverage workflow receives `1`. The standalone
   runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
   enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
   instrumentation. Affected-only runs remain without coverage. Direct local CI targets
-  retain their existing coverage behavior. Actual merge-group uploads and timings remain
+  retain their existing coverage behavior. Historical merge-group uploads and timings remain separately retained
   observation obligations; M1/M2 source changes claim no wall-clock gain. M3 supplies finite source bounds; its hosted timeout/cold-cache observations and the M4
   calibration in `fail-closed-ci-assurance` remain unfinished.
 - Pytest's configured default is 300 seconds per item. Existing justified finite marks stay;
@@ -256,3 +266,22 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
+
+### Owned coverage pipeline validation
+
+`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
+coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
+five unit and six integration commands, complete execution reconciliation and
+smoke fallback before the strict CoverageData reader. Inventory, execution and
+coverage metadata preserve the actual event, checkout, run and attempt. Both
+preflight and reporting fail visibly when any prerequisite fails, skips or is
+unknown. PR runs produce full report artifacts; only scheduled/manual main
+success can update the badge. Its exact Python/cache/frozen repair comes from
+the local setup composite, with existing finite job caps retained per row.
+
+The required queue now executes every shard untraced and has no coverage reporter.
+The owned workflow passed genuine eleven-input PR assurance run 38672598762 before
+this source cutover; it is mechanism evidence for that earlier revision, not final
+queue or timing proof. Local standalone coverage still defaults on and malformed
+CI_COVERAGE flags still refuse. Covered weights may truthfully age into fallback
+until genuine covered-workflow observer refresh is implemented.

@@ -8,15 +8,16 @@
 # would queue every PR behind statuses that can never report.
 #
 # What it configures on refs/heads/main:
-#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 5 entries built and
-#     merged per batch, merge as soon as 1 entry is ready or 5 minutes pass,
-#     60 minute check timeout.
+#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 5 concurrent
+#     merge_group builds. Independently, merge 1 to 5 ready entries together
+#     with a 5 minute minimum-group wait and 60 minute check response timeout.
 #   - required_status_checks: check, guards, frontend (non-strict, so a PR does
 #     not have to be rebased onto main first; the queue validates the merged
 #     tree instead).
 #   - deletion + non_fast_forward protection.
-#   - bypass: repository admins (RepositoryRole actor_id 5), always. The owner
-#     and the coordinator's direct fast-forward pushes keep working.
+#   - bypass: repository admins (RepositoryRole actor_id 5), always. This
+#     records the existing administrative setting; repository policy still
+#     requires every tracked change to land through the protected merge queue.
 #
 # Idempotent: looks up an existing ruleset by name and PUTs to it, otherwise
 # POSTs a new one. Prints the resulting ruleset id.

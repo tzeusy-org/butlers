@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (triage, LLM classification, thread affinity and `route.execute`'s session dispatch are removed, and `route.execute` survives only as Messenger's service-plane delivery endpoint; ingest envelopes, dedupe and the durable buffer feed goal admission).
 
 ## Summary
 

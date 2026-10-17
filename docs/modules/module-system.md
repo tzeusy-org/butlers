@@ -35,6 +35,11 @@ The invariants:
   against `config_schema` and passes the validated object to the hooks. Configs that mix in
   `ToolGroupMixin` gain an optional `groups` list; `register_tools` should gate each tool family
   with `group_enabled(config, "<group>")` so a butler can load only part of a module.
+- **Every tool carries a description.** FastMCP takes it from the handler's docstring (or an
+  explicit `description=`). Strict providers reject the whole request when any tool lacks one
+  (GLM via OpenCode: `tools[N]: function.description is required`), so one bare handler takes a
+  model out of rotation for every butler that loads it. `tests/contracts/test_tool_descriptions.py`
+  enforces this for core and module tools.
 - **Identity comes from `butler_name`.** `register_tools` receives the canonical butler name from
   the daemon; modules must use it and never derive identity from `db.schema` or similar.
 - **`on_startup` owns connections and background work; `on_shutdown` must release them.**

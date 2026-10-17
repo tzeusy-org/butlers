@@ -700,6 +700,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
 
+- Bearer scrub estimates
+- Loading scrub estimates…
+- Prometheus scrub estimates
 - Every external signal the house received, with end-to-end pipeline detail behind each row.
 
 ## `frontend/src/pages/IssuesPage.tsx`
@@ -4893,4 +4896,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3898*
+*Total strings: 3901*

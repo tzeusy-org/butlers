@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (ephemeral MCP config and own-butler session binding; module ABC and registration remain).
 
 ## Summary
 

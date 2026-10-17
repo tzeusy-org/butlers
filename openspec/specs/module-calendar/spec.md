@@ -1016,6 +1016,26 @@ Scope: v1-mandatory
 - **AND** all other event fields are preserved
 - **AND** unknown, failed, stale, repeated or missing pre-state requests cause zero write
 
+### Requirement: Calendar Write Permission Availability
+
+Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programmatic `create_user_event` paths SHALL refuse unavailable permission state before provider mutations or workspace idempotency preparation. This requirement refines Calendar Event CRUD Tools, Programmatic Butler-Authored Event Creation and Recurrence-Scoped Occurrence Mutation; it does not add permission gates to other operations or alter approval requirements.
+
+#### Scenario: Readable permission state
+- **WHEN** a guarded calendar operation reads no permission row or `granted=true`
+- **THEN** it MAY proceed through its existing validation, approval and idempotency path
+- **AND** an explicit `granted=false` row SHALL continue to refuse the operation
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** create, update, delete, occurrence mutations and `create_user_event` SHALL raise a typed transient permission-unavailable error before provider mutations or workspace mutation preparation
+- **AND** no applied mutation receipt SHALL be created by that refusal
+- **AND** availability errors and gate logs SHALL exclude effect content, row reasons and raw database exception text
+
+#### Scenario: Fresh execution after recovery
+- **WHEN** a caller retries or deferred execution resumes after permission-store recovery
+- **THEN** the guarded path SHALL read current permission state again
+- **AND** existing request-id idempotency and approval behavior SHALL remain in force
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

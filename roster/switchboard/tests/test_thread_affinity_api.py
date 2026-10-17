@@ -6,6 +6,9 @@ No Docker required — all DB calls are mocked.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,6 +18,20 @@ pytestmark = pytest.mark.unit
 
 # Butler DB key used by the switchboard router's _pool() helper
 _BUTLER_DB = "switchboard"
+
+# The tests import ``switchboard_api_router``, the name router discovery gives
+# roster/switchboard/api/router.py. Register it here so this file does not rely
+# on another test having loaded it first on the same worker. Discovery reuses an
+# existing sys.modules entry, so both paths see the same module.
+_ROUTER_MODULE = "switchboard_api_router"
+_ROUTER_PATH = Path(__file__).resolve().parents[1] / "api" / "router.py"
+if _ROUTER_MODULE not in sys.modules:
+    _spec = importlib.util.spec_from_file_location(_ROUTER_MODULE, _ROUTER_PATH)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Could not load spec from {_ROUTER_PATH}")
+    _router_module = importlib.util.module_from_spec(_spec)
+    sys.modules[_ROUTER_MODULE] = _router_module
+    _spec.loader.exec_module(_router_module)
 
 
 # ---------------------------------------------------------------------------

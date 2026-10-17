@@ -218,7 +218,17 @@ The frame:
   column from `AttentionList`, `KpiStrip`, and `RecentDaysIndex`.
 
 Motion follows spec `dashboard-design-language` §Motion Vocabulary: opacity-only cross-fade on
-briefing refresh, transform-only rotation on the status pill icon, nothing else.
+briefing refresh, transform-only rotation on the status pill icon, allowed paint/opacity/border/box-shadow
+state changes and rotate/translate transforms at the 150/200/250ms tiers. Sidebar chevrons retain the
+named 120ms linear rotation, Radix owns primitive enter/exit, and spinners indicate loading. Layout
+tweens, scale, bounce and decorative motion are forbidden.
+
+The ESLint class guard covers complete string tokens and static template chunks in each effective
+`no-restricted-syntax` override, including `ButlerMark`; it does not resolve interpolated values,
+inline CSS or library APIs. Review those paths against the same vocabulary. `MapWidgetInner` camera
+navigation uses `duration: 0`; the minimap changes dimensions instantly and MapLibre observes its
+container resize. Episode expansion reveals uncapped content instantly, and search-target highlights
+use static paint while retaining their existing visibility lifetimes.
 
 ### Row anatomies
 

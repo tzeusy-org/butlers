@@ -56,6 +56,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0035](rfcs/0035-bounded-post-delivery-approval-reminders.md) | Bounded Post-Delivery Approval Reminders | Proposed | At most two distinct-channel reminders after confirmed approval delivery, within expiry, quiet-hours, and burst limits. |
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
 | [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
+| [0038](rfcs/0038-goal-runtime-and-capability-authorization.md) | Goal Runtime and Capability Authorization | Accepted | Switchboard control plane admits goals, sandboxes lead and depth-1 child sessions, brokers origin-derived grants with exposure gating and domain-verified signed calls; `transact` disabled and messages to anyone but the owner always need owner approval; hard cutover replaces classify-and-route. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
@@ -63,6 +64,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
 
 ## Conventions
 

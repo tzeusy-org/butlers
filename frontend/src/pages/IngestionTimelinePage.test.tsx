@@ -20,27 +20,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { waitFor } from '@testing-library/react'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { transferableAbortController } from 'node:util'
 
 // ---------------------------------------------------------------------------
 // Mock TimelineTab so we can control onFreshnessChange calls
 // ---------------------------------------------------------------------------
 
+let capturedOnRangeReport: ((range: '1h' | '24h' | '7d') => void) | undefined
 let capturedOnFreshnessChange: ((ra: string | null, isDown: boolean) => void) | undefined
 
 vi.mock('@/components/ingestion/TimelineTab', () => ({
   TimelineTab: (
     props: ComponentProps<'div'> & {
+      onRangeReport?: (range: '1h' | '24h' | '7d') => void
       onFreshnessChange?: (ra: string | null, isDown: boolean) => void
     },
   ) => {
     capturedOnFreshnessChange = props.onFreshnessChange
+    capturedOnRangeReport = props.onRangeReport
     return <div data-testid="timeline-tab-stub">Timeline tab</div>
   },
 }))
 
 // This page test focuses on the LiveStatusBadge wiring. The opener's query
 // composition is covered directly in IngestionVerdictOpeners.test.tsx; keeping
-// it shallow here preserves the test's intentionally provider-free harness.
+// it shallow here isolates freshness from verdict queries. The scrub projection
+// below uses its real query/client through a fixture HTTP transport.
 vi.mock('@/components/ingestion/dispatch/IngestionVerdictOpeners', () => ({
   IngestionTimelineVerdictOpener: () => (
     <div role="region" aria-label="Ingestion timeline verdict" />
@@ -88,16 +97,25 @@ function staleIso(): string {
 describe('IngestionTimelinePage — LiveStatusBadge', () => {
   let container: HTMLDivElement
   let root: Root
+  let queryClient: QueryClient
+  const actualFetch = globalThis.fetch
 
   beforeEach(() => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
     capturedOnFreshnessChange = undefined
+    capturedOnRangeReport = undefined
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      bearer_scrub_available: false, bearer_scrub_counts: null,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
   })
 
   afterEach(() => {
     act(() => root.unmount())
+    queryClient.clear()
+    vi.unstubAllGlobals()
     container.remove()
     document.body.innerHTML = ''
     vi.clearAllMocks()
@@ -109,12 +127,99 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     }>('@/pages/IngestionTimelinePage')
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IngestionTimelinePage />
-        </MemoryRouter>,
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <IngestionTimelinePage />
+          </MemoryRouter>
+        </QueryClientProvider>,
       )
     })
   }
+
+  it('reads scrub estimates through the real client and follows all selected ranges', async () => {
+    const paths: string[] = []
+    // A test-owned HTTP fixture serves the real fetch/client/query path.
+    const server = createServer((request, response) => {
+      paths.push(request.url ?? '')
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({
+        bearer_scrub_available: true,
+        bearer_scrub_counts: request.url?.endsWith('window=1h')
+          ? { auth_code: 0, reset_link: 0, magic_link: 0 }
+          : { auth_code: 1.25, reset_link: 0, magic_link: 3 },
+      }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const fixtureOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      // Bridge jsdom's signal into native fetch's realm, preserving cancellation.
+      const controller = transferableAbortController()
+      const abort = () => controller.abort()
+      if (init?.signal?.aborted) abort()
+      init?.signal?.addEventListener('abort', abort, { once: true })
+      return actualFetch(new URL(String(input), fixtureOrigin).href, { ...init, signal: controller.signal })
+        .finally(() => init?.signal?.removeEventListener('abort', abort))
+    })
+    try {
+      await renderPage()
+      await waitFor(() => {
+        const state = queryClient.getQueryState(['ingestion', 'pipeline-stats', '24h'])
+        expect(state?.error).toBeNull()
+        expect(state?.status).toBe('success')
+      })
+      await waitFor(() => expect(container.querySelector('[aria-label="Bearer scrub estimates"]')?.textContent).toContain('1.25'))
+      const section = container.querySelector('[aria-label="Bearer scrub estimates"]')!
+      expect(section.textContent).toContain('Auth codes')
+      expect(section.textContent).toContain('Reset links')
+      expect(section.textContent).toContain('Magic links')
+      expect(section.textContent).toContain('Prometheus')
+      expect(section.textContent).toContain('attempts')
+      expect(Array.from(section.querySelectorAll('dd')).map(node => node.textContent)).toEqual(['1.25', '0', '3'])
+      for (const range of ['1h', '7d'] as const) {
+        act(() => capturedOnRangeReport?.(range))
+        await waitFor(() => expect(paths).toContain(`/api/ingestion/pipeline?window=${range}`))
+        await waitFor(() => expect(Array.from(section.querySelectorAll('dd')).map(node => node.textContent))
+          .toEqual(range === '1h' ? ['0', '0', '0'] : ['1.25', '0', '3']))
+      }
+      expect(paths).toEqual([
+        '/api/ingestion/pipeline?window=24h', '/api/ingestion/pipeline?window=1h', '/api/ingestion/pipeline?window=7d',
+      ])
+      expect(container.querySelector('[data-testid="timeline-tab-stub"]')).not.toBeNull()
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
+  })
+
+  it.each(['loading', 'unavailable', 'false-with-zero', 'legacy', 'malformed', 'negative', 'request-error', 'stale-error'] as const)(
+    'keeps the Timeline usable and scrub counts honest for %s', async (state) => {
+      let resolveFetch: ((response: Response) => void) | undefined
+      const healthy = { bearer_scrub_available: true, bearer_scrub_counts: { auth_code: 8, reset_link: 9, magic_link: 10 } }
+      const key = ['ingestion', 'pipeline-stats', '24h']
+      if (state === 'stale-error') queryClient.setQueryData(key, healthy)
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        if (state === 'loading') return new Promise<Response>(resolve => { resolveFetch = resolve })
+        if (state === 'request-error' || state === 'stale-error') throw new Error('fixture unavailable')
+        const payload = state === 'legacy' ? { ingested: 42, aggregates_available: true }
+          : state === 'malformed' ? { ...healthy, bearer_scrub_counts: { auth_code: 0 } }
+            : state === 'negative' ? { ...healthy, bearer_scrub_counts: { auth_code: -1, reset_link: 0, magic_link: 0 } }
+              : state === 'false-with-zero' ? { bearer_scrub_available: false, bearer_scrub_counts: { auth_code: 0, reset_link: 0, magic_link: 0 } }
+                : { bearer_scrub_available: false, bearer_scrub_counts: null }
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }))
+      await renderPage()
+      const section = container.querySelector('[aria-label="Bearer scrub estimates"]')!
+      if (state === 'loading') {
+        expect(section.querySelector('[role="status"]')?.textContent).toContain('Loading')
+        act(() => resolveFetch?.(new Response(JSON.stringify({}), { status: 200 })))
+      }
+      await waitFor(() => expect(section.querySelector('[role="alert"]')?.textContent).toContain('Prometheus'))
+      expect(section.querySelector('[role="alert"]')?.textContent).toContain('unavailable')
+      expect(section.querySelectorAll('dd')).toHaveLength(0)
+      expect(container.querySelector('[data-testid="timeline-tab-stub"]')).not.toBeNull()
+      expect(container.querySelector('[aria-label="Ingestion timeline verdict"]')).not.toBeNull()
+    },
+  )
 
   it('shows "checking…" before TimelineTab has reported freshness', async () => {
     await renderPage()

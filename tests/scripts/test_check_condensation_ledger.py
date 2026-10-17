@@ -44,6 +44,102 @@ def _repository(tmp_path):
     return root
 
 
+def test_current_shape_reuse_preserves_modes_and_new_source_validation(tmp_path, monkeypatch):
+    """REQ-testing-053: shared analysis cannot change admission or hide new invalid source."""
+    root = _repository(tmp_path)
+    owner = root / "tests/test_owner.py"
+    original = ledger.test_shapes
+    calls = []
+
+    def observe(path, text):
+        calls.append((path, text))
+        return original(path, text)
+
+    monkeypatch.setattr(ledger, "test_shapes", observe)
+    assert ledger.verify(root, "HEAD", []) == {
+        "status": "PASS",
+        "losses": 0,
+        "ledger_clusters": 0,
+        "test_definitions": 1,
+        "source_read_only": True,
+    }
+    assert calls.count(("tests/test_owner.py", owner.read_text())) == 1
+    cache = {}
+    owner.chmod(0o755)
+    expected = {"tests/test_owner.py::test_owner": "source-mode-change"}
+    assert ledger.destructive_changes(root, "HEAD", _current_shapes=cache) == expected
+    assert ledger.destructive_changes(root, "HEAD") == expected
+    assert all("mode" not in shape for shapes in cache.values() for shape in shapes.values())
+    owner.chmod(0o644)
+    added = root / "tests/test_added.py"
+    added.write_text("def test_added():\n    assert True\n")
+    subprocess.run(["git", "-C", str(root), "add", str(added)], check=True)
+    assert ledger.verify(root, "HEAD", [])["test_definitions"] == 2
+    added.write_text("def test_added(:\n")
+    with pytest.raises(ledger.EvidenceError, match="test-source-parse-failed"):
+        ledger.verify(root, "HEAD", [])
+
+
+def test_current_shape_reuse_keeps_rereads_and_source_race_refusals(tmp_path, monkeypatch):
+    """REQ-testing-053: a cached analysis never replaces current source or identity reads."""
+    for change in ("body", "invalid-body", "mode", "membership", "head", "link"):
+        root = _repository(tmp_path / change)
+        owner = root / "tests/test_owner.py"
+        original = ledger.tracked_paths
+        reads = 0
+
+        def race(repository, ref=None):
+            nonlocal reads
+            if ref is None:
+                reads += 1
+                if reads == 2:
+                    if change in {"body", "invalid-body"}:
+                        owner.write_text(
+                            owner.read_text()
+                            + ("    assert True\n" if change == "body" else "    (\n")
+                        )
+                    elif change == "mode":
+                        owner.chmod(0o755)
+                    elif change == "membership":
+                        added = root / "tests/test_new.py"
+                        added.write_text("def test_new():\n    assert True\n")
+                        subprocess.run(["git", "-C", str(root), "add", str(added)], check=True)
+                    elif change == "head":
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(root),
+                                "-c",
+                                "user.name=Proof",
+                                "-c",
+                                "user.email=proof@example.invalid",
+                                "-c",
+                                "core.hooksPath=/dev/null",
+                                "commit",
+                                "--allow-empty",
+                                "-qm",
+                                "changed head",
+                            ],
+                            check=True,
+                        )
+                    else:
+                        target = root / "owner-copy.py"
+                        owner.rename(target)
+                        owner.symlink_to("../owner-copy.py")
+            return original(repository, ref)
+
+        with monkeypatch.context() as context:
+            context.setattr(ledger, "tracked_paths", race)
+            reason = (
+                "test-source-parse-failed"
+                if change == "invalid-body"
+                else "source-changed-during-admission"
+            )
+            with pytest.raises(ledger.EvidenceError, match=reason):
+                ledger.verify(root, "HEAD", [])
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -935,3 +1031,580 @@ def test_mutations_select_whole_targets_at_shared_coordinates():
             loop_mutants,
             evidence.generate_mutants({"toy.py": changed_loop.encode()}),
         )
+
+
+# Synthetic parser inputs are not citations to repository requirements.
+_EXAMPLE_ID = "REQ-" + "example-001"
+_FORGED_ID = "REQ-" + "forged-001"
+_OTHER_ID = "REQ-" + "other-001"
+
+
+def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=()):
+    """Build real protected authority separately from its candidate request."""
+    import contract_evolution as evolution
+
+    root = _repository(tmp_path)
+    owner = "tests/test_owner.py::test_owner"
+    old = (root / "tests/test_owner.py").read_text()
+    new = after if after is not None else old.replace("    assert value in (1,2)\n", "")
+    spec = f"### Requirement: Example\nID: {_EXAMPLE_ID}\n\nSHALL check positive values.\n"
+    updated = spec.replace("positive", "nonzero positive")
+    (root / "spec.md").write_text(spec)
+    (root / "pyproject.toml").write_text('[tool.pytest.ini_options]\naddopts = ""\n')
+    (root / "uv.lock").write_text("version = 1\n")
+    (root / "spec-link").symlink_to("spec.md")
+
+    def commit(message):
+        ledger.git(root, "add", ".")
+        ledger.git(
+            root,
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            message,
+        )
+        return ledger.git(root, "rev-parse", "HEAD")
+
+    for name in evolution.MACHINERY:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((Path(evolution.__file__).resolve().parents[1] / name).read_bytes())
+    helper = root / "scripts/contract_lifecycle.py"
+    helper_body = helper.read_bytes()
+    if candidate_helper:
+        helper.unlink()
+    base = commit("complete original contract")
+    if candidate_helper:
+        helper.write_bytes(helper_body)
+    request = {
+        "schema": evolution.REQUEST_SCHEMA,
+        "authorization": "example-change",
+        "owners": [owner],
+        "timeout_s": timeout,
+    }
+    request_path = root / evolution.REQUESTS / "example.json"
+    request_path.parent.mkdir(parents=True)
+    request_path.write_text(json.dumps(request))
+    (root / "tests/test_owner.py").write_text(new)
+    (root / "spec.md").write_text(updated)
+    authority = {
+        "schema": evolution.AUTH_SCHEMA,
+        "id": "example-change",
+        "bead": "example.1",
+        "decision": {"owner": "Owner", "date": "2026-10-15", "reference": "independent review"},
+        "owners": [
+            {
+                "before": owner,
+                "after": owner,
+                "contracts": [_EXAMPLE_ID],
+                "reason": "Change the explicit expectation while retaining every case.",
+            }
+        ],
+        "contracts": [
+            {
+                "path": "spec.md",
+                "id": _EXAMPLE_ID,
+                "before_sha256": evolution.requirement_digest(spec, _EXAMPLE_ID),
+                "after_sha256": evolution.requirement_digest(updated, _EXAMPLE_ID),
+            }
+        ],
+        "inputs": [
+            {
+                "path": path,
+                "before": evolution.record_at(root, base, path),
+                "after": evolution.current_record(root, path),
+            }
+            for path in (
+                "tests/test_owner.py",
+                "pyproject.toml",
+                "uv.lock",
+                (evolution.REQUESTS + "example.json"),
+                *(("scripts/contract_lifecycle.py",) if candidate_helper else ()),
+            )
+            if path not in omit
+        ],
+    }
+    auth_path = root / evolution.AUTHORIZATIONS / "example-change.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text(json.dumps(authority))
+    (root / "tests/test_owner.py").write_text(old)
+    (root / "spec.md").write_text(spec)
+    request_path.unlink()
+    if candidate_helper:
+        helper.unlink()
+    trusted = commit("independently protected authorization")
+    (root / "tests/test_owner.py").write_text(new)
+    (root / "spec.md").write_text(updated)
+    request_path.write_text(json.dumps(request))
+    if candidate_helper:
+        helper.write_bytes(helper_body)
+    commit("candidate contract evolution request")
+    return root, base, trusted, authority, request, commit
+
+
+def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tmp_path):
+    """REQ-testing-053: exact protected authority needs fresh complete before/after PASS."""
+    import copy
+
+    import contract_evolution as evolution
+
+    # A real fast shebang descendant must retain both script and interpreter.
+    after = (
+        "import pytest\n@pytest.mark.parametrize('value',[1,2])\ndef test_owner(value):\n"
+        "    import subprocess,sys\n"
+        f"    subprocess.run([{str(Path(sys.executable).parent / 'pytest')!r},'--version'], check=True)\n"
+        "    import tempfile\n    from pathlib import Path\n"
+        "    tool = Path(tempfile.mkdtemp()) / 'temporary-tool'\n"
+        "    tool.write_text('#!' + sys.executable + '\\npass\\n')\n"
+        "    tool.chmod(0o755)\n    subprocess.run([str(tool)], check=True)\n"
+        "    assert value > 0\n"
+    )
+    root, base, trusted, authority, request, _ = _contract_repository(tmp_path, after=after)
+    output = tmp_path / "proofs"
+    output.mkdir()
+    result = ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+    assert result["status"] == "PASS" and result["losses"] == 1
+    projection = result["contract_evolution_proofs"][0]
+    assert projection["authorization"] == request["authorization"]
+    assert projection["public_authority"] == trusted and projection["base"] == base
+    assert projection["complete"] is True and projection["case_count"] == 2
+    assert projection["matched_owner_count"] == projection["executed_owner_count"] == 1
+    assert 0 < projection["elapsed_s"] <= request["timeout_s"]
+    directory = output / "contract-0"
+    receipt_path = directory / "receipt.json"
+    receipt = ledger.strict_json(receipt_path)
+    assert receipt["cases"] == 2 and receipt["status"] == "PASS"
+    assert receipt["binding"]["base"] == base
+    assert receipt["binding"]["inputs"] != receipt["binding"]["before_inputs"]
+    controls = set(receipt["controls"])
+    assert {p for p in controls if p.startswith(evolution.AUTHORIZATIONS)}
+    assert {p for p in controls if p.startswith(evolution.REQUESTS)}
+    assert all(not (directory / side).exists() for side in ("before", "after"))
+    for side in ("before", "after"):
+        temporary_root = directory / (side + ".runtime-tmp")
+        assert temporary_root.is_dir() and not temporary_root.is_symlink()
+        environment = dict.fromkeys(("TMPDIR", "PYTEST_DEBUG_TEMPROOT"), str(temporary_root))
+        assert (
+            ledger.strict_json(directory / (side + ".request.json"))["runtime_environment"]
+            == environment
+        )
+        assert receipt["runs"][side]["runtime_environment"] == {
+            **environment,
+            "tempfile_root": str(temporary_root),
+        }
+    for field, value in (
+        ("scope", ["spec.md"]),
+        ("scope_inputs", []),
+        ("command_flags", []),
+        ("measurement_root", str(root)),
+        ("runtime_environment", {}),
+        ("complete", False),
+        ("selected", 1),
+        ("deselected", True),
+    ):
+        forged = copy.deepcopy(receipt)
+        forged["runs"]["after"][field] = value
+        # Rewrite both JSON projections: the independent source/command/population
+        # checks must reject even internally consistent forged claimed PASS data.
+        receipt_path.write_text(json.dumps(forged))
+        (directory / "after.json").write_text(json.dumps(forged["runs"]["after"]))
+        with pytest.raises(ledger.EvidenceError):
+            evolution.consume(
+                root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+            )
+    receipt_path.write_text(json.dumps(receipt))
+    (directory / "after.json").write_text(json.dumps(receipt["runs"]["after"]))
+    execution_request_path = directory / "after.request.json"
+    execution_request = ledger.strict_json(execution_request_path)
+    forged_request = copy.deepcopy(execution_request)
+    forged_request["runtime_environment"]["TMPDIR"] = str(tmp_path)
+    execution_request_path.write_text(json.dumps(forged_request))
+    with pytest.raises(ledger.EvidenceError, match="changed-contract-execution-request"):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+    execution_request_path.write_text(json.dumps(execution_request))
+    changed_nonce = copy.deepcopy(receipt)
+    changed_nonce["binding"]["nonce"] = "0" * 64
+    receipt_path.write_text(json.dumps(changed_nonce))
+    with pytest.raises(ledger.EvidenceError, match="stale-contract-proof-binding"):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+    receipt_path.write_text(json.dumps(receipt))
+    lifecycle_path = directory / "after.lifecycle.json"
+    lifecycle = ledger.strict_json(lifecycle_path)
+    for field, value in (
+        ("nonce", "0" * 64),
+        ("eof", False),
+        ("root", None),
+        ("actors", []),
+        ("executables", []),
+    ):
+        forged = copy.deepcopy(lifecycle)
+        forged[field] = value
+        lifecycle_path.write_text(json.dumps(forged))
+        with pytest.raises((ledger.EvidenceError, TypeError)):
+            evolution.consume(
+                root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+            )
+    assert len(lifecycle["executables"]) > 1
+    partial = copy.deepcopy(lifecycle)
+    partial["executables"].pop()
+    lifecycle_path.write_text(json.dumps(partial))
+    with pytest.raises(ledger.EvidenceError):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+    lifecycle_path.write_text(json.dumps(lifecycle))
+    coverage = directory / "after.coverage"
+    original = coverage.read_bytes()
+    coverage.write_bytes(b"forged coverage")
+    with pytest.raises(ledger.EvidenceError):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+    coverage.write_bytes(original)
+    evolution.consume(
+        root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+    )
+    import os
+
+    import contract_lifecycle
+
+    fifo = tmp_path / "replaced-executable"
+    os.mkfifo(fifo)
+    with pytest.raises(ledger.EvidenceError, match="nonregular-contract-executable"):
+        contract_lifecycle.executable_record(str(fifo))
+    for pathname in ('""', r'"\x66\x6f\x6f"', r'"\x2f\x62\x69\x6e\x2f\x73\x68"'):
+        stream = contract_lifecycle.Stream()
+        stream.consume(
+            f"999999 execveat(AT_FDCWD, {pathname}, [], 0x0, AT_EMPTY_PATH) = 0".encode()
+        )
+        assert stream.failed  # no guessed argv/dirfd/native-image authority
+    # Real child death must retain its terminal marker, even if optional child
+    # /proc metadata disappears. Missing root custody still cannot admit PASS.
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess,sys,time; "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); "
+            "time.sleep(0.2); child.kill(); child.wait(); assert child.returncode==-9"
+        ),
+    ]
+    read_text = Path.read_text
+    for drop in ("nonroot", "root"):
+        control = tmp_path / ("custody-" + drop)
+        control.mkdir()
+        output_path = control / "control.json"
+        request_path = output_path.with_suffix(".request.json")
+        nonce = "2" * 64
+        request_path.write_text(json.dumps({"nonce": nonce}))
+        root_pid, dropped = [], []
+
+        def disappearing(path, *args, **kwargs):
+            if str(path).startswith("/proc/") and str(path).endswith("/status"):
+                pid = str(path).split("/")[2]
+                if not root_pid:
+                    root_pid.append(pid)
+                if (drop == "root") == (pid == root_pid[0]):
+                    dropped.append(pid)
+                    raise FileNotFoundError("actual optional-status race control")
+            return read_text(path, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(Path, "read_text", disappearing)
+            if drop == "nonroot":
+                code, cleaned, _ = contract_lifecycle.run(
+                    command, control, request_path, output_path, dict(os.environ), 5, set()
+                )
+                assert code == 0 and cleaned is True
+                contract_lifecycle.validate(output_path, command, nonce)
+                observed = ledger.strict_json(output_path.with_suffix(".lifecycle.json"))
+                assert len(observed["actors"]) == 2 and all(r["exited"] for r in observed["actors"])
+            else:
+                with pytest.raises(ledger.EvidenceError, match="contract-lifecycle-incomplete"):
+                    contract_lifecycle.run(
+                        command, control, request_path, output_path, dict(os.environ), 5, set()
+                    )
+            assert dropped  # both controls exercise their actual metadata lookup
+    # A new tracked owner invalidates the complete source binding.
+    (root / "tests/test_other.py").write_text("def test_other():\n    assert True\n")
+    ledger.git(root, "add", ".")
+    with pytest.raises(ledger.EvidenceError, match="stale-contract-proof-binding"):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+
+
+def test_contract_evolution_authority_refuses_forged_stale_or_unreviewed_changes(tmp_path):
+    """REQ-testing-053: candidate review strings never replace protected exact-source approval."""
+    import copy
+
+    import contract_evolution as evolution
+
+    root, base, trusted, authority, request, _ = _contract_repository(tmp_path)
+    assert evolution.authorize(root, base, trusted, request)[0] == authority
+    with pytest.raises(ledger.EvidenceError, match="missing-protected-contract-authority"):
+        evolution.authorize(root, base, base, request)
+    owner = root / "tests/test_owner.py"
+    original = owner.read_text()
+    for changed in (
+        original + "    assert True\n",
+        original.replace("[1,2]", "[3,4]"),
+        original.replace("test_owner", "test_renamed"),
+    ):
+        owner.write_text(changed)
+        with pytest.raises(ledger.EvidenceError, match="stale-authorized-source-or-context"):
+            evolution.authorize(root, base, trusted, request)
+    owner.write_text(original)
+    (root / "runtime.py").write_text("UNREVIEWED = True\n")
+    ledger.git(root, "add", "runtime.py")
+    with pytest.raises(ledger.EvidenceError, match="unapproved-contract-runtime-input"):
+        evolution.authorize(root, base, trusted, request)
+    ledger.git(root, "rm", "-f", "runtime.py")
+    spec = root / "spec.md"
+    original_spec = spec.read_text()
+    spec.write_text(
+        original_spec + "\n### Requirement: unrelated changed behavior\nSHALL disappear.\n"
+    )
+    with pytest.raises(ledger.EvidenceError):
+        evolution.authorize(root, base, trusted, request)
+    spec.write_text(original_spec)
+    for override in (
+        {"owners": []},
+        {"timeout_s": float("inf")},
+        {"approved": True},
+        {"authorization": "../forged"},
+        {"timeout_s": True},
+    ):
+        malformed = copy.deepcopy(request)
+        malformed.update(override)
+        with pytest.raises(ledger.EvidenceError):
+            evolution.validate_request(malformed)
+    assert evolution.authorize(root, base, trusted, request)[0] == authority
+
+    authorization = root / evolution.AUTHORIZATIONS / "example-change.json"
+    approved = authorization.read_bytes()
+    authorization.write_text(json.dumps(dict(authority, bead="self-approved")))
+    with pytest.raises(ledger.EvidenceError, match="changed-protected-contract-authority"):
+        evolution.authorize(root, base, trusted, request)
+    authorization.write_bytes(approved)
+    request_path = root / evolution.REQUESTS / "example.json"
+    original_request = request_path.read_bytes()
+    request_path.write_text(json.dumps(dict(request, timeout_s=59)))
+    with pytest.raises(ledger.EvidenceError, match="stale-authorized-source-or-context"):
+        evolution.authorize(root, base, trusted, request)
+    request_path.write_bytes(original_request)
+    # Actual executing source cannot borrow an untracked or altered reviewed copy.
+    helper = "scripts/contract_lifecycle.py"
+    ledger.git(root, "rm", "--cached", helper)
+    with pytest.raises(ledger.EvidenceError, match="unapproved-contract-executor"):
+        evolution.authorize(root, base, trusted, request)
+    ledger.git(root, "add", helper)
+    helper_body = (root / helper).read_bytes()
+    (root / helper).write_bytes(helper_body + b"\n# unapproved runtime delta\n")
+    with pytest.raises(ledger.EvidenceError, match="unapproved-contract-executor"):
+        evolution.authorize(root, base, trusted, request)
+    (root / helper).write_bytes(helper_body)
+    assert evolution.authorize(root, base, trusted, request)[0] == authority
+
+    for missing in ("scripts/contract_lifecycle.py", evolution.REQUESTS + "example.json"):
+        incomplete, old, public, _, asked, _ = _contract_repository(
+            tmp_path / ("missing-" + Path(missing).name), candidate_helper=True, omit=(missing,)
+        )
+        with pytest.raises(ledger.EvidenceError, match="unapproved-contract-runtime-input"):
+            evolution.authorize(incomplete, old, public, asked)
+
+
+def test_contract_evolution_requirement_boundaries_and_inactive_requests(tmp_path, monkeypatch):
+    """REQ-testing-053: unrelated unnumbered blocks and unchanged links grant no authority."""
+    import contract_evolution as evolution
+
+    text = (
+        "### Requirement: historical\nUnnumbered.\n\n### Requirement: selected\n"
+        f"ID: {_EXAMPLE_ID}\n\nSHALL pass.\n\n## Other section\nOutside.\n"
+    )
+    expected = text[text.index("### Requirement: selected") : text.index("## Other section")]
+    import hashlib
+
+    assert (
+        evolution.requirement_digest(text, _EXAMPLE_ID)
+        == hashlib.sha256(expected.encode()).hexdigest()
+    )
+    fenced = expected + f"````python\n```\n## still inside\nID: {_FORGED_ID}\n````\n"
+    assert (
+        evolution.requirement_digest(fenced, _EXAMPLE_ID)
+        == hashlib.sha256(fenced.encode()).hexdigest()
+    )
+    with pytest.raises(ledger.EvidenceError, match="missing-contract-block"):
+        evolution.requirement_digest(fenced, _FORGED_ID)
+    for invalid in (text + expected, text.replace(f"ID: {_EXAMPLE_ID}", f"ID: {_OTHER_ID}")):
+        with pytest.raises(ledger.EvidenceError):
+            evolution.requirement_digest(invalid, _EXAMPLE_ID)
+    root, _, trusted, _, _, _ = _contract_repository(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("inactive request must not authorize, snapshot or execute")
+
+    monkeypatch.setattr(evolution, "authorize", forbidden)
+    monkeypatch.setattr(evolution, "execute", forbidden)
+    assert evolution.fresh_accounts(root, trusted, trusted, {}, tmp_path / "unused") == set()
+    assert not (tmp_path / "unused").exists()
+
+
+def test_contract_evolution_refuses_actual_nonpass_case_drift_and_control_oracles(tmp_path):
+    """REQ-testing-053: complete cases execute; reviewed input reads need exact authority."""
+
+    parameter = "import pytest\n@pytest.mark.parametrize('value',[1,2])\ndef test_owner(value):\n"
+    cases = {
+        "failure": parameter + "    assert value < 0\n",
+        "skip": parameter + "    pytest.skip('incomplete')\n",
+        "same_count_changed_cases": parameter.replace("[1,2]", "[3,4]") + "    assert value > 0\n",
+        "authorization_oracle": parameter
+        + "    open('tests/contract-evolution-authorizations/example-change.json').read()\n"
+        "    assert value > 0\n",
+        "request_oracle": parameter
+        + "    open('tests/contract-evolution-requests/example.json').read()\n"
+        "    assert value > 0\n",
+        "absent_machinery_oracle": parameter + "    from pathlib import Path\n"
+        "    Path('scripts/check_condensation_ledger.py').exists()\n"
+        "    assert value > 0\n",
+    }
+    for name, after in cases.items():
+        root, base, trusted, _, _, _ = _contract_repository(tmp_path / name, after=after)
+        output = tmp_path / name / "proofs"
+        output.mkdir()
+        if name.endswith("_oracle"):
+            result = ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+            assert result["status"] == "PASS"
+            # The complete reviewed test/input bytes authorize this read, not a
+            # claim of non-observation or a generic machinery exemption.
+            receipt = ledger.strict_json(output / "contract-0/receipt.json")
+            assert receipt["status"] == "PASS" and receipt["cases"] == 2
+        else:
+            with pytest.raises(
+                ledger.EvidenceError, match="fresh-contract-evolution-proof-refused"
+            ):
+                ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+            receipt = ledger.strict_json(output / "contract-0/receipt.json")
+            assert receipt["status"] == "UNKNOWN"
+        assert not (output / "contract-0/after").exists()
+        assert not (output / "contract-0/before").exists()
+        if name == "same_count_changed_cases":
+            before = ledger.strict_json(output / "contract-0/before.json")
+            after_run = ledger.strict_json(output / "contract-0/after.json")
+            assert before["selected"] == after_run["selected"] == 2
+            assert before["exit"] == after_run["exit"] == 0
+            assert {r["key"] for r in before["cases"]} != {r["key"] for r in after_run["cases"]}
+
+
+def test_contract_evolution_closes_authorization_race_and_preserves_ordinary_refusal(
+    tmp_path, monkeypatch
+):
+    """REQ-testing-053: freshly hashed but unapproved source cannot race exact approval."""
+    import contract_evolution as evolution
+
+    root, base, trusted, authority, request, _ = _contract_repository(tmp_path)
+    original = evolution.authorize
+    reads = 0
+
+    def raced(*args, **kwargs):
+        nonlocal reads
+        result = original(*args, **kwargs)
+        reads += 1
+        if reads == 1:
+            path = root / "tests/test_owner.py"
+            path.write_text(path.read_text() + "    assert True\n")
+        return result
+
+    monkeypatch.setattr(evolution, "authorize", raced)
+    with pytest.raises(ledger.EvidenceError, match="stale-authorized-source-or-context"):
+        evolution.execute(root, base, authority, request, tmp_path / "race", set(), trusted=trusted)
+    assert ledger.strict_json(tmp_path / "race/receipt.json")["status"] == "UNKNOWN"
+    monkeypatch.setattr(evolution, "authorize", original)
+    request_path = root / evolution.REQUESTS / "example.json"
+    ledger.git(root, "rm", "-f", str(request_path))
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+    original_repository = _repository
+
+    def two_original_owners(home):
+        repo = original_repository(home)
+        owner_file = repo / "tests/test_owner.py"
+        owner_file.write_text(
+            owner_file.read_text()
+            + "\n@pytest.mark.parametrize('value',[1,2])\ndef test_unlisted(value):\n"
+            "    assert value > 0\n    assert value in (1,2)\n"
+        )
+        return repo
+
+    monkeypatch.setitem(globals(), "_repository", two_original_owners)
+    other, old, public, _, _, _ = _contract_repository(tmp_path / "unlisted-owner")
+    output = tmp_path / "unlisted-proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(other, old, [], contract_directory=output, trusted=public)
+    # Full file bytes were genuinely authorized and the named owner executed;
+    # that cannot excuse a second original owner's unmapped assertion loss.
+    assert ledger.strict_json(output / "contract-0/receipt.json")["status"] == "PASS"
+
+
+def test_contract_evolution_watchdog_cleans_real_resistant_descendant(tmp_path):
+    """REQ-testing-053: real timeout remains UNKNOWN and owns descendant cleanup."""
+    import os
+    import time
+
+    marker = tmp_path / "descendant.pid"
+    child = (
+        "import os,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+        f"open({str(marker)!r},'w').write(str(os.getpid())); time.sleep(120)"
+    )
+    after = (
+        "import pytest\n@pytest.mark.parametrize('value',[1,2])\ndef test_owner(value):\n"
+        "    import subprocess,sys,time\n"
+        f"    subprocess.Popen([sys.executable,'-c',{child!r}], start_new_session=True)\n"
+        "    time.sleep(120)\n    assert value > 0\n"
+    )
+    root, base, trusted, _, request, _ = _contract_repository(tmp_path, after=after, timeout=40)
+    output = tmp_path / "proofs"
+    output.mkdir()
+    started = time.monotonic()
+    with pytest.raises(ledger.EvidenceError, match="fresh-contract-evolution-proof-refused"):
+        ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+    assert time.monotonic() - started < 40
+    assert marker.is_file(), "real descendant must start before the timeout control proves cleanup"
+    pid = int(marker.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert ledger.strict_json(output / "contract-0/receipt.json")["status"] == "UNKNOWN"
+    assert not (output / "contract-0/after").exists()
+
+
+def test_contract_evolution_refuses_request_changed_after_controller_parse(tmp_path, monkeypatch):
+    """REQ-testing-053: executing a later valid request cannot rebind the controller request."""
+    import contract_evolution as evolution
+    import pre_push
+
+    root, base, trusted, _, request, _ = _contract_repository(tmp_path)
+    original = pre_push.run_checked
+    request_path = root / evolution.REQUESTS / "example.json"
+
+    def changed(*args, **kwargs):
+        request_path.write_text(json.dumps(dict(request, timeout_s=59)))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pre_push, "run_checked", changed)
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError, match="fresh-contract-evolution-proof-refused"):
+        ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+    # Exact protected request bytes reject a later valid request before execution.
+    assert not (output / "contract-0/receipt.json").exists()

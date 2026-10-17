@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -95,11 +95,41 @@ exports.chromium = { launch: async options => {
         assert.equal(readFileSync(path.join(root, 'closed'), 'utf8'), 'closed')
       }
     }
+
+    const frontend = path.join(temporary, 'frontend')
+    mkdirSync(frontend)
+    writeFileSync(path.join(frontend, 'package.json'), JSON.stringify(packageJson))
+    writeFileSync(path.join(frontend, 'vite.config.ts'), viteConfig)
+    symlinkSync(path.join(FRONTEND_ROOT, 'node_modules'), path.join(frontend, 'node_modules'), 'dir')
+    const inspectCache = `
+import { createVitest } from 'vitest/node'
+const context = await createVitest('test', {
+  root: process.cwd(), config: 'vite.config.ts', configLoader: 'runner', watch: false, run: true,
+})
+try {
+  console.log(JSON.stringify({ cacheDir: context.vite.config.cacheDir }))
+} finally {
+  await context.close()
+}
+`
+    for (const override of [undefined, '',
+      path.join(temporary, 'reference-cache'), path.join(temporary, 'execution-cache')]) {
+      const cacheEnv = { ...childEnv }
+      delete cacheEnv.BUTLERS_VITEST_CACHE_DIR
+      if (override !== undefined) cacheEnv.BUTLERS_VITEST_CACHE_DIR = override
+      const resolved = spawnSync(process.execPath, ['--input-type=module', '-e', inspectCache], {
+        cwd: frontend, encoding: 'utf8', timeout: 30000, env: cacheEnv,
+      })
+      assert.equal(resolved.status, 0, resolved.stderr)
+      const { cacheDir } = JSON.parse(resolved.stdout)
+      const expected = override || path.join(frontend, '.vite')
+      assert.ok(cacheDir === expected || cacheDir.startsWith(expected + path.sep),
+        `installed Vitest must keep its cache within ${expected}`)
+    }
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
 
-  assert.match(viteConfig, /cacheDir:\s*["']\.vite["']/)
   assert.match(viteConfig, /fileURLToPath\(import\.meta\.url\)/)
   assert.doesNotMatch(viteConfig, /\b__dirname\b/)
 

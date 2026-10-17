@@ -196,7 +196,7 @@ describe("TimelineTab — passive background refresh", () => {
     expect(dim.className).not.toContain("opacity-60");
   });
 
-  it("keeps the stale-data cue for a filter transition using placeholder data", () => {
+  it("keeps the stale-data cue for a filter trans" + "ition using placeholder data", () => {
     renderWithQueryState({ isFetching: true, isPlaceholderData: true });
 
     const ledger = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;

@@ -4212,9 +4212,13 @@ export interface ConnectorStats {
  * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
  * Sourced from Prometheus via PromQL with 60s TTL cache.
  * aggregates_available=false means Prometheus is unreachable — all numeric
- * fields are zero in that case.
+ * funnel fields are zero in that case; scrub and backlog flags are independent.
  */
 export interface PipelineStats {
+  /** Fresh Switchboard scrub-operation estimates, including attempts; absent on older servers. */
+  bearer_scrub_counts?: { auth_code: number; reset_link: number; magic_link: number } | null;
+  /** Independent Prometheus availability; only true makes scrub zeros measured values. */
+  bearer_scrub_available?: boolean;
   window: string;
   aggregates_available: boolean;
   ingested: number;
@@ -10235,7 +10239,7 @@ export interface DecisionIntentSummary {
   id: string;
   bead_id: string;
   option: string;
-  status: "pending" | "applying" | "applied" | "failed";
+  status: "pending" | "applying" | "applied" | "failed" | "superseded";
   source: "dashboard" | "telegram";
   created_at: string;
   /** Categorical reason, set exactly when `status` is `failed`. */
