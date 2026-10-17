@@ -175,6 +175,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
 | `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
 | `expected_signals` | SELECT for all roles; INSERT/UPDATE only for the row's originating runtime role through forced RLS. | liveness-qualified gap detectors (RFC 0029) |
+| `qa_publication_operations` | SELECT for all roles; INSERT/UPDATE only for `butler_qa_rw` through forced RLS; rows cannot be deleted because no DELETE policy exists (the bootstrap re-grants DELETE); the owner/runtime login keeps TRUNCATE and ALTER/DROP POLICY (residual). | QA publication operation ledger and lineage hold (core_266) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers
