@@ -1371,6 +1371,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Create standing rule
 - Auto-approve matching tool calls without manual review.
+- Butler
+- Select a butler
+- The butler whose approvals own this rule.
 - Tool Name
 - Description
 - Argument Constraints
@@ -4894,4 +4897,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3899*
+*Total strings: 3902*
