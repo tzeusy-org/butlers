@@ -176,3 +176,21 @@ async def test_invoke_nonzero_exit_records_process_info() -> None:
     assert info["exit_code"] == 1
     assert info["runtime_type"] == "gemini"
     assert "auth error" in info["stderr"]
+
+
+def test_build_config_file_carries_the_invocation_header(tmp_path: Path):
+    """The Spawner's per-invocation binding header survives into gemini_mcp.json (bu-m2zcah)."""
+    from butlers.core.fact_authority import INVOCATION_HEADER
+
+    config_path = GeminiAdapter().build_config_file(
+        mcp_servers={
+            "my-butler": {
+                "url": "http://localhost:9100/mcp",
+                "headers": {INVOCATION_HEADER: "synthetic-binding"},
+            }
+        },
+        tmp_dir=tmp_path,
+    )
+
+    entry = json.loads(config_path.read_text())["mcpServers"]["my-butler"]
+    assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}

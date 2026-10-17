@@ -17,10 +17,12 @@ from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
+    reset_current_runtime_session_locator_unbound,
     reset_current_runtime_trigger_source,
     set_current_approval_push_runtime,
     set_current_runtime_butler_name,
     set_current_runtime_session_id,
+    set_current_runtime_session_locator_unbound,
     set_current_runtime_trigger_source,
 )
 
@@ -220,6 +222,9 @@ class _McpRuntimeSessionGuard:
         if binding is not None:
             runtime_session_id = binding.runtime_session
         session_token = set_current_runtime_session_id(runtime_session_id)
+        locator_token = set_current_runtime_session_locator_unbound(
+            binding is None and bool(runtime_session_id)
+        )
         trigger_token = set_current_runtime_trigger_source(trigger_source)
         butler_token = set_current_runtime_butler_name(self._butler_name)
         push_token = set_current_approval_push_runtime(self._approval_push_runtime)
@@ -252,4 +257,5 @@ class _McpRuntimeSessionGuard:
             reset_current_approval_push_runtime(push_token)
             reset_current_runtime_butler_name(butler_token)
             reset_current_runtime_trigger_source(trigger_token)
+            reset_current_runtime_session_locator_unbound(locator_token)
             reset_current_runtime_session_id(session_token)

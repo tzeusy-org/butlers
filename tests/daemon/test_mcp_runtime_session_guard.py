@@ -169,3 +169,146 @@ async def test_runtime_session_guard_maps_request_mcp_session_header() -> None:
         assert fact_authority._current_report.get() is None
     finally:
         fact_authority.settle_invocation(token)
+
+
+# ---------------------------------------------------------------------------
+# Routing context is derived only from a valid invocation binding (bu-m2zcah)
+# ---------------------------------------------------------------------------
+
+_OWNER_ENTITY_ID = "11111111-1111-1111-1111-111111111111"
+_OWNER_CONTEXT = {"source_entity_id": _OWNER_ENTITY_ID}
+
+
+@pytest.fixture
+def owner_session(monkeypatch: pytest.MonkeyPatch):
+    """A live owner-routed session's routing context, with a resolvable owner entity."""
+    import uuid
+
+    from butlers.core import tool_call_capture
+    from butlers.modules.memory import content_authority
+
+    async def _owner(_pool: Any) -> uuid.UUID:
+        return uuid.UUID(_OWNER_ENTITY_ID)
+
+    monkeypatch.setattr(content_authority, "fetch_owner_entity_id", _owner)
+    session_id = f"owner-session-{uuid.uuid4().hex}"
+    tool_call_capture.set_runtime_session_routing_context(session_id, _OWNER_CONTEXT)
+    yield session_id
+    tool_call_capture.clear_runtime_session_routing_context(session_id)
+
+
+async def _observe_authority(
+    scope: dict[str, Any], *, butler_name: str = "relationship"
+) -> tuple[dict[str, Any] | None, str]:
+    from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    seen: list[tuple[dict[str, Any] | None, str]] = []
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        authority = await resolve_content_authority(object())
+        seen.append((get_current_runtime_session_routing_context(), authority.authority))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    await _McpRuntimeSessionGuard(app, butler_name=butler_name)(
+        scope, _empty_receive, _discard_send
+    )
+    return seen[0]
+
+
+async def test_unbound_query_locator_cannot_select_an_owner_routing_context(
+    owner_session: str,
+) -> None:
+    context, authority = await _observe_authority(
+        _http_scope(query_string=f"runtime_session_id={owner_session}".encode())
+    )
+
+    assert context is None
+    assert authority == "third_party"
+
+
+async def test_valid_invocation_binding_keeps_its_routing_context(owner_session: str) -> None:
+    from butlers.core import fact_authority
+
+    token = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        context, authority = await _observe_authority(
+            _http_scope(
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), token.encode())]
+            )
+        )
+    finally:
+        fact_authority.settle_invocation(token)
+
+    assert context == _OWNER_CONTEXT
+    assert authority == "owner"
+
+
+async def test_binding_wins_over_a_query_locator_naming_another_session(
+    owner_session: str,
+) -> None:
+    from butlers.core import fact_authority
+
+    token = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        context, authority = await _observe_authority(
+            _http_scope(
+                query_string=b"runtime_session_id=some-other-session",
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), token.encode())],
+            )
+        )
+    finally:
+        fact_authority.settle_invocation(token)
+
+    assert context == _OWNER_CONTEXT
+    assert authority == "owner"
+
+
+async def test_expired_or_foreign_binding_leaves_the_locator_unbound(owner_session: str) -> None:
+    from butlers.core import fact_authority
+
+    token = await fact_authority.register_invocation(
+        "health", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        context, authority = await _observe_authority(
+            _http_scope(
+                query_string=f"runtime_session_id={owner_session}".encode(),
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), token.encode())],
+            )
+        )
+    finally:
+        fact_authority.settle_invocation(token)
+
+    assert context is None
+    assert authority == "third_party"
+
+
+async def test_request_with_neither_locator_nor_binding_keeps_system_authority(
+    owner_session: str,
+) -> None:
+    context, authority = await _observe_authority(_http_scope())
+
+    assert context is None
+    assert authority == "system"
+
+
+def test_in_process_session_outside_the_guard_keeps_its_routing_context(
+    owner_session: str,
+) -> None:
+    from butlers.core.tool_call_capture import (
+        get_current_runtime_session_routing_context,
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
+
+    token = set_current_runtime_session_id(owner_session)
+    try:
+        assert get_current_runtime_session_routing_context() == _OWNER_CONTEXT
+    finally:
+        reset_current_runtime_session_id(token)

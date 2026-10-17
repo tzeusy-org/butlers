@@ -58,6 +58,15 @@ Scope: v1-mandatory
 - **AND** any rule the memory domain does store under a `third_party`-origin assertion SHALL have `content_authority = 'third_party'` and `endorsed_at IS NULL`
 - **AND** it SHALL be absent from `memory_context` Active Rules and from `public.memory_catalog` search
 
+#### Scenario: A query locator without a matching invocation token yields third_party
+
+- **WHEN** an MCP request names a live owner session only by a `runtime_session_id`
+  query locator and presents no valid invocation binding for this butler
+- **THEN** the request SHALL see no routing context and a write SHALL carry
+  `content_authority = 'third_party'`
+- **AND** a request with a valid binding, an in-process caller outside a request, and a
+  daemon request carrying neither locator nor binding SHALL be unchanged
+
 #### Scenario: Mixed evidence is held
 
 - **WHEN** consolidation derives one rule from one owner episode and one

@@ -343,6 +343,10 @@ it before changing the subsystem.
   [identity model](docs/concepts/identity-model.md) (the owner lives in `public.entities`),
   [expected signals](docs/concepts/expected-signals.md),
   [receiver-derived routing cutover](docs/operations/receiver-derived-routing-cutover.md).
+  Session routing context is binding-only: a `runtime_session_id` query locator without a valid
+  `X-Butlers-Fact-Invocation` binding is diagnostic, so
+  `get_current_runtime_session_routing_context()` returns `None` and memory content authority is
+  `third_party`.
 - Data: [schema topology](docs/data_and_storage/schema-topology.md),
   [migration patterns](docs/data_and_storage/migration-patterns.md),
   [credential store](docs/data_and_storage/credential-store.md).
