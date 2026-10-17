@@ -31,6 +31,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
 | 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
 | 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
+| 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
 
 ## Tier history
 
@@ -426,3 +427,23 @@ Feature-first lens: what Butlers can do that ChatGPT Dots cannot. Gate bu-4ap4ap
 13. Web watches through pinned research probes: owner-approved fixed questions run by code on the governed research host, alerting on price, availability or page change (bu-jv1moa.13)
 14. Inspectable owner knowledge: an owner-only Vouch for reported, inferred or web-derived facts, and a compiled owner profile page that is exactly what every lead is told (bu-jv1moa.14)
 15. Health visit brief: an owner-only 'since your last appointment' summary delivered before each medical appointment (bu-jv1moa.15)
+
+### 21 (JARVIS architecture) (2026-10-16) · epic bu-dhloi1
+
+Architecture-first lens from the Dots diff matrix. Gate bu-276pli remains owner-held; 16 owner-decision beads and 5 standalone bugs filed alongside.
+
+1. Close memory-laundering paths before the switch: consolidate owner-class and third-party episodes in separate batches, label every non-owner recalled item, and demote facts whose evidence batch cannot be proven (bu-dhloi1.1)
+2. Close situation-poisoning and fail-open paths on the context bus: no third-party calendar text in prompts, owner-only set_context, and fail-closed sleep and DND reads (bu-dhloi1.2)
+3. Interrupt rights are derived, never requested: remove model-chosen priority from notify; urgency comes from origin, deterministic sentinels and owner-made break-through rules (bu-dhloi1.3)
+4. Authorship-carrying transforms: a transcript of the owner's own non-forwarded voice note is owner input, so speaking an ask carries the same authority as typing it (bu-dhloi1.4)
+5. Owner principal strength: high-consequence owner decisions on the phone need a second factor the phone alone cannot supply (bu-dhloi1.5)
+6. Label plane: per-invocation labels (instruction principals, data principals, sensitivity categories) replace the goal-wide exposure bit at the switch, with a slot-principal rule for standing rules; typed boundaries ride the second cutover (bu-dhloi1.6)
+7. One goal lifecycle: a waiting state with no session, owner-approved wait envelopes, one owner thread and inbox per goal and plan versions across epochs at the switch; decision sets and evidence-closed completion at the second cutover (bu-dhloi1.7)
+8. Starting context and recall: a runner-composed, per-item-labelled packet (situation frame, recall envelope, thread digest, open loops) and a contracted context.search, as D15's successor at the switch (bu-dhloi1.8)
+9. Perception spine: one typed kind registry and four stores (situation slots with the owner clock and system health, owner modes, an append-only timeline, typed standing conditions) replace public.user_context; S1 ships dark before the switch (bu-dhloi1.9)
+10. Owner law layer: a tighten-only owner policy overlay (never, always ask) and one ordered grant intersection whose receipt names the term that held a call (bu-dhloi1.10)
+11. One condition evaluator: a closed typed predicate vocabulary over the spine and the goal ledger, run by one deterministic control-plane service, with owner watches ('when X, tell me') as the first owner-facing consumer (bu-dhloi1.11)
+12. Owner-latency lane: an interactive lead role with a reserved owner slot and an owner-set latency SLO, an owner-turn timeline and a turn-minimal prefix at the switch; a streamed reply with Telegram drafts and native Stop, local STT and spoken replies at the second cutover (bu-dhloi1.12)
+13. Owner delivery ledger and surface selector: one subject, many presentations, one acknowledgement and one signed token behind deliver(); a presence-aware deterministic selector; a 'Why?' door on every presentation (bu-dhloi1.13)
+14. Capability self-model with no silent failures: depends_on in the catalog, one health reducer read by broker, runner, admission and /status, a model-free cause line with one-tap retry for failed owner asks, and an outside witness off the cluster (bu-dhloi1.14)
+15. Egress plane: default-deny egress for every workload, one declared egress profile per workload in git, and a shared hostname-allowlisting gateway (bu-dhloi1.15)
