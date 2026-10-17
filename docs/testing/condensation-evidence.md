@@ -300,6 +300,30 @@ bu-ys9hdx.7, PR #4514). It retires `test_general_butler_toml_has_steam_module` a
 "General Butler Identity and Runtime" block of `openspec/specs/butler-general/spec.md`,
 and requires the two replacement owners that PR adds.
 
+## Authority that has already landed
+
+A pull request's event base (`github.event.pull_request.base.sha`) can predate the
+trusted parent (`HEAD^1`) of the provider's merge checkout. The loss scan keeps that
+event base, so a contract-evolution request or retirement manifest that landed on
+main in between shows up again as a loss. Both consumers treat it as public history
+instead of re-proving it, only from bytes committed at the trusted parent:
+
+- Contract evolution: the request, its authorization, every retained owner file and
+  every authorized contract block must be byte-identical between the trusted parent
+  and the candidate (`_already_landed`). The owners are then admitted without a fresh
+  proof and without holding the candidate's unrelated delta to the request. If the
+  candidate touched any of them, or the request or authorization is candidate-only
+  or edited, the ordinary fresh proof applies and refuses as before.
+- Retirement: when every manifest owner is already absent from the trusted parent
+  and the candidate (`_retired_in_public_history`), the base owner hash and the
+  governing-requirement bindings are not re-checked against the older event base.
+  Owners still present at the trusted parent keep the full checks.
+
+A loss the candidate introduces is never covered by this: it is not a manifest or
+request owner, or the owner's file differs from the trusted parent, so it stays in
+the ordinary `unproven-test-or-assertion-loss` account. `merge_group` and `push`
+runs, where the base is the checked-out ancestry, are unchanged.
+
 ## Retained owners with additive changes
 
 The additive route below preserves the original contract. Intentional replacement
