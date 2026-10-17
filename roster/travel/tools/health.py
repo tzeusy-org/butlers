@@ -36,6 +36,12 @@ async def request_health_medication_snapshot(
 ) -> dict[str, Any]:
     """Request Health's active medication snapshot through Switchboard MCP."""
     permission = await check_permission(pool, "travel", CROSS_BUTLER_PERMISSION)
+    if permission.unavailable:
+        return _failure(
+            code="permission_unavailable",
+            message="Permission state is unavailable; Health medication data was not requested.",
+            retryable=True,
+        )
     if not permission.allowed:
         return _failure(
             code="permission_denied",

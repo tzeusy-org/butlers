@@ -1202,6 +1202,7 @@ class ButlerDaemon:
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
+            require_eligibility_gate=True,
             default_timezone=runtime_context.default_timezone,
         )
 

@@ -38,6 +38,9 @@ from butlers.core.model_routing import (
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytestmark = pytest.mark.unit
 

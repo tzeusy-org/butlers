@@ -290,6 +290,36 @@ class TestSchedulerLoopBehavior:
         )
         assert all(kwargs["default_timezone"] == "Asia/Singapore" for kwargs in tick_kwargs)
 
+    async def test_daemon_loop_requires_eligibility_gate_even_without_registry_pool(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing audit pool must reach tick() as a required, absent gate (fail closed)."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        tick_kwargs: list[dict] = []
+
+        async def capture_tick(_pool, _dispatch_fn, **kwargs):
+            tick_kwargs.append(kwargs)
+            return 0
+
+        with (
+            patch("butlers.daemon._tick", side_effect=capture_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert tick_kwargs
+        assert all(kwargs["eligibility_pool"] is None for kwargs in tick_kwargs)
+        assert all(kwargs["require_eligibility_gate"] is True for kwargs in tick_kwargs)
+
     async def test_exception_tolerance_and_db_guard_and_custom_interval(
         self, tmp_path: Path
     ) -> None:

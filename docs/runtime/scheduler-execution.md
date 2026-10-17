@@ -145,6 +145,11 @@ psql -h localhost -U butlers -d butlers -c \
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
   `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
+- `_butler_dispatch_gated()` fails closed. A registry lookup that raises gates the tick with
+  `eligibility unavailable: registry lookup failed` (error log). The daemon loop passes
+  `require_eligibility_gate=True`, so a missing registry pool gates the tick with
+  `eligibility unavailable: no registry pool` instead of running ungated. Gated ticks leave
+  `next_run_at` untouched. Callers without a registry (unit tests) omit the flag and are not gated.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.
