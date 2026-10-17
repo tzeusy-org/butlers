@@ -5,12 +5,22 @@ earn its slots. Recent ignored deliveries reduce only their own category's
 weight. The API reports the reason without reproducing insight content, for
 example `hearing less from Health: 9 of last 10 ignored`.
 
-The owner has three bounded feedback verbs on delivered-message actions and
-dashboard insight rows:
+The owner has three bounded feedback verbs on Telegram deliveries (standalone
+and per-insight digest rows), delivered-message actions, and dashboard insight rows:
 
 - **Useful** restores the insight family and its category toward baseline.
 - **Not now** requires a future snooze deadline.
 - **Never** holds the family indefinitely, but a later Useful reverses it.
+
+Telegram shows **Useful**, **Not now** and **Never** for every insight. Not now
+snoozes its family for 72 hours, computed by the server. A tap marks the current
+verdict and keeps all buttons, so Useful can reverse Never without leaving the
+message. Repeating the current verdict or replaying an already recorded Telegram query
+adds no feedback row. Callback authority requires the primary owner's sender
+and private chat, a signed `ifb1` token bound to the candidate's server-created
+time, and the scoped connector credential. API outages keep the buttons for a
+retry; purged candidates lose only their own digest row.
+
 
 The Trust Console attention ledger also counts `expired_unseen` per originating
 butler. Each expired row records only its candidate reference and a closed

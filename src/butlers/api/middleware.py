@@ -46,9 +46,23 @@ def _is_approval_callback_route(request: Request) -> bool:
     The connector credential is deliberately narrower than the dashboard API
     key: it can read one approval detail or transition it through the established
     approve/deny routes, read one decision prompt or record its one-tap choice
-    (bu-ckkpz.3), and nothing else under ``/api``.
+    (bu-ckkpz.3), or read content-blind insight state and record signed
+    feedback (bu-kqme7f.4), and nothing else under ``/api``.
     """
     segments = request.url.path.split("/")
+    if segments[:4] == ["", "api", "switchboard", "insights"]:
+        if len(segments) != 6:
+            return False
+        try:
+            insight_id = UUID(segments[4])
+        except ValueError:
+            return False
+        if str(insight_id) != segments[4]:
+            return False
+        return (request.method, segments[5]) in {
+            ("GET", "callback-state"),
+            ("POST", "telegram-feedback"),
+        }
     if segments[:4] == ["", "api", "decisions", "prompts"]:
         return _is_decision_prompt_callback_route(request.method, segments)
     if len(segments) not in {4, 5} or segments[:3] != ["", "api", "approvals"]:

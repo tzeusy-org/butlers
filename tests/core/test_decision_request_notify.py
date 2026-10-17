@@ -272,3 +272,146 @@ def test_prompt_message_lists_every_option_in_full_and_the_default() -> None:
     assert "1. Ship it" in message
     assert f"2. {long_option}" in message
     assert "Default if unanswered: Ship it" in message
+
+
+@pytest.mark.asyncio
+async def test_insight_feedback_reaches_telegram_send_for_standalone_and_digest(tmp_path):
+    import logging
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from butlers.core.insight_feedback_callbacks import verify_insight_feedback_token
+    from butlers.core.logging import reset_butler_context, set_butler_context
+    from tests.daemon.test_daemon import (
+        _make_butler_toml,
+        _patch_infra,
+        _route_request_context,
+        _start_daemon_with_route_execute,
+    )
+
+    root_logger = logging.getLogger()
+    handlers, filters, level = (
+        list(root_logger.handlers),
+        list(root_logger.filters),
+        root_logger.level,
+    )
+    context_token = set_butler_context("feedback-test")
+    daemon = None
+    try:
+        butler_dir = _make_butler_toml(
+            tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+        )
+        daemon, route = await _start_daemon_with_route_execute(butler_dir, _patch_infra())
+        telegram = next(m for m in daemon._modules if m.name == "telegram")
+        telegram._send_message = AsyncMock(return_value={"result": {"message_id": 44}})
+        daemon._credential_store = MagicMock(resolve=AsyncMock(return_value=_SECRET))
+        for count in (0, 1, 3):
+            bindings = [
+                {"insight_id": str(uuid.UUID(int=i + 1)), "created_at": _CREATED_AT.isoformat()}
+                for i in range(count)
+            ]
+            notify = {
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "insight",
+                    "channel": "telegram",
+                    "recipient": "9001",
+                    "message": "Insight text",
+                },
+            }
+            if count:
+                notify["feedback_actions"] = bindings
+            with (
+                patch(
+                    "butlers.core.approvals_hooks.check_recipient",
+                    AsyncMock(
+                        return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()
+                    ),
+                ),
+                patch(
+                    "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                    AsyncMock(return_value=(None, True)),
+                ),
+            ):
+                result = await route(
+                    schema_version="route.v1",
+                    request_context={
+                        **_route_request_context(),
+                        "source_sender_identity": "switchboard",
+                    },
+                    input={"prompt": "Deliver", "context": {"notify_request": notify}},
+                )
+            assert result["status"] == "ok", result
+            kwargs = telegram._send_message.call_args.kwargs
+            if not count:
+                assert "reply_markup" not in kwargs
+                continue
+            rows = kwargs["reply_markup"]["inline_keyboard"]
+            assert len(rows) == count
+            for index, row in enumerate(rows):
+                assert len(row) == 3
+                for button, verdict, label in zip(
+                    row, ("useful", "not_now", "never"), ("Useful", "Not now", "Never"), strict=True
+                ):
+                    assert button["text"] == (f"{index + 1}. " if count > 1 else "") + label
+                    parsed = verify_insight_feedback_token(
+                        button["callback_data"], created_at=_CREATED_AT, secret=_SECRET
+                    )
+                    assert (str(parsed.insight_id), parsed.verdict) == (
+                        bindings[index]["insight_id"],
+                        verdict,
+                    )
+        # Feedback metadata never creates buttons or credential work on email.
+        email = next(m for m in daemon._modules if m.name == "email")
+        email._send_email = AsyncMock(return_value={"message_id": "email-44"})
+        notify["delivery"].update(intent="send", channel="email", recipient="owner@example.test")
+        daemon._credential_store.resolve.reset_mock()
+        with patch(
+            "butlers.core.approvals_hooks.check_email_recipient",
+            AsyncMock(return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()),
+        ):
+            result = await route(
+                schema_version="route.v1",
+                request_context={
+                    **_route_request_context(),
+                    "source_sender_identity": "switchboard",
+                },
+                input={"prompt": "Deliver", "context": {"notify_request": notify}},
+            )
+        assert result["status"] == "ok", result
+        email._send_email.assert_awaited_once_with(
+            "owner@example.test", "[switchboard] Notification", "Insight text"
+        )
+        daemon._credential_store.resolve.assert_not_awaited()
+        # A standing rule for another recipient cannot carry owner feedback controls.
+        before_sends = telegram._send_message.await_count
+        notify["delivery"].update(intent="insight", channel="telegram", recipient="777")
+        with (
+            patch(
+                "butlers.core.approvals_hooks.check_recipient",
+                AsyncMock(
+                    return_value=type("Gate", (), {"allowed": True, "dossier_error": None})()
+                ),
+            ),
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            result = await route(
+                schema_version="route.v1",
+                request_context={
+                    **_route_request_context(),
+                    "source_sender_identity": "switchboard",
+                },
+                input={"prompt": "Deliver", "context": {"notify_request": notify}},
+            )
+        assert result["status"] == "error"
+        assert telegram._send_message.await_count == before_sends
+    finally:
+        if daemon is not None:
+            await daemon.shutdown()
+        root_logger.handlers = handlers
+        root_logger.filters = filters
+        root_logger.setLevel(level)
+        reset_butler_context(context_token)

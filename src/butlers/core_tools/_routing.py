@@ -659,6 +659,37 @@ def _decision_request_reply_markup(actions: Any) -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 
+async def _insight_feedback_reply_markup(daemon: Any, bindings: Any) -> dict[str, Any]:
+    """Mint one content-blind feedback row per broker-selected candidate."""
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+    from butlers.core.insight_feedback_callbacks import mint_insight_feedback_token
+
+    store = daemon._credential_store
+    secret = (
+        await store.resolve(APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False) if store else None
+    )
+    if not secret:
+        raise ValueError("Insight callback signing credential is unavailable.")
+    labels = (("useful", "Useful"), ("not_now", "Not now"), ("never", "Never"))
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": (f"{index + 1}. " if len(bindings) > 1 else "") + label,
+                    "callback_data": mint_insight_feedback_token(
+                        insight_id=binding.insight_id,
+                        verdict=verdict,
+                        created_at=binding.created_at,
+                        secret=secret,
+                    ),
+                }
+                for verdict, label in labels
+            ]
+            for index, binding in enumerate(bindings)
+        ]
+    }
+
+
 def _owner_control_plain_text(intent: str, message: str, actions: Any) -> str:
     """Text for a channel without inline buttons: a decision prompt carries its link.
 
@@ -1701,7 +1732,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 daemon=daemon,
                 modules_by_name=modules_by_name,
                 channel=channel,
-                intent=intent,
+                intent="send" if intent == "insight" and channel == "telegram" else intent,
                 message_text=message_text,
                 origin=origin,
                 recipient=notify_request.delivery.recipient,
@@ -1784,10 +1815,28 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if message_text.lstrip().startswith(notify_prefix)
                     else f"{notify_prefix} {message_text}"
                 )
-                if intent in {"send", "reply"}:
+                if intent in {"send", "reply", "insight"}:
                     if delivery_command is None:
                         raise RuntimeError("Telegram delivery command was not materialized.")
-                    adapter_result = await delivery_command.execute()
+                    if intent == "insight" and notify_request.feedback_actions:
+                        feedback_pool = daemon.db.pool if daemon.db is not None else None
+                        owner_channel = (
+                            await resolve_owner_channel_via_definer(
+                                feedback_pool, "telegram_bot", notify_request.delivery.recipient
+                            )
+                            if feedback_pool is not None
+                            else None
+                        )
+                        if owner_channel is None or not owner_channel[1]:
+                            raise ValueError("Insight feedback requires the primary owner channel.")
+                        markup = await _insight_feedback_reply_markup(
+                            daemon, notify_request.feedback_actions
+                        )
+                        adapter_result = await telegram_module._send_message(
+                            notify_request.delivery.recipient, rendered_text, reply_markup=markup
+                        )
+                    else:
+                        adapter_result = await delivery_command.execute()
                 elif intent in OWNER_CONTROL_INTENTS:
                     if approval_recipient is None:
                         raise ValueError(f"{intent} owner recipient was not resolved.")

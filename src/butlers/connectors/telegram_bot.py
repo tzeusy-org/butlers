@@ -65,6 +65,10 @@ from butlers.core.decision_callbacks import (
     parse_decision_callback_token,
     verify_decision_callback_token,
 )
+from butlers.core.insight_feedback_callbacks import (
+    parse_insight_feedback_token,
+    verify_insight_feedback_token,
+)
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -904,6 +908,8 @@ class TelegramBotConnector:
                     return
                 if await self._maybe_handle_decision_callback(update):
                     return
+                if await self._maybe_handle_insight_feedback_callback(update):
+                    return
                 if await self._maybe_handle_gap_interview_callback(update):
                     return
                 if await self._maybe_ack_unhandled_callback(update):
@@ -1231,6 +1237,148 @@ class TelegramBotConnector:
             # Nothing was recorded and the cause may be transient: keep the keyboard.
             await answer(_DECISION_CALLBACK_RETRY_TOAST)
         return True
+
+    async def _maybe_handle_insight_feedback_callback(self, update: dict[str, Any]) -> bool:
+        """Authenticate a bounded ifb1 tap before calling the shared feedback API."""
+        query = update.get("callback_query")
+        raw = query.get("data") if isinstance(query, dict) else None
+        if not isinstance(raw, str) or not raw.startswith("ifb1:"):
+            return False
+        query_id = query.get("id")
+
+        async def answer(text: str) -> None:
+            if isinstance(query_id, str) and query_id:
+                await self._answer_callback_query(query_id, text)
+
+        parsed = parse_insight_feedback_token(raw)
+        if parsed is None:
+            await answer("")
+            return True
+        # A primary-owner sender in a forwarded/group message is insufficient:
+        # the originating private chat must be that same verified primary id.
+        message = query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        sender = query.get("from")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        try:
+            owner = (
+                isinstance(sender_id, int)
+                and not isinstance(sender_id, bool)
+                and chat_id == sender_id
+                and await self._is_primary_owner_callback(query)
+            )
+        except Exception:
+            owner = False
+        if not owner:
+            await answer("")
+            return True
+        status, payload = await self._insight_feedback_api(str(parsed.insight_id))
+        if status == 404:
+            await answer("No longer available.")
+            await self._edit_insight_feedback_keyboard(query, parsed.insight_id, None)
+            return True
+        state = payload.get("data") if isinstance(payload, dict) else None
+        created_at = self._approval_callback_requested_at(state)
+        secret = self._config.approval_callback_secret
+        if status != 200 or not isinstance(state, dict) or created_at is None or not secret:
+            await answer("Could not record feedback. Please try again.")
+            return True
+        if verify_insight_feedback_token(raw, created_at=created_at, secret=secret) is None:
+            await answer("")
+            return True
+        status, payload = await self._insight_feedback_api(
+            str(parsed.insight_id),
+            {"verdict": parsed.verdict, "token": raw, "callback_query_id": query_id},
+        )
+        result = payload.get("data") if isinstance(payload, dict) else None
+        if (
+            status == 200
+            and isinstance(result, dict)
+            and result.get("verdict") in {"useful", "not_now", "never"}
+        ):
+            await answer(
+                "Already recorded." if result.get("status") == "already_recorded" else "Recorded."
+            )
+            await self._edit_insight_feedback_keyboard(query, parsed.insight_id, result["verdict"])
+        elif status == 404:
+            await answer("No longer available.")
+            await self._edit_insight_feedback_keyboard(query, parsed.insight_id, None)
+        elif status in {401, 403, 422}:
+            await answer("")
+        else:
+            await answer("Could not record feedback. Please try again.")
+        return True
+
+    async def _insight_feedback_api(
+        self, insight_id: str, body: dict[str, Any] | None = None
+    ) -> tuple[int | None, dict[str, Any] | None]:
+        token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not token:
+            return None, None
+        path = "callback-state" if body is None else "telegram-feedback"
+        url = (
+            f"{self._config.internal_api_url.rstrip('/')}"
+            f"/api/switchboard/insights/{insight_id}/{path}"
+        )
+        headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: token}
+        try:
+            if body is None:
+                response = await self._http_client.get(url, headers=headers)
+            else:
+                headers[_APPROVAL_CALLBACK_DECISION_HEADER] = _APPROVAL_CALLBACK_DECISION_ACTOR
+                response = await self._http_client.post(url, headers=headers, json=body)
+            payload = response.json()
+            return response.status_code, payload if isinstance(payload, dict) else None
+        except Exception:
+            # Transport exceptions can include URLs/body bearer material.
+            logger.warning("Telegram insight feedback API unavailable")
+            return None, None
+
+    async def _edit_insight_feedback_keyboard(
+        self, query: dict[str, Any], insight_id: Any, verdict: str | None
+    ) -> None:
+        """Mark only this insight, preserving its reversal and every digest sibling."""
+        message = query.get("message")
+        markup = message.get("reply_markup") if isinstance(message, dict) else None
+        rows = markup.get("inline_keyboard") if isinstance(markup, dict) else None
+        chat = message.get("chat") if isinstance(message, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if (
+            not isinstance(rows, list)
+            or not isinstance(chat, dict)
+            or not isinstance(message_id, int)
+        ):
+            return
+        edited = []
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            buttons = []
+            for button in row:
+                if not isinstance(button, dict):
+                    continue
+                parsed = parse_insight_feedback_token(button.get("callback_data"))
+                if parsed is not None and parsed.insight_id == insight_id:
+                    if verdict is None:
+                        continue
+                    button = dict(button)
+                    label = str(button.get("text", "")).removeprefix("✓ ")
+                    button["text"] = ("✓ " if parsed.verdict == verdict else "") + label
+                buttons.append(button)
+            if buttons:
+                edited.append(buttons)
+        try:
+            await self._http_client.post(
+                f"{self._telegram_api_base}/editMessageReplyMarkup",
+                json={
+                    "chat_id": str(chat.get("id")),
+                    "message_id": message_id,
+                    "reply_markup": {"inline_keyboard": edited} if edited else None,
+                },
+            )
+        except Exception:
+            logger.warning("Failed to mark Telegram insight feedback")
 
     async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
         sender = callback_query.get("from")

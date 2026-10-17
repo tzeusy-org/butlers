@@ -340,9 +340,15 @@ class TestEndToEndInsightFlow:
         assert len(cycle_result["delivered"]) == 1
         assert notify_mock.called
         feedback_actions = notify_mock.await_args.args[1]["feedback_actions"]
+        persisted_created_at = await insight_pool.fetchval(
+            "SELECT created_at FROM insight_candidates WHERE id = $1",
+            uuid.UUID(cycle_result["delivered"][0]),
+        )
+        assert persisted_created_at is not None
         assert feedback_actions == [
             {
                 "insight_id": cycle_result["delivered"][0],
+                "created_at": persisted_created_at.isoformat(),
                 "useful": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/useful"),
                 "snooze": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/snooze"),
                 "mute": f"/api/switchboard/insights/{cycle_result['delivered'][0]}/mute",

@@ -29,6 +29,9 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
@@ -96,6 +99,7 @@ if _spec is not None and _spec.loader is not None:
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
     InsightCandidate = _models.InsightCandidate
     InsightFeedbackResponse = _models.InsightFeedbackResponse
+    TelegramInsightFeedbackRequest = _models.TelegramInsightFeedbackRequest
     FleetCaseSummary = _models.FleetCaseSummary
     FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
     FleetCaseLinkEntry = _models.FleetCaseLinkEntry
@@ -487,6 +491,113 @@ async def list_insight_candidates(
     ]
 
     return ApiResponse[list[InsightCandidate]](data=data)
+
+
+def _require_telegram_callback(request: Request) -> None:
+    if not getattr(request.state, "approval_callback_authenticated", False):
+        raise HTTPException(status_code=403, detail="telegram_provenance_required")
+
+
+@router.get("/insights/{insight_id}/callback-state")
+async def insight_callback_state(
+    insight_id: UUID,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Content-blind candidate binding and current verdict for signed Telegram taps."""
+    _require_telegram_callback(request)
+    row = await _pool(db).fetchrow(
+        "SELECT c.id, c.created_at, c.status, "
+        "(SELECT verdict FROM public.insight_feedback f WHERE f.insight_id = c.id "
+        "ORDER BY decided_at DESC, id DESC LIMIT 1) AS verdict "
+        "FROM public.insight_candidates c WHERE c.id = $1",
+        insight_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="insight_not_found")
+    return ApiResponse(
+        data={
+            "id": str(row["id"]),
+            "created_at": row["created_at"].isoformat(),
+            "status": row["status"],
+            "verdict": row["verdict"],
+        }
+    )
+
+
+class _InsightFeedbackRoute(APIRoute):
+    """Never reflect a bearer token in validation or unexpected error output."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def private_handler(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                return JSONResponse(status_code=422, content={"detail": "invalid_callback_request"})
+            except HTTPException:
+                raise
+            except Exception:
+                logger.error("Insight Telegram feedback failed")
+                return JSONResponse(status_code=500, content={"detail": "feedback_unavailable"})
+
+        return private_handler
+
+
+async def telegram_insight_feedback(
+    insight_id: UUID,
+    body: TelegramInsightFeedbackRequest,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Record fixed server-attributed Telegram feedback after verifying its original token."""
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+    from butlers.credential_store import CredentialStore
+    from butlers.tools.switchboard.insight.broker import record_insight_feedback
+
+    _require_telegram_callback(request)
+    if request.headers.get("X-Butlers-Decision-Actor") != "owner@telegram":
+        raise HTTPException(status_code=403, detail="telegram_provenance_required")
+    try:
+        secret = await CredentialStore(db.credential_shared_pool()).resolve(
+            APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="callback_verification_unavailable") from None
+    if not isinstance(secret, str) or not secret:
+        raise HTTPException(status_code=503, detail="callback_verification_unavailable")
+    snooze = (
+        datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=72)
+        if body.verdict == "not_now"
+        else None
+    )
+    result = await record_insight_feedback(
+        _pool(db),
+        insight_id=str(insight_id),
+        verdict=body.verdict,
+        actor="owner@telegram",
+        snooze_until=snooze,
+        evidence_ref=f"telegram:{body.callback_query_id}",
+        skip_unchanged=True,
+        callback_token=body.token.get_secret_value(),
+        callback_secret=secret,
+    )
+    if result["status"] == "error":
+        status = 404 if result["reason"] == "insight not found" else 403
+        raise HTTPException(
+            status_code=status,
+            detail="insight_not_found" if status == 404 else "invalid_callback_token",
+        )
+    return ApiResponse(data=result)
+
+
+router.add_api_route(
+    "/insights/{insight_id}/telegram-feedback",
+    telegram_insight_feedback,
+    methods=["POST"],
+    route_class_override=_InsightFeedbackRoute,
+)
 
 
 async def _record_feedback(

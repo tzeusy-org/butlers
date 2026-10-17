@@ -259,6 +259,21 @@ def _build_switchboard_insight_notify_fn(
             if not recipient:
                 return {"status": "error", "error": "No telegram chat ID configured for owner"}
 
+        # Only broker feedback deliveries opt into the typed Messenger envelope.
+        # Preserve the legacy path for every other notification/channel.
+        feedback_envelope = None
+        if channel == "telegram" and metadata.get("feedback_actions"):
+            feedback_envelope = {
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "insight",
+                    "channel": channel,
+                    "message": message,
+                    "recipient": recipient,
+                },
+                "feedback_actions": metadata["feedback_actions"],
+            }
         deliver_result = await deliver(
             pool,
             channel=channel,
@@ -266,6 +281,7 @@ def _build_switchboard_insight_notify_fn(
             recipient=recipient,
             source_butler="switchboard",
             metadata=metadata,
+            **({"notify_request": feedback_envelope} if feedback_envelope else {}),
         )
         # Translate deliver()'s "failed" status to "error" so the broker's
         # failure-detection check (notify_result.get("status") == "error") fires.

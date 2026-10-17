@@ -738,6 +738,20 @@ class ApprovalRequestActionV1(BaseModel):
         return self
 
 
+class InsightFeedbackBindingV1(BaseModel):
+    """Content-blind broker binding; legacy feedback URLs are advisory only."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    insight_id: UUID
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def _aware(cls, value: datetime) -> datetime:
+        return _validate_tz_aware(value, field_name="feedback_actions.created_at")
+
+
 class NotifyRequestV1(BaseModel):
     """Canonical versioned notify envelope (`notify.v1`)."""
 
@@ -753,6 +767,7 @@ class NotifyRequestV1(BaseModel):
     decision_dossier: dict[str, Any] | None = None
     actions: tuple[ApprovalRequestActionV1, ...] | None = None
     recovery: ApprovalRecoveryV1 | None = None
+    feedback_actions: tuple[InsightFeedbackBindingV1, ...] | None = None
 
     @field_validator("schema_version")
     @classmethod

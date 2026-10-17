@@ -278,3 +278,146 @@ async def test_insight_feedback_rest_verbs_share_server_attributed_behavior(
     assert feedback.await_args.args[0] is mock_pool
     assert feedback.await_args.kwargs["actor"] == "owner"
     assert "actor" not in (body or {})
+
+
+def _callback_app():
+    from fastapi import FastAPI
+
+    from butlers.api.owner_auth.config import OwnerAuthConfig
+    from butlers.api.owner_auth.http import OwnerAuthMiddleware
+    from tests.api.auth_helpers import _DomainOwnerState
+
+    dep = _get_db_dep()
+    app = FastAPI()
+    app.state.approval_callback_connector_token = "test-only-connector"
+    app.state.owner_auth_service = _DomainOwnerState("test-only-owner-key")
+    app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env("test-only-owner-key"))
+    app.include_router(sys.modules[_MODULE_NAME].router)
+    pool = AsyncMock()
+    db = MagicMock()
+    db.pool.return_value = pool
+    app.dependency_overrides[dep] = lambda: db
+    return app, pool
+
+
+async def test_telegram_feedback_credential_scope_is_exact_and_actor_is_fixed():
+    app, pool = _callback_app()
+    insight_id = "11111111-1111-1111-1111-111111111111"
+    base = f"/api/switchboard/insights/{insight_id}"
+    pool.fetchrow.return_value = {
+        "id": insight_id,
+        "created_at": datetime.datetime(2026, 10, 16, tzinfo=datetime.UTC),
+        "status": "delivered",
+        "verdict": None,
+        "message": "must never be returned",
+    }
+    scoped = {"X-Butlers-Approval-Callback-Token": "test-only-connector"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for method, suffix in (("GET", "callback-state"), ("POST", "telegram-feedback")):
+            for headers in (
+                {},
+                {"X-Butlers-Approval-Callback-Token": "wrong"},
+                {"X-API-Key": "test-only-owner-key"},
+            ):
+                response = await client.request(
+                    method,
+                    f"{base}/{suffix}",
+                    headers=headers,
+                    json={"verdict": "useful", "token": "ifb1:test", "callback_query_id": "query"},
+                )
+                assert response.status_code in (401, 403)
+        allowed = await client.get(f"{base}/callback-state", headers=scoped)
+        assert allowed.status_code == 200
+        assert set(allowed.json()["data"]) == {"id", "created_at", "status", "verdict"}
+        for path in (f"{base}/useful", f"{base}/callback-state/extra", "/api/switchboard/insights"):
+            denied = await client.post(path, headers=scoped, json={})
+            assert denied.status_code == 401
+        body = {"verdict": "useful", "token": "ifb1:test", "callback_query_id": "query"}
+        for actor in (None, "owner@dashboard", "forged"):
+            response = await client.post(
+                f"{base}/telegram-feedback",
+                headers={**scoped, **({"X-Butlers-Decision-Actor": actor} if actor else {})},
+                json=body,
+            )
+            assert response.status_code == 403
+
+
+async def test_telegram_feedback_derives_snooze_and_rejects_body_authority():
+    app, _ = _callback_app()
+    path = "/api/switchboard/insights/11111111-1111-1111-1111-111111111111/telegram-feedback"
+    headers = {
+        "X-Butlers-Approval-Callback-Token": "test-only-connector",
+        "X-Butlers-Decision-Actor": "owner@telegram",
+    }
+    result = {
+        "status": "recorded",
+        "verdict": "not_now",
+        "insight_id": path.split("/")[4],
+        "snooze_until": None,
+    }
+    body = {"verdict": "not_now", "token": "ifb1:test", "callback_query_id": "query-1"}
+    with (
+        patch(
+            "butlers.credential_store.CredentialStore.resolve",
+            AsyncMock(return_value="test-only-signing-secret"),
+        ),
+        patch(
+            "butlers.tools.switchboard.insight.broker.record_insight_feedback",
+            AsyncMock(return_value=result),
+        ) as record,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            before = datetime.datetime.now(datetime.UTC)
+            response = await client.post(path, headers=headers, json=body)
+            assert response.status_code == 200
+            kwargs = record.call_args.kwargs
+            assert kwargs["actor"] == "owner@telegram"
+            assert kwargs["evidence_ref"] == "telegram:query-1"
+            assert (
+                before + datetime.timedelta(hours=72)
+                <= kwargs["snooze_until"]
+                <= datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=72)
+            )
+            assert kwargs["skip_unchanged"] is True
+            for extra in (
+                {"actor": "forged"},
+                {"snooze_until": "2099-01-01"},
+                {"callback_query_id": "\nsecret"},
+            ):
+                response = await client.post(path, headers=headers, json={**body, **extra})
+                assert response.status_code == 422
+                assert body["token"] not in response.text
+            record.assert_awaited_once()
+
+
+async def test_telegram_feedback_audit_and_errors_omit_bearer_body(caplog):
+    from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
+
+    app, _ = _callback_app()
+    app.add_middleware(DashboardAuditMiddleware)
+    path = "/api/switchboard/insights/11111111-1111-1111-1111-111111111111/telegram-feedback"
+    headers = {
+        "X-Butlers-Approval-Callback-Token": "test-only-connector",
+        "X-Butlers-Decision-Actor": "owner@telegram",
+        "Content-Type": "application/json",
+    }
+    private = "synthetic-private-bearer-sentinel"
+    with (
+        patch("butlers.api.dashboard_audit_middleware.get_db_manager", MagicMock()),
+        patch("butlers.api.dashboard_audit_middleware.emit_dashboard_audit", AsyncMock()) as emit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for suffix, body in (
+                ("", '{"token":"' + private + '"'),
+                ("/", '{"private": "' + private + '"}'),
+            ):
+                response = await client.post(path + suffix, headers=headers, content=body)
+                assert response.status_code in (401, 422)
+                assert emit.call_args.kwargs["body"] == {"redacted": "insight_callback"}
+                assert private not in repr(emit.call_args) + response.text + caplog.text
