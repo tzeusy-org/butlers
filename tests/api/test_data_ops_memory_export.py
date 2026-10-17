@@ -88,6 +88,23 @@ def test_memory_entries_fail_fast_on_empty_roster():
         _memory_export_entries(_manager({"messenger": _pool([])}, {"messenger": "m"}, []))
 
 
+def test_memory_entries_503_when_a_configured_memory_butler_has_no_pool():
+    db = _manager({"alpha": _pool([])}, {"alpha": "alpha"}, ["alpha"])
+    db.register_configured_modules("alpha", frozenset({"memory"}))
+    db.register_configured_modules("beta", frozenset({"memory"}))
+    with pytest.raises(HTTPException) as exc:
+        _memory_export_entries(db)
+    assert exc.value.status_code == 503
+    assert "beta" in exc.value.detail and "alpha" not in exc.value.detail
+
+
+def test_memory_entries_ok_when_every_configured_memory_butler_is_pooled():
+    db = _manager({"alpha": _pool([])}, {"alpha": "alpha"}, ["alpha"])
+    db.register_configured_modules("alpha", frozenset({"memory"}))
+    db.register_configured_modules("gamma", frozenset({"calendar"}))
+    assert {e[2] for e in _memory_export_entries(db)} == {"alpha"}
+
+
 def test_memory_entries_reject_unsafe_schema_identifier():
     db = _manager({"general": _pool([])}, {"general": 'x"; DROP SCHEMA y; --'}, ["general"])
     with pytest.raises(ValueError):

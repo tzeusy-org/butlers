@@ -447,7 +447,25 @@ def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
     without module metadata every registered butler is tried.  The schema is the
     butler's effective memory schema.  Each query must run on that butler's own pool,
     because a butler role sees only its own schema plus ``public``.
+
+    Raises ``HTTPException`` 503 when a configured memory butler has no pool and 500
+    when no memory butler is registered at all.
     """
+    # A configured memory butler whose dashboard pool failed at startup is absent from
+    # the pooled roster; exporting without it would be a silent partial archive, so this
+    # is an availability error (same census pattern as the calendar workspace).
+    configured = db.configured_butlers_with_module("memory")  # type: ignore[attr-defined]
+    if configured is not None:
+        pooled = set(db.butler_names)  # type: ignore[attr-defined]
+        unavailable = sorted(name for name in configured if name not in pooled)
+        if unavailable:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Export unavailable: memory butler database not available for "
+                    + ", ".join(unavailable)
+                ),
+            )
     butlers = db.butlers_with_module("memory")  # type: ignore[attr-defined]
     if butlers is None:
         butlers = db.butler_names  # type: ignore[attr-defined]
