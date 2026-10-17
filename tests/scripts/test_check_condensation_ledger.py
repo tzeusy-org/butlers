@@ -1608,3 +1608,195 @@ def test_contract_evolution_refuses_request_changed_after_controller_parse(tmp_p
         ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
     # Exact protected request bytes reject a later valid request before execution.
     assert not (output / "contract-0/receipt.json").exists()
+
+
+_STEAM_TESTS = (
+    "import pytest\n\n\n"
+    "class TestSteam:\n"
+    "    @pytest.mark.unit\n"
+    "    def test_has_steam(self):\n        assert 'steam' in ('steam',)\n\n"
+    "    def test_empty_config(self):\n        assert {} == {}\n\n\n"
+    "def test_unrelated():\n    assert True\n"
+)
+_STEAM_AFTER = "import pytest\n\n\ndef test_unrelated():\n    assert True\n"
+_STEAM_SPEC = (
+    "### Requirement: Steam Module\nGeneral SHALL load steam.\n\n### Requirement: Other\nx\n"
+)
+_STEAM_SPEC_AFTER = _STEAM_SPEC.replace("SHALL load", "SHALL NOT load")
+_RETIRED = (
+    "tests/test_steam.py::TestSteam::test_has_steam",
+    "tests/test_steam.py::TestSteam::test_empty_config",
+)
+
+
+def _commit_all(root, message):
+    ledger.git(root, "add", ".")
+    ledger.git(
+        root,
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        message,
+    )
+    return ledger.git(root, "rev-parse", "HEAD")
+
+
+def _retirement_repository(tmp_path, *, mutate=None, trusted_manifest=True):
+    """Real Git history: reviewed base, protected manifest commit, candidate untouched."""
+    import contract_evolution as evolution
+
+    root = _repository(tmp_path)
+    (root / "tests/test_steam.py").write_text(_STEAM_TESTS)
+    (root / "spec.md").write_text(_STEAM_SPEC)
+    base = _commit_all(root, "reviewed base")
+    manifest = {
+        "schema": evolution.RETIREMENT_SCHEMA,
+        "id": "example-retirement",
+        "bead": "example.1",
+        "authority": "owner decision, provenance only",
+        "retired": [
+            {
+                "owner": owner,
+                "base_sha256": evolution.owner_body_sha256(_STEAM_TESTS, owner.split("::", 1)[1]),
+                "reason": "Steam is no longer a General module.",
+            }
+            for owner in _RETIRED
+        ],
+        "requirements": [
+            {
+                "path": "spec.md",
+                "requirement": "Steam Module",
+                "before_sha256": evolution.requirement_digest_or_none(_STEAM_SPEC, "Steam Module"),
+                "after_sha256": evolution.requirement_digest_or_none(
+                    _STEAM_SPEC_AFTER, "Steam Module"
+                ),
+            }
+        ],
+    }
+    if mutate:
+        mutate(manifest)
+    path = root / evolution.AUTHORIZATIONS / "example-retirement.json"
+    path.parent.mkdir(parents=True)
+    if trusted_manifest:
+        path.write_text(json.dumps(manifest))
+    else:
+        (root / "note.txt").write_text("protected public history without the manifest\n")
+    trusted = _commit_all(root, "protected retirement authority")
+    if not trusted_manifest:
+        path.write_text(json.dumps(manifest))
+    return root, base, trusted, path
+
+
+def _retire(root, *, extra=""):
+    (root / "tests/test_steam.py").write_text(_STEAM_AFTER + extra)
+    (root / "spec.md").write_text(_STEAM_SPEC_AFTER)
+    return _commit_all(root, "candidate retirement")
+
+
+def test_retirement_admits_exact_whole_owners_only_from_trusted_manifest(tmp_path):
+    """REQ-testing-053: protected retirement authority admits exactly the named owners."""
+    root, base, trusted, path = _retirement_repository(tmp_path)
+    _retire(root)
+    result = ledger.verify(root, base, [], trusted=trusted)
+    (account,) = result["retirement_accounts"]
+    assert result["status"] == "PASS" and result["losses"] == 2
+    assert account["manifest"] == "example-retirement"
+    assert account["admitted_owner_count"] == 2
+    assert (
+        account["manifest_sha256"]
+        == ledger.input_record(root, path.relative_to(root).as_posix())["sha256"]
+    )
+    assert account["public_authority"] == trusted
+
+
+def test_historical_retirement_manifest_is_inert_without_a_current_loss(tmp_path):
+    """REQ-testing-053: a protected manifest with no matching loss changes nothing."""
+    root, base, trusted, _ = _retirement_repository(tmp_path)
+    result = ledger.verify(root, base, [], trusted=trusted)
+    assert result["status"] == "PASS" and "retirement_accounts" not in result
+
+
+def test_retirement_cannot_be_claimed_by_candidate_or_edited_authority(tmp_path):
+    """REQ-testing-053: candidate-only or altered manifests never authorize loss."""
+    root, base, trusted, path = _retirement_repository(tmp_path / "only", trusted_manifest=False)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="candidate-only-retirement-authority"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, path = _retirement_repository(tmp_path / "edited")
+    path.write_text(path.read_text().replace("no longer", "never"))
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="changed-protected-retirement-authority"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_leaves_unlisted_and_partial_losses_unproven(tmp_path):
+    """REQ-testing-053: only whole named owners retire; every other loss keeps its account."""
+    root, base, trusted, _ = _retirement_repository(tmp_path / "extra")
+    (root / "tests/test_owner.py").write_text(
+        (root / "tests/test_owner.py").read_text().replace("    assert value in (1,2)\n", "")
+    )
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, _ = _retirement_repository(tmp_path / "partial")
+    (root / "spec.md").write_text(_STEAM_SPEC_AFTER)
+    (root / "tests/test_steam.py").write_text(
+        _STEAM_AFTER + "\n\nclass TestSteam:\n    def test_empty_config(self):\n        pass\n"
+    )
+    _commit_all(root, "candidate keeps a hollowed owner")
+    with pytest.raises(ledger.EvidenceError, match="retired-owner-not-wholly-removed"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate", "category"),
+    [
+        (
+            "stale",
+            lambda m: m["requirements"][0].update(before_sha256="0" * 64),
+            "stale-retirement",
+        ),
+        (
+            "wrong",
+            lambda m: m["requirements"][0].update(after_sha256="1" * 64),
+            "mismatched-retirement",
+        ),
+        ("owner", lambda m: m["retired"][0].update(base_sha256="2" * 64), "stale-retired-owner"),
+    ],
+)
+def test_retirement_refuses_stale_or_mismatched_bindings(tmp_path, name, mutate, category):
+    """REQ-testing-053: base hashes and requirement blocks must match exactly."""
+    root, base, trusted, _ = _retirement_repository(tmp_path / name, mutate=mutate)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match=category):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_requires_the_governing_requirement_to_have_moved(tmp_path):
+    """REQ-testing-053: an unchanged governing block cannot retire any test."""
+    root, base, trusted, _ = _retirement_repository(tmp_path)
+    (root / "tests/test_steam.py").write_text(_STEAM_AFTER)
+    _commit_all(root, "candidate deletes tests without the governing change")
+    with pytest.raises(ledger.EvidenceError, match="unchanged-retirement-requirement"):
+        ledger.verify(root, base, [], trusted=trusted)
+
+
+def test_retirement_replacements_must_exist_in_the_candidate(tmp_path):
+    """REQ-testing-053: named replacement owners are required beside the retirement."""
+    replacement = "tests/test_steam.py::test_excludes_steam"
+
+    def add(manifest):
+        manifest["replacements"] = [replacement]
+
+    root, base, trusted, _ = _retirement_repository(tmp_path / "missing", mutate=add)
+    _retire(root)
+    with pytest.raises(ledger.EvidenceError, match="missing-retirement-replacement"):
+        ledger.verify(root, base, [], trusted=trusted)
+    root, base, trusted, _ = _retirement_repository(tmp_path / "present", mutate=add)
+    _retire(root, extra="\n\ndef test_excludes_steam():\n    assert True\n")
+    assert ledger.verify(root, base, [], trusted=trusted)["status"] == "PASS"

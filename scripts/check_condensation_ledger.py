@@ -1712,6 +1712,18 @@ def _verify(
         admitted |= contract_evolution.fresh_accounts(
             root, base, trusted, losses, contract_directory, reports=contract_reports
         )
+    retirement_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.retirement_accounts(
+            root,
+            base,
+            trusted,
+            {key: value for key, value in losses.items() if key not in admitted},
+            current,
+            reports=retirement_reports,
+        )
     if set(losses) - admitted:
         raise EvidenceError("unproven-test-or-assertion-loss")
     if (
@@ -1730,6 +1742,8 @@ def _verify(
     }
     if contract_reports:
         result["contract_evolution_proofs"] = contract_reports
+    if retirement_reports:
+        result["retirement_accounts"] = retirement_reports
     return result
 
 
@@ -2128,4 +2142,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # contract_evolution imports this file by name; share one EvidenceError identity
+    # so its refusals keep their real category instead of the structural fallback.
+    sys.modules.setdefault("check_condensation_ledger", sys.modules[__name__])
     sys.exit(main())
