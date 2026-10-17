@@ -38,7 +38,7 @@ async def request_health_medication_snapshot(
     permission = await check_permission(pool, "travel", CROSS_BUTLER_PERMISSION)
     if permission.unavailable:
         return _failure(
-            code="permission_unavailable",
+            code="switchboard_unavailable",
             message="Permission state is unavailable; Health medication data was not requested.",
             retryable=True,
         )

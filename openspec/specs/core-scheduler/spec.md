@@ -193,6 +193,12 @@ A butler under an administrative hold (paused, quarantined or non-active policy 
 - **THEN** `tick()` SHALL skip the deadline and cron passes with reason `eligibility unavailable: no registry pool`
 - **AND** no task's `next_run_at` SHALL change
 
+#### Scenario: A registry pool that failed at startup is retried
+- **WHEN** the daemon's registry pool could not be created at startup
+- **THEN** ticks SHALL stay gated and an error SHALL be logged while the pool is unavailable
+- **AND** the daemon SHALL retry pool creation at most once per backoff window (60 s, doubling to a 10 minute cap) and cache a successful pool
+- **AND** the first tick after the pool is available SHALL evaluate eligibility normally, with `next_run_at` preserved throughout
+
 #### Scenario: Callers without a registry are not gated
 - **WHEN** `tick()` is called without an eligibility pool and without `require_eligibility_gate` (unit tests, tools)
 - **THEN** all passes run as before

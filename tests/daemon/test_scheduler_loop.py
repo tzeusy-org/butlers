@@ -320,6 +320,74 @@ class TestSchedulerLoopBehavior:
         assert all(kwargs["eligibility_pool"] is None for kwargs in tick_kwargs)
         assert all(kwargs["require_eligibility_gate"] is True for kwargs in tick_kwargs)
 
+    async def test_registry_pool_retry_backs_off_and_caches_recovery(self, tmp_path: Path) -> None:
+        """A registry pool that failed at startup is retried with 60s..600s backoff."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        recovered = object()
+        create = AsyncMock(side_effect=[None, None, None, None, None, None, recovered])
+        clock = [1000.0]
+        attempts: list[float] = []
+        with (
+            patch.object(daemon, "_create_audit_pool", create),
+            patch("butlers.daemon.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            for _ in range(2000):
+                before = create.await_count
+                daemon._resolve_eligibility_pool()
+                task = daemon._audit_pool_retry_task
+                if task is not None:
+                    await task
+                if create.await_count > before:
+                    attempts.append(clock[0])
+                if daemon._audit_pool is not None:
+                    break
+                clock[0] += 10
+            assert daemon._audit_pool is recovered
+            # Gaps between attempts double from 60s and cap at 600s.
+            gaps = [b - a for a, b in zip(attempts, attempts[1:], strict=False)]
+            assert gaps == [60, 120, 240, 480, 600, 600]
+            # Success is cached: no further creation attempts.
+            assert daemon._resolve_eligibility_pool() is recovered
+            assert create.await_count == 7
+
+    async def test_loop_gates_until_registry_pool_recovers(self, tmp_path: Path) -> None:
+        """Ticks see no pool while creation fails, then the recovered pool on a later tick."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        recovered = object()
+        create = AsyncMock(side_effect=[None, recovered])
+        seen: list[tuple[object | None, bool]] = []
+
+        async def capture_tick(_pool, _dispatch_fn, **kwargs):
+            seen.append((kwargs["eligibility_pool"], kwargs["require_eligibility_gate"]))
+            return 0
+
+        clock = [0.0]
+
+        async def fast_sleep(_delay):
+            clock[0] += 1000  # every tick is past any backoff window
+            await _real_sleep(0)
+
+        with (
+            patch.object(daemon, "_create_audit_pool", create),
+            patch("butlers.daemon._tick", side_effect=capture_tick),
+            patch("butlers.daemon.time.monotonic", side_effect=lambda: clock[0]),
+            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            for _ in range(20):
+                await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert seen[0] == (None, True)
+        assert (recovered, True) in seen
+        assert seen.index((recovered, True)) >= 1
+
     async def test_exception_tolerance_and_db_guard_and_custom_interval(
         self, tmp_path: Path
     ) -> None:
