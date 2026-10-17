@@ -43,9 +43,12 @@ step sequence of each, consult the `patrol-operations` skill.
   variable. Automated publication fails closed: no `git push`, no `gh pr create`;
   the attempt fails with `publication_unavailable` (follow-up: `last_follow_up_error`)
   until the isolated publisher and process/filesystem isolation are proven. The
-  dispatcher keeps the token for read-only PR-status polling and its own
-  fetch/worktree preparation. This does not activate the publisher or change live
-  credentials.
+  dispatcher keeps the token only for read-only PR-status polling, which addresses
+  the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the
+  shared `repo_root` that agents can write (`.git/hooks`, `.git/config`), so it holds
+  no token. Every dispatcher git subprocess gets `harden_git_env()` (command-line
+  `core.hooksPath=/dev/null`, `core.fsmonitor=false`, empty `credential.helper`).
+  This does not activate the publisher or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First

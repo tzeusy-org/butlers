@@ -581,6 +581,32 @@ def _git_askpass_script() -> Path:
     return script_path
 
 
+def harden_git_env(env: dict[str, str], *, isolate_credentials: bool = True) -> dict[str, str]:
+    """Return *env* with command-line git config that agent-writable config cannot override.
+
+    QA worktrees are linked worktrees of ``repo_root``, so an agent can write the shared
+    ``.git/hooks`` and ``.git/config``.  Command-line config (``GIT_CONFIG_COUNT``) wins over
+    every file scope, so hooks, fsmonitor and (by default) credential helpers planted there
+    never run in a dispatcher git subprocess.  The remaining file-scoped config (for example
+    ``url.*.insteadOf``) is why the token also stays out of these subprocesses where possible.
+    """
+    hardened = dict(env)
+    settings = [("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false")]
+    if isolate_credentials:
+        settings.append(("credential.helper", ""))
+        hardened["GIT_CONFIG_NOSYSTEM"] = "1"
+        hardened["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    # Ambient command-line entries (trusted deployment config) are kept unless isolating.
+    start = 0
+    if not isolate_credentials and env.get("GIT_CONFIG_COUNT", "").isdecimal():
+        start = int(env["GIT_CONFIG_COUNT"])
+    hardened["GIT_CONFIG_COUNT"] = str(start + len(settings))
+    for index, (key, value) in enumerate(settings, start):
+        hardened[f"GIT_CONFIG_KEY_{index}"] = key
+        hardened[f"GIT_CONFIG_VALUE_{index}"] = value
+    return hardened
+
+
 def build_git_auth_env(
     gh_token: str | None, *, base_env: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -594,7 +620,7 @@ def build_git_auth_env(
     else:
         env.pop("GIT_ASKPASS", None)
         env.pop(_GIT_AUTH_TOKEN_ENV_VAR, None)
-    return env
+    return harden_git_env(env)
 
 
 _AUTH_ERROR_MARKERS: tuple[str, ...] = (
@@ -2418,7 +2444,10 @@ async def check_open_pr_statuses(
     if not rows:
         return counts
 
-    env = build_sandbox_env(gh_token)
+    env = harden_git_env(build_sandbox_env(gh_token))
+    # gh addresses the PR by URL from a neutral cwd, so it never resolves the repository
+    # through the agent-writable shared .git of repo_root.
+    neutral_cwd = tempfile.gettempdir()
 
     for row in rows:
         attempt_id: uuid.UUID = row["id"]
@@ -2535,10 +2564,10 @@ async def check_open_pr_statuses(
                     "gh",
                     "pr",
                     "view",
-                    str(pr_number),
+                    pr_url or str(pr_number),
                     "--json",
                     json_fields,
-                    cwd=str(repo_root),
+                    cwd=neutral_cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
@@ -2949,10 +2978,11 @@ async def _dispatch_pr_review_followup(
         )
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build authenticated git env for all branch-prep subprocesses so that
-        # private HTTPS remotes don't reject fetch/worktree commands before the
-        # agent even runs.
-        git_prep_env = build_git_auth_env(gh_token)
+        # Branch-prep git runs in repo_root, whose shared .git an earlier agent may have
+        # written (hooks, config).  It therefore never holds the GitHub token: the env is
+        # token-free and hardened, so a private remote fails the fetch closed (publication
+        # is unavailable anyway) instead of exposing the token to agent-written config.
+        git_prep_env = build_git_auth_env(None)
 
         async def _run_git_here(*args: str) -> tuple[int, str]:
             proc = await asyncio.create_subprocess_exec(
@@ -3286,6 +3316,8 @@ async def _refresh_main_commit(repo_root: Path) -> str:
                 cwd=str(repo_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                # Keep ambient fetch auth, but never run agent-planted hooks or fsmonitor.
+                env=harden_git_env(dict(os.environ), isolate_credentials=False),
             )
             output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode != 0:
