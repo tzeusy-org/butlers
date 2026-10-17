@@ -780,6 +780,11 @@ async def ann_pool(_ceiling_migrated_db_url: str):
 
     async def init(conn) -> None:
         await register_jsonb_codec(conn)
+
+    # ``setup`` runs on every acquire.  ``init`` runs once per connection and the pool's
+    # release-time ``RESET ALL`` would wipe session settings made there, so the plan GUCs
+    # would silently not apply to later queries.
+    async def setup(conn) -> None:
         await conn.execute("SET enable_seqscan = off")
         # Every non-HNSW way to answer ``ORDER BY embedding <=> ... LIMIT`` needs a Sort, so
         # disabling it leaves an un-materialized filtered statement only the HNSW plan.  The
@@ -787,7 +792,9 @@ async def ann_pool(_ceiling_migrated_db_url: str):
         await conn.execute("SET enable_sort = off")
         await conn.execute("SET hnsw.ef_search = 10")
 
-    p = await asyncpg.create_pool(_ceiling_migrated_db_url, min_size=1, max_size=3, init=init)
+    p = await asyncpg.create_pool(
+        _ceiling_migrated_db_url, min_size=1, max_size=3, init=init, setup=setup
+    )
     await p.execute(
         "TRUNCATE TABLE facts, rules, episodes, public.entities RESTART IDENTITY CASCADE"
     )
