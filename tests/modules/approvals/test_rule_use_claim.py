@@ -9,6 +9,7 @@ in CI's integration shards only (the author lane has no Docker).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,7 @@ from butlers.identity import ResolvedContact
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.approvals.rules import claim_rule_use
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -78,8 +80,12 @@ async def _insert_rule(
     return rule_id
 
 
-async def _run_gate_calls(pool, calls: int):
-    """Run *calls* concurrent gate invocations; return (results, park mock)."""
+async def _run_gate_calls(pool, calls: int, *, stale_match: dict | None = None):
+    """Run *calls* concurrent gate invocations; return (results, park mock).
+
+    ``stale_match`` makes the gate act on a rule snapshot taken while the rule was
+    still usable, regardless of what the row looks like by claim time.
+    """
     original_fn = AsyncMock(return_value={"status": "sent"})
     original_fn.__name__ = TOOL
     original_fn.__qualname__ = TOOL
@@ -94,6 +100,14 @@ async def _run_gate_calls(pool, calls: int):
     )
     contact = ResolvedContact(entity_id=uuid.uuid4(), name="Friend", roles=["contact"])
     park = AsyncMock()
+    stale_snapshot = (
+        patch(
+            "butlers.modules.approvals.gate.match_standing_rule",
+            new=MagicMock(return_value=stale_match),
+        )
+        if stale_match is not None
+        else contextlib.nullcontext()
+    )
     with (
         patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
@@ -106,6 +120,7 @@ async def _run_gate_calls(pool, calls: int):
             new=AsyncMock(return_value=MagicMock(success=True, result={"status": "sent"})),
         ),
         patch("butlers.fleet_events.publish_fleet_event", new=AsyncMock()),
+        stale_snapshot,
     ):
         results = await asyncio.gather(
             *(
@@ -193,3 +208,52 @@ async def test_executor_no_longer_counts_the_use(pool) -> None:
 
     assert result.success
     assert await _use_count(pool, rule_id) == 1
+
+
+_UNUSABLE = [
+    {"max_uses": 2, "use_count": 2},
+    {"max_uses": None, "active": False},
+    {"max_uses": None, "expires_at": datetime.now(UTC) - timedelta(hours=1)},
+]
+_UNUSABLE_IDS = ["exhausted", "inactive", "expired"]
+
+
+@pytest.mark.parametrize("rule_kwargs", _UNUSABLE, ids=_UNUSABLE_IDS)
+async def test_claim_rule_use_refuses_an_unusable_rule_without_counting(pool, rule_kwargs) -> None:
+    """The claim statement itself re-checks every usability clause under the row lock."""
+    rule_id = await _insert_rule(pool, **rule_kwargs)
+    before = await _use_count(pool, rule_id)
+
+    assert await claim_rule_use(pool, rule_id) is False
+    assert await _use_count(pool, rule_id) == before
+
+
+async def test_claim_rule_use_claims_a_usable_rule_once_per_call(pool) -> None:
+    """Positive control for the refusals above: the same call succeeds on a usable rule."""
+    rule_id = await _insert_rule(
+        pool, max_uses=2, expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    assert [await claim_rule_use(pool, rule_id) for _ in range(3)] == [True, True, False]
+    assert await _use_count(pool, rule_id) == 2
+
+
+@pytest.mark.parametrize("rule_kwargs", _UNUSABLE, ids=_UNUSABLE_IDS)
+async def test_gate_parks_when_the_matched_rule_became_unusable_before_the_claim(
+    pool, rule_kwargs
+) -> None:
+    """A rule matched from a usable snapshot but unusable at claim time never auto-approves."""
+    rule_id = await _insert_rule(pool, **rule_kwargs)
+    snapshot = {
+        "id": rule_id,
+        "tool_name": TOOL,
+        "arg_constraints": {"chat_id": {"type": "any"}},
+    }
+    before = await _use_count(pool, rule_id)
+
+    results, park = await _run_gate_calls(pool, calls=1, stale_match=snapshot)
+
+    assert results[0] != {"status": "sent"}
+    assert park.await_count == 1
+    assert await _approved_count(pool, rule_id) == 0
+    assert await _use_count(pool, rule_id) == before

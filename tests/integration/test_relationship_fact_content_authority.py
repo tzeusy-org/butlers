@@ -2296,3 +2296,95 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     assert await env.admin.fetchval(
         "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE content_authority IS NOT NULL)"
     )
+
+
+async def test_lost_rule_claim_parks_an_assertion_the_owner_can_still_execute(env, monkeypatch):
+    """A standing-rule claim lost after preparation parks a normally approvable action.
+
+    ``prepare_rule_assertion`` commits a ``standing_rule`` decision before the gate
+    claims the rule's use.  When the claim loses, that decision must not survive
+    on the parked action, or the owner's approval could never execute it.
+    """
+    from butlers.config import DEFAULT_APPROVAL_RULE_PRECEDENCE, ApprovalRiskTier
+    from butlers.modules.approvals import gate as gate_module
+    from butlers.modules.approvals.executor import execute_approved_action
+    from butlers.modules.approvals.gate import _make_gate_wrapper
+    from butlers.modules.approvals.operations import create_approval_rule
+
+    subject = await _person(env)
+    report = await _report(env, await _person(env))
+    rule_args = {
+        "subject": str(subject),
+        "predicate": "has-email",
+        "object": f"lost-race-{subject}@example.test",
+        "object_kind": "literal",
+    }
+    constraints = {key: {"type": "exact", "value": value} for key, value in rule_args.items()}
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-lost-race-rule")
+        async def create_rule():
+            return await create_approval_rule(
+                env.rel, "relationship_assert_fact", constraints, "Synthetic bounded permission"
+            )
+
+        created = await client.post("/api/test-lost-race-rule", headers=headers)
+        assert created.status_code == 200 and "error" not in created.json()
+        rule_id = uuid.UUID(created.json()["id"])
+    snapshot = dict(
+        await env.rel.fetchrow("SELECT * FROM relationship.approval_rules WHERE id=$1", rule_id)
+    )
+    # The rule was usable when the gate matched it, and is spent by the time of the claim.
+    await env.rel.execute(
+        "UPDATE relationship.approval_rules SET max_uses=1, use_count=1 WHERE id=$1", rule_id
+    )
+    monkeypatch.setattr(gate_module, "match_standing_rule", lambda *_args, **_kwargs: snapshot)
+
+    async def handler(**values):
+        values["subject"] = uuid.UUID(values["subject"])
+        values["approval_action_id"] = uuid.UUID(values["approval_action_id"])
+        result = await relationship_assert_fact(env.rel, src="relationship", **values)
+        return {"fact_id": str(result.fact_id), "outcome": result.outcome.value}
+
+    gate = _make_gate_wrapper(
+        "relationship_assert_fact",
+        handler,
+        env.rel,
+        48,
+        ApprovalRiskTier.MEDIUM,
+        DEFAULT_APPROVAL_RULE_PRECEDENCE,
+        butler_name="relationship",
+    )
+    async with _context(report):
+        parked = await asyncio.wait_for(
+            gate(**rule_args, why="Synthetic exhausted standing permission", evidence=[]), 5
+        )
+    assert parked["status"] == "pending_approval"
+    action_id = uuid.UUID(parked["action_id"])
+    assert (
+        await env.rel.fetchval(
+            "SELECT decision_report FROM relationship.fact_approval_context WHERE action_id=$1",
+            action_id,
+        )
+        is None
+    )
+
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-lost-race-approve")
+        async def approve():
+            return await approve_action(env.rel, str(action_id))
+
+        response = await client.post("/api/test-lost-race-approve", headers=headers)
+        assert response.status_code == 200 and "error" not in response.json()
+
+    args = await env.rel.fetchval("SELECT tool_args FROM pending_actions WHERE id=$1", action_id)
+    executed = await asyncio.wait_for(
+        execute_approved_action(env.rel, action_id, "relationship_assert_fact", args, handler), 5
+    )
+    assert executed.success, executed.error
+    row = await env.admin.fetchrow(
+        "SELECT * FROM relationship.entity_facts WHERE id=$1", uuid.UUID(executed.result["fact_id"])
+    )
+    assert row["confirmation_source"] == "approved_action"
+    assert await env.rel.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule_id) == 1

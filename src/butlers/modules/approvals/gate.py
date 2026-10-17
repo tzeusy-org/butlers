@@ -853,6 +853,11 @@ def _make_gate_wrapper(
             rule_claimed = claimed_row is not None
             if not rule_claimed:
                 rule_exhausted = True
+                if tool_name == "relationship_assert_fact":
+                    from butlers.tools.relationship.fact_authority import release_rule_assertion
+
+                    # Park the already-prepared args, but not the standing-rule decision.
+                    await release_rule_assertion(pool, action_id)
                 logger.info(
                     "Gate: standing rule %s is exhausted or expired for tool %r; parking",
                     rule_id,
