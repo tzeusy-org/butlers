@@ -781,6 +781,10 @@ async def ann_pool(_ceiling_migrated_db_url: str):
     async def init(conn) -> None:
         await register_jsonb_codec(conn)
         await conn.execute("SET enable_seqscan = off")
+        # Every non-HNSW way to answer ``ORDER BY embedding <=> ... LIMIT`` needs a Sort, so
+        # disabling it leaves an un-materialized filtered statement only the HNSW plan.  The
+        # exact (materialized CTE) leg must still sort its CTE scan and so stays exact.
+        await conn.execute("SET enable_sort = off")
         await conn.execute("SET hnsw.ef_search = 10")
 
     p = await asyncpg.create_pool(_ceiling_migrated_db_url, min_size=1, max_size=3, init=init)
