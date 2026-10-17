@@ -1802,6 +1802,30 @@ def test_retirement_replacements_must_exist_in_the_candidate(tmp_path):
     assert ledger.verify(root, base, [], trusted=trusted)["status"] == "PASS"
 
 
+def test_cli_prints_the_real_contract_refusal_category_across_module_identities(tmp_path):
+    """bu-rf37wu: run as a script, an imported consumer's refusal keeps its own category.
+
+    ``python scripts/check_condensation_ledger.py`` loads the ledger as ``__main__`` while
+    ``contract_evolution`` imports it again by name, so without the ``sys.modules`` alias in
+    the ``__main__`` block its ``EvidenceError`` is a different class and collapses to
+    ``invalid-structural-evidence``. In-process tests cannot see that.
+    """
+    root, base, _trusted, _authority, _request, _commit = _contract_repository(tmp_path)
+    # The protected ref predates the authorization, so the candidate request has no authority.
+    ledger.git(root, "update-ref", "refs/remotes/origin/main", base)
+    proc = subprocess.run(
+        [sys.executable, str(Path(ledger.__file__)), "--repo-root", str(root), "--base", base],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout) == {
+        "status": "REFUSED",
+        "category": "missing-protected-contract-authority",
+    }
+
+
 def test_stale_base_pr_is_not_forced_through_an_already_landed_contract_request(tmp_path):
     """bu-1bxczh: a request the trusted parent already carries is public history."""
     root, base, authorized, _authority, _request, _commit = _contract_repository(tmp_path)
@@ -1905,3 +1929,35 @@ def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(
         ledger.verify(
             root, landed if fresh_base else base, [], contract_directory=output, trusted=landed
         )
+
+
+_SKIPPING_CONFTEST = (
+    "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip_all():\n    pytest.skip('x')\n"
+)
+
+
+@pytest.mark.parametrize("location", ["conftest.py", "tests/conftest.py"])
+def test_added_ancestor_conftest_is_attributed_to_every_owner_below_it(tmp_path, location):
+    """bu-0jd93j: a conftest.py absent at base but added by the candidate is new fixture context."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / location).write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a skipping ancestor conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert losses
+    assert set(losses.values()) == {"ancestral-fixture-context-change"}
+    assert all(node.startswith("tests/test_owner.py::") for node in losses)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [])
+
+
+def test_added_conftest_without_owners_below_it_changes_nothing(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "unrelated").mkdir()
+    (root / "unrelated/conftest.py").write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a conftest above no owner")
+
+    assert ledger.destructive_changes(root, base) == {}

@@ -959,6 +959,21 @@ def destructive_changes(
                     or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
                 ):
                     losses.setdefault(node, "ancestral-fixture-context-change")
+    # A conftest.py the candidate adds is new fixture context for every owner below it,
+    # exactly like an edit or deletion of one the base already had.
+    base_paths = set(paths)
+    for path in tracked_paths(root):
+        if PurePosixPath(path).name != "conftest.py" or path in base_paths:
+            continue
+        if (root / path).is_symlink():
+            raise EvidenceError("indirect-fixture-source")
+        ancestor = PurePosixPath(path).parent
+        for node in before:
+            if (
+                ancestor == PurePosixPath(".")
+                or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
+            ):
+                losses.setdefault(node, "ancestral-fixture-context-change")
     return losses
 
 
