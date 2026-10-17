@@ -480,6 +480,34 @@ being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
 
+Admission routes for a PR that changes non-Python inputs (verified against the guard
+with `scripts/check_condensation_ledger.py`, bu-ihitkl). The refusal
+`changed-non-python-dependency-needs-independent-runtime-proof` belongs to the
+survivor-evidence route only (`production_dependencies`, reached from
+`verify_ledger` and the producer); the contract-evolution route does not call it.
+
+- **Split a no-loss PR.** The guard demands evidence only for source loss, so a PR
+  that retains every test and changes only documentation, OpenSpec files, a
+  `pyproject.toml` marker line or an executed data or shell file passes with
+  `losses: 0`. Removing those paths from a PR that does lose or restructure tests
+  leaves the same `unproven-test-or-assertion-loss` refusal, so the split moves the
+  non-Python concern but never admits the loss itself.
+- **Contract-evolution manifest.** `contract_evolution.authorize` admits every
+  changed path, whatever its type, when the protected manifest lists it as an exact
+  `inputs` record: documentation, OpenSpec files, workflow YAML and executed JSON
+  such as `.github/ci-test-weights.json` are all admitted this way in merged
+  precedent. It refuses an unlisted changed path
+  (`unapproved-contract-runtime-input`), a listed path edited after the manifest
+  merged (`stale-authorized-source-or-context`), any change to `pyproject.toml` or
+  `uv.lock` (`changed-environment-needs-independent-installed-tools`), and a
+  requirement that is new in the PR (`git-source-unavailable`: the cited block must
+  already exist on the comparison base and change in the same PR). The amended
+  requirement therefore stays in the PR that changes the tests; do not split it out.
+- **Neither route.** A loss PR that carries no changed existing requirement block,
+  or that needs a changed environment input in the same PR, is not admitted by
+  either route. Land the environment change in a separate no-loss PR first, or file
+  a spec-first amendment of REQ-testing-053; do not add an exemption.
+
 The finite Python worker still refuses any runtime read of an excluded request,
 including a caught audit refusal. Its descendant event is evidence of execution,
 not evidence that the child could not read the input. A metadata-bearing child
