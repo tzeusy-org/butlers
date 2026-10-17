@@ -28,7 +28,7 @@ from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
-from butlers.ingestion_bearer_scrub import scrub_stored_record
+from butlers.ingestion_bearer_scrub import scrub_message_text, scrub_stored_record
 from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.telemetry import (
@@ -2429,6 +2429,19 @@ class MessagePipeline:
         source_id = source_metadata.get("source_id")
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
+        # Everything downstream (routing prompt, preview, response summary, dead-letter
+        # cc_output) uses the scrubbed text. The ingress dedupe record keeps hashing
+        # the text as received, and scrubs it itself before any write.
+        raw_message_text = message_text
+        try:
+            message_text = scrub_message_text(
+                message_text,
+                source={"provider": source},
+                sender={"identity": self._source_sender_identity(args, source_metadata)},
+            )
+        except Exception:
+            logger.warning("Inbound bearer scrub failed; withholding message text")
+            message_text = "[content withheld]"
         message_length = len(message_text)
         content_blind_observability = self._uses_content_blind_observability(source, args)
         message_preview = (
@@ -2498,7 +2511,7 @@ class MessagePipeline:
                     if message_inbox_id is None and self._enable_ingress_dedupe:
                         try:
                             ingress_record = await self._accept_ingress(
-                                message_text=message_text,
+                                message_text=raw_message_text,
                                 args=args,
                                 source_metadata=source_metadata,
                                 source=source,

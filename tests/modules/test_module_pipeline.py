@@ -4892,3 +4892,43 @@ async def test_dead_letter_replay_scrubs_legacy_raw_payload() -> None:
     _, _, raw_payload, normalized_text, _ = _replayed_insert(conn)
     assert "482913" not in raw_payload + normalized_text
     assert "[auth-code withheld" in normalized_text
+
+
+async def test_process_routes_scrubbed_text_and_withholds_it_on_detector_failure(
+    mocked_pipeline_source,
+) -> None:
+    """The routing prompt gets the placeholder, never the code; a detector failure withholds."""
+    prompts: list[str] = []
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        prompts.append(kwargs["prompt"])
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    tool_args = {
+        "source_channel": "email",
+        "source_identity": "sender@example.com",
+        "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+    }
+    with patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new=AsyncMock(return_value=_MOCK_BUTLERS),
+    ):
+        await pipeline.process(
+            "Your code is 482913",
+            tool_args=dict(tool_args),
+            message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+        )
+        with patch(
+            "butlers.modules.pipeline.scrub_message_text", side_effect=RuntimeError("482913")
+        ):
+            await pipeline.process(
+                "Your code is 482913",
+                tool_args=dict(tool_args),
+                message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+            )
+
+    assert len(prompts) == 2
+    assert all("482913" not in prompt for prompt in prompts)
+    assert "[auth-code withheld" in prompts[0]
+    assert "[content withheld]" in prompts[1]
