@@ -535,6 +535,7 @@ async def test_evaluator_withholds_bearer_text_from_prompt_log_and_window(caplog
     for secret in ("482913", "synthetic-reset-token"):
         assert all(secret not in prompt for prompt in prompts)
         assert secret not in caplog.text
+    assert "[auth-code withheld: example.com]" in caplog.text
     # The window re-sends the placeholder, not the code, to later evaluations.
     assert "[auth-code withheld: example.com]" in prompts[2]
 
@@ -557,6 +558,17 @@ async def test_evaluator_bypass_paths_keep_verdicts_and_store_scrubbed_entry() -
     dispatcher.call.assert_not_called()
     assert all("482913" not in entry.text for entry in evaluator.window.entries)
     assert len(evaluator.window.entries) == 2
+
+    # Group-size bypass: a small group skips the LLM and still stores the scrubbed entry.
+    small_group = DiscretionEvaluator(
+        source_name="tg:2", dispatcher=dispatcher, group_size_bypass_max=20
+    )
+    by_group = await small_group.evaluate(
+        "Your code is 482913", weight=0.1, participant_count=5, chat_type="group"
+    )
+    assert by_group.reason == "group-size-bypass"
+    dispatcher.call.assert_not_called()
+    assert "482913" not in small_group.window.entries[0].text
 
 
 async def test_evaluator_leaves_ordinary_numbers_unchanged() -> None:
