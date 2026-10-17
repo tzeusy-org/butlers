@@ -218,3 +218,35 @@ async def test_invoke_stderr_log(tmp_path: Path):
         await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
             prompt="hi", system_prompt="sys", mcp_servers={}, env={}
         )
+
+
+async def test_invoke_hands_the_cli_an_mcp_config_with_the_invocation_header():
+    """The Spawner's binding header reaches the --mcp-config file the CLI reads (bu-m2zcah)."""
+    from butlers.core.fact_authority import INVOCATION_HEADER
+
+    seen: dict[str, object] = {}
+
+    async def fake_exec(*cmd, **kwargs):
+        config_path = Path(cmd[cmd.index("--mcp-config") + 1])
+        seen["config"] = json.loads(config_path.read_text())
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        proc.pid = 1
+        return proc
+
+    with patch(_EXEC, side_effect=fake_exec):
+        await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+            prompt="hi",
+            system_prompt="",
+            mcp_servers={
+                "my-butler": {
+                    "url": "http://localhost:9100/mcp",
+                    "headers": {INVOCATION_HEADER: "synthetic-binding"},
+                }
+            },
+            env={},
+        )
+
+    entry = seen["config"]["mcpServers"]["my-butler"]
+    assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}
