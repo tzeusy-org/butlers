@@ -111,6 +111,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
   `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
   mounts only the runtime-probe verifier keyring, never the signing key.
+  The host kernel must also allow unprivileged user namespaces: on Ubuntu 24.04 and newer,
+  `kernel.apparmor_restrict_unprivileged_userns=1` makes `bwrap` fail with
+  `setting up uid map: Permission denied` even under `apparmor:unconfined`, and the sandbox fails
+  closed (nothing runs unsandboxed). Set it to `0` on such hosts. The nightly `exact-image-sandbox`
+  job does this on its runner (bu-3kyyyy).
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
   (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
   placeholders, so the stack boots on a machine that has provisioned neither --- with the control
