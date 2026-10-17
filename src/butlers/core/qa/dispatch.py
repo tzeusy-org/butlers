@@ -37,8 +37,9 @@ and, when active, records a decision-only ``healing_dispatch_events`` row
 (no ``healing_attempts`` row, no LLM session, no worktree) instead of
 proceeding to Gate 6.
 
-Investigation agents run in sandboxed worktree environments with only
-GH_TOKEN (from CredentialStore), PATH, and build-tool variables.
+Investigation agents run in sandboxed worktree environments with only PATH and
+build-tool variables; they never receive a GitHub credential.  Automated
+publication (push / PR create) is unavailable until the isolated publisher lands.
 
 Spec reference
 --------------
@@ -531,6 +532,22 @@ def build_sandbox_env(
     return env
 
 
+def build_agent_env(
+    *,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
+) -> dict[str, str]:
+    """Build the environment for LLM agent sessions: never any GitHub credential.
+
+    Agents run in an agent-controlled worktree, so they get the sandbox allowlist
+    without ``GH_TOKEN`` or any git credential helper variable.  Only the trusted
+    dispatcher (:func:`build_git_auth_env`, PR-status polling) holds the token.
+    """
+    return build_sandbox_env(
+        None, git_author_name=git_author_name, git_author_email=git_author_email
+    )
+
+
 def _prepare_agent_workspace(worktree_path: Path) -> Path:
     """Create an ignored helper cwd with QA-specific AGENTS.md overrides."""
     agent_dir = worktree_path / _QA_AGENT_SUBDIR
@@ -594,6 +611,12 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 Shared by :func:`_classify_git_push_error` and the ``gh pr create`` error
 classifier so that both code paths remain consistent without duplication.
 """
+
+_PUBLICATION_UNAVAILABLE = "publication_unavailable"
+_PUBLICATION_UNAVAILABLE_DETAIL = (
+    "publication_unavailable: automated QA publication is disabled until the isolated "
+    "publisher lands; nothing was pushed and no PR was created or changed"
+)
 
 _GIT_AUTH_FAILURE_DETAIL = (
     "git_auth_failed: QA GitHub authentication or repository write authorization failed; "
@@ -1297,6 +1320,9 @@ async def _create_qa_pr(
 ) -> tuple[str | None, int | None, datetime | None, str | None]:
     """Push branch and create a QA investigation GitHub PR.
 
+    Dormant: no dispatch path calls this while automated publication is disabled
+    (``publication_unavailable``); the isolated publisher slices replace it.
+
     When ``worktree_path`` is provided, the dispatcher reads
     ``{worktree_path}/.tmp/qa-agent/INVESTIGATION_NOTES.md`` (written by the
     investigation agent) and substitutes its Root Cause / Fix Summary / Test
@@ -1712,8 +1738,7 @@ async def _run_investigation_session(
         agent_cwd = _prepare_agent_workspace(worktree_path)
 
         # Build sandboxed environment for the agent
-        sandbox_env = build_sandbox_env(
-            gh_token,
+        sandbox_env = build_agent_env(
             git_author_name=git_author_name,
             git_author_email=git_author_email,
         )
@@ -1860,17 +1885,15 @@ async def _run_investigation_session(
             )
             return
 
-        # Agent succeeded — create PR
-        pr_url, pr_number, pr_created_at, pr_error = await _create_qa_pr(
-            repo_root=repo_root,
-            branch_name=branch_name,
-            finding=finding,
-            attempt_id=attempt_id,
-            labels=config.pr_labels,
-            gh_token=gh_token,
-            dashboard_base_url=config.dashboard_base_url,
-            whitelist=config.repo_whitelist,
-            worktree_path=worktree_path,
+        # Agent succeeded — publication fails closed: the trusted dispatcher must not
+        # push or open a PR from the agent-controlled worktree until the isolated
+        # publisher lands (bu-mc01y5.5-.7).  Only no-op detection (local git log,
+        # no credential) still runs so empty investigations stay "unfixable".
+        pr_url, pr_number, pr_created_at = None, None, None
+        pr_error = (
+            "no_op_branch"
+            if await _detect_no_op_branch(repo_root, branch_name, build_agent_env())
+            else _PUBLICATION_UNAVAILABLE
         )
         diff_snapshot = (
             [] if pr_error == "no_op_branch" else await _capture_commit_diff_snapshot(worktree_path)
@@ -1919,7 +1942,7 @@ async def _run_investigation_session(
             )
             return
 
-        if pr_error == "no_gh_token":
+        if pr_error == _PUBLICATION_UNAVAILABLE:
             if metrics is not None:
                 _elapsed = (_time.monotonic() - _phase_start) * 1000
                 metrics.record_recovery_phase_duration(
@@ -1931,12 +1954,15 @@ async def _run_investigation_session(
                 metrics.record_recovery_execution_failure(
                     workflow="qa",
                     phase="investigate",
-                    error_class="no_gh_token",
+                    error_class=_PUBLICATION_UNAVAILABLE,
                 )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
-                        pool, phase_session_id, "failed", error_detail="no_gh_token"
+                        pool,
+                        phase_session_id,
+                        "failed",
+                        error_detail=_PUBLICATION_UNAVAILABLE,
                     )
                 except Exception as _pss_exc:
                     logger.debug("Failed to mark phase session failed: %s", _pss_exc)
@@ -1944,14 +1970,14 @@ async def _run_investigation_session(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
+                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
                 healing_session_id=investigation_session_id,
             )
             await _record_escalation_for_terminal(
                 pool,
                 attempt_id=attempt_id,
                 status="failed",
-                error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
+                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -3007,8 +3033,7 @@ async def _dispatch_pr_review_followup(
             patrol_id,
         )
 
-        sandbox_env = build_sandbox_env(
-            gh_token,
+        sandbox_env = build_agent_env(
             git_author_name=git_author_name,
             git_author_email=git_author_email,
         )
@@ -3125,52 +3150,27 @@ async def _run_review_followup_session(
             )
             return
 
-        owner_repo = await _get_remote_owner_repo(repo_root, sandbox_env)
-        if owner_repo is None:
-            push_error = "remote_unavailable"
-        else:
-            push_error = await _push_branch_with_gh_auth(
-                repo_root, followup_branch, owner_repo, sandbox_env
-            )
-        if push_error is not None:
-            safe_push_error = _content_blind_git_error(push_error)
-            logger.warning(
-                "QA review follow-up: %s (attempt=%s)",
-                safe_push_error,
-                attempt_id,
-            )
-            await pool.execute(
-                """
-                UPDATE public.healing_attempts
-                SET last_follow_up_status     = 'failed',
-                    last_follow_up_session_id = $2,
-                    last_follow_up_error      = $3,
-                    updated_at                = now()
-                WHERE id = $1
-                """,
-                attempt_id,
-                followup_session_id,
-                safe_push_error,
-            )
-        else:
-            logger.info(
-                "QA review follow-up: pushed to origin/%s (attempt=%s pr_number=%s)",
-                followup_branch,
-                attempt_id,
-                pr_number,
-            )
-            await pool.execute(
-                """
-                UPDATE public.healing_attempts
-                SET last_follow_up_status     = 'succeeded',
-                    last_follow_up_session_id = $2,
-                    last_follow_up_error      = NULL,
-                    updated_at                = now()
-                WHERE id = $1
-                """,
-                attempt_id,
-                followup_session_id,
-            )
+        # Publication fails closed: no push from the agent-controlled worktree and the
+        # open PR is left untouched until the isolated publisher lands.
+        logger.warning(
+            "QA review follow-up: %s (attempt=%s pr_number=%s)",
+            _PUBLICATION_UNAVAILABLE,
+            attempt_id,
+            pr_number,
+        )
+        await pool.execute(
+            """
+            UPDATE public.healing_attempts
+            SET last_follow_up_status     = 'failed',
+                last_follow_up_session_id = $2,
+                last_follow_up_error      = $3,
+                updated_at                = now()
+            WHERE id = $1
+            """,
+            attempt_id,
+            followup_session_id,
+            _PUBLICATION_UNAVAILABLE_DETAIL,
+        )
 
         # Clean up the local worktree; keep the branch for the PR
         await remove_healing_worktree(
