@@ -634,3 +634,141 @@ class TestLocalCeilingEnforcedInSQL:
             )
             == fact_before
         )
+
+
+# ---------------------------------------------------------------------------
+# Entity and predicate filters apply before ranking (bu-s11n0s.19)
+# ---------------------------------------------------------------------------
+
+_FILTER_SCOPE = "zz_prefilter_test"
+_QUERY_VECTOR = [1.0] + [0.0] * 383
+_FAR_VECTOR = [0.0, 1.0] + [0.0] * 382
+
+
+class TestRecallFiltersApplyBeforeRanking:
+    async def test_unparseable_entity_id_matches_nothing_without_querying_facts(self) -> None:
+        engine = MagicMock()
+        engine.embed.return_value = _QUERY_VECTOR
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock(return_value=None)
+
+        result = await _search.recall(
+            pool,
+            "work",
+            engine,
+            filters={"entity_id": "not-a-uuid"},
+            read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        assert result == []
+        pool.fetch.assert_not_awaited()
+
+
+async def _insert_ranked_fact(
+    pool,
+    *,
+    content: str,
+    near: bool,
+    predicate: str | None = None,
+    entity_id: uuid.UUID | None = None,
+    object_entity_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    vector = str(_QUERY_VECTOR if near else _FAR_VECTOR)
+    row = await pool.fetchrow(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, sensitivity, entity_id,
+                           object_entity_id, importance, embedding, search_vector,
+                           last_confirmed_at, content_authority)
+        VALUES ($1, $2, $3, $4, 'normal', $5, $6, 5.0, $7::vector,
+                to_tsvector('english', $3), now(), 'owner')
+        RETURNING id
+        """,
+        f"subject-{uuid.uuid4().hex[:8]}",
+        predicate or f"note-{uuid.uuid4().hex[:8]}",
+        content,
+        _FILTER_SCOPE,
+        entity_id,
+        object_entity_id,
+        vector,
+    )
+    return row["id"]
+
+
+async def _insert_entity(pool, name: str) -> uuid.UUID:
+    row = await pool.fetchrow(
+        "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, ARRAY[]::text[])"
+        " RETURNING id",
+        name,
+    )
+    return row["id"]
+
+
+def _filter_engine() -> MagicMock:
+    engine = MagicMock()
+    engine.embed.return_value = _QUERY_VECTOR
+    return engine
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+class TestRecallFiltersApplyBeforeRankingIntegration:
+    async def _recall(self, pool, filters):
+        return await _search.recall(
+            pool,
+            "work",
+            _filter_engine(),
+            scope=_FILTER_SCOPE,
+            limit=10,
+            filters=filters,
+            read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+    async def _crowd(self, pool) -> None:
+        for index in range(50):
+            await _insert_ranked_fact(pool, content=f"work item {index}", near=True)
+
+    async def test_entity_filter_finds_a_fact_ranked_below_the_top_n(self, ceiling_pool) -> None:
+        entity = await _insert_entity(ceiling_pool, "Filter Subject")
+        await self._crowd(ceiling_pool)
+        wanted = await _insert_ranked_fact(
+            ceiling_pool, content="unrelated gardening note", near=False, entity_id=entity
+        )
+
+        unfiltered = await self._recall(ceiling_pool, None)
+        filtered = await self._recall(ceiling_pool, {"entity_id": str(entity)})
+
+        assert wanted not in {row["id"] for row in unfiltered}
+        assert [row["id"] for row in filtered] == [wanted]
+
+    async def test_entity_filter_matches_a_fact_through_its_object_entity(
+        self, ceiling_pool
+    ) -> None:
+        subject = await _insert_entity(ceiling_pool, "Edge Subject")
+        target = await _insert_entity(ceiling_pool, "Edge Object")
+        await self._crowd(ceiling_pool)
+        edge = await _insert_ranked_fact(
+            ceiling_pool,
+            content="unrelated gardening edge",
+            near=False,
+            predicate="knows",
+            entity_id=subject,
+            object_entity_id=target,
+        )
+
+        filtered = await self._recall(ceiling_pool, {"entity_id": str(target)})
+
+        assert [row["id"] for row in filtered] == [edge]
+
+    async def test_predicate_filter_finds_a_fact_ranked_below_the_top_n(self, ceiling_pool) -> None:
+        await self._crowd(ceiling_pool)
+        wanted = await _insert_ranked_fact(
+            ceiling_pool, content="unrelated gardening note", near=False, predicate="prefilter-p"
+        )
+
+        unfiltered = await self._recall(ceiling_pool, None)
+        filtered = await self._recall(ceiling_pool, {"predicate": "prefilter-p"})
+
+        assert wanted not in {row["id"] for row in unfiltered}
+        assert [row["id"] for row in filtered] == [wanted]
