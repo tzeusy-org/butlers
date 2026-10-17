@@ -247,17 +247,22 @@ a later non-suppressed cycle.
 
 ### Requirement: Context-Bus Gating of the Delivery Cycle
 The delivery cycle SHALL consult the situational context bus
-(`public.user_context`) for an active `dnd`, `focused`, `meeting`,
-`sleeping`, or `traveling` signal, deterministically, as an additional
-suppression input alongside the global Owner Attention Policy. When more than
-one such signal is active, precedence is `dnd`, then `focused`, then
-`meeting`, then `sleeping`, then `traveling` — the first of these, in that order, with an active
+(`public.user_context`) for an active `dnd`, `meeting`, `sleeping`, or
+`traveling` signal, deterministically, as an additional suppression input
+alongside the global Owner Attention Policy. When more than one such signal
+is active, precedence is `dnd`, then `meeting`, then `sleeping`, then
+`traveling` — the first of these, in that order, with an active
 non-max-held instance wins and is reported as the suppression signal.
+
+The delivery cycle SHALL also treat an active `focused` signal as a
+suppression input, ranked immediately after `dnd` and before `meeting` in the
+precedence above, with a max-hold TTL of 4 hours, and SHALL report it as
+`context_bus:focused` when it wins.
 
 Each signal type has its own max-hold TTL bounding how long that signal
 alone may suppress routine delivery, independent of the signal's own (often
-much longer) context-bus expiry: `dnd` 4 hours, `focused` 4 hours, `meeting` 2
-hours, `sleeping` 10 hours, `traveling` 6 hours. A signal whose `set_at` is older than its
+much longer) context-bus expiry: `dnd` 4 hours, `meeting` 2 hours, `sleeping`
+10 hours, `traveling` 6 hours. A signal whose `set_at` is older than its
 max-hold TTL, relative to the delivery cycle's `now`, no longer suppresses
 delivery even while it otherwise remains active on the context bus — this
 exists because `traveling` may legitimately stay active for up to 30 days
@@ -274,11 +279,18 @@ silently queue for the length of a trip.
   `reason="context_bus:dnd"`
 
 #### Scenario: meeting or traveling signal suppresses like dnd/sleeping
-- **WHEN** `public.user_context` has an active `focused`, `meeting` or `traveling`
+- **WHEN** `public.user_context` has an active `meeting` or `traveling`
   signal within its max-hold TTL, and no higher-precedence signal is active
 - **AND** no pending candidate is priority>=90
-- **THEN** the cycle is suppressed with `reason="context_bus:focused"`,
-  `"context_bus:meeting"` or `"context_bus:traveling"` respectively, exactly as `dnd`/`sleeping` suppress today
+- **THEN** the cycle is suppressed with `reason="context_bus:meeting"` (or
+  `"context_bus:traveling"`), exactly as `dnd`/`sleeping` suppress today
+
+#### Scenario: focused signal suppresses after dnd within a 4 hour max-hold
+- **WHEN** `public.user_context` has an active `focused` signal whose `set_at`
+  is within 4 hours of the delivery cycle's `now`, and no `dnd` signal is
+  active
+- **AND** no pending candidate is priority>=90
+- **THEN** the cycle is suppressed with `reason="context_bus:focused"`
 
 #### Scenario: A signal beyond its max-hold TTL no longer suppresses
 - **WHEN** `public.user_context` has an active `traveling` signal whose
