@@ -68,6 +68,7 @@ from butlers.testing.schema_standins import (
     CONNECTOR_REGISTRY,
     PENDING_ACTIONS,
 )
+from tests.integration.permission_store_table import permission_store_table  # noqa: F401
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -103,15 +104,6 @@ async def pending_actions_pool(provisioned_postgres_pool):
         await pool.execute(
             "CREATE TABLE IF NOT EXISTS public.entities ("
             "id UUID PRIMARY KEY, posture TEXT NOT NULL DEFAULT 'active')"
-        )
-        # notify() reads the permission matrix first; an unreadable store refuses
-        # (bu-svqpzo.3). Provision the table so the real read runs and finds no row
-        # (readable missing permission stays default-allow).
-        await pool.execute(
-            "CREATE TABLE IF NOT EXISTS public.permissions ("
-            "butler TEXT NOT NULL, permission TEXT NOT NULL, "
-            "granted BOOL NOT NULL DEFAULT TRUE, reason TEXT, "
-            "PRIMARY KEY (butler, permission))"
         )
         # Token rotation is rejected before a pending action can be created.
         # Its refusal is an audit event, so provision the canonical table the
