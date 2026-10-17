@@ -399,3 +399,349 @@ class TestOutOfScopeEndpointsNotBlocked:
             resp.json().get("code") != "owner_required"
             and (resp.json().get("error") or {}).get("code") != "owner_required"
         ), f"GET /entities/{{id}}/{tab} must not be gated by owner_required."
+
+
+# Additive survivor candidate. All original owners above stay until the complete
+# REQ-testing-053 executing account admits each owner separately.
+# This domain fixture retains production middleware; it is not real-role/auth
+# persistence evidence. Authority-backed identity routes retain their own tests.
+_ENTITY_ROUTE_POLICY = {
+    ("GET", "/api/relationship/entities/search"): ("search_entities", "owner"),
+    ("GET", "/api/relationship/entities"): ("list_entities", "authenticated-domain"),
+    ("POST", "/api/relationship/entities"): ("promote_entity", "owner"),
+    ("GET", "/api/relationship/entities/queue"): ("get_entities_queue", "owner"),
+    ("POST", "/api/relationship/entities/queue/dismiss"): ("dismiss_queue_entity", "owner"),
+    ("GET", "/api/relationship/entities/concentration"): ("get_entities_concentration", "owner"),
+    ("GET", "/api/relationship/entities/{entity_id}"): ("get_entity", "authenticated-domain"),
+    ("POST", "/api/relationship/entities/{entity_id}/info"): (
+        "create_entity_info",
+        "authenticated-domain",
+    ),
+    ("PATCH", "/api/relationship/entities/{entity_id}/info/{info_id}"): (
+        "patch_entity_info",
+        "authenticated-domain",
+    ),
+    ("DELETE", "/api/relationship/entities/{entity_id}/info/{info_id}"): (
+        "delete_entity_info",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/secrets/{info_id}"): (
+        "reveal_entity_secret",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/notes"): (
+        "list_entity_notes",
+        "authenticated-domain",
+    ),
+    ("POST", "/api/relationship/entities/{entity_id}/notes"): ("create_entity_note", "owner"),
+    ("GET", "/api/relationship/entities/{entity_id}/interactions"): (
+        "list_entity_interactions",
+        "authenticated-domain",
+    ),
+    ("POST", "/api/relationship/entities/{entity_id}/interactions"): (
+        "create_entity_interaction",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/gifts"): (
+        "list_entity_gifts",
+        "authenticated-domain",
+    ),
+    ("POST", "/api/relationship/entities/{entity_id}/gifts"): ("create_entity_gift", "owner"),
+    ("GET", "/api/relationship/entities/{entity_id}/loans"): (
+        "list_entity_loans",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/timeline"): (
+        "list_entity_timeline",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/cadence"): (
+        "get_entity_cadence",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/linked-contacts"): (
+        "list_entity_linked_contacts",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/message-threads"): (
+        "list_entity_message_threads",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/dates"): (
+        "list_entity_important_dates",
+        "authenticated-domain",
+    ),
+    ("PATCH", "/api/relationship/entities/{entity_id}/dunbar-tier"): (
+        "patch_entity_dunbar_tier",
+        "authenticated-domain",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/neighbours"): (
+        "list_entity_neighbours",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/contacts"): ("list_entity_contacts", "owner"),
+    ("POST", "/api/relationship/entities/{entity_id}/contacts"): ("add_entity_contact", "owner"),
+    ("DELETE", "/api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}"): (
+        "delete_entity_contact",
+        "owner",
+    ),
+    ("POST", "/api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}/verify"): (
+        "verify_entity_contact",
+        "owner",
+    ),
+    ("PUT", "/api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}"): (
+        "update_entity_contact",
+        "owner",
+    ),
+    ("PUT", "/api/relationship/entities/{entity_id}/preferred-channel"): (
+        "set_entity_preferred_channel",
+        "owner",
+    ),
+    ("DELETE", "/api/relationship/entities/{entity_id}/preferred-channel"): (
+        "clear_entity_preferred_channel",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/facts"): ("list_entity_facts", "owner"),
+    ("POST", "/api/relationship/entities/{entity_id}/archive"): ("archive_entity", "owner"),
+    ("DELETE", "/api/relationship/entities/{entity_id}"): ("forget_entity", "owner"),
+    ("POST", "/api/relationship/entities/{entity_id}/merge"): ("merge_entities", "owner"),
+    ("POST", "/api/relationship/entities/compare"): ("compare_entities", "owner"),
+    ("POST", "/api/relationship/entities/dismiss-pair"): ("dismiss_pair", "owner"),
+    ("GET", "/api/relationship/entities/{entity_id}/activity"): ("get_entity_activity", "owner"),
+    ("POST", "/api/relationship/entities/{entity_id}/view-mark"): ("mark_entity_view", "owner"),
+    ("GET", "/api/relationship/entities/{entity_id}/delta-facts"): (
+        "get_entity_delta_facts",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/core-dates"): (
+        "get_entity_core_dates",
+        "owner",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/identity-candidates"): (
+        "list_identity_candidates",
+        "fact-authority",
+    ),
+    ("POST", "/api/relationship/entities/{entity_id}/identity-facts/{fact_id}/{decision}"): (
+        "owner_identity_fact_decision",
+        "fact-authority",
+    ),
+    ("GET", "/api/relationship/entities/{entity_id}/identity-facts/{fact_id}/decision"): (
+        "read_identity_fact_decision",
+        "fact-authority",
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def shared_relationship_domain_app():
+    """One production-built domain app for the additive route-table species."""
+    return create_app(api_key="test-key")
+
+
+def _relationship_module(app):
+    modules = [module for name, module in app.state.butler_routers if name == "relationship"]
+    assert len(modules) == 1
+    return modules[0]
+
+
+def _mounted_entity_routes(app):
+    """Follow actual FastAPI lazy includes, retaining complete endpoint identity."""
+    found = {}
+
+    def visit(router, prefix=""):
+        for route in router.routes:
+            nested = getattr(route, "original_router", None)
+            if nested is not None:
+                visit(nested, prefix + route.include_context.prefix)
+                continue
+            path = prefix + getattr(route, "path", "")
+            if path == _BASE or path.startswith(_BASE + "/"):
+                for method in getattr(route, "methods", ()):
+                    key = (method, path)
+                    assert key not in found, f"duplicate mounted route: {key}"
+                    found[key] = route.endpoint
+
+    visit(app.router)
+    return found
+
+
+def _entity_table_body(endpoint):
+    """Known valid domain payloads; validation must not stand in for denial."""
+    a = "00000000-0000-4000-8000-000000000001"
+    b = "00000000-0000-4000-8000-000000000002"
+    return {
+        "promote_entity": {"canonical_name": "Synthetic table entity"},
+        "dismiss_queue_entity": {"entity_id": a},
+        "create_entity_note": {"content": "Synthetic table note"},
+        "create_entity_interaction": {"type": "call"},
+        "create_entity_gift": {"description": "Synthetic table gift"},
+        "add_entity_contact": {"predicate": "has-email", "value": "table@example.test"},
+        "update_entity_contact": {"new_value": "updated@example.test"},
+        "set_entity_preferred_channel": {"channel": "email"},
+        "merge_entities": {"entityA": a, "entityB": b, "keepAs": "A"},
+        "compare_entities": {"entity_a": a, "entity_b": b},
+        "dismiss_pair": {"entity_a": a, "entity_b": b},
+    }.get(endpoint)
+
+
+def _entity_table_path(path):
+    return (
+        path.replace("{entity_id}", str(_ENT_ID))
+        .replace("{info_id}", "00000000-0000-4000-8000-000000000003")
+        .replace("{predicate}", "has-email")
+        .replace("{value_hash}", "abc123")
+    )
+
+
+async def _run_entity_owner_case(app, method, path, endpoint, state):
+    """Fresh dependency/collaborator state, finally restored on every outcome."""
+    import asyncio
+    from contextlib import contextmanager
+
+    @contextmanager
+    def original_app_state():
+        old_state = dict(app.state._state)
+        old_routers = list(app.state.butler_routers)
+        old_overrides = dict(app.dependency_overrides)
+        service = app.state.owner_auth_service
+        old_service = dict(vars(service))
+        tasks = set(asyncio.all_tasks())
+        try:
+            yield
+        finally:
+            # These cases do not start lifespan or background work. A newly live
+            # Task is uncertainty, not silently cancelled/borrowed cleanup.
+            live = {task for task in asyncio.all_tasks() if task not in tasks and not task.done()}
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(old_overrides)
+            app.state._state.clear()
+            app.state._state.update(old_state)
+            app.state.butler_routers[:] = old_routers
+            vars(service).clear()
+            vars(service).update(old_service)
+            assert not live, "route table leaked live background Tasks"
+            assert app.state.owner_auth_service is service
+            assert app.state.butler_routers == old_routers
+            assert app.dependency_overrides == old_overrides
+
+    with original_app_state():
+        pool = AsyncMock()
+        pool.fetchval.return_value = 1
+        pool.fetch.return_value = []
+        pool.execute.return_value = "UPDATE 0"
+        if state == "no-row":
+            pool.fetchrow.return_value = None
+        elif state == "error":
+            pool.fetchrow.side_effect = RuntimeError("synthetic owner query failure")
+        else:
+            pool.fetchrow.return_value = {"id": _ENT_ID, "roles": [], "canonical_name": "Test"}
+        db = MagicMock(spec=DatabaseManager)
+        db.pool.return_value = pool
+        module = _relationship_module(app)
+        app.dependency_overrides[module._get_db_manager] = lambda: db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        request_path = _entity_table_path(path)
+        if endpoint == "search_entities":
+            request_path += "?q=synthetic"
+        response = await _request(app, method.lower(), request_path, _entity_table_body(endpoint))
+        _assert_owner_required(response)
+        # Denial is before data/mutation collaborators, not an empty-row green.
+        assert pool.fetchrow.await_count == 1
+        owner_sql = pool.fetchrow.await_args.args[0]
+        assert "'owner' = ANY(COALESCE(roles, '{}'))" in owner_sql
+        assert "public.entities" in owner_sql
+        pool.fetch.assert_not_awaited()
+        pool.fetchval.assert_not_awaited()
+        pool.execute.assert_not_awaited()
+        pool.acquire.assert_not_called()
+
+
+def test_entity_route_policy_covers_mounted_and_source_routes(shared_relationship_domain_app):
+    """New, removed, remapped, duplicate or unclassified entity routes refuse."""
+    import ast
+    from pathlib import Path
+
+    app = shared_relationship_domain_app
+    module = _relationship_module(app)
+    mounted = _mounted_entity_routes(app)
+    assert set(mounted) == set(_ENTITY_ROUTE_POLICY)
+    source = ast.parse(Path(module.__file__).read_text())
+    declared = {}
+    for function in source.body:
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in function.decorator_list:
+            if not (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and isinstance(decorator.func.value, ast.Name)
+                and decorator.func.value.id == "router"
+                and decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+            ):
+                continue
+            path = "/api/relationship" + decorator.args[0].value
+            if path == _BASE or path.startswith(_BASE + "/"):
+                key = (decorator.func.attr.upper(), path)
+                assert key not in declared
+                declared[key] = function.name
+                policy = _ENTITY_ROUTE_POLICY[key][1]
+                owner_calls = [
+                    call
+                    for call in ast.walk(function)
+                    if isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "_assert_owner_role"
+                ]
+                assert bool(owner_calls) == (policy == "owner")
+    assert set(declared) == set(mounted)
+    for key, (name, policy) in _ENTITY_ROUTE_POLICY.items():
+        assert policy in {"owner", "authenticated-domain", "fact-authority"}
+        assert mounted[key] is getattr(module, name)
+        assert declared[key] == name
+
+
+@pytest.mark.parametrize("order", ["forward", "reverse", "shuffle"])
+async def test_entity_owner_route_survivor_table(shared_relationship_domain_app, order):
+    """Complete named owner-route cohort, independently ordered on one app."""
+    import random
+
+    rows = [
+        (method, path, endpoint, state)
+        for (method, path), (endpoint, policy) in _ENTITY_ROUTE_POLICY.items()
+        if policy == "owner"
+        for state in ("non-owner", "no-row", "error")
+    ]
+    assert rows
+    if order == "reverse":
+        rows.reverse()
+    elif order == "shuffle":
+        random.Random(1103).shuffle(rows)
+    for method, path, endpoint, state in rows:
+        await _run_entity_owner_case(shared_relationship_domain_app, method, path, endpoint, state)
+
+
+async def test_entity_shared_owner_and_not_found_companions(shared_relationship_domain_app):
+    """Healthy owner can execute; missing entity is 404 after its real gate."""
+    app = shared_relationship_domain_app
+    module = _relationship_module(app)
+    old = dict(app.dependency_overrides)
+    try:
+        for exists in (True, False, True):
+            pool = AsyncMock()
+            pool.fetchrow.side_effect = [
+                {"id": _ENT_ID, "roles": ["owner"]},
+                {"id": _ENT_ID} if exists else None,
+            ]
+            pool.execute.return_value = "UPDATE 1"
+            db = MagicMock(spec=DatabaseManager)
+            db.pool.return_value = pool
+            app.dependency_overrides[module._get_db_manager] = lambda: db
+            response = await _request(app, "post", f"{_BASE}/{_ENT_ID}/archive", {})
+            assert response.status_code == (204 if exists else 404)
+            assert pool.fetchrow.await_count == 2
+            assert pool.execute.await_count == int(exists)
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(old)
+    assert app.dependency_overrides == old
