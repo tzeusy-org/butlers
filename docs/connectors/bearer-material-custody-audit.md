@@ -217,7 +217,7 @@ digests, privacy/authorization boundaries or outbound delivery.
 | `core/fact_authority.py::FactSourceContextRegistry.capture_accepted_report`, `verify`, `recover` | raw_payload + normalized_text + request_context -> `accepted_source_digest`; returned report/claim/digest, not message text | SAFE-SCOPE S: named return projection discloses source report/digest, not raw content. Bytes are still consumed in memory; this is no sanitizer. | Real synthetic digest/admission recovery tests; PG/catalog UNKNOWN. Never rewrite hash inputs under a text-display fix without authority. G2 compatibility gate. |
 | `scripts/backfill_batch_sender_identities.py` main query/caller | raw_payload participants/sender -> update identity/provenance context | SAFE-SCOPE S: identity-only result; script is a maintenance reader, not a display/prompt sanitizer. | Synthetic script fixture/role readback; no live script run. G2 preservation gate. |
 | `core_tools/_switchboard.py::register_switchboard_core_tools` ingest/session wrapper | Caller envelope text -> central ingest then durable enqueue/pipeline/session; indirect inbox consumer, not new SQL owner | SAFE-SCOPE S/E: `scrub_message_text` before normal enqueue; it does not cover scanner/legacy readers or attached raw context. | Current central helper/normal connector tests pass; actual enqueue/session legacy path remains G2. |
-| `dead_letter/capture.py`, `dead_letter/replay.py`; `api/routers/approvals.py::_unroutable_question` | Capture supplied original content; replay reinsert; approval question extracts dead-letter content. These are downstream/alternate stores, not an additional direct inbox text SELECT. | GAP S capture/question; GAP E replay INSERT bind. API source-table filters are metadata-only but downstream question may reflect original text. | Real capture/approval response/replay tests; G2. |
+| `dead_letter/capture.py`, `dead_letter/replay.py`; `api/routers/approvals.py::_unroutable_question` | Capture supplied original content; replay reinsert; approval question extracts dead-letter content. These are downstream/alternate stores, not an additional direct inbox text SELECT. | Capture and replay now scrub `original_payload` before their INSERT (`bu-ksao0y`), so the approval question reads scrubbed text for new dead letters. Dead letters captured before the fix hold raw text until replayed, and the `_unroutable_question` reader is unchanged (historical rows remain a gap). API source-table filters are metadata-only. | Real capture/approval response/replay tests; G2. |
 
 The following direct readers are **SAFE-SCOPE S for their exact no-text projection**;
 this is not an access-control or deployed-schema verdict. They must remain in the inventory:
@@ -225,7 +225,7 @@ this is not an access-control or deployed-schema verdict. They must remain in th
 | Owner | Exact projection / use |
 | --- | --- |
 | `core/ingestion_events.py` reconciliation and replay/reset helpers | lifecycle/status/IDs and counts; exception strings are not certified by this no-text verdict. `ingestion_event_get_inbox_lifecycle` unrestricted decomposition reader is separately GAP above. |
-| `MessagePipeline._accept_ingress` dedupe SELECT; `process` accepted->processing lifecycle UPDATE | request ID/state only; alternate INSERT and `_update_message_inbox_lifecycle` text-descendant UPDATE are separately GAP |
+| `MessagePipeline._accept_ingress` dedupe SELECT; `process` accepted->processing lifecycle UPDATE | request ID/state only; the alternate INSERT is now scrubbed for new rows (`bu-ksao0y`); the `_update_message_inbox_lifecycle` text-descendant UPDATE is separately GAP |
 | `ingest.py` dedupe/content-hash lookups and partition ensure | ID/hash/request context or DDL; central content INSERT separately scrubbed |
 | `roster/relationship/jobs/relationship_jobs.py::run_interaction_sync`, `run_email_identity_enrichment` | sender/thread/time/identity aggregates; no normalized_text or body projection |
 | `roster/switchboard/api/router.py::get_ingestion_overview` | counts/lifecycle aggregates |
@@ -351,7 +351,10 @@ original-bead completion or fleet custody certification.
 At the stated source SHA, create an owned venv with `uv sync --dev` if one is absent
 (never sync a symlinked venv). Extract this block to a temporary file outside the repo
 and run it from the worktree. It prints check names only, never fixture-bearing log or
-payload values. The deliberately public fixture below is not a credential.
+payload values. The deliberately public fixture below is not a credential. The check names
+that say a writer retains text (for example `legacy_pipeline_insert_bind_retains_text`) record
+behavior at the stated source SHA; `bu-ksao0y` later scrubbed those writers for new rows, so
+re-running the block on a newer SHA is expected to flip them.
 
 ```bash
 python3 - <<'PY'
