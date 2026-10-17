@@ -6,8 +6,9 @@ The owner signed off the full design on 2026-10-14 with four amendments,
 recorded as owner decisions 8 to 11: `transact` is disabled, communication with
 anyone other than the owner always needs owner approval, the RFC corpus is
 rewritten after the switch, and the dashboard is redesigned around one mind
-with specialized regions. The author applied those amendments with detail the
-owner has not reviewed: `recipient_params` and the recipient rules in D4, the
+with specialized regions. The owner confirmed the author-added detail in the
+2026-10-14/15 walkthrough recorded in `bu-4m4e42`: `recipient_params` and the
+recipient rules in D4, the
 reclassification of calendar-invitation answers from `transact` to
 `communicate`, the Messenger delivery carve-out in D7, the D19 direction
 bullets, the proposed RFC organization, and gaps closed while writing the
@@ -18,8 +19,8 @@ model-catalog probes as model functions, the template-pinned definition, the
 approvals `cancelled` status, and, from the second review, fail-closed exposure
 for admission input without lineage, `administer` scheduling tools, named
 relay endpoints, inert-link delivery flags and per-group consolidation goals).
-These stand pending owner confirmation;
-D19's detail is confirmed with the dashboard change.
+All five answers are recorded in [Author-detail confirmation](#author-detail-confirmation).
+D19's detailed experience contract remains in the dashboard change.
 **Date:** 2026-10-14
 **Tracking:** `bu-7p9ll5`
 **Supersedes at cutover:** the contracts listed in
@@ -700,10 +701,13 @@ outcome relies on.
 When a call needs approval or its grant is park-only, the broker parks it
 through the owning domain's approvals module with the exact capability,
 arguments and lineage (goal, invocation, depth, exposure) and returns `parked`
-with the approval reference. The session may continue or end. Standing rules
-stay in the owning domain's approvals schema, so that module matches them at
-park time: a match approves the parked effect at once, and the effect records
-the rule as its approval. A domain gate treats a verified assertion whose
+with the approval reference. The session may continue or end. A park-only
+effect is never approved by a standing rule and always waits for the owner's
+per-event approval tap. Standing rules stay in the owning domain's approvals
+schema; for other parked effects, that module matches them at park time within
+the exposure limits below. A permitted match approves the effect at once, and
+the effect records the rule as its approval. A domain gate treats a verified
+assertion whose
 `approval_ref` covers the exact call digest as approval, so an approved call is
 never parked twice.
 
@@ -1037,6 +1041,32 @@ built.
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
 | 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
+
+### Author-detail confirmation
+
+Owner `tze` answered all five items in `bu-4m4e42` in the 2026-10-14/15
+Claude Code walkthrough. The native record preserves these structured
+question answers verbatim, with no owner edits; timestamps below are UTC.
+
+| Item | Recorded at | Verbatim owner answer | Confirmed boundary and destination |
+|---|---|---|---|
+| 1. Recipient rules | 2026-10-14T16:40:43Z | A. As written + one-click (Recommended) | Standing rules apply to owner and scheduled goals that have not read outside content; exposed goals use only owner-addressed or fully template-pinned rules; third-party-started goals only park, and no standing rule may approve a park-only effect. A dashboard submit click is the recorded owner approval and does not count toward promotion; drafts from exposed or third-party goals reach the owner only as parked effects with lineage. Amendment: `bu-m1u7zy.1`; implementation destinations: `bu-cadcr1`, `bu-2c1g7v`, `bu-fg499t`, `bu-k2z6iw`. |
+| 2. D19 dashboard brief | 2026-10-14T16:43:00Z | B. Five bullets + operator view (Recommended) | The five D19 bullets plus a read-only operator view per region (state, config, service-side failures, health; no call console); Direction 5 reversed; Direction 4's per-butler tab layout dropped, its operator-versus-resident split kept. Destination: the `bu-k2z6iw` dashboard brief. |
+| 3. Calendar invitation answers | 2026-10-14T16:33:34Z | A. Keep, approval each time (Recommended) | `calendar_respond` stays `communicate`, approval-gated on every call and outside standing rules, as today; the archive keeps `REQ-module-calendar-029`. No amendment to the written calendar delta. |
+| 4. Remaining author detail | 2026-10-14T16:43:37Z | A. Confirm all (Recommended) | The listed detail as written in RFC 0038 and its deltas. `bu-m1u7zy.1` removes the pending-confirmation status sentence. |
+| 5. RFC organization after the switch | 2026-10-14T16:36:52Z | A. By subsystem, no gate (Recommended) | The post-switch RFC rewrite is organized by subsystem (control plane, capability services, owner surface, connectors, data) and merges through the normal agent-reviewed route with no further owner gate. Destination: `bu-bda935`. |
+
+Item 1 authorizes exactly the recipient rules in D4, D5, D7 and D13 and
+`REQ-capability-authorization-007` and `REQ-capability-authorization-016`,
+with the park-only alignment and two dashboard additions recorded above.
+The submit-click path follows today's recorded owner approval for the exact
+`calendar_respond` command (`src/butlers/api/routers/calendar_workspace.py`,
+`_respond_through_approval`); this amendment specifies that behavior and adds
+no runtime implementation. It approves no message, creates or changes no
+standing rule, enables no `transact` capability, grants no extension beyond
+item 1, and authorizes no production change. Every answer excludes enabling
+`transact` and production changes. This confirmation does not release the
+hard-cutover gates or alter the private-custody boundary.
 
 ## Alternatives considered
 

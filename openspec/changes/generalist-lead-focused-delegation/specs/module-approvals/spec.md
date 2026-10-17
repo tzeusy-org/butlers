@@ -2,7 +2,7 @@
 
 ### Requirement: Gate Wrapper Interception
 
-The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. For a call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or is template-pinned (`REQ-capability-authorization-006`: every content-bearing argument fixed to an exact value or to an owner-authored template with only typed slots); every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval.
+The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. A park-only effect SHALL never be approved by a standing rule and SHALL always wait for the owner's per-event approval tap. For other parked effects, this module SHALL match standing rules at park time within the exposure limits below. For a non-park-only call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or is template-pinned (`REQ-capability-authorization-006`: every content-bearing argument fixed to an exact value or to an owner-authored template with only typed slots); every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval.
 
 Source: RFC 0038 D4, D6, D7 and D13; RFC 0021
 Scope: v1-mandatory
@@ -17,12 +17,18 @@ Scope: v1-mandatory
 
 #### Scenario: Gated tool is called with a matching standing rule
 
-- **WHEN** a gated tool is invoked without an exposed assertion and a standing rule matches the tool name and arguments
+- **WHEN** a gated non-park-only call is invoked without an exposed assertion and a standing rule matches the tool name and arguments
 - **THEN** the action is persisted with status `approved` and `approval_rule_id` set to the matching rule
 - **AND** for a call that names no goal, the original tool function is executed immediately via the shared executor
 - **AND** for a goal invocation's call, the broker parks the call through this module, this module matches the rule at park time and approves the action, and the broker then forwards the stored call with an `approval_ref` naming that action after its per-call check that the goal is running (RFC 0038 D13); the wrapper executes the handler only for that forwarded call, never directly on its own rule match
 - **AND** `action_queued` and `action_auto_approved` audit events are recorded
 - **AND** the rule's `use_count` is incremented
+
+#### Scenario: A matching standing rule cannot approve a park-only effect
+
+- **WHEN** the broker parks an effect under a park-only grant and a standing rule matches, including an owner-addressed or template-pinned rule
+- **THEN** the action remains `pending` for the owner's per-event approval tap and the original handler does not run
+- **AND** no rule is recorded as its approval and the rule's `use_count` is unchanged
 
 #### Scenario: Unknown gated tool configured
 
