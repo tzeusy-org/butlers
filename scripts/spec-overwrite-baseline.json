@@ -2569,6 +2569,14 @@
       "scenario": "Approved physical action receives trusted lineage"
     }
   ],
+  "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "982c41ec33eb",
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+    }
+  ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
     {
       "digest": "87a4073f5084",

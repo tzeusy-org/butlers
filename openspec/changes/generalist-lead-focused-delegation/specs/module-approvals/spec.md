@@ -242,6 +242,7 @@ tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
 
+ID: REQ-module-approvals-004
 Source: RFC 0038 D12 and D13; RFC 0021
 Scope: v1-mandatory
 
