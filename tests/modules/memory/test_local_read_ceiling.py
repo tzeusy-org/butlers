@@ -772,3 +772,53 @@ class TestRecallFiltersApplyBeforeRankingIntegration:
 
         assert wanted not in {row["id"] for row in unfiltered}
         assert [row["id"] for row in filtered] == [wanted]
+
+
+@pytest.fixture
+async def ann_pool(_ceiling_migrated_db_url: str):
+    """A pool whose connections force the approximate (HNSW) plan, as the ANN probe does."""
+
+    async def init(conn) -> None:
+        await register_jsonb_codec(conn)
+        await conn.execute("SET enable_seqscan = off")
+        await conn.execute("SET hnsw.ef_search = 10")
+
+    p = await asyncpg.create_pool(_ceiling_migrated_db_url, min_size=1, max_size=3, init=init)
+    await p.execute(
+        "TRUNCATE TABLE facts, rules, episodes, public.entities RESTART IDENTITY CASCADE"
+    )
+    yield p
+    await p.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+class TestFilteredVectorLegIsExactUnderTheAnnPlan:
+    async def test_predicate_filter_finds_a_fact_the_index_would_truncate(self, ann_pool) -> None:
+        for index in range(50):
+            await _insert_ranked_fact(ann_pool, content=f"work item {index}", near=True)
+        wanted = await _insert_ranked_fact(
+            ann_pool, content="unrelated gardening note", near=False, predicate="ann-p"
+        )
+
+        # Control: the plain filtered ORDER BY ... LIMIT is served by the HNSW index, which
+        # hands back only ef_search candidates before the filter, so it loses the fact.
+        plain = await ann_pool.fetch(
+            "SELECT id FROM facts WHERE predicate = $1 ORDER BY embedding <=> $2::vector LIMIT 10",
+            "ann-p",
+            str(_QUERY_VECTOR),
+        )
+        assert wanted not in {row["id"] for row in plain}
+
+        filtered = await _search.recall(
+            ann_pool,
+            "work",
+            _filter_engine(),
+            scope=_FILTER_SCOPE,
+            limit=10,
+            filters={"predicate": "ann-p"},
+            read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        assert [row["id"] for row in filtered] == [wanted]

@@ -515,6 +515,10 @@ treated as `normal`.
 
 The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it.
 
+ID: REQ-module-memory-015
+Source: bu-s11n0s.19 (run-16 move #11 slice S1); RFC 0038 D15
+Scope: v1-mandatory
+
 #### Scenario: Entity filter finds a fact outside the unfiltered top results
 - **WHEN** many facts about other entities match the topic more closely than the only fact about entity E
 - **AND** `recall` is called with `filters={"entity_id": E}`
