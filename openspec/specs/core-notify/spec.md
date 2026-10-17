@@ -265,6 +265,8 @@ Naming note: the summary's "per source" grouping is `origin_butler` (which butle
 
 ### Requirement: notify.v1 Envelope Schema
 
+ID: REQ-core-notify-034
+
 The notify envelope SHALL include `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
 
 #### Scenario: Send intent envelope

@@ -500,7 +500,8 @@ TOOL_PRESENTATION_INVENTORY = (
         "identity_resolve_channels identity_assert_sender_channel",
         presentable=False,
     ),
-    *_declare("switchboard", "routing", "correct_route list_butlers route"),
+    *_declare("switchboard", "routing", "correct_route list_butlers"),
+    *_declare("switchboard", "routing", "route", presentable=False),
     *_declare("switchboard", "delivery", "deliver", presentable=False),
     *_declare("switchboard", "lifecycle", "connector_disconnect", presentable=False),
     *_declare(

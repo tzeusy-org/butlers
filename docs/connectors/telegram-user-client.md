@@ -186,9 +186,59 @@ Because this connector ingests personal account traffic, strict safeguards apply
 - **Explicit consent** before enabling account-wide ingestion.
 - **Scope disclosure** -- clear documentation of which chats/types are included or excluded.
 - **Allow/deny lists** for chats and senders (target-state feature, not yet implemented).
-- **Content redaction** for sensitive content classes before ingest (target-state).
+- **Bearer-material scrubbing** before ingest is implemented as described below; broader sensitive-content redaction remains target-state.
 - **Retention limits** aligned with memory and ingestion policy.
 - **Audit trail** of connector start/stop/config changes.
+
+### Bearer-Material Scrubbing
+
+The Telegram user-client scrubs single-message and conversation-history batch
+`ingest.v1` envelopes before submission. The shared detector withholds one-time
+authentication codes (OTPs), password-reset links, magic links, and Telegram login
+codes. Sender identity `777000`, or a batch with that service account among its
+sender participants, enables aggressive login-code detection across message
+content.
+
+| Detected material | Replacement in message content |
+|---|---|
+| One-time authentication code, including a Telegram login code | `[auth-code withheld: <provider-domain>]` |
+| Password-reset link | `[reset-link withheld: <provider-domain>]` |
+| Magic link | `[magic-link withheld: <provider-domain>]` |
+
+Telegram codes normally use `[auth-code withheld: telegram]`; code labels use
+the sender's email domain when present, otherwise the source provider. Link
+labels use the URL hostname. Labels describe the artifact and do not authenticate
+the sender. Already-scrubbed placeholders are unchanged on repeat passes.
+
+**Known false positive:** aggressive `777000` handling withholds code-shaped
+4–8 digit numbers in message text without requiring authentication wording, so
+benign numbers of that shape can also disappear. Date/time-shaped runs are
+excluded from that aggressive numeric rule. For other senders, ordinary order
+numbers, dates, and amounts outside authentication wording or bearer links
+remain unchanged. Scrubbing removes the detected value, not the message.
+
+Only message content is rewritten. Envelope metadata is never rewritten:
+existing `source`, `event`, `sender`, and `control` identities, event IDs,
+timestamps, participants, and idempotency keys remain intact, including sender
+ID `777000`. A hit adds `control.bearer_scrubbed=true`. Switchboard scrubs again
+before inbox persistence and records `raw_payload.bearer_artifacts` with `kind`,
+`provider_domain`, and `observed_at` (plus `expires_hint` when detected), without
+storing the withheld value or changing the existing policy decision.
+
+If the Switchboard scrubber raises, the persisted row fails closed to lifecycle
+state `metadata_ref` with `raw_payload.payload.raw=null`. Both
+`raw_payload.payload.normalized_text` and `message_inbox.normalized_text` contain
+`[content withheld: bearer scrub failed]` instead of the original text.
+It sets `control.bearer_scrubbed=true` and `control.bearer_scrub_failed=true` while
+preserving envelope metadata.
+
+This is the envelope/inbox scrub required by [Bearer material never persists](../../openspec/specs/connector-telegram-user-client/spec.md#requirement-bearer-material-never-persists)
+and the [security constraints](../../about/heart-and-soul/security.md#constraints).
+It occurs after the connector's discretion step; it does not protect earlier
+prompts/logs or establish custody for every queue, replay copy, or reader. Those
+source gaps and remaining unknowns are recorded in the [custody audit](bearer-material-custody-audit.md).
+The [Gmail guide](gmail.md#bearer-material-scrubbing) describes its subject/body
+and metadata-only envelope coverage.
 
 ### Missing or invalid consent
 

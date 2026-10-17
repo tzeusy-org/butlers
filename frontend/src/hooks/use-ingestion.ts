@@ -239,7 +239,7 @@ export function useConnectorSummaries(options?: { enabled?: boolean }) {
 }
 
 /**
- * Pipeline funnel statistics from Prometheus (60s TTL cache on the backend).
+ * Pipeline funnel and independent scrub estimates (60s backend TTL per window).
  * aggregates_available=false means Prometheus is unreachable — show "metrics unavailable" eyebrow.
  */
 export function usePipelineStats(

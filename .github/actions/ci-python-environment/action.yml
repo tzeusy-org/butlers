@@ -1,0 +1,43 @@
+name: CI Python environment
+description: Restore advisory dependencies and always repair the frozen checkout-owned environment.
+inputs:
+  request-observer:
+    description: Install the request file-access observer for actual test consumers.
+    default: 'false'
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v6
+      with:
+        python-version: 3.12.15
+    - name: Install uv
+      run: python3 scripts/install_ci_uv.py
+      shell: bash
+    - name: Compute exact environment cache key
+      id: environment-key
+      run: |
+        set -euo pipefail
+        cache_key="$(python3 scripts/ci_environment.py key)"
+        printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+      shell: bash
+    - name: Restore advisory environment cache
+      uses: actions/cache@v4
+      continue-on-error: true
+      with:
+        path: .venv
+        key: ${{ steps.environment-key.outputs.key }}
+    - name: Install request file-access observer
+      run: |
+        set -euo pipefail
+        if ! command -v strace >/dev/null 2>&1; then
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends strace
+        fi
+        strace --version
+      shell: bash
+      if: inputs.request-observer == 'true'
+    - name: Install dependencies
+      run: python3 scripts/ci_environment.py prepare
+      shell: bash

@@ -4670,7 +4670,7 @@ export async function getConnectorSummaries(): Promise<
 
 /**
  * GET /api/ingestion/pipeline?window=24h
- * Returns pipeline funnel stats from Prometheus (60s TTL cache).
+ * Returns pipeline funnel and independently available scrub estimates (60s TTL cache).
  * Always returns 200; aggregates_available=false when Prometheus is unreachable.
  */
 export async function getPipelineStats(

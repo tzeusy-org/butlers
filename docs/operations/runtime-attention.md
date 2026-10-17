@@ -50,6 +50,19 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   in the worker's own transaction. The worker role gains no marker privilege. The bootstrap-only
   `public.runtime_attention_deactivate_condition_marker_v5()` removes the trigger and keeps every
   marker, and `init-db.sql` reruns restore the trigger while it is installed.
+- **A restore may re-page once.** The standard backup excludes both
+  `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`
+  (owner decision `bu-43lod8`, option A). After a valid restore that loses both, once the
+  protected interfaces and normal producer/controller are available, a still-active eligible
+  fleet or overdue-QA condition may create one new episode and page the owner once more.
+  Existing mandatory append/admission and fenced delivery rules still apply; external delivery
+  is not guaranteed. After the new marker exists, repeated scans, concurrent appends, retries
+  and controller restarts return the same episode. This allowance is per restored state that
+  loses both records, not an ordinary retention or escalation re-page, and it does not authorize
+  automatic replay of a surviving `uncertain` episode. Re-enabling with retained markers also
+  cannot re-page. Another loss of both records in a later restore is a separate restored state.
+  The existing [restore ownership precondition](backup-restore.md#ownership-precondition)
+  still applies; a restore does not confer bootstrap authority.
 - **Owner status.** `GET /api/system/conditions` attaches `attention` to each fleet and overdue-QA
   row. It reads the content-blind `public.observe_runtime_attention_conditions()` projection,
   which is granted to the migration and dashboard login only and refuses `SET ROLE`. `status` is
@@ -160,13 +173,19 @@ episode production stops. The outbox, the delivery lease, attempt rows,
 `public.runtime_attention_producer_control`, and the marker trigger all stay in place. Repair from
 there is forward remediation only.
 
+Supported rollback of the `core_251` condition-attention producer rolls back the database revision
+and application code together (owner decision `bu-6gdfxt`, option A). An ordinary migration-login
+downgrade never refuses: it only restamps and logs a warning, leaving the installed producer and
+its enabled flag in place. Code from before `core_251` does not call that producer, but newer code
+that remains deployed can still append and page. A DB-only partial rollback is not a stop-paging
+guarantee.
+
 To stop condition paging alone, downgrade `core_251` as a cluster superuser. It calls
 `public.runtime_attention_deactivate_condition_v4()`, which clears
-`runtime_attention_condition_control.producer_enabled`. The same downgrade as the ordinary migration
-login never refuses: it only restamps and logs a warning, because no code before `core_251` calls the
-producer. Clear the flag separately if new code must stay deployed. Emitted episodes, their markers, and their
+`runtime_attention_condition_control.producer_enabled`. Clearing the flag while newer code stays
+deployed remains a bootstrap-superuser operation. Emitted episodes, their markers, and their
 delivery truth all stay. Re-enabling with an `UPDATE` as bootstrap pages only conditions that have no
-marker, so an active condition that already paged is never re-armed.
+marker, so an active condition whose marker remains is never re-armed.
 
 Downgrading below `core_198` is not supported on any database that has reached `core_199`. The
 `core_198` downgrade fails with `core_198 downgrade requires trusted bootstrap rollback interface`

@@ -36,7 +36,7 @@ from butlers.core.approval_delivery_transport import (
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
-from butlers.core.permissions import PermissionDenied
+from butlers.core.permissions import PermissionDenied, PermissionUnavailable
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
     route_inbox_claim_processing,
@@ -1943,6 +1943,23 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             else:
                 raise ValueError(f"Unsupported notify channel: {channel}")
 
+        except PermissionUnavailable:
+            # The module refused before provider traffic; retry is safe after recovery.
+            error_message = "Permission store unavailable; delivery was not attempted."
+            return _route_error_response(
+                context_payload=route_context,
+                error_class="target_unavailable",
+                message=error_message,
+                retryable=True,
+                transport=POLICY_DENIED,
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class="target_unavailable",
+                    message=error_message,
+                    retryable=True,
+                ),
+            )
         except ValueError as exc:
             from butlers.core.approval_review import ParkedApprovalRefusal
 

@@ -1,6 +1,7 @@
 # RFC 0037: General capture and private source boundaries
 
 **Status:** Adopted target; implementation and operational verification remain outstanding.
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (capture classification and routing become goal admission; capture ledger, receipts and private custody remain).
 
 Owner adopted the exact six-file composition manifest `7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7` and bounded repository delivery. The original bytes are retained as provenance in `openspec/changes/compose-general-capture-with-private-custody/adopted-artifact.json`; this RFC is the single durable design authority. Private custody and checklist feature implementation are not released by this change.
 

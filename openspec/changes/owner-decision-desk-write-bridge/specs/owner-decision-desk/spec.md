@@ -6,7 +6,7 @@ The system SHALL record each owner decision choice as a durable decision intent 
 schema before any tracker effect. An intent SHALL carry its bead id, the chosen option text, its
 source (`dashboard` or `telegram`), its actor, an optional originating prompt id, a status, an
 attempt count, categorical failure and last-error reasons, and creation, claim, and terminal
-timestamps. Its status SHALL be exactly one of `pending`, `applying`, `applied`, or `failed`.
+timestamps. Its status SHALL be exactly one of `pending`, `applying`, `applied`, `failed`, or `superseded`.
 
 Recording SHALL validate the choice against the current decision digest. The bead SHALL be an open
 decision with available structured details, and the option SHALL exactly match one of its current
@@ -17,8 +17,13 @@ offered. Recording SHALL NOT invent, normalize, or default an option.
 At most one intent per bead SHALL be live (`pending`, `applying`, or `applied`), enforced by the
 database. Recording the same option for a bead that already has a live intent SHALL return that
 intent unchanged and identify it as not newly created. Recording a different option SHALL be
-refused as a conflict that names the existing intent's state. A `failed` intent SHALL NOT block a
-new choice.
+refused as a conflict that names the existing intent's state. A `failed` or `superseded` intent SHALL NOT block a
+new choice. A `superseded` intent SHALL remain immutable choice history: its original option, actor,
+source, prompt id, attempt count, claim timestamp, and applied `finished_at` SHALL be preserved.
+It SHALL NOT be returned to `pending`, claimed, or applied again. A later explicit owner choice,
+including the same option text, SHALL create a new `pending` intent with a new id. A Telegram
+prompt that produced a superseded intent SHALL remain consumed: a later callback on that prompt
+SHALL be refused as `intent_conflict:superseded` without recording an intent or re-sending a prompt.
 
 ID: REQ-owner-decision-desk-001
 Source: bu-ckkpz.3; owner ruling 2026-10-08
@@ -53,11 +58,37 @@ Scope: v1-mandatory
 The development tracker bridge workload SHALL apply decision intents with `bd` so that each
 intent's tracker effect happens at most once and every intent reaches an honest terminal state.
 
+Before listing or recording choices, the runtime SHALL reconcile an `applied` intent to `superseded`
+using only the existing local decision export. It SHALL do so only when that export identifies the
+bead as an open decision and provides all of the following evidence: the intent has a recorded
+`finished_at`; the bead has a valid timezone-aware source `updated_at` strictly later than
+`finished_at` and no later than the export file's `export_as_of`; and the export's `export_as_of`
+is at least ten minutes after `finished_at`, no later than the digest's `checked_at`, and no more
+than ten minutes before `checked_at`. The ten-minute grace and snapshot window are conservative
+operational windows based on two cycles of the enabled development bridge's five-minute export
+cadence, not a measured worst-case lag guarantee. They do not establish a guarantee for the
+default-disabled fifteen-minute schedule or a stalled exporter. Missing, malformed, timezone-naive,
+future, unavailable, or old evidence SHALL preserve the applied intent. A new file mtime alone
+SHALL NOT establish that a bead was reopened.
+
+This reconciliation SHALL change only the eligible applied row's status and update timestamp,
+using an atomic status-guarded transition. It SHALL NOT reach the tracker, close the bead, mutate
+a newer live intent, replay an earlier effect, or interpret an unknown `applying` outcome as
+reopened. Recording a later explicit choice SHALL retain the database-enforced single-live-intent
+invariant under concurrent listing, recording, and old callbacks. Existing `applying` reconciliation
+and its finite unreadable-claim settlement SHALL remain unchanged.
+
 The applier SHALL first reconcile every intent left `applying` by an earlier run, using the
 tracker's current state as evidence: a closed bead whose close reason carries the intent's marker
 `decision-intent <intent id>` is `applied`; a bead closed without that marker is `failed` with
 reason `bead_closed_elsewhere`; a still-open bead returns to `pending`. It SHALL NOT re-run a tracker
 operation for an intent before this reconciliation.
+
+When a bead cannot be described during reconciliation, an intent with a claim younger than
+24 hours, or with no recorded claim timestamp, SHALL remain `applying` while other intents
+continue. Once the claim is at least 24 hours old, the intent SHALL become terminal `failed`
+with reason `bead_unreadable_unsettled` and terminal timestamps. The applier SHALL NOT return
+that unreadable intent to `pending` or retry its close: the earlier close may have landed.
 
 The applier SHALL then claim pending intents oldest first, in a bounded batch, by atomically moving
 each from `pending` to `applying` and committing that claim before any tracker call. For each
@@ -68,6 +99,13 @@ that `bd` answers for but cannot describe SHALL fail that intent alone (`bead_un
 SHALL NOT stop the batch. Otherwise
 it SHALL close the bead with a reason containing the chosen option, the intent marker, and the
 source, under a fixed audit actor, and mark the intent `applied`.
+
+Before classifying a failed `bd show` as an outage, except for a structured not-found answer,
+the applier SHALL make one bounded tracker statistics probe. Only a successful exit with a
+structured summary containing valid nonnegative integer issue counts SHALL establish tracker
+health. A healthy probe SHALL classify the failed show as `bead_unreadable`; an unsuccessful,
+empty, or malformed probe SHALL preserve `tracker_unavailable` behavior. A clean but unreadable
+show answer SHALL remain a per-bead fault without requiring a probe.
 
 A failed close SHALL be re-read before classification: our marker on a closed bead means `applied`.
 A transient tracker failure SHALL return the intent to `pending` with a categorical `last_error`;
@@ -106,6 +144,47 @@ Scope: v1-mandatory
 - **WHEN** the tracker is unreachable during a run
 - **THEN** claimed intents return to `pending` with `last_error=tracker_unavailable`
 - **AND** the export step still runs and the run reports failure
+
+#### Scenario: An aged unreadable claim settles without replay
+
+- **WHEN** reconciliation cannot describe a bead whose intent was claimed at least 24 hours ago
+- **THEN** the intent becomes `failed` with reason `bead_unreadable_unsettled` and terminal timestamps
+- **AND** its close is not retried and the remaining batch can proceed
+- **AND** a younger unreadable claim remains `applying`
+
+#### Scenario: A healthy tracker isolates a failed show
+
+- **WHEN** a bead's show command fails and one bounded statistics probe returns a valid healthy summary
+- **THEN** only that pending intent fails with reason `bead_unreadable` and remaining intents apply
+- **AND** an empty successful probe does not establish tracker health
+
+
+#### Scenario: A reopened applied decision permits a new explicit choice
+
+- **WHEN** an open decision has qualified post-grace source evidence and an applied intent
+- **THEN** the prior intent becomes `superseded` without changing its applied history
+- **AND** a later explicit owner choice records a distinct `pending` intent, even for the same option
+- **AND** at most one intent remains live and no earlier tracker effect is replayed
+
+#### Scenario: Export lag within grace preserves an applied intent
+
+- **WHEN** an export shows the decision open less than ten minutes after its intent finished
+- **THEN** the applied intent is unchanged and still occupies the live-intent slot
+- **AND** a different choice remains a named conflict
+
+#### Scenario: Incomplete or stale reopening evidence preserves an applied intent
+
+- **WHEN** the export is unavailable or older than the snapshot window, its open-bead update does
+  not postdate the applied finish, or its required timestamps are missing, invalid, or future
+- **THEN** the intent remains `applied` and no tracker operation is attempted
+- **AND** copying old open-bead content into a file with a new mtime does not supersede the intent
+
+#### Scenario: A consumed prompt cannot choose again after supersession
+
+- **WHEN** the owner taps a prompt that already produced a superseded intent
+- **THEN** the choose route refuses it as `intent_conflict:superseded`
+- **AND** the existing connector acknowledges it as already handled and removes its keyboard
+- **AND** no new intent is recorded and the prompt is not re-sent
 
 ### Requirement: Decision Prompts Route Through the Attention Policy
 
@@ -157,6 +236,23 @@ Scope: v1-mandatory
 - **THEN** the prompt is recorded `uncertain` and the ledger records `failed`
 - **AND** no later run sends a prompt for that bead
 
+#### Scenario: Oversized decision prompts are visible in routing summaries
+
+- **WHEN** an enabled routing pass has an available digest and a decision otherwise satisfies its existing non-length eligibility checks
+- **AND** an option exceeds the current512-character limit or the fixed prompt text exceeds the current4096-character limit
+- **THEN** that bead is excluded from delivery and contributes once to the integer `skipped_unsendable` summary count
+- **AND** every enabled, available summary includes that count, including0 and the no-candidate, suppression and budget paths
+- **AND** the diagnostic creates no prompt, intent, attention-ledger entry, budget debit or send for that excluded bead and changes no existing enabled-job maintenance
+- **AND** disabled or unavailable passes retain their existing no-action/reason response without a fabricated measured count
+
+#### Scenario: The decision linter warns without changing convention validity
+
+- **WHEN** the decision-bead linter encounters an option over512 characters or an estimated fixed prompt over4096 characters
+- **THEN** its human and JSON output exposes an advisory warning with category and length information
+- **AND** existing convention violations, `ok` meaning, discovery modes and exit0/1/2 semantics remain unchanged
+- **AND** the estimate follows current literal template, date, Unicode and newline counting, with explicit conservative lower bounds for incomplete date context
+- **AND** advisory warnings neither enable routing nor become an additional owner notification or authority to change the choice/default
+
 ### Requirement: Telegram One-Tap Decision Capture
 
 A decision prompt SHALL travel as a `notify.v1` envelope with intent `decision_request` through
@@ -171,6 +267,29 @@ coalesce a decision request into a digest.
 Each callback token SHALL be `dsk1:<prompt id>:<option index>:<signature>`, at most 64 UTF-8 bytes,
 signed with the same Tier-1 callback secret and signer as RFC 0021 approval tokens over a payload
 that includes the `dsk1` prefix, the prompt id, the option index, and the prompt's creation time.
+
+The connector SHALL forward the original verified token as JSON `token` alongside `option_index`
+and the existing scoped callback credential and fixed actor header. The API SHALL independently
+resolve the shared Tier 1 callback secret from the database with environment fallback disabled.
+It SHALL lock the current prompt row through the intent transaction's commit, verify the HMAC
+against that row's creation time, and compare both signed prompt id and option index to the URL
+and body before any reopening reconciliation or choice write. Authentication failure SHALL NOT
+mutate prompt or intent history, including otherwise-qualified reopening metadata. Authenticated
+named business refusals SHALL preserve the existing commit of proved supersession; ordinary
+database failures SHALL roll back. A legal later reservation SHALL retain its existing policy.
+
+Token-only validation/authentication failures SHALL return `403 invalid_callback_token`; malformed
+whole requests, invalid URL UUIDs or other request-field validation errors SHALL return
+`422 invalid_callback_request`, including mixed failures. Unavailable shared secret custody SHALL
+return `503 callback_verification_unavailable` without environment rescue. A missing prompt with
+usable custody SHALL retain `404 prompt_not_found`; offered-option, changed-options, unavailable
+digest, consumed-prompt and identical-repeat outcomes SHALL retain their existing semantics.
+Callback audit events SHALL retain method, path, response status, result, verified context and
+trace correlation with only a fixed safe body projection, including malformed bodies and the
+single trailing slash. Responses, logs and telemetry SHALL NOT retain raw tokens, identifiable
+signature fragments, signing secrets, credentials or raw validation/exception input. The callback
+allowlist and non-redirecting trailing-slash behavior SHALL remain unchanged. A newly token-bearing
+transport failure SHALL retain retry/keyboard behavior without ingestion or error-buffer storage.
 
 The Telegram bot connector SHALL handle a `dsk1` callback before ingestion and before its generic
 callback acknowledgement. It SHALL verify that the tapping sender is the primary verified owner
@@ -212,6 +331,42 @@ Scope: v1-mandatory
 - **WHEN** a `decision_request` envelope lacks a recipient, a `choose` action, or the single
   `open_dashboard` action, or carries an approval verb
 - **THEN** the envelope is rejected before delivery
+
+#### Scenario: The API independently refuses forged or mismatched tokens
+
+- **WHEN** otherwise-valid callback provenance carries an invalid signature, another prompt's
+  token, another option's token or a token bound to an older stored creation time
+- **THEN** choose returns `403 invalid_callback_token` before reconciliation or recording
+- **AND** prompt generations and all intent fields remain unchanged
+
+#### Scenario: Missing shared signing custody fails closed
+
+- **WHEN** the shared credential pool or its nonempty signing secret is unavailable or lookup fails
+- **THEN** choose returns `503 callback_verification_unavailable` and records nothing
+- **AND** an environment value cannot rescue the lookup or appear in the error
+
+#### Scenario: Verification and reservation use one current generation
+
+- **WHEN** a legal reservation refreshes a prompt before choose locks it
+- **THEN** the old token is refused without an intent
+- **AND** a reservation concurrent with an already verified locked choice waits through its commit,
+  while that choice records only the locked generation's exact option
+
+#### Scenario: A valid consumed token preserves committed supersession
+
+- **WHEN** a valid consumed-prompt token reaches otherwise-qualified applied history
+- **THEN** choose returns `409 intent_conflict:superseded` without creating a new intent
+- **AND** proved supersession commits while original choice and application fields remain intact
+
+#### Scenario: Private callback requests remain private on every refusal path
+
+- **WHEN** valid, token-invalid, malformed, oversized, scalar/list, invalid-path, trailing-slash or
+  exceptional callback requests pass through the production API stack
+- **THEN** audit events retain correlated request/effect metadata with a fixed safe body projection
+- **AND** responses, logs and exported telemetry contain no raw token, signature fragment, signing
+  secret, credential or validation/exception input
+- **AND** token-only failures use the fixed 403 category and other or mixed validation failures
+  use the fixed 422 category, without expanding callback authorization
 
 ## Source References
 

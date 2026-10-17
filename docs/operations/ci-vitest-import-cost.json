@@ -1,0 +1,42 @@
+{
+  "schema": "vitest-import-cost.v1",
+  "source_head": "e6436fdbc3fad17788df0913d89d373b0d2fb5bf",
+  "config": {
+    "node": "24.6.0",
+    "vitest": "3.2.4",
+    "pool": "forks",
+    "isolate": true,
+    "available_parallelism": 4,
+    "max_workers": null,
+    "min_workers": null,
+    "file_parallelism": true,
+    "test_timeout": 5000,
+    "hook_timeout": 10000,
+    "retry": 0,
+    "sequence_shuffle": false
+  },
+  "files": 527,
+  "items": 8298,
+  "complete_reference_equal": true,
+  "canonical_reference_sha256": "feb8e3707181c74cfb2f094d8f2ead29df5ce4b6ff7e42b3f23fcd1ffbcff21b",
+  "measurements": {
+    "baseline": {
+      "collect_s": 285.45679267599996,
+      "summed_phases_s": {
+        "environmentSetupDuration": 252.472255971,
+        "prepareDuration": 46.421990296000004,
+        "collectDuration": 422.44653629199996,
+        "setupDuration": 8.567915375
+      }
+    },
+    "optimized": {
+      "collect_s": 228.14509465400002,
+      "summed_phases_s": {
+        "environmentSetupDuration": 280.132643361,
+        "prepareDuration": 50.225276737,
+        "collectDuration": 212.450753131,
+        "setupDuration": 10.708308677
+      }
+    }
+  }
+}

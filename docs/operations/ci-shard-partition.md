@@ -133,3 +133,35 @@ This pins an installed private interface: an unknown version or method lifecycle
 refuses admission and needs a reviewed protocol update. It does not introduce a
 controller-before-test-body barrier, or change worker isolation, selectors, test
 bodies, clocks or timeouts.
+
+The six-hour observer refreshes uncovered queue and covered nightly costs
+independently. Its existing `ci-weight-candidate` artifact retains the original
+`candidate.json`/`receipt.json` pair from successful `ci.yml` merge-group execution.
+A separate `covered-candidate.json`/`covered-receipt.json` pair comes only from
+successful owned-main scheduled or manual `ci-coverage.yml` execution. The latter
+keeps its genuine schedule/manual event, exact source/run/attempt and uniformly
+observed CTracer or SysMonitor; it never impersonates merge_group. Both paths
+require the inventory and all eleven complete execution carriers through the
+same historical reconciler. An absent, partial, foreign or malformed source is
+UNKNOWN independently and cannot overwrite its sibling's valid candidate.
+
+Both pairs retain the single-profile `ci-weights.v2` format. Restore uses the
+same three five-second bounded API reads and validates each fixed pair inside
+the unique observer ZIP independently. Each profile must pass its own source,
+receipt, tracer, runtime/pytest/lock/selectors, fourteen-day age, finite cost and
+per-file digest checks. A missing or incompatible pair leaves the corresponding
+reviewed seed or deterministic fallback; a newer compatible seed remains newer.
+No profile supplies membership, and every child and preflight retain independent
+fresh collection and complete execution identity. The producer keeps three-page
+run/artifact horizons,32MiB response and16MiB member limits. Added covered reads
+have five-second bounds; the existing twelve-minute outer job remains unchanged.
+The observer succeeds if either independent candidate is available and returns
+UNKNOWN/exit2 when neither is available. Closed per-source restore states expose
+no raw exception, parameter, environment or subprocess payload.
+
+These covered hints balance nightly work only. Historical covered receipt replay
+and candidate/restore conformance do not establish current runtime execution,
+queue latency gains, the parent's twenty-natural-run window, p95 improvement or
+the independent five-minute lane goals. Rollback can remove the covered pair
+reader/producer in a reviewed PR without changing the workflow, publisher,
+uncovered refresh, authoritative inventory or safe fallback.

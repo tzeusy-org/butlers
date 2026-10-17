@@ -1517,8 +1517,8 @@ class GmailConnectorRuntime:
                             if not policy_result.should_ingest:
                                 rows_skipped += 1
                                 logger.info(
-                                    "[Gmail] '%s' filtered out: %s",
-                                    self._get_subject(message_data),
+                                    "[Gmail] message %s filtered out: %s",
+                                    message_data.get("id"),
                                     policy_result.filter_reason,
                                 )
                             else:
@@ -1530,8 +1530,8 @@ class GmailConnectorRuntime:
                                 if not _bf_decision.allowed:
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by connector rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by connector rule: %s",
+                                        message_data.get("id"),
                                         _bf_decision.reason,
                                     )
                                 # 2. Global-scope rules
@@ -1542,8 +1542,8 @@ class GmailConnectorRuntime:
                                 ).action == "skip":
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by global rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by global rule: %s",
+                                        message_data.get("id"),
                                         _bf_global.reason,
                                     )
                                 else:
@@ -2204,8 +2204,8 @@ class GmailConnectorRuntime:
                 # Tier 3: skip — do not submit to Switchboard
                 if not policy_result.should_ingest:
                     logger.info(
-                        "[Gmail] '%s' filtered out: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out: %s",
+                        message_id,
                         policy_result.filter_reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2240,8 +2240,8 @@ class GmailConnectorRuntime:
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.info(
-                        "[Gmail] '%s' filtered out by connector rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by connector rule: %s",
+                        message_id,
                         _ip_decision.reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2277,8 +2277,8 @@ class GmailConnectorRuntime:
                 _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
                 if _gp_decision.action == "skip":
                     logger.info(
-                        "[Gmail] '%s' filtered out by global rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by global rule: %s",
+                        message_id,
                         _gp_decision.reason,
                     )
                     self._filtered_event_buffer.record(

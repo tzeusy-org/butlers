@@ -6,5 +6,6 @@
 
 - [Testing Strategy](testing-strategy.md) — test pyramid, unit vs integration vs E2E
 - [Markers and Fixtures](markers-and-fixtures.md) — pytest markers, shared fixtures, parallel execution
+- [Flaky-Test Quarantine](quarantine.md) — how flaky tests leave the blocking lanes, where they still run, how they come back
 - [Orphaned Test Containers](orphaned-testcontainers.md) — how pytest leaks Docker containers, how to tell a leak from a kept container, safe sweeping
 - [E2E Suite](e2e/README.md) — how to run the end-to-end suite and what each test file proves

@@ -91,6 +91,10 @@ def test_malformed_tokens_do_not_parse(token) -> None:
     assert parse_decision_callback_token(token) is None
 
 
+def test_unencodable_token_does_not_parse() -> None:
+    assert parse_decision_callback_token("dsk1:\ud800") is None
+
+
 def test_prefixes_cannot_cross_verify() -> None:
     approval = mint_approval_callback_token(
         action_id=_PROMPT_ID, verb="a", requested_at=_CREATED_AT, secret=_SECRET

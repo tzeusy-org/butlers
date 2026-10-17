@@ -235,10 +235,17 @@ Payloads, replay/drop decisions, status and other columns are unchanged;
 this is not a claim that every payload or producer log is free of secrets, and it does not produce
 an authentication artifact.
 
+`record()` also scrubs the buffered `full_payload` envelope (the shared `scrub_envelope` that
+connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
+carry typed placeholders; a detector failure withholds that text without changing the row's status.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview
 contract; unresolved durable and vendor boundaries remain unknown.
+
+The discretion evaluator scrubs message text before its context window, prompt, log line and
+dispatcher call, so the discretion model sees the same typed placeholders ingest persists.
 
 `scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
 job or migration. The CLI defaults to dry run and requires an explicit existing database target and
@@ -265,3 +272,9 @@ A dry run is not a stable-snapshot or applied-repair claim.
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
 - [Switchboard Butler Role](../concepts/switchboard-routing.md) -- Ingestion authority
 - [API Authentication](../identity_and_secrets/cli-runtime-auth.md) -- Token lifecycle
+
+## Home Assistant event bearer custody
+
+The HA connector's state and recursive attribute content uses the shared ingestion bearer scrubber before filtering/discretion, submission, filtered-event buffering, person-history writes, and wellness emission. It withholds the shared detector's recognized keyword OTPs and reset/magic links in both normalized text and raw duplicates. The adapter also checks the existing assembled label/state normalization context before discretion retains it and projects recognized redactions into matching content copies. Each available state is checked under its own friendly name and units as well as the actual transition, so new or missing metadata cannot erase old-state context. Contextual projection replaces only complete selected lexical values, including quoted or prose echoes, and protects existing placeholders. Quotes and opening brackets may precede a copied value; closing brackets and sentence punctuation may follow it. Other leading punctuation, internal punctuation, signs, and unit symbols stay part of a distinct value: fractional decimals, decimal amounts and compound identifiers containing selected digits remain exact. Its ordered alignment uses bounded scans and refuses unestablished edits with a fixed content-free error. The HA adapter does not enable Telegram's aggressive bare-number mode; ordinary readings and enum states keep their existing representation and event identity.
+
+Scrub failure withholds the affected content and logs a fixed warning. Replay protects outgoing content without restoring withheld values or backfilling old rows. The transient REST comparison cache retains provider values for correct diff membership; only its copied downstream event is admitted to content consumers. This connector guarantee does not claim remediation of the separate module-owned HA entity snapshot/cache or the shared full-payload/error-custody investigations. No notification capability, allowlist, or authentication behavior is changed.

@@ -123,6 +123,7 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
     expected = {
         "route",
         "guards",
+        "inventory",
         "check-preflight",
         "check-unit",
         "check-integration",
@@ -183,6 +184,7 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
     results = {
         "route": "success",
         "guards": "success",
+        "inventory": "success" if mode in {"full", "push"} else "skipped",
         "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
         "check-affected": "success" if mode == "scoped" else "skipped",
         "check-unit": "success" if mode == "full" else "skipped",
