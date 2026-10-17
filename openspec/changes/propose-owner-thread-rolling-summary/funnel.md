@@ -1,0 +1,9 @@
+## Gates 0–6: Source Candidate
+
+0. Baseline: actual builder/API/router and current ingress/session copy readers inspected; original design/AC retained verbatim; whole adopted affected requirements preserved. Current normalized_text/session storage is unsafe for private derivative copies.
+1. Outcome: useful older-prefix rolling summary plus complete admitted recent raw tail at actual eligible invocation. Marked raw-tail fallback is failure, never marker-only success or narrowed original scope.
+2. Doctrine: same-owner/thread sovereignty, hidden/secret exclusions, raw truth and partial model trust; normal domain tools/config/risk/approval/audit remain. No intelligence activation in deterministic infrastructure.
+3. Topology: final .15 private payload -> trusted source/binding/epoch -> safe durable base path -> eligible leased runtime overlay -> admitted result/copy projections. All physical/transit/client holders are covered; no private-row-only retention assumption.
+4. Design: preserve eight decisions and finite budgets; exact late-bound transport, every-holder disposal/replay/races and restore/capability retirement are proposed choices. Missing provider/source/custody proof is explicit unavailability, not an authorization shortcut.
+5. Native contract: complete current MODIFIED requirement blocks plus meaningful ADDED privacy/custody clauses, WHEN/THEN positive/read/replacement/delete/capture/restore cases. No skip_specs/fenced ignored clause is counted as validation. Baseline/foreign changes unchanged.
+6. Source checks and handoff: parser/named/all strict/overwrite/countable/full guards/knip/fresh inventory/hygiene plus body/field preservation and complete allocation census. Fresh independent corrected-head review precedes root exact adoption and implementation filing. All future tasks unchecked; no future/runtime/test PASS claimed.
