@@ -86,3 +86,8 @@ def registrable_domain(url: str | None) -> str | None:
         return None
     keep = 3 if len(labels) >= 3 and ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES else 2
     return ".".join(labels[-keep:])
+
+
+def defanged_domain(domain: str) -> str:
+    """Render a domain so no chat client auto-links it (``example.com`` -> ``example[.]com``)."""
+    return domain.replace(".", "[.]")

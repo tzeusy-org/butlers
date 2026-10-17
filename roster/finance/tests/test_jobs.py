@@ -1532,12 +1532,16 @@ async def test_insight_scan_extracted_door_is_inert_and_unverified(
         cand = await pool.fetchrow(
             "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
         )
-        assert "example-phish.test (link from an email, not verified)" in cand["message"]
+        assert "example-phish[.]test (link from an email, not verified)" in cand["message"]
+        # No linkifiable host survives anywhere in the owner message.
+        import re
+
+        assert re.search(r"[A-Za-z0-9-]+\.[A-Za-z]{2,}", cand["message"]) is None
         assert "http" not in cand["message"]
         assert "/cancel" not in cand["message"]
         assert cand["metadata"]["door_verified"] is False
         assert cand["metadata"]["cancellation_url"] is None
-        assert cand["metadata"]["cancellation_domain"] == "example-phish.test"
+        assert cand["metadata"]["cancellation_domain"] == "example-phish[.]test"
         assert "token=abc" not in json.dumps(cand["metadata"])
 
 

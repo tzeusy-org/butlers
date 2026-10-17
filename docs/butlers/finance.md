@@ -89,11 +89,10 @@ history is explicitly resolved. The migration never deletes or converts history.
 context, never a tool argument; a routed email, a missing context or an unreadable attestation is
 `extracted`. An extracted write never overwrites an owner-set cancellation link or status, and
 existing rows read as `extracted`. The renewal warning shows an extracted link as its registrable
-domain in plain text with "(link from an email, not verified)", carries no URL in its metadata
+domain, defanged (`example[.]com`) so no chat client can auto-link it, with "(link from an email, not verified)", carries no URL in its metadata
 (`door_verified: false`), and an extracted `cancelled` or `paused` status still warns and asks the
 owner to confirm. The domain is derived offline (last two labels, or three under a short list of
-multi-label suffixes), so it is a display label, not an authorization input. Telegram may still
-auto-link the bare domain.
+multi-label suffixes), so it is a display label, not an authorization input.
 
 ## Related Pages
 

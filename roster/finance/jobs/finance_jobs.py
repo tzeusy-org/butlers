@@ -31,7 +31,7 @@ from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
-from butlers.tools.finance.cancellation_door import registrable_domain
+from butlers.tools.finance.cancellation_door import defanged_domain, registrable_domain
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
 from butlers.tools.finance.expected_signals import signal_source_from_metadata
 from butlers.tools.finance.overview import subscription_audit
@@ -1320,7 +1320,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         cancel_by = row["cancel_by"]
         # A door written by anything but an owner-attested session is never a live link.
         door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
-        door_domain = None if door_verified else registrable_domain(cancellation_url)
+        door_domain = None
+        if not door_verified:
+            domain = registrable_domain(cancellation_url)
+            # Defanged: a bare domain would still be auto-linked by chat clients.
+            door_domain = defanged_domain(domain) if domain else None
         # Email origin is only known from the last writer's attested signal source.
         from_email = (
             getattr(signal_source_from_metadata(row["metadata"]), "producer", None)

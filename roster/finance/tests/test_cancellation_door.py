@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from butlers.tools.finance.cancellation_door import registrable_domain
+from butlers.tools.finance.cancellation_door import defanged_domain, registrable_domain
 
 
 @pytest.mark.parametrize(
@@ -40,3 +42,8 @@ def test_registrable_domain_is_the_plain_text_domain_only(url: str, expected: st
 )
 def test_registrable_domain_is_none_when_the_link_names_no_domain(url: str | None) -> None:
     assert registrable_domain(url) is None
+
+
+def test_defanged_domain_cannot_be_linkified() -> None:
+    assert defanged_domain("example-phish.test") == "example-phish[.]test"
+    assert re.search(r"[A-Za-z0-9-]+\.[A-Za-z]{2,}", defanged_domain("shop.co.uk")) is None
