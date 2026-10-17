@@ -20,7 +20,8 @@ Scope: v1-mandatory
 - **THEN** `config.type` is `ButlerType.STAFFER`
 - **AND** `config.name` is `"concierge"`
 - **AND** `config.db_schema` is `"concierge"`
-- **AND** `config.permissions.cross_butler_access` is `["*"]`
+- **AND** `config.permissions.cross_butler_access` is `["qa"]` (RFC 0015 error relay only;
+  view-backed fleet reads require no outbound domain-butler access)
 
 #### Scenario: Staffer behaviors apply automatically
 

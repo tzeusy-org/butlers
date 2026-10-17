@@ -464,9 +464,10 @@ async def test_qa_dispatch_records_phase_session_on_success():
     assert call_args.args[2] == "investigate"  # phase
     assert call_args.args[3] == session_id  # session_id
 
-    # update_phase_session_status should be called with "completed" on success
+    # Publication fails closed, so the phase session ends "failed" with the fixed reason
     mock_update_phase.assert_called_once()
-    assert mock_update_phase.call_args.args[2] == "completed"
+    assert mock_update_phase.call_args.args[2] == "failed"
+    assert mock_update_phase.call_args.kwargs["error_detail"] == "publication_unavailable"
 
 
 @pytest.mark.asyncio
