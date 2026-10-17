@@ -404,7 +404,13 @@ Butlers SHALL submit insight candidates exclusively through the Switchboard's `p
 
 #### Scenario: propose_insight_candidate tool signature
 - **WHEN** the insight broker module registers its MCP tools
-- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None, premise: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+
+#### Scenario: Origin is derived by the server, never supplied
+- **WHEN** a session calls the `propose_insight_candidate()` MCP tool
+- **THEN** the tool SHALL have no `origin_butler` parameter, and the staged row's `origin_butler` SHALL be the name of the butler daemon that registered the tool
+- **AND** a four-segment (butler-scoped) `dedup_key` whose first segment is not that butler SHALL be refused with `{"status": "error"}` and no row written, while a three-segment (cross-butler) key is accepted
+- **AND** in-process producers that import the Python function keep passing their own fixed `origin_butler`
 
 #### Scenario: Successful candidate submission
 - **WHEN** a butler calls `propose_insight_candidate()` with valid parameters

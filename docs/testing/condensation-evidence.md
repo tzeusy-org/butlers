@@ -136,7 +136,8 @@ as undeclared proof inputs.
 
 The stdlib source consumer examines `tests/` and `roster/*/tests/`, including
 assertions within retained names and their execution structure, parameters, local fixture/helper/marker
-context, class inheritance and ancestral conftests. Renames, moves and deleted
+context, class inheritance and ancestral conftests (an edited, deleted or newly added
+`conftest.py` is context change for every owner below it). Renames, moves and deleted
 production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
@@ -207,6 +208,30 @@ manifest, exact source/tool records and fresh raw carriers remain mandatory.
 The execution supervisor must still establish bounded cleanup of every owned
 descendant, including nested sessions, on success, failure and interruption.
 The ordinary condensation protocol and its excluded-request observer are unchanged.
+
+The CLI prints the category of the first refusal, for example
+`{"status": "REFUSED", "category": "missing-protected-contract-authority"}`. Manifest
+and request structure categories include:
+
+- Authority lookup: `missing-protected-contract-authority` (no manifest at the
+  trusted ref) and `changed-protected-contract-authority` (the candidate's copy
+  differs from the trusted bytes).
+- Identity and review record: `contract-request-identity`,
+  `contract-request-population-or-bound`, `contract-authority-identity` and
+  `missing-contract-review-record`.
+- Owner population: `incomplete-authorized-owner-population`,
+  `contract-evolution-is-retained-owner-only` and `missing-retained-contract-owner`.
+- Contract blocks: `ambiguous-or-self-authorizing-contract`,
+  `stale-or-unchanged-authorized-contract` and `unmapped-changed-contract`.
+- Input records: `stale-authorized-source-or-context` and
+  `unapproved-contract-runtime-input`.
+
+Proof execution has its own categories (for example `nonpass-contract-case` and
+`contract-proof-timeout`) that are not listed here. Run as a script, the CLI keeps
+these categories only because the script's `if __name__ == "__main__":` block aliases
+`__main__` as `check_condensation_ledger` in `sys.modules` before `main()` runs and the
+consumer imports it; a subprocess regression test pins
+that.
 
 ### CI speed authorization, 2026-10-15
 
@@ -290,6 +315,18 @@ Refusal categories: `candidate-only-retirement-authority`,
 `unchanged-retirement-requirement`, `mismatched-retirement-requirement`,
 `missing-retirement-replacement`, `duplicate-retirement-owner-account`, and the
 generic `unproven-test-or-assertion-loss` for everything unlisted.
+
+A trusted manifest (one on main) that claims the retirement schema but is malformed
+refuses when `retirement_accounts` consults it, which only happens while unadmitted
+losses remain. Structural categories include `retirement-schema-fields` (missing or
+extra top-level fields), `retirement-authority-identity` (the `id` is not the file
+stem, an identity field is empty or mistyped, or `retired` or `requirements` is empty
+or not a list), `retirement-owner-record` (a `retired` row or replacement is not a
+`path::qualname` with a hex `base_sha256`, or an owner repeats) and
+`retirement-requirement-record` (a `requirements` row has missing, extra or non-hex
+fields). A `retired` row with the wrong keys refuses with `schema-fields`. A malformed
+manifest that only the candidate adds is currently ignored rather than refused
+(follow-up bu-qzyxoy).
 
 The first authorization is
 [`bu-ys9hdx-general-steam-retirement-20261018.json`](../../tests/contract-evolution-authorizations/bu-ys9hdx-general-steam-retirement-20261018.json):
@@ -523,6 +560,47 @@ alone gives no exemption. Each finite worker forbids that control object from
 being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
+
+Admission routes for a PR that changes non-Python inputs (bu-ihitkl). Evidence
+basis: the no-loss split was confirmed by running `scripts/check_condensation_ledger.py`
+against scratch trees; the contract-evolution statements are read from
+`contract_evolution.authorize` and `contract_evolution.retirement_accounts` as of this
+change, with `authorize` also run against the merged bu-q1hzqn and bu-2hlwhh
+manifests (it accepted both; refusals were probed on the bu-q1hzqn tree). A full
+contract-evolution replay was not completed. The refusal
+`changed-non-python-dependency-needs-independent-runtime-proof` belongs to the
+survivor-evidence route only (`production_dependencies`, reached from
+`verify_ledger` and the producer); the contract-evolution route does not call it.
+
+- **Split a no-loss PR.** The guard demands evidence only for source loss, so a PR
+  that retains every test and changes only documentation, OpenSpec files, a
+  `pyproject.toml` marker line or an executed data or shell file passes with
+  `losses: 0`. Removing those paths from a PR that does lose or restructure tests
+  leaves the same `unproven-test-or-assertion-loss` refusal, so the split moves the
+  non-Python concern but never admits the loss itself.
+- **Contract-evolution manifest (retained-owner changes).** `authorize` admits every
+  changed path, whatever its type, when the protected manifest lists it as an exact
+  `inputs` record. The merged bu-q1hzqn manifest lists changed
+  `.github/ci-test-weights.json`, workflow YAML and docs; the merged bu-2hlwhh
+  manifest lists changed docs and an OpenSpec change spec. It refuses an unlisted
+  changed path (`unapproved-contract-runtime-input`), a listed path edited after the
+  manifest merged (`stale-authorized-source-or-context`), any change to
+  `pyproject.toml` or `uv.lock`
+  (`changed-environment-needs-independent-installed-tools`), and a cited requirement
+  block that does not exist on the comparison base (`missing-contract-block`, or
+  `git-source-unavailable` when the spec file itself is new) or does not change in
+  the PR (`stale-or-unchanged-authorized-contract`). The amended requirement
+  therefore stays in the PR that changes the tests; do not split it out.
+- **Governing retirement (whole-owner removals).** `retirement_accounts` admits owners
+  that are wholly removed, under trusted manifest bytes and a changed bound
+  requirement (see "Governing retirement" above). It is the route for whole-owner
+  removals.
+- **Neither route.** A retained-owner loss PR (a retained test changed or
+  restructured) that carries no changed existing requirement block, or that needs a
+  changed environment input in the same PR, is not admitted by the contract-evolution
+  route, and the survivor-evidence route refuses the same inputs. Land the environment
+  change in a separate no-loss PR first, or file a spec-first amendment of
+  REQ-testing-053; do not add an exemption.
 
 The finite Python worker still refuses any runtime read of an excluded request,
 including a caught audit refusal. Its descendant event is evidence of execution,

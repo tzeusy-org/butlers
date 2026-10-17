@@ -6,8 +6,6 @@ Provides:
   GET  /api/butlers/{name}/prompt            — current system prompt
   PUT  /api/butlers/{name}/prompt            — update prompt (snapshots prior version)
   GET  /api/butlers/{name}/prompt/history    — version history DESC
-  GET  /api/butlers/{name}/tools             — list tool grants
-  PUT  /api/butlers/{name}/tools/{tool}      — update tool grant/scope
   GET  /api/butlers/{name}/memory-access     — memory tier access metadata
   POST /api/butlers/{name}/kill              — initiate graceful shutdown
 
@@ -98,27 +96,6 @@ class PromptUpdateRequest(IgnoresCallerAssertedActor):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str
-
-
-class ButlerTool(BaseModel):
-    """A tool grant entry for a butler."""
-
-    name: str
-    description: str | None = None
-    allowed: bool
-    scope: str | None = None
-
-
-class ToolUpdateRequest(IgnoresCallerAssertedActor):
-    """Request body for PUT /api/butlers/{name}/tools/{tool}.
-
-    Deliberately carries no ``actor`` — see :class:`PromptUpdateRequest`.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    allowed: bool
-    scope: str | None = None
 
 
 class MemoryAccess(BaseModel):
@@ -500,110 +477,6 @@ async def get_butler_prompt_history(
         data=versions,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
-
-
-# ---------------------------------------------------------------------------
-# §9.2-B: Tools endpoints
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{name}/tools", response_model=ApiResponse[list[ButlerTool]])
-async def get_butler_tools(
-    name: str,
-    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[ButlerTool]]:
-    """Return the list of tool grants for a butler.
-
-    Returns rows from ``public.butler_tools`` ordered alphabetically by
-    tool name.  Returns an empty list when no grants have been configured.
-    """
-    _assert_butler_exists(name, configs)
-    pool = await _get_shared_pool(db)
-
-    rows = await pool.fetch(
-        """
-        SELECT tool_name, description, allowed, scope
-        FROM public.butler_tools
-        WHERE butler_name = $1
-        ORDER BY tool_name ASC
-        """,
-        name,
-    )
-
-    tools = [
-        ButlerTool(
-            name=r["tool_name"],
-            description=r["description"],
-            allowed=r["allowed"],
-            scope=r["scope"],
-        )
-        for r in rows
-    ]
-
-    return ApiResponse[list[ButlerTool]](data=tools)
-
-
-@router.put("/{name}/tools/{tool}", response_model=ApiResponse[ButlerTool])
-async def update_butler_tool(
-    name: str,
-    tool: str,
-    body: ToolUpdateRequest = Body(...),
-    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ButlerTool]:
-    """Upsert a tool grant for a butler.
-
-    Creates the row if it does not exist (INSERT … ON CONFLICT).  Appends an
-    audit entry for ``butler.tool_set``.
-
-    ``updated_by`` and the audit actor are derived from the authenticated
-    principal; an ``actor`` in the request body is ignored.
-    """
-    _assert_butler_exists(name, configs)
-    pool = await _get_shared_pool(db)
-    updated_by = authenticated_principal()
-
-    # Upsert + audit entry inside one transaction so a missing audit table
-    # rolls back the tool-grant change too, instead of persisting un-audited.
-    # AuditTableNotAvailableError is intentionally NOT caught here — it
-    # propagates to the app-level handler, which returns
-    # 503 {"error": "audit_unavailable"} (dashboard-audit-log spec).
-    async with pool.acquire() as conn, conn.transaction():
-        row = await conn.fetchrow(
-            """
-            INSERT INTO public.butler_tools (butler_name, tool_name, allowed, scope, updated_by)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (butler_name, tool_name) DO UPDATE
-                SET allowed    = EXCLUDED.allowed,
-                    scope      = EXCLUDED.scope,
-                    updated_at = now(),
-                    updated_by = EXCLUDED.updated_by
-            RETURNING tool_name, description, allowed, scope
-            """,
-            name,
-            tool,
-            body.allowed,
-            body.scope,
-            updated_by,
-        )
-
-        await audit_append(
-            conn,
-            updated_by,
-            "butler.tool_set",
-            target=f"{name}.{tool}",
-            note=f"allowed={body.allowed}",
-        )
-
-    bt = ButlerTool(
-        name=row["tool_name"],
-        description=row["description"],
-        allowed=row["allowed"],
-        scope=row["scope"],
-    )
-
-    return ApiResponse[ButlerTool](data=bt)
 
 
 # ---------------------------------------------------------------------------
