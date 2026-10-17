@@ -8871,7 +8871,7 @@
     {
      "id": "bu-1gfjx",
      "verdict": "owner-gated",
-     "actions": "assigned to owner identity uniquosity@gmail.com and visible in bd ready; owner ask exists (models-tools)",
+     "actions": "assigned to owner identity owner@example.com and visible in bd ready; owner ask exists (models-tools)",
      "blockers": [],
      "note": ""
     },
