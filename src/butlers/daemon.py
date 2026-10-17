@@ -2176,3 +2176,35 @@ class ButlerDaemon:
             fallback_pools=fallback_pools,
             system_global_pool=shared_pool,
         )
+
+    @staticmethod
+    def _validate_dashboard_read_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
+        """Validate remote read arguments against the provider's plugin declarations.
+
+        Capture signatures using the same registration path as Concierge. This
+        declares no endpoint and executes no handler; remote availability remains
+        the routed MCP call's responsibility. Core tools consume only this callback.
+        """
+        import inspect
+        from typing import get_type_hints
+
+        from pydantic import TypeAdapter
+
+        from butlers.modules.dashboard_read.tools import register_tools
+
+        handlers: dict[str, Any] = {}
+
+        class ReadRegistry:
+            def tool(self):
+                def capture(fn):
+                    handlers[fn.__name__] = fn
+                    return fn
+
+                return capture
+
+        register_tools(ReadRegistry(), None)
+        handler = handlers[tool_name]
+        bound = inspect.signature(handler).bind(**arguments)
+        hints = get_type_hints(handler)
+        for name, value in bound.arguments.items():
+            TypeAdapter(hints[name]).validate_python(value, strict=True)

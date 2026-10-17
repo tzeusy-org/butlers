@@ -3640,6 +3640,131 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_lane_d_system_scope_read_is_published_without_dead_letter(
+        self, mock_load, mocked_pipeline_source, monkeypatch, cancelled
+    ):
+        """Successful Concierge evidence is consumed as an answer, not a decline."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Fleet estimated cost was $1.23.",
+                tool_calls=[
+                    {
+                        "name": "answer_question",
+                        "args": {"scope": "system", "question": "What did the fleet spend today?"},
+                        "result": {
+                            "status": "cancelled" if cancelled else "ok",
+                            "answered": True,
+                            "tool": "dashboard_read_spend_summary",
+                            "data": {
+                                "total_cost_cents": 123,
+                                "source": {
+                                    "kind": "view",
+                                    "ref": "concierge.v_fleet_spend",
+                                    "as_of": "2026-10-14T00:00:00+00:00",
+                                },
+                            },
+                        },
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-10", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        persist = AsyncMock(return_value="completed")
+        monkeypatch.setattr(
+            "butlers.core_tools._dashboard_system_answer.persist_system_answer", persist
+        )
+        result = await pipeline.process(
+            "What did the fleet spend today?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000010",
+        )
+
+        if cancelled:
+            assert result.target_butler == "cancelled"
+            assert result.route_result == {"cancelled": True}
+            assert result.routing_error is None
+            persist.assert_not_awaited()
+        else:
+            assert result.target_butler == "concierge"
+            assert result.route_result == {"lane": "system_answer", "status": "completed"}
+            assert persist.await_args.kwargs["answer"] == "Fleet estimated cost was $1.23."
+            assert (
+                persist.await_args.kwargs["evidence"]["data"]["source"]["ref"]
+                == "concierge.v_fleet_spend"
+            )
+        assert result.routed_targets == []
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_system_answer_pending_publication_remains_non_success(
+        self, mock_load, mocked_pipeline_source, monkeypatch
+    ):
+        evidence = {
+            "status": "ok",
+            "answered": True,
+            "tool": "dashboard_read_spend_summary",
+            "data": {
+                "source": {
+                    "kind": "view",
+                    "ref": "concierge.v_fleet_spend",
+                    "as_of": "2026-10-14T00:00:00+00:00",
+                }
+            },
+        }
+
+        async def classify(**kwargs):
+            return FakeSpawnerResult(
+                output="A sourced answer awaiting durable settlement.",
+                tool_calls=[{"name": "answer_question", "result": evidence}],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=classify, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(return_value={"conversation_id": "conv-10"})
+        pipeline._update_message_inbox_lifecycle = AsyncMock()
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()
+        publish = AsyncMock(return_value="pending")
+        monkeypatch.setattr(
+            "butlers.core_tools._dashboard_system_answer.persist_system_answer", publish
+        )
+        result = await pipeline.process(
+            "Fleet cost?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000010",
+        )
+        assert result.route_result == {"lane": "system_answer", "status": "pending"}
+        assert result.routing_error == "system_answer:pending"
+        assert result.acked_targets == [] and result.routed_targets == []
+        assert publish.await_args.kwargs["evidence"] == evidence
+        assert (
+            publish.await_args.kwargs["answer"] == "A sourced answer awaiting durable settlement."
+        )
+        assert (
+            pipeline._update_message_inbox_lifecycle.await_args.kwargs["lifecycle_state"]
+            == "errored"
+        )
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
     async def test_ambiguous_question_fixture_yields_cannot_answer_not_general_route(
         self, mock_load, mocked_pipeline_source
     ):
