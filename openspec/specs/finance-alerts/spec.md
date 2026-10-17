@@ -190,10 +190,11 @@ Scope: classify-and-route frozen path security fix
 - **WHEN** a yearly subscription renews within 14 days and its `cancellation_url_source` is
   `extracted`
 - **THEN** the `subscription-renewal` message MUST name only the link's registrable domain,
-  defanged (`example[.]com`) so that no chat client can render it as a live link, followed by "(link from an email, not verified)" (or "(link from an unverified source, not
-  verified)" when the last writer was not an email)
-- **AND** neither the message nor the candidate metadata MUST contain the URL or a linkifiable
-  host, and the metadata MUST carry `door_verified: false`
+  defanged (`example[.]com`) so that no chat client can render it as a live link, followed by
+  "(link from an email, not verified)" (or "(link from an unverified source, not verified)" when
+  the last writer was not an email)
+- **AND** neither the message nor the candidate metadata MUST contain the URL, and the metadata
+  MUST carry `door_verified: false`
 
 #### Scenario: Owner-set cancellation link is unchanged
 

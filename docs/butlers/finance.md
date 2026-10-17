@@ -92,7 +92,7 @@ existing rows read as `extracted`. The renewal warning shows an extracted link a
 domain, defanged (`example[.]com`) so no chat client can auto-link it, with "(link from an email, not verified)", carries no URL in its metadata
 (`door_verified: false`), and an extracted `cancelled` or `paused` status still warns and asks the
 owner to confirm. The domain is derived offline (last two labels, or three under a short list of
-multi-label suffixes), so it is a display label, not an authorization input.
+multi-label suffixes), so it is a display label, not an authorization input. Only the cancellation door is defanged; other free text in the message, such as the service name, is not (bu-svqpzo.17).
 
 ## Related Pages
 
