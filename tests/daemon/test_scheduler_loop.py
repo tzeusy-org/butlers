@@ -330,7 +330,7 @@ class TestSchedulerLoopBehavior:
         attempts: list[float] = []
         with (
             patch.object(daemon, "_create_audit_pool", create),
-            patch("butlers.daemon.time.monotonic", side_effect=lambda: clock[0]),
+            patch("butlers.daemon._monotonic", side_effect=lambda: clock[0]),
         ):
             for _ in range(2000):
                 before = create.await_count
@@ -350,6 +350,56 @@ class TestSchedulerLoopBehavior:
             # Success is cached: no further creation attempts.
             assert daemon._resolve_eligibility_pool() is recovered
             assert create.await_count == 7
+
+    async def test_registry_pool_retry_never_runs_twice_concurrently(self, tmp_path: Path) -> None:
+        """A retry still connecting must not be joined by another on later ticks."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        gate = asyncio.Event()
+        calls = 0
+
+        async def slow_create(_pool):
+            nonlocal calls
+            calls += 1
+            await gate.wait()
+            return None
+
+        with patch.object(daemon, "_create_audit_pool", slow_create):
+            for _ in range(5):
+                assert daemon._resolve_eligibility_pool() is None
+                await _real_sleep(0)
+            assert calls == 1
+            gate.set()
+            await daemon._audit_pool_retry_task
+
+    async def test_registry_pool_retry_is_cancelled_when_the_loop_exits(
+        self, tmp_path: Path
+    ) -> None:
+        """A retry must not outlive the scheduler loop and set the pool after shutdown."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        started = asyncio.Event()
+
+        async def hanging_create(_pool):
+            started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(daemon, "_create_audit_pool", hanging_create),
+            patch("butlers.daemon._tick", new=AsyncMock(return_value=0)),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            loop_task = asyncio.create_task(daemon._scheduler_loop())
+            await asyncio.wait_for(started.wait(), 5)
+            retry = daemon._audit_pool_retry_task
+            loop_task.cancel()
+            try:
+                await loop_task
+            except asyncio.CancelledError:
+                pass
+            for _ in range(5):
+                await _real_sleep(0)
+            assert retry.cancelled()
 
     async def test_loop_gates_until_registry_pool_recovers(self, tmp_path: Path) -> None:
         """Ticks see no pool while creation fails, then the recovered pool on a later tick."""
@@ -372,7 +422,7 @@ class TestSchedulerLoopBehavior:
         with (
             patch.object(daemon, "_create_audit_pool", create),
             patch("butlers.daemon._tick", side_effect=capture_tick),
-            patch("butlers.daemon.time.monotonic", side_effect=lambda: clock[0]),
+            patch("butlers.daemon._monotonic", side_effect=lambda: clock[0]),
             patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
         ):
             task = asyncio.create_task(daemon._scheduler_loop())

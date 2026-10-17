@@ -408,7 +408,7 @@ class TelegramModule(Module):
 
         Prefers the switchboard audit pool (cross-butler, reads ``public``);
         falls back to the butler's own pool (which can also read ``public``).
-        ``None`` when neither is wired, which fails the gate open.
+        ``None`` when neither is wired, which fails the gate closed (unreadable store).
         """
         if self._audit_pool is not None:
             return self._audit_pool

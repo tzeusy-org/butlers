@@ -115,6 +115,13 @@ logger = logging.getLogger(__name__)
 _AUDIT_POOL_RETRY_INITIAL_S = 60.0
 _AUDIT_POOL_RETRY_MAX_S = 600.0
 
+
+def _monotonic() -> float:
+    """Clock seam for the registry-pool retry deadline, so tests patch it without touching
+    the event loop's own ``time.monotonic``."""
+    return time.monotonic()
+
+
 _MCP_SERVER_START_TIMEOUT_S = 5.0
 _MCP_SERVER_START_POLL_INTERVAL_S = 0.01
 
@@ -831,7 +838,7 @@ class ButlerDaemon:
         if self._audit_pool is not None:
             return self._audit_pool
         task = self._audit_pool_retry_task
-        if (task is None or task.done()) and time.monotonic() >= self._audit_pool_retry_at:
+        if (task is None or task.done()) and _monotonic() >= self._audit_pool_retry_at:
             self._audit_pool_retry_task = asyncio.create_task(
                 self._retry_audit_pool(), name=f"audit-pool-retry-{self.config.name}"
             )
@@ -850,7 +857,7 @@ class ButlerDaemon:
             logger.info("Registry pool recovered for %s; scheduler gate readable", self.config.name)
             return
         delay = self._audit_pool_backoff_s
-        self._audit_pool_retry_at = time.monotonic() + delay
+        self._audit_pool_retry_at = _monotonic() + delay
         self._audit_pool_backoff_s = min(delay * 2, _AUDIT_POOL_RETRY_MAX_S)
         logger.error(
             "Registry pool unavailable for %s; scheduled ticks stay gated, retrying in %.0fs",
