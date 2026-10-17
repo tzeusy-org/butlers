@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from opentelemetry import metrics
@@ -4797,6 +4797,8 @@ async def test_accept_ingress_binds_scrubbed_text_and_keeps_dedupe_reuse() -> No
 
 
 async def test_ordinary_numbers_survive_all_inbound_writers() -> None:
+    from uuid import UUID
+
     from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
     from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
 
@@ -4829,6 +4831,8 @@ async def test_ordinary_numbers_survive_all_inbound_writers() -> None:
 
 
 def _replay_conn(original_payload: dict[str, Any]) -> AsyncMock:
+    from uuid import UUID
+
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=AsyncMock())
     conn.fetchrow = AsyncMock(
@@ -4853,6 +4857,8 @@ def _replayed_insert(conn: AsyncMock) -> tuple[Any, ...]:
 
 
 async def test_dead_letter_capture_stores_scrubbed_original_payload() -> None:
+    from uuid import UUID
+
     from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
 
     dl_conn = AsyncMock()
@@ -4873,6 +4879,8 @@ async def test_dead_letter_capture_stores_scrubbed_original_payload() -> None:
 
 
 async def test_dead_letter_replay_scrubs_legacy_raw_payload() -> None:
+    from uuid import UUID
+
     from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
 
     # A legacy pre-fix dead letter still holds raw text; replay scrubs it on reinsert.
