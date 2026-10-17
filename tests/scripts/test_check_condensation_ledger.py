@@ -1800,3 +1800,27 @@ def test_retirement_replacements_must_exist_in_the_candidate(tmp_path):
     root, base, trusted, _ = _retirement_repository(tmp_path / "present", mutate=add)
     _retire(root, extra="\n\ndef test_excludes_steam():\n    assert True\n")
     assert ledger.verify(root, base, [], trusted=trusted)["status"] == "PASS"
+
+
+def test_cli_prints_the_real_contract_refusal_category_across_module_identities(tmp_path):
+    """bu-rf37wu: run as a script, an imported consumer's refusal keeps its own category.
+
+    ``python scripts/check_condensation_ledger.py`` loads the ledger as ``__main__`` while
+    ``contract_evolution`` imports it again by name, so without the ``sys.modules`` alias in
+    ``main`` its ``EvidenceError`` is a different class and collapses to
+    ``invalid-structural-evidence``. In-process tests cannot see that.
+    """
+    root, base, _trusted, _authority, _request, _commit = _contract_repository(tmp_path)
+    # The protected ref predates the authorization, so the candidate request has no authority.
+    ledger.git(root, "update-ref", "refs/remotes/origin/main", base)
+    proc = subprocess.run(
+        [sys.executable, str(Path(ledger.__file__)), "--repo-root", str(root), "--base", base],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout) == {
+        "status": "REFUSED",
+        "category": "missing-protected-contract-authority",
+    }
