@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
@@ -29,12 +30,22 @@ from typing import Any
 import asyncpg
 
 from butlers.modules.contacts.owner import ContactsLookupAmbiguous, ContactsOwner
-from butlers.modules.contacts.sync import CanonicalContact
+from butlers.modules.contacts.sync import (
+    CanonicalContact,
+    ContactsSyncError,
+    ContactsSyncMode,
+    ContactsSyncState,
+    ContactsSyncStateRepository,
+    ContactsSyncStateStore,
+)
 
 logger = logging.getLogger(__name__)
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
+# A loss greater than half the active links is suspect; equality is accepted.
+# Empty full lists are always refused, independently of this limit.
+DEFAULT_MAX_SHRINK_FRACTION = 0.5
 
 
 def _provenance_key(provider: str, field: str) -> str:
@@ -922,7 +933,16 @@ class ContactBackfillEngine:
         provider: str,
         account_id: str,
         owner: ContactsOwner | None = None,
+        max_shrink_fraction: float = DEFAULT_MAX_SHRINK_FRACTION,
     ) -> None:
+        if (
+            isinstance(max_shrink_fraction, bool)
+            or not isinstance(max_shrink_fraction, (int, float))
+            or not 0 <= max_shrink_fraction < 1
+            or not math.isfinite(max_shrink_fraction)
+        ):
+            raise ValueError("max_shrink_fraction must be finite and in [0, 1)")
+        self._max_shrink_fraction = max_shrink_fraction
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
@@ -932,6 +952,158 @@ class ContactBackfillEngine:
         self._writer = ContactBackfillWriter(
             pool, provider=provider, account_id=account_id, owner=owner
         )
+
+    async def begin_sync(self, *, provider: str, account_id: str) -> dict[str, dict[str, Any]]:
+        """Snapshot local source anchors before a configured Telegram cycle fetches."""
+        if provider != "telegram" or provider != self._provider or account_id != self._account_id:
+            raise ContactsSyncError("contacts batch scope does not match configured backfill")
+        rows = await self._pool.fetch(
+            "SELECT external_contact_id,local_entity_id,source_etag,last_seen_at,deleted_at "
+            "FROM contacts_source_links WHERE provider=$1 AND account_id=$2",
+            self._provider,
+            self._account_id,
+        )
+        return {row["external_contact_id"]: dict(row) for row in rows}
+
+    def _refuse_absence(
+        self, reason: str, *, baseline_count: int | None, present_count: int | None
+    ) -> None:
+        logger.warning(
+            "contact_sync_absence_refused",
+            extra={
+                "reason": reason,
+                "provider": self._provider,
+                "account_id": self._account_id,
+                "baseline_count": baseline_count,
+                "present_count": present_count,
+            },
+        )
+
+    async def finalize_sync(
+        self,
+        *,
+        contacts: list[CanonicalContact],
+        mode: ContactsSyncMode,
+        baseline: dict[str, dict[str, Any]],
+        expected_state: ContactsSyncState,
+        next_state: ContactsSyncState,
+        state_store: ContactsSyncStateRepository,
+    ) -> int:
+        """Co-commit accepted absence transitions, cache eviction and sync progress."""
+        if (
+            not isinstance(state_store, ContactsSyncStateStore)
+            or state_store._pool is not self._pool
+        ):
+            raise ContactsSyncError("Telegram custody requires its hosting sync state store")
+        active = {key: row for key, row in baseline.items() if row["deleted_at"] is None}
+        present = {c.external_id for c in contacts if not c.deleted}
+        accept_absence = mode == "full"
+        if accept_absence:
+            if not present:
+                self._refuse_absence("empty_full", baseline_count=len(active), present_count=0)
+                accept_absence = False
+            elif active and (len(active) - len(present)) / len(active) > self._max_shrink_fraction:
+                self._refuse_absence(
+                    "sharp_shrink", baseline_count=len(active), present_count=len(present)
+                )
+                accept_absence = False
+        deleted = []
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await state_store.lock_state(
+                    provider=self._provider,
+                    account_id=self._account_id,
+                    executor=conn,
+                )
+                if current != expected_state:
+                    self._refuse_absence(
+                        "concurrent_state", baseline_count=len(active), present_count=len(present)
+                    )
+                    raise ContactsSyncError("contacts sync state changed during fetch")
+                if accept_absence:
+                    candidates = await conn.fetch(
+                        "SELECT external_contact_id,local_entity_id,source_etag, "
+                        "last_seen_at,deleted_at "
+                        "FROM contacts_source_links WHERE provider=$1 AND account_id=$2 "
+                        "AND deleted_at IS NULL AND NOT(external_contact_id=ANY($3::text[])) "
+                        "ORDER BY external_contact_id FOR UPDATE",
+                        self._provider,
+                        self._account_id,
+                        sorted(present),
+                    )
+                    if any(
+                        active.get(row["external_contact_id"]) != dict(row) for row in candidates
+                    ):
+                        self._refuse_absence(
+                            "concurrent_source",
+                            baseline_count=len(active),
+                            present_count=len(present),
+                        )
+                        raise ContactsSyncError("contacts source baseline changed during fetch")
+                    missing = [row["external_contact_id"] for row in candidates]
+                    if missing:
+                        deleted = await conn.fetch(
+                            "UPDATE contacts_source_links SET deleted_at=now() "
+                            "WHERE provider=$1 AND account_id=$2 AND deleted_at IS NULL "
+                            "AND external_contact_id=ANY($3::text[]) "
+                            "RETURNING external_contact_id,local_entity_id",
+                            self._provider,
+                            self._account_id,
+                            missing,
+                        )
+                        for row in deleted:
+                            next_state.contact_versions.pop(row["external_contact_id"], None)
+                await state_store.save(
+                    provider=self._provider,
+                    account_id=self._account_id,
+                    state=next_state,
+                    executor=conn,
+                )
+        for row in deleted:
+            logger.info(
+                "contact_sync_deleted_source",
+                extra={
+                    "entity_id": str(row["local_entity_id"]) if row["local_entity_id"] else None,
+                    "provider": self._provider,
+                    "account_id": self._account_id,
+                    "external_id": row["external_contact_id"],
+                },
+            )
+        return len(deleted)
+
+    async def record_failure(
+        self,
+        *,
+        state_store: ContactsSyncStateRepository,
+        expected_state: ContactsSyncState,
+        expired_cursor: bool,
+    ) -> None:
+        self._refuse_absence("cycle_failed", baseline_count=None, present_count=None)
+        if isinstance(state_store, ContactsSyncStateStore) and state_store._pool is self._pool:
+            await state_store.record_failure(
+                provider=self._provider,
+                account_id=self._account_id,
+                expected_state=expected_state,
+                expired_cursor=expired_cursor,
+            )
+
+    async def _reappearing_anchor(self, contact: CanonicalContact) -> uuid.UUID | None:
+        """A positive Telegram reappearance resumes only its exact inactive local anchor."""
+        row = await self._pool.fetchrow(
+            "SELECT sl.local_entity_id, EXISTS(SELECT 1 FROM public.entities e "
+            "WHERE e.id=sl.local_entity_id AND e.entity_type='person' "
+            "AND e.metadata->>'merged_into' IS NULL AND e.metadata->>'deleted_at' IS NULL) AS live "
+            "FROM contacts_source_links sl WHERE sl.provider=$1 AND sl.account_id=$2 "
+            "AND sl.external_contact_id=$3 AND sl.deleted_at IS NOT NULL",
+            self._provider,
+            self._account_id,
+            contact.external_id,
+        )
+        if row is None:
+            return None
+        if not row["local_entity_id"] or not row["live"]:
+            raise ContactsSyncError("inactive contact source anchor unavailable")
+        return uuid.UUID(str(row["local_entity_id"]))
 
     async def __call__(self, contact: CanonicalContact) -> None:
         """Process one canonical contact: resolve, write, feed."""
@@ -947,7 +1119,15 @@ class ContactBackfillEngine:
             raise
 
     async def _apply(self, contact: CanonicalContact) -> None:
-        local_id, strategy = await self._resolver.resolve(contact)
+        reappearing = (
+            await self._reappearing_anchor(contact)
+            if self._provider == "telegram" and not contact.deleted
+            else None
+        )
+        if reappearing is not None:
+            local_id, strategy = reappearing, "source_link"
+        else:
+            local_id, strategy = await self._resolver.resolve(contact)
 
         # Handle tombstone (source deleted) before anything else
         if contact.deleted:
@@ -965,6 +1145,8 @@ class ContactBackfillEngine:
                 "SELECT 1 FROM public.entities WHERE id = $1", local_id
             )
             if not exists:
+                if reappearing is not None:
+                    raise ContactsSyncError("reappearing contact entity became unavailable")
                 logger.warning(
                     "ContactBackfill: resolved local_id=%s via %s but entity missing; "
                     "treating as new",
