@@ -127,18 +127,28 @@ async def test_all_scope_includes_memory_per_butler_plus_static_scopes():
 class TestMemoryExportRealSchemas:
     """Two butlers with memory in their own schemas of real migrated databases."""
 
-    @pytest.fixture
-    async def pools(self, postgres_container):
-        made = {}
-        for butler in ("alpha", "beta"):
-            url = create_migrated_test_db(
+    @pytest.fixture(scope="class")
+    def database_urls(self, postgres_container) -> dict[str, str]:
+        # create_migrated_test_db is synchronous (it calls asyncio.run internally), so it
+        # must run in a sync fixture, never inside the running event loop.
+        return {
+            butler: create_migrated_test_db(
                 postgres_container,
                 migration_db_name(),
                 chains=["core", "memory"],
                 schemas={"memory": butler},
             )
-            pool = await asyncpg.create_pool(url, min_size=1, max_size=2, init=register_jsonb_codec)
-            made[butler] = pool
+            for butler in ("alpha", "beta")
+        }
+
+    @pytest.fixture
+    async def pools(self, database_urls: dict[str, str]):
+        made = {
+            butler: await asyncpg.create_pool(
+                url, min_size=1, max_size=2, init=register_jsonb_codec
+            )
+            for butler, url in database_urls.items()
+        }
         yield made
         for pool in made.values():
             await pool.close()
