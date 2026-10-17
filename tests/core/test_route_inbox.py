@@ -419,3 +419,70 @@ async def test_scan_and_recovery_sweep() -> None:
     skipped_dispatch = AsyncMock()
     assert await route_inbox_recovery_sweep(pool2, dispatch_fn=skipped_dispatch) == 0
     skipped_dispatch.assert_not_awaited()
+
+
+def test_ingestion_delivery_binding_is_immutable_and_content_blind() -> None:
+    """REQ-ingestion-target-delivery-recovery-002: bind canonical work, not retry metadata."""
+    from copy import deepcopy
+
+    from butlers.core.ingestion_delivery import DeliveryBinding, validate_delivery
+
+    envelope = _sample_envelope()
+    envelope["target"] = {"butler": "health"}
+    envelope["subrequest"] = {
+        "subrequest_id": "part-a",
+        "segment_id": "a",
+        "fanout_mode": "parallel",
+    }
+    envelope["request_context"].update(subrequest_id="part-a", segment_id="a")
+    binding = DeliveryBinding.for_envelope(envelope)
+    envelope["delivery"] = binding.model_dump(mode="json")
+    validate_delivery(envelope, receiving_butler="health", trusted_callers=["switchboard"])
+    retry = deepcopy(envelope)
+    retry["trace_context"] = {"traceparent": "changed"}
+    retry["request_context"]["received_at"] = "2026-03-01T10:00:00Z"
+    assert DeliveryBinding.for_envelope(retry) == binding
+    for mutation in ("prompt", "segment", "target", "caller", "digest", "request"):
+        changed = deepcopy(envelope)
+        if mutation == "prompt":
+            changed["input"]["prompt"] = "changed work"
+        elif mutation == "segment":
+            changed["request_context"]["segment_id"] = "b"
+        elif mutation == "target":
+            changed["target"]["butler"] = "finance"
+        elif mutation == "caller":
+            changed["request_context"]["source_endpoint_identity"] = "untrusted"
+        elif mutation == "digest":
+            changed["delivery"]["payload_digest"] = "0" * 64
+        else:
+            changed["delivery"]["ingestion_event_id"] = str(uuid.uuid4())
+        with pytest.raises(ValueError):
+            validate_delivery(changed, receiving_butler="health", trusted_callers=["switchboard"])
+
+
+async def test_ingestion_receipt_lookup_never_writes_or_returns_changed_work() -> None:
+    """REQ-ingestion-target-delivery-recovery-002: same binding or content-blind conflict."""
+    from butlers.core.ingestion_delivery import DeliveryBinding
+    from butlers.core.route_inbox import RouteAcceptanceConflict, route_inbox_lookup_acceptance
+
+    _, conn = _make_pool()
+    binding = DeliveryBinding(
+        ingestion_event_id=_sample_envelope()["request_context"]["request_id"],
+        target_butler="health",
+        segment_id="a",
+        payload_digest="a" * 64,
+        operation="lookup",
+    )
+    receipt_id = uuid.uuid4()
+    conn.fetchrow.return_value = {
+        "payload_digest": binding.payload_digest,
+        "receipt_id": receipt_id,
+    }
+    receipt = await route_inbox_lookup_acceptance(conn, binding)
+    assert receipt.receipt_id == receipt_id and not receipt.created
+    changed = binding.model_copy(update={"payload_digest": "b" * 64})
+    with pytest.raises(RouteAcceptanceConflict):
+        await route_inbox_lookup_acceptance(conn, changed)
+    conn.fetchrow.return_value = None
+    assert await route_inbox_lookup_acceptance(conn, binding) is None
+    conn.execute.assert_not_awaited()

@@ -502,3 +502,301 @@ def test_restoring_the_artifact_yields_the_drill_history_back(
         "may create that boundary; a dump that carries it would land its objects "
         "under whoever ran the restore."
     )
+
+
+def test_ingestion_acceptance_survives_published_backup_and_restore(
+    bootstrapped, postgres_container, tmp_path
+) -> None:
+    """REQ-ingestion-target-delivery-recovery-002: restore never reopens accepted work."""
+    import asyncio
+    import json
+    import shlex
+    import uuid
+
+    import asyncpg
+
+    from butlers.core.ingestion_delivery import DeliveryBinding
+    from butlers.core.route_inbox import (
+        RouteAcceptanceConflict,
+        route_inbox_accept_delivery,
+        route_inbox_lookup_acceptance,
+    )
+    from butlers.core.utils import generate_uuid7_string
+    from butlers.migrations import run_migrations
+    from butlers.testing.migration import (
+        _bootstrap_migration_prerequisites,
+        bootstrap_extensions,
+    )
+    from tests.scripts.test_pg_restore_definer_ownership import _docker_client
+
+    backup_url, privileged_url = bootstrapped
+    asyncio.run(run_migrations(backup_url, chain="core", schema="health"))
+    asyncio.run(run_migrations(backup_url, chain="switchboard", schema="switchboard"))
+    _bootstrap_migration_prerequisites(privileged_url, urlparse(backup_url).username)
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": {
+            "request_id": generate_uuid7_string(),
+            "received_at": "2026-10-14T00:00:00Z",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "backup-private-sender-canary",
+            "subrequest_id": "backup-part",
+            "segment_id": "backup",
+        },
+        "target": {"butler": "health"},
+        "subrequest": {
+            "subrequest_id": "backup-part",
+            "segment_id": "backup",
+            "fanout_mode": "parallel",
+        },
+        "input": {"prompt": "backup-private-payload-canary"},
+    }
+    binding = DeliveryBinding.for_envelope(envelope)
+    envelope["delivery"] = binding.model_dump(mode="json")
+
+    async def runtime_pool(db_url, role, schema):
+        async def init(conn):
+            await conn.set_type_codec(
+                "jsonb", schema="pg_catalog", encoder=json.dumps, decoder=json.loads
+            )
+
+        async def setup(conn):
+            # These identifiers come from the bootstrap catalog, never caller input.
+            await conn.execute(f'SET ROLE "{role}"; SET search_path TO "{schema}",public')
+
+        return await asyncpg.create_pool(db_url, min_size=1, max_size=1, init=init, setup=setup)
+
+    async def seed():
+        pool = await runtime_pool(backup_url, "butler_health_rw", "health")
+        try:
+            accepted = await route_inbox_accept_delivery(
+                pool, binding=binding, route_envelope=envelope
+            )
+            assert accepted.created
+            await pool.execute("DELETE FROM route_inbox WHERE id=$1", accepted.receipt_id)
+        finally:
+            await pool.close()
+        pool = await runtime_pool(backup_url, "butler_switchboard_rw", "switchboard")
+        try:
+            await pool.execute(
+                "INSERT INTO ingestion_target_plans "
+                "(ingestion_event_id,plan_digest,classified_plan) VALUES ($1,$2,$3)",
+                binding.ingestion_event_id,
+                "a" * 64,
+                {"payload": "backup-private-plan-canary"},
+            )
+            await pool.execute(
+                "INSERT INTO ingestion_target_intents "
+                "(ingestion_event_id,target_butler,segment_id,subrequest_id,payload_digest,"
+                "route_payload,state,receipt_id) VALUES ($1,'health','backup','backup-part',"
+                "$2,$3,'accepted',$4)",
+                binding.ingestion_event_id,
+                binding.payload_digest,
+                envelope,
+                accepted.receipt_id,
+            )
+            await pool.execute("UPDATE ingestion_target_intents SET route_payload=NULL")
+            await pool.execute("UPDATE ingestion_target_plans SET classified_plan=NULL")
+        finally:
+            await pool.close()
+        return accepted.receipt_id
+
+    receipt = asyncio.run(seed())
+    tables = (
+        "health.route_acceptance_ledger",
+        "switchboard.ingestion_target_plans",
+        "switchboard.ingestion_target_intents",
+    )
+    expected = {table: _query(backup_url, f"SELECT * FROM {table}") for table in tables}
+    assert all(len(rows) == 1 for rows in expected.values())
+    assert _query(
+        backup_url, "SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user"
+    ) == [(False, False)]
+    for table in tables:
+        assert _query(
+            backup_url,
+            "SELECT relrowsecurity,relforcerowsecurity,pg_get_userbyid(relowner)=current_user "
+            "FROM pg_class WHERE oid=CAST(:table AS regclass)",
+            table=table,
+        ) == [(True, False, True)]
+
+    backup_dir = tmp_path / "acceptance-backup"
+    backup_dir.mkdir()
+    result = _run_backup_script(
+        backup_url, backup_dir, str(postgres_container.get_exposed_port(5432))
+    )
+    assert result.returncode == 0, "canonical backup must publish retained acceptance evidence"
+    artifacts = list(backup_dir.glob("butlers_*.sql.gz"))
+    assert len(artifacts) == 1 and not list(backup_dir.glob("*.tmp"))
+    with gzip.open(artifacts[0], "rt", encoding="utf-8") as handle:
+        artifact = handle.read()
+    for table in tables:
+        assert f"COPY {table} " in artifact
+    assert str(receipt) in artifact and binding.payload_digest in artifact
+    assert "backup-private-" not in artifact
+    # The canonical artifact deliberately excludes protected control-plane
+    # objects. Restore onto the documented prebootstrapped target: the fixed
+    # installers must establish the complete interfaces before any retained
+    # dump fragments arrive. Reuse the source migration login and trusted
+    # testcontainer control login; no recovery role or grant is introduced.
+    restored_db = f"restored_acceptance_{migration_db_name()}"
+    migration_user = urlparse(backup_url).username
+    control_url = postgres_container.get_connection_url()
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            quote_identifier = conn.dialect.identifier_preparer.quote
+            conn.execute(
+                text(
+                    f"CREATE DATABASE {quote_identifier(restored_db)} "
+                    f"OWNER {quote_identifier(migration_user)}"
+                )
+            )
+    finally:
+        engine.dispose()
+    restored_control_url = migration_bootstrap_db_url(postgres_container, restored_db)
+    restored_url = urlparse(backup_url)._replace(path=f"/{restored_db}").geturl()
+    bootstrap_extensions(restored_control_url)
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
+    command.upgrade(_build_alembic_config(restored_url, chains=["core"]), "core@head")
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
+    # No target-local acceptance or Switchboard intent can satisfy the later
+    # exact readback unless it came from the published artifact.
+    for table in tables:
+        assert _query(restored_url, "SELECT to_regclass(:table)", table=table) == [(None,)]
+    assert _query(restored_url, "SELECT count(*) FROM public.route_acceptance_ledger") == [(0,)]
+
+    # Exercise the actual ownership-auditing restore script on the original
+    # published gzip. Omitting --drop-existing preserves that trusted setup.
+    published_bytes = artifacts[0].read_bytes()
+    control = urlparse(control_url)
+    result = _docker_client(
+        artifacts[0],
+        'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; '
+        "bash /pg_restore.sh /backup.sql.gz --host host.docker.internal "
+        f"--port {shlex.quote(str(postgres_container.get_exposed_port(5432)))} "
+        f"--user {shlex.quote(control.username or '')} "
+        f"--target-db {shlex.quote(restored_db)}",
+        password=control.password or "",
+    )
+    assert result.returncode == 0, "canonical restore must certify original function ownership"
+    assert artifacts[0].read_bytes() == published_bytes
+    # Replay the actual broad bootstrap grants before measuring runtime denial.
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
+    for table in tables:
+        assert _query(restored_url, f"SELECT * FROM {table}") == expected[table]
+    assert _query(restored_url, "SELECT count(*) FROM health.route_inbox") == [(0,)]
+
+    async def verify_fences():
+        pool = await runtime_pool(restored_url, "butler_health_rw", "health")
+        try:
+            async with pool.acquire() as conn:
+                lookup = await route_inbox_lookup_acceptance(conn, binding)
+                assert lookup is not None
+                assert lookup.receipt_id == receipt and not lookup.created
+            duplicate = await route_inbox_accept_delivery(
+                pool, binding=binding, route_envelope=envelope
+            )
+            assert not duplicate.created and duplicate.receipt_id == receipt
+            assert await pool.fetchval("SELECT count(*) FROM route_inbox") == 0
+            with pytest.raises(RouteAcceptanceConflict):
+                async with pool.acquire() as conn:
+                    await route_inbox_lookup_acceptance(
+                        conn, binding.model_copy(update={"payload_digest": "f" * 64})
+                    )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "INSERT INTO route_inbox (id,route_envelope) VALUES ($1,$2)",
+                    uuid.uuid4(),
+                    envelope,
+                )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "INSERT INTO route_acceptance_ledger "
+                    "(ingestion_event_id,target_butler,segment_id,payload_digest,receipt_id) "
+                    "VALUES ($1,'finance','foreign',$2,$3)",
+                    binding.ingestion_event_id,
+                    binding.payload_digest,
+                    uuid.uuid4(),
+                )
+        finally:
+            await pool.close()
+        roles = _query(
+            restored_url,
+            "SELECT rolname FROM pg_roles WHERE (rolname ~ '^butler_[a-z][a-z0-9_-]*_rw$' "
+            "OR rolname='connector_writer') AND pg_has_role(current_user,oid,'SET')",
+        )
+        assert {role for (role,) in roles} >= {
+            "butler_" + name + "_rw"
+            for name in (
+                "chronicler",
+                "concierge",
+                "education",
+                "finance",
+                "general",
+                "health",
+                "home",
+                "lifestyle",
+                "messenger",
+                "qa",
+                "relationship",
+                "switchboard",
+                "travel",
+            )
+        } | {"connector_writer"}
+        inserts = {
+            tables[0]: "(ingestion_event_id,target_butler,segment_id,payload_digest,receipt_id) "
+            "VALUES ($1,'health','foreign',$2,$3)",
+            tables[1]: "(ingestion_event_id,plan_digest) VALUES ($1,$2)",
+            tables[2]: "(ingestion_event_id,target_butler,segment_id,subrequest_id,payload_digest) "
+            "VALUES ($1,'health','foreign','foreign',$2)",
+        }
+        for (role,) in roles:
+            schema = "connectors" if role == "connector_writer" else role[7:-3]
+            pool = await runtime_pool(restored_url, role, schema)
+            try:
+                for table in tables:
+                    for operation in ("DELETE FROM", "TRUNCATE"):
+                        try:
+                            result = await pool.execute(f"{operation} {table}")
+                        except asyncpg.InsufficientPrivilegeError:
+                            pass
+                        else:
+                            # A foreign role with bootstrap DML grants may be
+                            # filtered to zero rows by RLS instead of raising.
+                            assert result == "DELETE 0"
+                    column = "plan_digest" if table == tables[1] else "payload_digest"
+                    try:
+                        result = await pool.execute(f"UPDATE {table} SET {column}=repeat('f',64)")
+                    except asyncpg.InsufficientPrivilegeError:
+                        pass
+                    else:
+                        assert result == "UPDATE 0"
+                    if (table.startswith("health.") and role == "butler_health_rw") or (
+                        table.startswith("switchboard.") and role == "butler_switchboard_rw"
+                    ):
+                        assert await pool.fetchval(f"SELECT count(*) FROM {table}") == 1
+                    else:
+                        values = (binding.ingestion_event_id, binding.payload_digest)
+                        if table == tables[0]:
+                            values += (uuid.uuid4(),)
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                            await pool.execute(f"INSERT INTO {table} {inserts[table]}", *values)
+                        try:
+                            count = await pool.fetchval(f"SELECT count(*) FROM {table}")
+                        except asyncpg.InsufficientPrivilegeError:
+                            pass
+                        else:
+                            assert count == 0
+                if role == "butler_switchboard_rw":
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        await pool.execute(
+                            "UPDATE ingestion_target_intents SET state='pending',receipt_id=NULL"
+                        )
+            finally:
+                await pool.close()
+
+    asyncio.run(verify_fences())
+    for table in tables:
+        assert _query(restored_url, f"SELECT * FROM {table}") == expected[table]

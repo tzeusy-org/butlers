@@ -382,6 +382,19 @@ concurrent duplicates cannot create a second inbox row or target session.
 Receipt lookup also compares receiving target and digest, and a same-key change
 returns conflict rather than proof of acceptance. This extends, rather than replaces, the target
 inbox's post-acceptance crash recovery in RFC 0001.
+The D1 representation/acceptance primitive uses optional top-level
+`delivery` on `route.execute`: `ingestion_event_id`, `target_butler`,
+`segment_id`, `payload_digest`, and `operation` (`accept` or read-only
+`lookup`). Event/request and both segment/subrequest bindings must agree with
+an explicit receiving target. SHA256 covers normalized immutable route work,
+excluding only the delivery field, tracing and receipt time. The existing
+trusted-host `trusted_route_callers` boundary admits Switchboard; this assertion
+is not cryptographic authentication. Lookup may carry placeholder input and
+must compare the original digest to the retained ledger; missing evidence is
+not no-effect proof. The implementation and migration/rollback boundary are
+[documented separately](../../../docs/runtime/ingestion-target-acceptance.md).
+Pipeline plan commit and intent workers remain separate implementation work.
+
 The content-blind acceptance key/target/digest/receipt ledger is append-only
 and non-prunable in v1, even when source or inbox payload rows age out.
 Mutable source timestamps and an absent receipt are not non-acceptance proof;

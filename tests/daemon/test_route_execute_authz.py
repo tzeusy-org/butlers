@@ -788,3 +788,99 @@ prompt = "Do the daily check"
             ConfigError, match=r"butler\.security\.trusted_route_callers must be a list of strings"
         ):
             load_config(d4)
+
+
+async def test_ingestion_delivery_refusals_never_touch_database(tmp_path: Path) -> None:
+    """REQ-ingestion-target-delivery-recovery-002: malformed/untrusted/changed target is inert."""
+    from copy import deepcopy
+
+    from butlers.core.ingestion_delivery import DeliveryBinding
+
+    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+    patches = _patch_infra()
+    daemon, route = await _start_daemon_with_route_execute(butler_dir, patches)
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": {
+            "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+            "received_at": "2026-10-14T00:00:00Z",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "private-canary",
+            "segment_id": "a",
+            "subrequest_id": "part-a",
+        },
+        "target": {"butler": "health"},
+        "subrequest": {"segment_id": "a", "subrequest_id": "part-a", "fanout_mode": "parallel"},
+        "input": {"prompt": "private-canary"},
+    }
+    envelope["delivery"] = DeliveryBinding.for_envelope(envelope).model_dump(mode="json")
+    pool = patches["mock_pool"]
+    try:
+        for mutation in ("caller", "target", "segment", "payload", "key"):
+            payload = deepcopy(envelope)
+            if mutation == "caller":
+                payload["request_context"]["source_endpoint_identity"] = "private-untrusted-canary"
+            elif mutation == "target":
+                payload["delivery"]["target_butler"] = "finance"
+            elif mutation == "segment":
+                payload["request_context"]["subrequest_id"] = "part-b"
+            elif mutation == "payload":
+                payload["input"]["prompt"] = "private-changed-canary"
+            else:
+                payload["delivery"]["ingestion_event_id"] = str(uuid.uuid4())
+            pool.reset_mock()
+            response = await route(**payload)
+            assert response["status"] == "error"
+            assert "private" not in str(response) and "receipt_id" not in response
+            pool.acquire.assert_not_called()
+            pool.fetch.assert_not_awaited()
+            pool.fetchval.assert_not_awaited()
+            pool.execute.assert_not_awaited()
+    finally:
+        await daemon.shutdown()
+
+    # The actual registry binds optional defaults before approval admission.
+    # A null ingestion binding must preserve the existing helper signature;
+    # a non-null binding must refuse before invoking that helper or the pool.
+    from types import SimpleNamespace
+
+    from fastmcp import FastMCP
+
+    from butlers.core.approval_delivery_transport import RecoveryAuthorityError
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._routing import register_routing_tools
+
+    mcp = FastMCP("ingestion-approval-boundary")
+    messenger = SimpleNamespace(config=SimpleNamespace(trusted_route_callers=("switchboard",)))
+    register_routing_tools(
+        ToolContext(messenger, pool, None, "messenger", None, False, True, None),
+        mcp,
+        lambda *_args, **_kwargs: mcp.tool(),
+    )
+    registered = await mcp.get_tool("route.execute")
+    approval_payload = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_endpoint_identity="switchboard"),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": _recovery_notify_request()}},
+    }
+    with patch(
+        "butlers.core_tools._routing._preauthenticate_messenger_recovery",
+        autospec=True,
+        side_effect=RecoveryAuthorityError("synthetic authority refusal"),
+    ) as preauthenticate:
+        pool.reset_mock()
+        response = await registered.fn(**approval_payload)
+        assert response["status"] == "error"
+        preauthenticate.assert_called_once()
+        assert "delivery" not in preauthenticate.call_args.kwargs
+        preauthenticate.reset_mock()
+        response = await registered.fn(**approval_payload, delivery=envelope["delivery"])
+        assert response["status"] == "error"
+        preauthenticate.assert_not_called()
+        ordinary_payload = {**approval_payload, "input": {"prompt": "ordinary request"}}
+        response = await registered.fn(**ordinary_payload, delivery=envelope["delivery"])
+        assert response["status"] == "error"
+        preauthenticate.assert_not_called()
+        pool.acquire.assert_not_called()
+        pool.execute.assert_not_awaited()

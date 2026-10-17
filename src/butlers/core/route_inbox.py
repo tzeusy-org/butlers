@@ -26,10 +26,13 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+
+from butlers.core.ingestion_delivery import DeliveryBinding
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,102 @@ _DEFAULT_PROCESSING_HEARTBEAT_S = 3
 
 class RouteInboxLeaseLost(RuntimeError):
     """Raised after a live invocation is cancelled because its queue lease was lost."""
+
+
+class RouteAcceptanceConflict(ValueError):
+    """An accepted identity does not prove acceptance of the supplied work."""
+
+
+@dataclass(frozen=True)
+class RouteAcceptance:
+    """Permanent receipt plus whether this transaction admitted new work."""
+
+    receipt_id: uuid.UUID
+    created: bool
+
+
+async def route_inbox_lookup_acceptance(
+    conn: asyncpg.Connection, binding: DeliveryBinding
+) -> RouteAcceptance | None:
+    """Read-only, content-blind exact receipt lookup; absence proves no effect only indirectly."""
+    row = await conn.fetchrow(
+        """
+        SELECT payload_digest, receipt_id FROM route_acceptance_ledger
+        WHERE ingestion_event_id = $1 AND target_butler = $2 AND segment_id = $3
+        """,
+        binding.ingestion_event_id,
+        binding.target_butler,
+        binding.segment_id,
+    )
+    if row is None:
+        return None
+    if row["payload_digest"] != binding.payload_digest:
+        raise RouteAcceptanceConflict("ingestion delivery binding conflict")
+    return RouteAcceptance(row["receipt_id"], created=False)
+
+
+async def route_inbox_accept_delivery(
+    pool: asyncpg.Pool,
+    *,
+    binding: DeliveryBinding,
+    route_envelope: dict[str, Any],
+) -> RouteAcceptance:
+    """Atomically create one permanent acceptance and its first processing row.
+
+    A conflicting insert waits for the first transaction; the following READ
+    COMMITTED statement sees its committed receipt. Never update the winner or
+    infer admission from a surviving inbox payload. No source-table FK exists.
+    Callers must validate the binding at the receiving trusted route boundary.
+    """
+    if binding.operation != "accept":
+        raise ValueError("lookup cannot admit ingestion delivery")
+    async with pool.acquire() as conn:
+        async with conn.transaction(isolation="read_committed"):
+            receipt_id = uuid.uuid4()
+            inserted = await conn.fetchval(
+                """
+                INSERT INTO route_acceptance_ledger
+                    (ingestion_event_id, target_butler, segment_id, payload_digest, receipt_id)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (ingestion_event_id, target_butler, segment_id) DO NOTHING
+                RETURNING receipt_id
+                """,
+                binding.ingestion_event_id,
+                binding.target_butler,
+                binding.segment_id,
+                binding.payload_digest,
+                receipt_id,
+            )
+            if inserted is None:
+                existing = await route_inbox_lookup_acceptance(conn, binding)
+                if existing is None:
+                    raise RuntimeError("acceptance ledger unavailable after conflict")
+                return existing
+            await conn.execute(
+                """
+                INSERT INTO route_inbox (id, route_envelope, lifecycle_state)
+                VALUES ($1, $2, $3)
+                """,
+                receipt_id,
+                route_envelope,
+                STATE_ACCEPTED,
+            )
+            return RouteAcceptance(receipt_id, created=True)
+
+
+async def route_inbox_acceptance_capacity(pool: asyncpg.Pool) -> dict[str, int]:
+    """Bounded catalog-only capacity monitoring, including indexes, without content or keys."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT pg_total_relation_size(oid) AS bytes,
+                   greatest(reltuples, 0)::bigint AS estimated_rows
+            FROM pg_class WHERE oid = to_regclass('route_acceptance_ledger')
+            """
+        )
+    if row is None:
+        raise RuntimeError("acceptance ledger capacity unavailable")
+    return {"bytes": int(row["bytes"]), "estimated_rows": int(row["estimated_rows"])}
 
 
 async def route_inbox_insert_on_connection(
@@ -528,6 +627,17 @@ async def route_inbox_recovery_sweep(
     int
         Number of rows recovered (dispatched for re-processing).
     """
+    # Catalog estimates avoid scanning the unbounded permanent ledger. This
+    # startup/recovery observation is content-blind and never prunes evidence.
+    try:
+        capacity = await route_inbox_acceptance_capacity(pool)
+        logger.info(
+            "route_inbox acceptance capacity: bytes=%d estimated_rows=%d",
+            capacity["bytes"],
+            capacity["estimated_rows"],
+        )
+    except Exception as exc:
+        logger.warning("route_inbox acceptance capacity unavailable class=%s", type(exc).__name__)
     rows = await route_inbox_scan_unprocessed(pool, grace_s=grace_s, batch_size=batch_size)
     if not rows:
         return 0

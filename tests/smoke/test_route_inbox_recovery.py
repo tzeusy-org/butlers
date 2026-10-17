@@ -244,3 +244,20 @@ async def test_recovered_row_reaches_terminal_state() -> None:
         f"DB write must set lifecycle_state to {STATE_PROCESSED!r}, "
         f"got {conn.fetchval.call_args.args[1]!r}"
     )
+
+
+async def test_recovery_reports_content_blind_permanent_ledger_capacity(caplog) -> None:
+    """REQ-ingestion-target-delivery-recovery-008: capacity is observed even without pending work."""
+    pool, conn = _make_pool()
+    conn.fetchrow.return_value = {"bytes": 8192, "estimated_rows": 4}
+    caplog.set_level("INFO", logger="butlers.core.route_inbox")
+    dispatch = AsyncMock()
+    assert await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch) == 0
+    dispatch.assert_not_awaited()
+    assert "bytes=8192 estimated_rows=4" in caplog.text
+    assert "route_envelope" not in caplog.text and "prompt" not in caplog.text
+    conn.fetchrow.return_value = None
+    caplog.clear()
+    assert await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch) == 0
+    assert "capacity unavailable" in caplog.text
+    assert "bytes=0" not in caplog.text

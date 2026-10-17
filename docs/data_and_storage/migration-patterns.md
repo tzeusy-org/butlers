@@ -433,6 +433,11 @@ their separate authority contract or equate the trusted migration owner with run
   the next number, repoint `down_revision`, update chain-head literals in tests, and push with
   `--force-with-lease`. Renumber before review so the reviewed head is final.
 
+Ordinary ingestion delivery migrations `core_268` and `sw_045` deliberately
+retain permanent acceptance evidence and immutable source representation on
+downgrade. See [target acceptance and rollback](../runtime/ingestion-target-acceptance.md).
+Source or inbox-payload retention never deletes the acceptance ledger.
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
