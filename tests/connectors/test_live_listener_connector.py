@@ -104,3 +104,55 @@ def test_mint_event_id_includes_device_and_timestamp() -> None:
     eid = mint_event_id(_DEVICE, _UNIX_MS)
     assert _DEVICE in eid
     assert str(_UNIX_MS) in eid
+
+
+async def test_process_segment_logs_ids_and_length_not_transcript(caplog) -> None:
+    """A spoken code never reaches the INFO transcription or DEBUG submitted-utterance logs."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from butlers.connectors.live_listener.connector import LiveListenerConnector
+
+    connector = object.__new__(LiveListenerConnector)
+    connector._ll_metrics = {"kitchen": MagicMock()}
+    connector._mic_states = {"kitchen": SimpleNamespace()}
+    transcript = "my login code is 482913"
+    connector._transcription_clients = {
+        "kitchen": SimpleNamespace(
+            transcribe=AsyncMock(
+                return_value=SimpleNamespace(
+                    text=transcript, confidence=0.9, language="en", healthy=True
+                )
+            ),
+            healthy=True,
+        )
+    }
+    connector._prefilters = {}
+    connector._discretion_evaluators = {}
+    connector._sessions = {
+        "kitchen": SimpleNamespace(
+            get_or_create_session=lambda _ts: "session-1",
+            session_id="session-1",
+            session_last_ts_ms=0,
+        )
+    }
+    connector._mcp_client = SimpleNamespace(call_tool=AsyncMock(return_value={"status": "ok"}))
+    connector._connector_metrics = MagicMock()
+    connector._db_pool = None
+    segment = SimpleNamespace(duration_ms=1000, audio_bytes=b"x", offset_ts=1_782_000_000.0)
+
+    with (
+        patch(
+            "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+            return_value=SimpleNamespace(allowed=True),
+        ),
+        caplog.at_level(logging.DEBUG, logger="butlers.connectors.live_listener.connector"),
+    ):
+        await connector._process_segment(SimpleNamespace(name="kitchen"), segment, object())
+
+    connector._mcp_client.call_tool.assert_awaited_once()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("submitted utterance" in m for m in messages)
+    assert all("482913" not in m and "login code" not in m for m in messages)
+    assert any(f"chars={len(transcript)}" in m for m in messages)
