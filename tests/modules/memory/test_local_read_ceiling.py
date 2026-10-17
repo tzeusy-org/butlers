@@ -802,13 +802,20 @@ class TestFilteredVectorLegIsExactUnderTheAnnPlan:
             ann_pool, content="unrelated gardening note", near=False, predicate="ann-p"
         )
 
-        # Control: the plain filtered ORDER BY ... LIMIT is served by the HNSW index, which
-        # hands back only ef_search candidates before the filter, so it loses the fact.
-        plain = await ann_pool.fetch(
-            "SELECT id FROM facts WHERE predicate = $1 ORDER BY embedding <=> $2::vector LIMIT 10",
-            "ann-p",
-            str(_QUERY_VECTOR),
+        # Control: a filter the planner cannot serve from any other index leaves the HNSW
+        # index as the only ordered path.  It hands back at most ef_search candidates before
+        # the filter, so the filtered row is lost.  ``predicate || ''`` keeps the btree
+        # indexes out of the plan; a small table otherwise lets the planner pick one and
+        # answer exactly, which would make this control vacuous.
+        await ann_pool.execute("ANALYZE facts")
+        control = (
+            "SELECT id FROM facts WHERE predicate || '' = $1 "
+            "ORDER BY embedding <=> $2::vector LIMIT 10"
         )
+        plan = await ann_pool.fetch("EXPLAIN " + control, "ann-p", str(_QUERY_VECTOR))
+        plan_text = "\n".join(row[0] for row in plan)
+        assert "idx_facts_embedding" in plan_text, f"setup: HNSW plan not forced\n{plan_text}"
+        plain = await ann_pool.fetch(control, "ann-p", str(_QUERY_VECTOR))
         assert wanted not in {row["id"] for row in plain}
 
         filtered = await _search.recall(
