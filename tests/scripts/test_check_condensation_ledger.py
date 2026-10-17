@@ -1039,9 +1039,7 @@ _FORGED_ID = "REQ-" + "forged-001"
 _OTHER_ID = "REQ-" + "other-001"
 
 
-def _contract_repository(
-    tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=(), conftest=False
-):
+def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=()):
     """Build real protected authority separately from its candidate request."""
     import contract_evolution as evolution
 
@@ -1080,8 +1078,6 @@ def _contract_repository(
     helper_body = helper.read_bytes()
     if candidate_helper:
         helper.unlink()
-    if conftest:
-        (root / "tests/conftest.py").write_text("import pytest\n")
     base = commit("complete original contract")
     if candidate_helper:
         helper.write_bytes(helper_body)
@@ -1128,7 +1124,6 @@ def _contract_repository(
                 "pyproject.toml",
                 "uv.lock",
                 (evolution.REQUESTS + "example.json"),
-                *(("tests/conftest.py",) if conftest else ()),
                 *(("scripts/contract_lifecycle.py",) if candidate_helper else ()),
             )
             if path not in omit
@@ -1881,11 +1876,20 @@ def test_stale_base_still_counts_a_loss_the_pull_request_introduces(tmp_path):
 
 @pytest.mark.parametrize("change", ["edit", "delete"])
 @pytest.mark.parametrize("fresh_base", [False, True])
-def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(tmp_path, change, fresh_base):
+def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(
+    tmp_path, monkeypatch, change, fresh_base
+):
     """bu-1bxczh: a conftest.py change is attributed to every owner below it."""
-    root, base, _authorized, _authority, _request, _commit = _contract_repository(
-        tmp_path, conftest=True
-    )
+    real_repository = _repository
+
+    def repository_with_conftest(path):
+        root = real_repository(path)
+        (root / "tests/conftest.py").write_text("import pytest\n")
+        return root
+
+    monkeypatch.setattr(sys.modules[__name__], "_repository", repository_with_conftest)
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    monkeypatch.undo()
     landed = ledger.git(root, "rev-parse", "HEAD")
     conftest = root / "tests/conftest.py"
     if change == "edit":
