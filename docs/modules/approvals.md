@@ -174,6 +174,42 @@ recorded failure or uncertain delivery remains visible even for a prepared actio
   withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
   Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
 
+## Approval cards show the exact stored call
+
+The owner push for a single parked action (Telegram) renders the call itself, not
+the assistant's description of it. A per-tool preview registry
+(`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
+fact lines: for email sends every To, Cc and Bcc address, the subject
+and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
+text. The assistant's `why`, `blast_radius` and `reversibility` sit under
+"Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
+span rendered in code formatting so it stays literal after the transport's HTML
+escaping. "Started by" names the owning butler (and marks prepared actions).
+
+Approve and Reject are offered only when the whole call is shown and the card
+fits about 3,500 UTF-16 code units (Telegram's own measure, so an emoji counts
+twice). Otherwise the card says why and offers Open only:
+no registered preview, an argument the preview cannot show (for example
+attachments or a reply markup), a recipient that cannot be enumerated, a body
+with backticks, any C0/C1 control character (other than a newline) or Unicode
+format character such as a bidi override or zero-width space in a shown value
+(these can forge the transport's placeholders or reorder what the owner reads), an
+over-budget call, or an `administer` or protected or
+consequential tool. Register a preview with `register_preview(tool, renderer,
+effect_class=...)`; an unregistered tool is Open only by design.
+
+Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
+stored call) on its `approval_delivery_presentations` row, written under the
+action's row lock when the handoff starts; the handoff does not start if the
+stored call changed since it was rendered, and a card never records a NULL
+digest. A connector-authenticated Telegram tap carries only the action id, so the
+approve endpoint refuses it with 409 "changed since shown" when any presented
+digest differs from the stored call, and the tap edits the message to say nothing
+was executed. This check applies to card taps only: a dashboard approval binds to
+the call the dashboard displayed, and dashboard edits are the owner's explicit
+change. Rows presented before migration 018 carry no digest and are not checked.
+Migration 018's downgrade refuses while any presentation carries a digest.
+
 ## Related Pages
 
 - [Module System](module-system.md)

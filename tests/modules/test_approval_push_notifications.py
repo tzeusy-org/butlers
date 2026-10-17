@@ -27,7 +27,11 @@ def test_build_approval_request_is_templated_and_carries_signed_actions() -> Non
     """The push is fixed daemon text, with both one-tap tokens and an edit link."""
     from butlers.modules.approvals.notifications import build_approval_request_envelope
 
-    action = _pending_action()
+    action = {
+        **_pending_action(),
+        "tool_name": "email_send_message",
+        "tool_args": {"to": "dana@x.com", "subject": "Re: Thursday", "body": "Thursday works."},
+    }
     envelope = build_approval_request_envelope(
         action=action,
         origin_butler="relationship",
@@ -42,10 +46,12 @@ def test_build_approval_request_is_templated_and_carries_signed_actions() -> Non
         "message": envelope["delivery"]["message"],
         "recipient": "100200300",
     }
-    assert "relationship_assert_fact" in envelope["delivery"]["message"]
+    assert "To: `dana@x.com`" in envelope["delivery"]["message"]
+    assert "Thursday works." in envelope["delivery"]["message"]
+    assert "Assistant says" in envelope["delivery"]["message"]
     assert "The owner asked to preserve this relationship fact." in envelope["delivery"]["message"]
-    assert "Blast radius: contact" in envelope["delivery"]["message"]
-    assert "Reversibility: compensable" in envelope["delivery"]["message"]
+    assert "Blast radius: `contact`" in envelope["delivery"]["message"]
+    assert "Reversibility: `compensable`" in envelope["delivery"]["message"]
     assert "Expires:" in envelope["delivery"]["message"]
     assert envelope["actions"][0]["verb"] == "approve"
     assert envelope["actions"][0]["callback_token"].startswith("apr1:")

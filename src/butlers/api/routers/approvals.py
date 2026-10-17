@@ -86,6 +86,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
+from butlers.modules.approvals.previews import args_digest
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
@@ -3079,7 +3080,43 @@ async def approve_approval(
         target_pool=target_pool,
         db_mgr=db_mgr,
         mcp_mgr=mcp_mgr,
+        check_presented_digests=callback_authenticated,
     )
+
+
+# Shared with the Telegram connector, which matches it to answer the tap honestly.
+APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+
+
+async def _require_presented_call_unchanged(
+    conn: Any, action_id: UUID, stored_tool_args: Any
+) -> None:
+    """Refuse a card tap whose stored call differs from any call a card showed.
+
+    Every presented card records the digest of the call it rendered
+    (``approval_delivery_presentations.args_digest``).  A connector-authenticated
+    tap carries only the action id, so it cannot say which card it came from;
+    tapping while any card for a different call is outstanding would execute
+    something that card did not show, so the tap executes nothing (security.md
+    § Approval Gates).  Dashboard approvals do not use this check: they bind to
+    the call the dashboard displayed.  Actions never presented with a digest are
+    unaffected.
+    """
+    presented = await conn.fetch(
+        """
+        SELECT DISTINCT p.args_digest
+          FROM approval_delivery_presentations AS p
+          JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+         WHERE i.action_id = $1 AND p.args_digest IS NOT NULL
+        """,
+        action_id,
+    )
+    if not isinstance(presented, list | tuple):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    current = args_digest(raw if isinstance(raw, dict) else None)
+    if any(row["args_digest"] != current for row in presented):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
 
 
 async def approve_owning_action(
@@ -3092,6 +3129,7 @@ async def approve_owning_action(
     db_mgr: DatabaseManager,
     mcp_mgr: MCPClientManager,
     expected_tool_args: dict[str, Any] | None = None,
+    check_presented_digests: bool = False,
 ) -> ApiResponse[ApprovalAction]:
     """Shared verified decision/audit/dispatch on an already selected owner.
 
@@ -3106,11 +3144,15 @@ async def approve_owning_action(
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
     async with target_pool.acquire() as conn, conn.transaction():
+        # The row lock makes the presented-digest check below atomic with the
+        # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1"
-            + (" FOR UPDATE" if expected_tool_args is not None else ""),
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
+
+        if action_row is not None and check_presented_digests:
+            await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
 
         if expected_tool_args is not None:
             if (

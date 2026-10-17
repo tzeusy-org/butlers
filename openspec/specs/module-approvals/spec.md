@@ -681,3 +681,48 @@ immediate execution when approval is not required.
 - **THEN** dispatch MUST fail without rewriting or guessing its executable arguments
 - **AND** the action MUST remain `approved` with `execution_result = null`
 - **AND** an immutable `action_execution_failed` event MUST be recorded
+
+### Requirement: Approval Cards Show the Exact Stored Call
+
+An owner-targeted `approval_request` card for a single parked action SHALL render
+its recipients and content from the stored, unredacted `pending_actions.tool_args`
+through a deterministic per-tool preview registry, never from model-written text.
+The model-written `why`, `blast_radius` and `reversibility` fields SHALL appear
+only under an "Assistant says" label as claims, with URLs defanged and the text
+rendered inert. The "Started by" line SHALL come from server rows, not from
+message text. The card SHALL offer Approve and Reject only when the whole stored
+call is shown and fits within about 3,500 rendered characters; in every other
+case it SHALL offer Open only: no registered preview, a renderer error, an
+argument or recipient the preview cannot enumerate, a shown value containing a C0/C1
+control character (other than a newline) or a Unicode format character, an
+over-budget call, and any tool whose effect class is `administer` or protected or
+consequential actuation. The budget SHALL be measured in UTF-16 code units.
+The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
+
+Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
+(sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
+pending action's row lock when the handoff starts. If the stored call no longer
+matches the rendered digest, the handoff SHALL NOT start, and a card SHALL NOT be
+handed off with a NULL digest. A connector-authenticated card decision SHALL take
+the pending action's row lock and refuse with HTTP 409 "changed since shown" when
+any recorded presentation digest differs from the digest of the stored call,
+executing nothing; a dashboard approval binds to the call the dashboard displayed
+and does not use that check. Downgrading the migration that adds the digest column
+SHALL refuse while any presentation carries a digest.
+
+#### Scenario: Email card shows the call
+
+- **WHEN** an email send is parked and its card is rendered
+- **THEN** the card lists every To and Cc address, the subject and the full body from stored `tool_args`
+- **AND** the assistant's explanation appears only under "Assistant says"
+- **AND** Approve, Reject and Open are offered
+
+#### Scenario: Call cannot be shown whole
+
+- **WHEN** the body exceeds the fit budget, the tool has no registered preview, or the tool is `administer`
+- **THEN** the card offers Open only
+
+#### Scenario: Stored call changed after presentation
+
+- **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
+- **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown
