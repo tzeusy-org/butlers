@@ -11,15 +11,20 @@ core_267 fenced stage order, the binding and reconciliation.  Three gaps remaine
   may repeat the same value, but a recorded object can never be replaced.  The
   ``qa_publication_operations_guard`` function is extended, not replaced: every core_267
   rule is kept.
-* ``ck_qa_publication_operations_result_stage`` ties ``result`` to ``stage`` using only
-  the values the ledger writer produces: ``succeeded`` carries ``success``, ``failed``
-  carries ``failed``, ``ambiguous`` carries ``ambiguous``, and a ``reconciled`` row keeps
-  whichever outcome it was reached from.  ``bound`` and ``egress_started`` carry no
-  result.  A NULL result is always accepted (a reconciled row reached from
-  ``egress_started`` has none).
+* ``result`` is set-once, like ``new_object_id``: ``record_outcome`` fills it (NULL to a
+  value) and nothing may change or clear it afterwards, so a reconciled row really keeps the
+  outcome it was reached from.
+* ``ck_qa_publication_operations_stage_result`` ties ``result`` to ``stage`` using only the
+  values ``state.py`` writes: ``bound`` and ``egress_started`` carry no result, ``succeeded``
+  carries ``success``, ``failed`` carries ``failed``, ``ambiguous`` carries ``ambiguous``, and
+  a ``reconciled`` row carries none (reached from ``egress_started``) or ``ambiguous``
+  (reached from ``ambiguous``).  A ``succeeded`` or ``failed`` row without its result is
+  refused.  Residual: an ``ambiguous`` row may carry a NULL result.  The writer never
+  produces one and the hold is keyed on stage, not result, so it cannot release a hold;
+  bu-mc01y5.15 closes it later.
 * ``qa_publication_operations_no_held_delete`` (BEFORE DELETE) refuses deleting a row
-  that holds the lineage (``egress_started`` or ``ambiguous``), for every role including
-  superusers.  Other rows may still be deleted.  TRUNCATE is not guarded.
+  that holds the lineage (``egress_started`` or ``ambiguous``), including from a privileged
+  login that bypasses row security.  Other rows may still be deleted.  TRUNCATE is not guarded.
 
 The core chain runs once per butler schema over the shared table, so only the last
 schema to leave core_268 removes the shared objects and restores the core_267 guard
@@ -39,7 +44,9 @@ _TABLE = "public.qa_publication_operations"
 _FUNCTION = "public.qa_publication_operations_guard"
 _DELETE_FUNCTION = "public.qa_publication_operations_no_held_delete"
 _DELETE_TRIGGER = "qa_publication_operations_no_held_delete"
-_CONSTRAINT = "ck_qa_publication_operations_result_stage"
+# Named to sort after ck_qa_publication_operations_stage: Postgres evaluates CHECKs by name, and
+# the stage/order refusal must keep reporting first.
+_CONSTRAINT = "ck_qa_publication_operations_stage_result"
 _HOLD_STAGES = "('egress_started', 'ambiguous')"
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_268:qa-publication', 0))"
 
@@ -73,6 +80,10 @@ _SET_ONCE = """
             IF OLD.new_object_id IS NOT NULL
                 AND NEW.new_object_id IS DISTINCT FROM OLD.new_object_id THEN
                 RAISE EXCEPTION 'qa_publication_operations: new_object_id is set-once'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            IF OLD.result IS NOT NULL AND NEW.result IS DISTINCT FROM OLD.result THEN
+                RAISE EXCEPTION 'qa_publication_operations: result is set-once'
                     USING ERRCODE = 'check_violation';
             END IF;
 """
@@ -132,12 +143,11 @@ def upgrade() -> None:
                 ALTER TABLE {_TABLE} ADD CONSTRAINT {_CONSTRAINT} CHECK (
                     -- COALESCE: a CHECK passes on NULL, and an unknown must not match.
                     COALESCE(
-                        result IS NULL
+                        (stage IN ('bound', 'egress_started') AND result IS NULL)
                         OR (stage = 'succeeded' AND result = 'success')
                         OR (stage = 'failed' AND result = 'failed')
-                        OR (stage = 'ambiguous' AND result = 'ambiguous')
-                        OR (stage = 'reconciled'
-                            AND result IN ('success', 'failed', 'ambiguous')),
+                        OR (stage = 'ambiguous' AND (result IS NULL OR result = 'ambiguous'))
+                        OR (stage = 'reconciled' AND (result IS NULL OR result = 'ambiguous')),
                         false
                     )
                 );

@@ -40,10 +40,13 @@ checks the hold itself (`get_publication_hold`): while the fingerprint is held i
 Only `butler_qa_rw` can insert or update rows: forced row security admits no other writer, because
 `scripts/init-db.sql` re-grants public-schema DML to every runtime role on each run and a policy is
 not a grant. Every runtime role can read the ledger so any dispatcher sees a hold. The bootstrap
-re-grants DELETE, so QA-role deletion is refused only because no DELETE policy exists; `core_268`
-additionally refuses deleting a held row for every role. Residual: the owner/runtime login keeps
-TRUNCATE (an implicit right that cannot be revoked) and ALTER/DROP POLICY; no runtime path truncates.
-TRUNCATE remains out of scope and is not guarded.
+re-grants DELETE, so a QA-role DELETE silently affects 0 rows (forced row security, no DELETE policy);
+it is not refused with an error. `core_268` additionally refuses deleting a held row for any role that
+reaches the row, including a privileged login that bypasses row security. Residual: the owner/runtime
+login keeps TRUNCATE (an implicit right that cannot be revoked) and ALTER/DROP POLICY; no runtime path
+truncates. TRUNCATE remains out of scope and is not guarded. The triggers are not absolute against a
+privileged operator either: a superuser can `SET session_replication_role = replica`, which skips
+ordinary triggers, and the table owner can disable or drop a trigger.
 
 The core chain runs once per butler schema over one shared table, so only the last schema to leave
 `core_266` drops it (earlier schemas leave it in place). That downgrade drops the table only while no row is `egress_started` or `ambiguous`; otherwise it
@@ -59,16 +62,20 @@ reconciled row, and any change to a frozen column: `id`, `attempt_id`, `kind`, `
 `request_digest`, `expected_object_id` and `started_at`. It fires for every role. As for `core_266`, only the last schema to leave
 `core_267` removes the shared trigger, function and constraint.
 
-Migration `core_268` extends that guard without replacing it. `new_object_id` is set-once: the writer
-may fill it (NULL to a value) or repeat the same value, but a recorded object is never changed or
-cleared. A CHECK (`ck_qa_publication_operations_result_stage`) ties `result` to `stage` using only the
-values the writer produces: `succeeded` carries `success`, `failed` carries `failed`, `ambiguous`
-carries `ambiguous`, a `reconciled` row keeps its outcome's result, and `bound` and `egress_started`
-carry none; a NULL result is always accepted. A BEFORE DELETE trigger
-(`qa_publication_operations_no_held_delete`) refuses deleting a row in the hold predicate's stages
-(`egress_started`, `ambiguous`) for every role, superusers included; rows in any other stage can still
-be deleted by a role that has the right. Only the last schema to leave `core_268` removes the delete
-trigger, its function and the CHECK, and restores the `core_267` guard body.
+Migration `core_268` extends that guard without replacing it. `new_object_id` and `result` are
+set-once: the writer may fill either (NULL to a value) or repeat the same value, but a recorded value is
+never changed or cleared, so a reconciled row keeps the outcome it was reached from. A CHECK
+(`ck_qa_publication_operations_stage_result`) ties `result` to `stage` using only the values the writer
+produces: `bound` and `egress_started` carry none, `succeeded` carries `success`, `failed` carries
+`failed`, `ambiguous` carries `ambiguous`, and a `reconciled` row carries none (reached from
+`egress_started`) or `ambiguous` (reached from `ambiguous`). A `succeeded` or `failed` row without
+its result is refused. Residual: an `ambiguous` row may carry a NULL result. The writer never produces
+one and holds are keyed on stage, not result, so it cannot release a hold; bu-mc01y5.15 closes it
+later. A BEFORE DELETE trigger (`qa_publication_operations_no_held_delete`) refuses deleting a row in
+the hold predicate's stages (`egress_started`, `ambiguous`), including from a privileged login; rows in
+any other stage can still be deleted by a role that can reach them. Only the last schema to leave
+`core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
+body.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and

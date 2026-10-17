@@ -344,6 +344,12 @@ def test_new_object_id_is_set_once(db_url: str, operation: uuid.UUID) -> None:
         ((_EGRESS,), "stage = 'succeeded', stage_order = 3, result = 'failed'"),
         ((_EGRESS,), "stage = 'failed', stage_order = 3, result = 'ambiguous'"),
         ((_EGRESS,), "stage = 'ambiguous', stage_order = 3, result = 'success'"),
+        ((_EGRESS,), "stage = 'succeeded', stage_order = 3"),
+        (
+            (_EGRESS,),
+            "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_absent', "
+            "reconciled_at = now(), result = 'success'",
+        ),
     ],
     ids=[
         "bound-with-result",
@@ -351,6 +357,8 @@ def test_new_object_id_is_set_once(db_url: str, operation: uuid.UUID) -> None:
         "succeeded-with-failed",
         "failed-with-ambiguous",
         "ambiguous-with-success",
+        "succeeded-without-result",
+        "reconciled-from-egress-with-success",
     ],
 )
 def test_result_must_match_stage(
@@ -359,7 +367,48 @@ def test_result_must_match_stage(
     for step in prior:
         _update_as_qa(db_url, operation, step)
 
-    _refused(db_url, operation, assignment, "ck_qa_publication_operations_result_stage")
+    _refused(db_url, operation, assignment, "ck_qa_publication_operations_stage_result")
+
+
+@pytest.mark.parametrize(
+    ("prior", "assignment"),
+    [
+        ((_EGRESS, _SUCCEEDED), "result = NULL"),
+        ((_EGRESS, _SUCCEEDED), "result = 'failed'"),
+        (
+            (_EGRESS, _AMBIGUOUS),
+            "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_absent', "
+            "reconciled_at = now(), result = 'success'",
+        ),
+        ((_EGRESS, _AMBIGUOUS), "result = NULL"),
+    ],
+    ids=["erase-succeeded", "rewrite-succeeded", "reconcile-rewrites-ambiguous", "erase-ambiguous"],
+)
+def test_result_is_set_once(
+    db_url: str, operation: uuid.UUID, prior: tuple[str, ...], assignment: str
+) -> None:
+    for step in prior:
+        _update_as_qa(db_url, operation, step)
+
+    _refused(db_url, operation, assignment, "result is set-once")
+
+
+def test_reconciled_row_keeps_the_outcome_it_was_reached_from(
+    db_url: str, operation: uuid.UUID
+) -> None:
+    _update_as_qa(db_url, operation, _EGRESS)
+    _update_as_qa(db_url, operation, _AMBIGUOUS)
+    _update_as_qa(db_url, operation, _ABSENT)
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            result = conn.exec_driver_sql(
+                f"SELECT result FROM {_TABLE} WHERE id = '{operation}'"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert result == "ambiguous"
 
 
 def _superuser_url(postgres_container, db_url: str) -> str:
@@ -414,7 +463,7 @@ def _hardening_objects(conn) -> tuple[int, int, bool, int]:
     ).scalar_one()
     constraint = conn.exec_driver_sql(
         "SELECT count(*) FROM pg_constraint "
-        "WHERE conname = 'ck_qa_publication_operations_result_stage'"
+        "WHERE conname = 'ck_qa_publication_operations_stage_result'"
     ).scalar_one()
     set_once = conn.exec_driver_sql(
         "SELECT bool_or(position('set-once' in prosrc) > 0) FROM pg_proc "
