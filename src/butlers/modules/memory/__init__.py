@@ -305,6 +305,8 @@ class MemoryModule(Module):
         # Opaque lifecycle token for the per-butler scheduled-maintenance runtime.
         self._maintenance_runtime: Any = None
         self._maintenance_runtime_owner: str | None = None
+        self._fast_catalog_runtime: Any = None
+        self._fast_catalog_runtime_owner: str | None = None
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
     @property
@@ -393,9 +395,11 @@ class MemoryModule(Module):
         # (dependency inversion: core owns the interface, modules supply the impl).
         from butlers.core.memory_hooks import (
             register_catalog_search,
+            register_fast_answer_catalog,
             register_memory_forget,
             register_memory_maintenance_runtime,
             register_memory_session_runtime,
+            unregister_fast_answer_catalog,
             unregister_memory_maintenance_runtime,
             unregister_memory_session_runtime,
         )
@@ -545,6 +549,36 @@ class MemoryModule(Module):
         register_memory_forget(_memory_forget)
         register_catalog_search(_catalog_search_hook)
 
+        if self._fast_catalog_runtime_owner is not None and self._fast_catalog_runtime is not None:
+            unregister_fast_answer_catalog(
+                self._fast_catalog_runtime_owner, self._fast_catalog_runtime
+            )
+        self._fast_catalog_runtime = None
+        self._fast_catalog_runtime_owner = None
+
+        async def _fast_catalog_search_hook(query: str) -> list[dict[str, Any]]:
+            accessor = getattr(module._db, "runtime_config_accessor", None)
+            if accessor is None:
+                raise RuntimeError("catalog read authority unavailable")
+            runtime_config = await accessor.get()
+            read_policy = _search_helper.resolve_catalog_read_policy(
+                runtime_config.catalog_read_sensitivity
+            )
+            embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
+            return await _search_catalog(
+                module._get_pool(),
+                query,
+                embedding_engine,
+                limit=3,
+                mode="hybrid",
+                read_policy=read_policy,
+            )
+
+        if isinstance(runtime_owner, str) and runtime_owner.strip():
+            self._fast_catalog_runtime_owner = runtime_owner.strip()
+            self._fast_catalog_runtime = _fast_catalog_search_hook
+            register_fast_answer_catalog(runtime_owner, _fast_catalog_search_hook)
+
         if self._maintenance_runtime_owner is not None and self._maintenance_runtime is not None:
             unregister_memory_maintenance_runtime(
                 self._maintenance_runtime_owner,
@@ -618,6 +652,7 @@ class MemoryModule(Module):
     async def on_shutdown(self) -> None:
         """Clear state references."""
         from butlers.core.memory_hooks import (
+            unregister_fast_answer_catalog,
             unregister_memory_maintenance_runtime,
             unregister_memory_session_runtime,
         )
@@ -643,6 +678,12 @@ class MemoryModule(Module):
             )
         self._maintenance_runtime = None
         self._maintenance_runtime_owner = None
+        if self._fast_catalog_runtime_owner is not None and self._fast_catalog_runtime is not None:
+            unregister_fast_answer_catalog(
+                self._fast_catalog_runtime_owner, self._fast_catalog_runtime
+            )
+        self._fast_catalog_runtime = None
+        self._fast_catalog_runtime_owner = None
         self._db = None
         self._embedding_engine = None
         if self._memory_db is not None:

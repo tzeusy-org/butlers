@@ -1275,6 +1275,7 @@ class MessagePipeline:
         classification_timeout_s: int | None = None,
         local_tool_server_provider: Callable[[], Any] | None = None,
         credential_store: Any | None = None,
+        dashboard_fast_answer: Any | None = None,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -1287,6 +1288,7 @@ class MessagePipeline:
         self._classification_timeout_s = classification_timeout_s
         self._local_tool_server_provider = local_tool_server_provider
         self._credential_store = credential_store
+        self._dashboard_fast_answer = dashboard_fast_answer
 
     def _set_routing_context(
         self,
@@ -3276,6 +3278,86 @@ class MessagePipeline:
                         "butlers.switchboard.routing.llm_decision"
                     ) as decision_span:
                         spawn_result = None
+                        if (
+                            source == "dashboard"
+                            and _payload_type != "conversation_history"
+                            and self._dashboard_fast_answer is not None
+                            and dashboard_turn_id is not None
+                            and dashboard_context is not None
+                            and dashboard_context.get("conversation_id")
+                        ):
+                            fast_result = await self._dashboard_fast_answer.run(
+                                message_id=dashboard_turn_id,
+                                request_id=UUID(str(request_id)),
+                                conversation_id=UUID(dashboard_context["conversation_id"]),
+                                prompt=routing_prompt,
+                                catalog_query=message_text,
+                            )
+                            if fast_result.handled:
+                                # A handled failure must settle ingress without
+                                # replaying reads or impersonating a success.
+                                succeeded = fast_result.outcome in {"completed", "no_match"}
+                                routing_error = (
+                                    None if succeeded else "fast_answer:" + fast_result.outcome
+                                )
+                                completed_at = datetime.now(UTC)
+                                latency_ms = (time.perf_counter() - spawn_start) * 1000
+                                lifecycle_state = "parsed" if succeeded else "errored"
+                                acked = ["concierge"] if succeeded else []
+                                failed = [] if succeeded else ["concierge"]
+                                telemetry.end_to_end_latency_ms.record(
+                                    (time.perf_counter() - start) * 1000,
+                                    {
+                                        **request_attrs,
+                                        "outcome": "success" if succeeded else "failure",
+                                    },
+                                )
+                                telemetry.lifecycle_transition.add(
+                                    1,
+                                    {
+                                        **request_attrs,
+                                        "lifecycle_state": lifecycle_state,
+                                        "outcome": "success" if succeeded else "failure",
+                                    },
+                                )
+                                if message_inbox_id:
+                                    try:
+                                        await self._update_message_inbox_lifecycle(
+                                            message_inbox_id=message_inbox_id,
+                                            decomposition_output={
+                                                "request_id": request_id,
+                                                "routed": ["concierge"],
+                                                "tool_calls": 0,
+                                            },
+                                            dispatch_outcomes={
+                                                "request_id": request_id,
+                                                "acked": acked,
+                                                "failed": failed,
+                                            },
+                                            response_summary="fast_answer:" + fast_result.outcome,
+                                            lifecycle_state=lifecycle_state,
+                                            classified_at=completed_at,
+                                            classification_duration_ms=latency_ms,
+                                            final_state_at=completed_at,
+                                        )
+                                    except Exception:
+                                        # The runtime has already settled or is
+                                        # durably pending. An ingress write
+                                        # failure cannot replay its effects.
+                                        logger.warning("fast answer ingress settlement unavailable")
+                                        routing_error = "fast_answer:ingress_settlement_unavailable"
+                                        acked, failed = [], ["concierge"]
+                                return RoutingResult(
+                                    target_butler="concierge",
+                                    route_result={
+                                        "fast_answer": fast_result.outcome,
+                                        "session_id": str(fast_result.session_id),
+                                    },
+                                    routing_error=routing_error,
+                                    routed_targets=["concierge"],
+                                    acked_targets=acked,
+                                    failed_targets=failed,
+                                )
                         # Structured tool-use fast lane (bu-qvnce.12 slice 3):
                         # attempt it first when a local FastMCP server is
                         # wired and this isn't the decomposition/signal-

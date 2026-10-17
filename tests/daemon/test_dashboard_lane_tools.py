@@ -95,7 +95,15 @@ def _patch_infra():
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.fetchval = AsyncMock(return_value=None)
+
+    async def persisted_intent_lane(query: str, *args, **kwargs):
+        # This fixture models only the new immutable lane write. Unrelated
+        # fetchval calls retain the old unavailable/None behavior.
+        if query == "SELECT public.dashboard_turn_intent_lane($1,$2)" and len(args) == 2:
+            return args[1]
+        return None
+
+    mock_pool.fetchval = AsyncMock(side_effect=persisted_intent_lane)
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])

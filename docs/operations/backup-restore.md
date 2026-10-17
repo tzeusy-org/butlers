@@ -563,3 +563,25 @@ into the live application database or manually erase recovery evidence.
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+## Dashboard fast-runtime durable snapshot
+
+`public.dashboard_fast_answer_runtimes` contains durable owner/generation, Stop,
+lease-anchor and reply evidence. It is not a rebuildable exclusion. The ordinary
+dump retains its schema, owner, FORCE RLS, policy and functions while its complete
+rows travel through a separate owner-only hex JSON stage in the same exported
+snapshot. The existing three cost-ledger stages retain their own policy and importer.
+
+The fast stage verifies the exact upstream table owner, existing owner membership,
+the owner-only policy and the two fixed SECURITY INVOKER functions. Export proves
+complete row equality against the relation; restore requires the dump owner's
+membership, every typed column, bidirectional full-row readback and one atomic
+transaction. Missing ownership, policy, importer or complete rows refuses publication
+or rolls back replay. Runtime roles and PUBLIC receive no new capability.
+
+The new owning test is `tests/scripts/test_dashboard_fast_answer_backup.py`. Its
+software node executes shell failure/unknown/restoration paths without SQL; its
+migrated PostgreSQL node verifies published staging, Stop/generation/reply parity,
+non-owner refusal, changed policy/missing importer refusal and independent rollback
+readback. Component staging replay does not certify whole-cluster disaster recovery.
+The normal managed-bootstrap restore requirements above remain binding.

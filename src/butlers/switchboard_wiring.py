@@ -221,6 +221,15 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
     daemon._fact_source_registry = FactSourceContextRegistry(pool)
     register_source_registry(daemon._fact_source_registry)
 
+    from butlers.core.dashboard_fast_answer_adapters import RegisteredFastAnswerDependencies
+    from butlers.core.dashboard_fast_answer_runtime import DashboardFastAnswerRuntime
+    from butlers.core.dashboard_fast_answer_store import FastAnswerStore
+
+    fast_store = FastAnswerStore(pool)
+    daemon._dashboard_fast_answer_runtime = DashboardFastAnswerRuntime(
+        fast_store, RegisteredFastAnswerDependencies(daemon, fast_store)
+    )
+
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,
@@ -236,6 +245,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         # by which point startup has long finished.
         local_tool_server_provider=lambda: daemon.mcp,
         credential_store=daemon._credential_store,
+        dashboard_fast_answer=daemon._dashboard_fast_answer_runtime,
     )
     daemon._pipeline = pipeline
 

@@ -620,6 +620,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 "error": "Dashboard turn control identity is invalid.",
             }
         if dashboard_turn_id is not None:
+            from butlers.core.dashboard_fast_answer_intent import persist_dashboard_intent
+
+            await persist_dashboard_intent(
+                ctx, dashboard_turn_id, "answer" if claim_value == "answer" else "non_answer"
+            )
             normalized_source_metadata["dashboard_message_id"] = str(dashboard_turn_id)
         request_context = routing_ctx.get("request_context")
         if not isinstance(request_context, dict):
@@ -1186,6 +1191,9 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         dashboard_action_claimed = False
         if dashboard_turn_id is not None:
+            from butlers.core.dashboard_fast_answer_intent import persist_dashboard_intent
+
+            await persist_dashboard_intent(ctx, dashboard_turn_id, "answer")
             try:
                 dashboard_control = await claim_dead_letter(
                     pool,
@@ -1436,7 +1444,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         file_error: str | None = None
         dashboard_action_claimed = False
         if dashboard_turn_id is not None:
+            from butlers.core.dashboard_fast_answer_intent import persist_dashboard_intent
             from butlers.core.dashboard_turns import claim_bug_report
+
+            await persist_dashboard_intent(ctx, dashboard_turn_id, "non_answer")
 
             raw_request_id = _routing_ctx.get("request_id")
             if raw_request_id in (None, "") and isinstance(

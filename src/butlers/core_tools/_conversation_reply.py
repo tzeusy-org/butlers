@@ -209,6 +209,7 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 )
             ),
         ] = None,
+        fast_answer: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Reply into a dashboard conversation for owner confirmation.
 
@@ -246,6 +247,23 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
 
         if pool is None:
             return {"status": "error", "error": "Database pool is not available"}
+
+        if fast_answer is not None:
+            from butlers.core.dashboard_fast_answer_runtime import DashboardFastAnswerRuntime
+
+            runtime = getattr(ctx.daemon, "_dashboard_fast_answer_runtime", None)
+            if (
+                butler_name != "switchboard"
+                or not isinstance(runtime, DashboardFastAnswerRuntime)
+                or gap is not None
+            ):
+                return {"status": "refused", "error": "Fast reply owning runtime unavailable"}
+            try:
+                return await runtime.registered_reply(
+                    fast_answer, conv_uuid, message, normalization.citations
+                )
+            except (ValueError, TypeError, KeyError):
+                return {"status": "refused", "error": "Fast reply prepared identity does not match"}
 
         request_id = _best_effort_request_id()
         session_id = _best_effort_session_id()

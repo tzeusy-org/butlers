@@ -535,6 +535,12 @@ async def run_startup(daemon: Any) -> None:
     # 16c. Start internal scheduler loop
     daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
 
+    from butlers.core.dashboard_fast_answer_runtime import DashboardFastAnswerRuntime
+
+    fast_runtime = getattr(daemon, "_dashboard_fast_answer_runtime", None)
+    if isinstance(fast_runtime, DashboardFastAnswerRuntime):
+        await fast_runtime.start()
+
     # 17. Legacy reporting is retained for flag-off and rollback deployments.
     # Receiver-derived mode uses the independently supervised Dashboard observer;
     # an unauthenticated daemon POST cannot renew that receiver evidence.
@@ -616,6 +622,11 @@ async def run_shutdown(daemon: Any) -> None:
 
     daemon._shutting_down = True
     daemon._accepting_connections = False
+    from butlers.core.dashboard_fast_answer_runtime import DashboardFastAnswerRuntime
+
+    fast_runtime = getattr(daemon, "_dashboard_fast_answer_runtime", None)
+    if isinstance(fast_runtime, DashboardFastAnswerRuntime):
+        await fast_runtime.close()
     if daemon._boot_registration_task is not None:
         daemon._boot_registration_task.cancel()
         try:

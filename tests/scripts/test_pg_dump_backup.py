@@ -312,8 +312,18 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         schema, _, _table = qualified.partition(".")
         return schema in excluded_schemas or qualified in excluded_tables
 
+    def _is_fast_data_only(qualified: str) -> bool:
+        # This separate declared path retains schema and complete staged rows;
+        # it is not a whole-object exclusion or part of the cost3 policy set.
+        source = _SCRIPT.read_text(encoding="utf-8")
+        match = re.search(r'^BACKUP_FAST_RUNTIME_DATA_TABLES="([^"]*)"$', source, re.MULTILINE)
+        assert match is not None
+        return qualified in match[1].split()
+
     missed = sorted(
-        rel for rel in fenced if not _is_excluded(rel) and rel not in scoped_data_tables
+        rel
+        for rel in fenced
+        if not _is_excluded(rel) and rel not in scoped_data_tables and not _is_fast_data_only(rel)
     )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
