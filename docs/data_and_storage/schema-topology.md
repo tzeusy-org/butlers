@@ -32,7 +32,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
   summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
   full recall routes back to the owning schema.
-- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266):
+- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation):
   one row per attempt and closed operation kind, with binding/payload digests, stage and result.
   Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
   fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
