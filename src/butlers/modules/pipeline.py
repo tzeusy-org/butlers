@@ -28,6 +28,7 @@ from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
+from butlers.ingestion_bearer_scrub import scrub_stored_record
 from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.telemetry import (
@@ -2160,8 +2161,17 @@ class MessagePipeline:
             "dedupe_key": dedupe_key,
             "dedupe_strategy": dedupe_strategy,
         }
+        # Scrub before any write; a detector failure raises, so no raw text is stored.
+        scrubbed, message_text, _ = scrub_stored_record(
+            {
+                "content": message_text,
+                "source": {"provider": source},
+                "sender": {"identity": source_sender_identity},
+            },
+            message_text,
+        )
         raw_payload = {
-            "content": message_text,
+            "content": scrubbed["content"],
             "metadata": raw_metadata_payload,
         }
 
