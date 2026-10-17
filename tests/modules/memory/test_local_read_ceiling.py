@@ -673,8 +673,15 @@ async def _insert_ranked_fact(
     predicate: str | None = None,
     entity_id: uuid.UUID | None = None,
     object_entity_id: uuid.UUID | None = None,
+    spread: int | None = None,
 ) -> uuid.UUID:
-    vector = str(_QUERY_VECTOR if near else _FAR_VECTOR)
+    # HNSW stores identical vectors as one graph element holding several heap tuples, and
+    # ``ef_search`` counts elements.  ``spread`` makes a near vector distinct so a crowd of
+    # near rows really is a crowd of elements that ``ef_search`` can truncate.
+    near_vector = list(_QUERY_VECTOR)
+    if spread is not None:
+        near_vector[2] = 0.001 * (spread + 1)
+    vector = str(near_vector if near else _FAR_VECTOR)
     row = await pool.fetchrow(
         """
         INSERT INTO facts (subject, predicate, content, scope, sensitivity, entity_id,
@@ -808,7 +815,9 @@ async def ann_pool(_ceiling_migrated_db_url: str):
 class TestFilteredVectorLegIsExactUnderTheAnnPlan:
     async def test_predicate_filter_finds_a_fact_the_index_would_truncate(self, ann_pool) -> None:
         for index in range(50):
-            await _insert_ranked_fact(ann_pool, content=f"work item {index}", near=True)
+            await _insert_ranked_fact(
+                ann_pool, content=f"work item {index}", near=True, spread=index
+            )
         wanted = await _insert_ranked_fact(
             ann_pool, content="unrelated gardening note", near=False, predicate="ann-p"
         )
