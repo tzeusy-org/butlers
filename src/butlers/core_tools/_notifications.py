@@ -483,17 +483,22 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # send owner-facing notifications. A cell flipped to granted=false
             # blocks notify() outright (an authorization decision). Mirrors the
             # spawn gate: consult the matrix at the decision point, return an
-            # observable denial. check_permission fails open, so a DB error never
-            # wedges delivery.
+            # observable denial. check_permission fails closed: an unreadable store
+            # refuses delivery (bu-svqpzo.3); a readable missing row stays default-allow.
             _perm_pool = daemon.db.pool if daemon.db is not None else None
             _notify_perm = await check_permission(_perm_pool, butler_name, NOTIFY_PERMISSION)
             if not _notify_perm.allowed:
-                _perm_msg = (
-                    f"Permission denied: butler '{butler_name}' is not granted "
-                    f"'{NOTIFY_PERMISSION}'"
-                )
-                if _notify_perm.reason:
-                    _perm_msg += f" (reason: {_notify_perm.reason})"
+                if _notify_perm.unavailable:
+                    _perm_msg = (
+                        f"Permission store unavailable: notify refused for butler '{butler_name}'"
+                    )
+                else:
+                    _perm_msg = (
+                        f"Permission denied: butler '{butler_name}' is not granted "
+                        f"'{NOTIFY_PERMISSION}'"
+                    )
+                    if _notify_perm.reason:
+                        _perm_msg += f" (reason: {_notify_perm.reason})"
                 logger.warning(
                     "notify() blocked by permissions matrix for butler=%s: %s",
                     butler_name,

@@ -24,6 +24,9 @@ from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, SpawnerResult
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 # Skip integration tests if Docker is not available
 docker_available = shutil.which("docker") is not None

@@ -441,9 +441,7 @@ class EmailModule(Module):
         (which calls ``module._send_email`` directly).
         """
         _perm_pool = self._pool or self._audit_pool
-        await require_permission(
-            _perm_pool, self._butler_name, EMAIL_SEND_PERMISSION, fail_closed=True
-        )
+        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
         try:
             result = await asyncio.to_thread(self._smtp_send, to, subject, body)
         except Exception as exc:

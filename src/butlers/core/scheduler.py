@@ -2117,6 +2117,8 @@ async def _qa_admission_refusal(pool: asyncpg.Pool) -> str | None:
 async def _butler_dispatch_gated(
     eligibility_pool: asyncpg.Pool | None,
     butler_name: str | None,
+    *,
+    require_gate: bool = False,
 ) -> str | None:
     """Return a gate reason when non-QA scheduled dispatch must be suppressed.
 
@@ -2134,11 +2136,27 @@ async def _butler_dispatch_gated(
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be
-    skipped.  Registry/lookup failures fail OPEN (return ``None``) so a
-    transient registry hiccup never silently freezes a healthy butler's
-    schedule.
+    skipped.  Registry/lookup failures fail CLOSED: an unreadable pause or
+    quarantine state is not evidence of eligibility, so the tick is gated with
+    ``eligibility unavailable: registry lookup failed`` (``next_run_at`` is
+    preserved, so the schedule resumes on the first tick that can read state).
+
+    ``require_gate`` is set by the daemon loop, which always owns a registry
+    pool in production.  When set, a missing *eligibility_pool* gates the tick
+    (``eligibility unavailable: no registry pool``) instead of skipping the
+    check.  Callers without a registry (unit tests, tools) leave it unset and
+    keep the ungated behavior.
     """
-    if eligibility_pool is None or not butler_name:
+    if eligibility_pool is None:
+        if require_gate:
+            logger.error(
+                "Scheduler eligibility gate required but no registry pool is available "
+                "for butler %r; gating dispatch",
+                butler_name,
+            )
+            return "eligibility unavailable: no registry pool"
+        return None
+    if not butler_name:
         return None
 
     try:
@@ -2164,14 +2182,15 @@ async def _butler_dispatch_gated(
             allow_quarantined=False,
         )
     except Exception:
-        # Registry unreachable / schema missing — fail open so scheduling keeps
-        # working for healthy butlers; do not gate on infrastructure errors.
-        logger.warning(
-            "Scheduler eligibility check failed for butler %r; proceeding with dispatch",
+        # Registry unreachable / schema missing — fail closed: pause and
+        # quarantine are owner-set holds, and an unreadable hold must not be
+        # treated as absent.
+        logger.error(
+            "Scheduler eligibility check failed for butler %r; gating dispatch",
             butler_name,
             exc_info=True,
         )
-        return None
+        return "eligibility unavailable: registry lookup failed"
 
     if target is None:
         # error is the registry's own reason string (e.g. quarantined/stale).
@@ -2191,6 +2210,7 @@ async def tick(
     prompt_hooks: dict[str, Any] | None = None,
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
+    require_eligibility_gate: bool = False,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
 ) -> int:
     """Evaluate due tasks and dispatch them.
@@ -2275,10 +2295,15 @@ async def tick(
             resume.  ``next_run_at`` is left untouched while gated, so the
             schedule resumes naturally on the next eligible tick.  When ``None``
             (e.g. unit tests, or a context without a registry), no gating is
-            applied and all passes run as before.  Ignored for QA, which reads
+            applied and all passes run as before, unless *require_eligibility_gate*
+            is set.  Ignored for QA, which reads
             ``public.qa_local_schedule_policy()`` through *pool* (its own
             runtime-role pool) before the passes and again immediately before
             every deadline or cron dispatch; any refusal fails closed.
+        require_eligibility_gate: Set by the daemon loop, which always has a
+            registry pool.  When True and *eligibility_pool* is ``None``, the tick
+            is gated (``eligibility unavailable: no registry pool``) rather than
+            running ungated; a failing registry lookup is gated either way.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -2343,7 +2368,9 @@ async def tick(
 
             dispatch_gate_reason = await admission_refusal()
         else:
-            dispatch_gate_reason = await _butler_dispatch_gated(eligibility_pool, butler_name)
+            dispatch_gate_reason = await _butler_dispatch_gated(
+                eligibility_pool, butler_name, require_gate=require_eligibility_gate
+            )
         span.set_attribute("dispatch_gated", dispatch_gate_reason is not None)
 
         if dispatch_gate_reason is not None:

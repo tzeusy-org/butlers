@@ -47,6 +47,17 @@ def _available_permission_for_owner_resolution(request, monkeypatch):
         )
 
 
+@pytest.fixture(autouse=True)
+def _readable_permission_store_for_notify(monkeypatch):
+    """These tests exercise recipient validation; the notify permission gate has its own."""
+    from butlers.core.permissions import PermissionStatus
+
+    monkeypatch.setattr(
+        "butlers.core_tools._notifications.check_permission",
+        AsyncMock(return_value=PermissionStatus(allowed=True)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared test data
 # ---------------------------------------------------------------------------

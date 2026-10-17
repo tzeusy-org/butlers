@@ -21,6 +21,9 @@ from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.spawner import Spawner
 from butlers.core.tool_call_capture import _captured_tool_calls
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytest_plugins = ("tests.core.spawner_fixtures",)
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]

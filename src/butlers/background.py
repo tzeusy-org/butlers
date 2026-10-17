@@ -228,6 +228,7 @@ async def scheduler_loop(
     prompt_hooks: dict[str, Any] | None = None,
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
+    require_eligibility_gate: bool = False,
     default_timezone: str = "UTC",
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
@@ -278,9 +279,14 @@ async def scheduler_loop(
         (``butler_registry``) used to gate scheduled dispatch on
         ``eligibility_state``.  Called lazily per tick so the pool is read after
         startup wiring completes.  When ``None`` (or the callable returns
-        ``None``), no eligibility gating is applied and all ticks dispatch.
-        QA ignores it: ``tick()`` gates QA only on its own policy projection
-        read through ``pool``, which is QA's runtime-role pool.
+        ``None``) and ``require_eligibility_gate`` is unset, no eligibility gating
+        is applied and all ticks dispatch.  QA ignores it: ``tick()`` gates QA only
+        on its own policy projection read through ``pool``, which is QA's
+        runtime-role pool.
+    require_eligibility_gate:
+        Forwarded to ``tick_fn``.  The daemon sets it so a missing registry pool
+        gates the tick (``eligibility unavailable: no registry pool``) instead of
+        silently running ungated.  Unit-test callers leave it unset.
     default_timezone:
         IANA timezone used to interpret cron fields for schedules whose
         ``timezone`` column is the default ``'UTC'`` sentinel (e.g. TOML
@@ -346,6 +352,7 @@ async def scheduler_loop(
                     prompt_hooks=prompt_hooks,
                     completion_hooks=completion_hooks,
                     eligibility_pool=eligibility_pool,
+                    require_eligibility_gate=require_eligibility_gate,
                     default_timezone=default_timezone,
                 )
             )

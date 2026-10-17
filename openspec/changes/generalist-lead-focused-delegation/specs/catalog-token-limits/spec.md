@@ -50,7 +50,7 @@ Scope: v1-mandatory
 - **AND** `butler_name` is the dispatcher's butler name (defaults to `"__discretion__"`)
 
 ### Requirement: Pre-Spawn Quota Check
-The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function that evaluates whether a catalog entry's usage is within its configured limits for both rolling windows. The function SHALL let its caller distinguish a check that could not complete from an allowed result. The goal runner SHALL fail closed on a check that could not complete and SHALL NOT launch the invocation on that basis, because every goal budget check fails closed; model use outside goals keeps the fail-open treatment.
+The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function that evaluates whether a catalog entry's usage is within its configured limits for both rolling windows. The function SHALL let its caller distinguish a check that could not complete from an allowed result. The goal runner SHALL fail closed on a check that could not complete and SHALL NOT launch the invocation on that basis, because every goal budget check fails closed; every other caller (spawner, connector discretion screening) fails closed as well, skipping the candidate (bu-svqpzo.3).
 
 Source: RFC 0038 D10, D18
 Scope: v1-mandatory
@@ -97,11 +97,13 @@ Scope: v1-mandatory
 - **AND** the failure is logged as a warning with the exception details
 - **AND** the refusal is not reported as an allowed quota result
 
-#### Scenario: Fail-open on quota check error
-- **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.) for model use outside goals, such as connector discretion screening
-- **THEN** the function returns `QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)`
-- **AND** the failure is logged as a warning with the exception details
-- **AND** that call proceeds (fail-open — the guardrail must never become a single point of failure outside goals)
+#### Scenario: Fail-closed on quota check error
+- **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.)
+- **THEN** the function returns `QuotaStatus(allowed=False, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None, unavailable=True)`
+- **AND** the failure is logged as an error with the exception details
+- **AND** the spawner SHALL NOT invoke the candidate's adapter and SHALL record a `quota_skip` attempt whose `failure_reason` begins `Token quota unavailable for catalog entry`
+- **AND** the spawner and discretion dispatcher SHALL continue their existing same-tier candidate loop, hard-blocking only when no candidate remains
+- **AND** a readable catalog entry with no `token_limits` row remains unlimited (an unreadable budget is not an absent one)
 
 ### Requirement: Post-Spawn Ledger Recording
 The system SHALL record token usage to the ledger whenever an adapter reports token consumption, regardless of whether the invocation completed successfully or failed. Tokens are consumed by the upstream API provider on invocation — a failed invocation still costs tokens and MUST count against the quota. For goal invocations the goal runner SHALL record this usage, metered from the runtime's usage stream, with the invocation's lineage; engineering executors outside goals keep their session-keyed recording.

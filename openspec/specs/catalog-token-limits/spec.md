@@ -133,11 +133,13 @@ The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function 
 - **WHEN** `check_token_quota()` is called
 - **THEN** limits and both window usages are resolved in a single database round-trip (CTE-based query)
 
-#### Scenario: Fail-open on quota check error
+#### Scenario: Fail-closed on quota check error
 - **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.)
-- **THEN** the function returns `QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)`
-- **AND** the failure is logged as a warning with the exception details
-- **AND** the spawn proceeds (fail-open — the guardrail must never become a single point of failure)
+- **THEN** the function returns `QuotaStatus(allowed=False, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None, unavailable=True)`
+- **AND** the failure is logged as an error with the exception details
+- **AND** the spawner SHALL NOT invoke the candidate's adapter and SHALL record a `quota_skip` attempt whose `failure_reason` begins `Token quota unavailable for catalog entry`
+- **AND** the spawner and discretion dispatcher SHALL continue their existing same-tier candidate loop, hard-blocking only when no candidate remains
+- **AND** a readable catalog entry with no `token_limits` row remains unlimited (an unreadable budget is not an absent one)
 
 ### Requirement: Post-Spawn Ledger Recording
 The system SHALL record token usage to the ledger whenever an adapter reports token consumption, regardless of whether the session completed successfully or failed. Tokens are consumed by the upstream API provider on invocation — a failed session still costs tokens and MUST count against the quota.
@@ -310,6 +312,12 @@ The model catalog table on the settings page SHALL display token usage alongside
 The monthly spend ceiling SHALL price the current month from the append-only
 token usage ledger and SHALL preserve the distinction between a known
 zero-marginal model and a model with no configured price.
+
+#### Scenario: Unreadable ceiling or spend state refuses the spawn
+- **WHEN** `check_monthly_ceiling()` fails reading `public.spend_ceiling` or pricing the ledger
+- **THEN** it SHALL return `CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)` and log an error
+- **AND** the spawner SHALL NOT invoke any adapter, SHALL record a `quota_skip` attempt whose `failure_reason` begins `Monthly spend ceiling unavailable`, and SHALL NOT produce a fleet halt (no ceiling was reached)
+- **AND** a readable absent or non-positive ceiling remains "no ceiling configured" and allows the spawn
 
 #### Scenario: Ceiling reports attempts with no measurable usage
 - **WHEN** the current-month ledger contains one or more `usage_source='unmeasurable'` rows

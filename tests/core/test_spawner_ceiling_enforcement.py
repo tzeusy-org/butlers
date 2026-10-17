@@ -28,6 +28,9 @@ from butlers.core.model_routing import CeilingStatus, QuotaStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytest_plugins = ("tests.core.spawner_fixtures",)
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
@@ -166,6 +169,45 @@ class TestSpawnerCeilingEnforcement:
         write_attempt_mock.assert_awaited_once()
         assert write_attempt_mock.await_args.kwargs["outcome"] == "quota_skip"
         assert write_attempt_mock.await_args.kwargs["produce_fleet_halt"] is True
+
+    async def test_spawn_blocked_without_halt_when_ceiling_unreadable(self, tmp_path: Path) -> None:
+        """Unreadable spend state refuses the spawn but is not a reached ceiling."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow.side_effect = OSError("private-database-error")
+
+        adapter = _MockAdapter(result_text="should not run")
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_resolution(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_quota_allowed(),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt_mock,
+        ):
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("Monthly spend ceiling unavailable")
+        assert "private-database-error" not in result.error
+        assert adapter.invoke_calls == 0
+        write_attempt_mock.assert_awaited_once()
+        kwargs = write_attempt_mock.await_args.kwargs
+        assert kwargs["outcome"] == "quota_skip"
+        assert kwargs["failure_reason"].startswith("Monthly spend ceiling unavailable")
+        assert kwargs["produce_fleet_halt"] is False
 
     async def test_ceiling_deny_result_survives_atomic_recorder_failure(
         self, tmp_path: Path

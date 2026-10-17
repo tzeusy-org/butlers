@@ -36,7 +36,7 @@ docker_available = shutil.which("docker") is not None
 
 @pytest.mark.unit
 async def test_check_monthly_ceiling_unit_behaviors() -> None:
-    """check_monthly_ceiling: fast path, over/under pricing, and fail-open."""
+    """check_monthly_ceiling: fast path, over/under pricing, and fail-closed."""
     # No ceiling row → unlimited fast path; ledger is never queried.
     pool = MagicMock()
     pool.fetchrow = AsyncMock(return_value=None)
@@ -84,13 +84,14 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     assert over.allowed is False and over.mtd_usd == 150.0 and over.ceiling_usd == 100.0
     assert over.unmeasurable_attempts == 1
 
-    # Fail-open on DB error.
+    # Fail-closed on DB error: unreadable spend state is a refusal, not "no ceiling".
     pool_err = MagicMock()
     pool_err.fetchrow = AsyncMock(side_effect=RuntimeError("connection refused"))
     with patch("butlers.core.model_routing.logger") as mock_logger:
         err = await check_monthly_ceiling(pool_err)
-    assert err.allowed is True and err.ceiling_usd is None
-    mock_logger.warning.assert_called_once()
+    assert err.allowed is False and err.unavailable is True and err.ceiling_usd is None
+    mock_logger.error.assert_called_once()
+    mock_logger.warning.assert_not_called()
 
 
 @pytest.mark.unit
@@ -164,7 +165,7 @@ async def test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling() 
 async def test_price_mtd_from_ledger_raises_rather_than_fails_open() -> None:
     """Unlike check_monthly_ceiling, price_mtd_from_ledger does not swallow
     failures -- each caller applies its own semantics on top (the spawn gate
-    fails open so a ledger outage never wedges spawns; the dashboard reports a
+    fails closed so a ledger outage refuses spawns; the dashboard reports a
     degraded envelope so an outage never renders as a fabricated $0 MTD).
     """
     pool = MagicMock()
@@ -180,7 +181,7 @@ async def test_price_mtd_from_ledger_raises_rather_than_fails_open() -> None:
 
 @pytest.mark.unit
 async def test_quota_unit_behaviors() -> None:
-    """QuotaStatus fields; fail-open on DB error; record_token_usage best-effort."""
+    """QuotaStatus fields; fail-closed on DB error; record_token_usage best-effort."""
     # QuotaStatus fields
     qs = QuotaStatus(allowed=True, usage_24h=100, limit_24h=500, usage_30d=200, limit_30d=None)
     assert qs.allowed is True and qs.usage_24h == 100 and qs.limit_24h == 500
@@ -188,16 +189,17 @@ async def test_quota_unit_behaviors() -> None:
     qs2 = QuotaStatus(allowed=False, usage_24h=1000, limit_24h=500, usage_30d=0, limit_30d=None)
     assert qs2.allowed is False and qs2.usage_24h == 1000
 
-    # check_token_quota: fail-open on DB error
+    # check_token_quota: fail-closed on DB error
     pool = MagicMock()
     pool.fetchrow = AsyncMock(side_effect=RuntimeError("connection refused"))
     entry_id = uuid.uuid4()
     with patch("butlers.core.model_routing.logger") as mock_logger:
         result = await check_token_quota(pool, entry_id)
-    assert result.allowed is True
+    assert result.allowed is False and result.unavailable is True
     assert result.usage_24h == 0 and result.limit_24h is None
     assert result.usage_30d == 0 and result.limit_30d is None
-    mock_logger.warning.assert_called_once()
+    mock_logger.error.assert_called_once()
+    mock_logger.warning.assert_not_called()
 
     # record_token_usage: best-effort (does not raise on INSERT error)
     pool2 = MagicMock()

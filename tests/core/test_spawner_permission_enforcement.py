@@ -168,6 +168,48 @@ class TestSpawnerPermissionEnforcement:
         assert "permission denied" in result.error.lower()
         assert adapter.invoke_calls == 0
 
+    async def test_spawn_blocked_when_permission_store_unreadable(self, tmp_path: Path) -> None:
+        """An unreadable matrix refuses the spawn; it is not evidence of a grant."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow.side_effect = OSError("private-database-error")
+
+        adapter = _MockAdapter(result_text="should not run")
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_resolution(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_quota_allowed(),
+            ),
+            patch(
+                "butlers.core.spawner.check_monthly_ceiling",
+                new_callable=AsyncMock,
+                return_value=_ceiling_unset(),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as attempt,
+        ):
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "permission store unavailable" in result.error.lower()
+        assert "private-database-error" not in result.error
+        assert adapter.invoke_calls == 0
+        attempt.assert_awaited_once()
+        assert attempt.await_args.kwargs["outcome"] == "quota_skip"
+        assert "unavailable" in attempt.await_args.kwargs["failure_reason"]
+
     async def test_spawn_allowed_when_permission_granted(self, tmp_path: Path) -> None:
         """Spawn proceeds normally when ``spawn`` is granted."""
         config_dir = tmp_path / "config"

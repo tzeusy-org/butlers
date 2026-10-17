@@ -28,6 +28,9 @@ from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytest_plugins = ("tests.core.spawner_fixtures",)
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
@@ -207,6 +210,55 @@ class TestSpawnerQuotaEnforcement:
                 config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter_30
             ).trigger("hello", "tick")
         assert result2.success is False and "30d" in result2.error and adapter_30.invoke_calls == 0
+
+    async def test_spawn_skips_candidate_when_quota_unreadable(self, tmp_path: Path) -> None:
+        """An unreadable quota is a refused candidate, never an unlimited budget."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        unavailable = QuotaStatus(
+            allowed=False,
+            usage_24h=0,
+            limit_24h=None,
+            usage_30d=0,
+            limit_30d=None,
+            unavailable=True,
+        )
+
+        adapter = _MockAdapter(result_text="should not run")
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                side_effect=_fake_catalog_quota_exhausted_at_resolve(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=unavailable,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as attempt,
+        ):
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is False and result.error is not None
+        assert "Token quota unavailable for catalog entry" in result.error
+        assert "exhausted" not in result.error
+        assert adapter.invoke_calls == 0
+        attempt.assert_awaited_once()
+        assert attempt.await_args.kwargs["outcome"] == "quota_skip"
+        assert attempt.await_args.kwargs["failure_reason"].startswith(
+            "Token quota unavailable for catalog entry"
+        )
 
     async def test_spawn_proceeds_within_or_unlimited(self, tmp_path: Path) -> None:
         """Spawner proceeds normally when within limits or unlimited."""

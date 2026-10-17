@@ -9438,9 +9438,7 @@ class CalendarModule(Module):
         any calendar write.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
-        await require_permission(
-            pool, self._butler_name, CALENDAR_WRITE_PERMISSION, fail_closed=True
-        )
+        await require_permission(pool, self._butler_name, CALENDAR_WRITE_PERMISSION)
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:

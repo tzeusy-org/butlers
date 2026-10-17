@@ -887,15 +887,21 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # cell flipped to granted=false blocks the cross-butler call outright
         # (an authorization decision). Mirrors the spawn gate: consult the matrix
         # at the decision point, return an observable denial. check_permission
-        # fails open, so a DB error never wedges routing.
+        # fails closed: an unreadable store refuses the call (bu-svqpzo.3), while a
+        # readable missing row stays default-allow.
         _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
         if not _cb_perm.allowed:
-            _cb_msg = (
-                f"Permission denied: butler '{butler_name}' is not granted "
-                f"'{CROSS_BUTLER_PERMISSION}'"
-            )
-            if _cb_perm.reason:
-                _cb_msg += f" (reason: {_cb_perm.reason})"
+            if _cb_perm.unavailable:
+                _cb_msg = (
+                    f"Permission store unavailable: cross-butler call refused for '{butler_name}'"
+                )
+            else:
+                _cb_msg = (
+                    f"Permission denied: butler '{butler_name}' is not granted "
+                    f"'{CROSS_BUTLER_PERMISSION}'"
+                )
+                if _cb_perm.reason:
+                    _cb_msg += f" (reason: {_cb_perm.reason})"
             logger.warning(
                 "route_to_butler blocked by permissions matrix for butler=%s: %s",
                 butler_name,
@@ -1071,12 +1077,17 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # --- Permissions-matrix enforcement, mirrors route_to_butler. ---
         _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
         if not _cb_perm.allowed:
-            _cb_msg = (
-                f"Permission denied: butler '{butler_name}' is not granted "
-                f"'{CROSS_BUTLER_PERMISSION}'"
-            )
-            if _cb_perm.reason:
-                _cb_msg += f" (reason: {_cb_perm.reason})"
+            if _cb_perm.unavailable:
+                _cb_msg = (
+                    f"Permission store unavailable: cross-butler call refused for '{butler_name}'"
+                )
+            else:
+                _cb_msg = (
+                    f"Permission denied: butler '{butler_name}' is not granted "
+                    f"'{CROSS_BUTLER_PERMISSION}'"
+                )
+                if _cb_perm.reason:
+                    _cb_msg += f" (reason: {_cb_perm.reason})"
             logger.warning(
                 "answer_question blocked by permissions matrix for butler=%s: %s",
                 butler_name,
