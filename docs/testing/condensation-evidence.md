@@ -251,6 +251,55 @@ approved cadence change; their replacement obligations live in the actual
 covered workflow and these executing controls. No assertion count or manifest
 hash substitutes for the fresh old/new runs.
 
+## Governing retirement
+
+REQ-testing-053 admits the deletion or rename-away of a test owner only with body
+and case continuity "or genuine governing retirement authority with a protected
+survivor account". Contract evolution cannot do this (it retains every owner and
+case), and a retired expectation has no honest survivor, so the required consumer
+has a third account: `governing-retirement-authorization/v1`. It follows the same
+trust shape as contract evolution, by the owner's 2026-10-15 answer.
+
+A manifest lives under `tests/contract-evolution-authorizations/` and lands in a
+separate protected main PR before any candidate consumes it. Fields:
+
+- `schema`, `id` (the file stem), `bead`, `authority`: provenance text only; it
+  grants nothing by itself.
+- `retired`: `{owner, base_sha256, reason}` rows. `owner` is `path::qualname`.
+  `base_sha256` hashes the owner's own source (decorators included, nothing else
+  in the file) at the event base, so unrelated edits do not stale the manifest.
+- `requirements`: `{path, requirement, before_sha256, after_sha256?}` rows binding
+  the governing spec block, keyed by its `ID:` or, when it has none, by its exact
+  `### Requirement:` heading text. Each block must hash to `before_sha256` at the
+  event base and must differ or be absent at HEAD; when `after_sha256` is given it
+  must match exactly (optional so a manifest can land before its product PR).
+- `replacements` (optional): owners that must exist in the candidate. Ordinary CI
+  runs them; this mode never executes retired owners.
+
+`retirement_accounts` in `scripts/contract_evolution.py` runs after ledger clusters
+and contract evolution. It reads manifests only from the trusted ref and requires
+the candidate copy to equal the trusted bytes. Every owner a manifest names must be
+a whole-owner loss (`removed-or-moved`); anything else, and any unlisted loss, keeps
+its ordinary survivor or contract-evolution account. A manifest whose owners have no
+current loss is inert. A healthy admission reports `retirement_accounts` (manifest
+id, trusted sha256, admitted owner count, base and public authority).
+
+Refusal categories: `candidate-only-retirement-authority`,
+`changed-protected-retirement-authority`, `retired-owner-not-wholly-removed`,
+`stale-retired-owner-hash`, `stale-retirement-requirement`,
+`unchanged-retirement-requirement`, `mismatched-retirement-requirement`,
+`missing-retirement-replacement`, `duplicate-retirement-owner-account`, and the
+generic `unproven-test-or-assertion-loss` for everything unlisted.
+
+The first authorization is
+[`bu-ys9hdx-general-steam-retirement-20261018.json`](../../tests/contract-evolution-authorizations/bu-ys9hdx-general-steam-retirement-20261018.json):
+General no longer loads Steam (owner decision 2026-10-14, epic bu-ys9hdx; bead
+bu-ys9hdx.7, PR #4514). It retires `test_general_butler_toml_has_steam_module` and
+`test_general_steam_config_is_empty_dict` of `TestButlerTomlSteamConfig` in
+`roster/lifestyle/tests/test_lifestyle_steam_integration.py`, bound to the
+"General Butler Identity and Runtime" block of `openspec/specs/butler-general/spec.md`,
+and requires the two replacement owners that PR adds.
+
 ## Retained owners with additive changes
 
 The additive route below preserves the original contract. Intentional replacement
