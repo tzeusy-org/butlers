@@ -250,3 +250,23 @@ async def test_invoke_hands_the_cli_an_mcp_config_with_the_invocation_header():
 
     entry = seen["config"]["mcpServers"]["my-butler"]
     assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}
+    # Without a ``type`` the CLI defaults the entry to stdio, rejects it for lacking
+    # ``command`` and skips the server, so the header and the connection would both be lost.
+    assert entry["type"] == "http"
+
+
+def test_build_config_file_keeps_stdio_and_explicit_types(tmp_path: Path):
+    """Only a url entry with no type gains ``http``; stdio and explicit types are untouched."""
+    config_path = ClaudeCodeAdapter(claude_binary="/usr/bin/claude").build_config_file(
+        mcp_servers={
+            "local": {"command": "some-server", "args": ["--flag"]},
+            "streaming": {"type": "sse", "url": "http://localhost:9100/sse"},
+            "plain": {"url": "http://localhost:9100/mcp"},
+        },
+        tmp_dir=tmp_path,
+    )
+
+    servers = json.loads(config_path.read_text())["mcpServers"]
+    assert "type" not in servers["local"]
+    assert servers["streaming"]["type"] == "sse"
+    assert servers["plain"]["type"] == "http"
