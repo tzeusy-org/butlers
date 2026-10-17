@@ -51,3 +51,37 @@ async def test_non_list_presented_rows_fail_closed() -> None:
 
 async def test_schema_without_digest_column_is_unaffected() -> None:
     await _check(_Conn(has_column=False, presented=object()))
+
+
+@pytest.mark.parametrize("authenticated", [True, False])
+async def test_only_connector_authenticated_approvals_run_the_card_check(
+    monkeypatch: pytest.MonkeyPatch, authenticated: bool
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_owning(**kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "ok"
+
+    async def fake_find(_db: Any, _action_id: Any) -> tuple[str, object]:
+        return "general", object()
+
+    monkeypatch.setattr(approvals_router, "approve_owning_action", fake_owning)
+    monkeypatch.setattr(approvals_router, "_find_action_pool", fake_find)
+    request = type(
+        "Request",
+        (),
+        {"state": type("State", (), {"approval_callback_authenticated": authenticated})()},
+    )()
+
+    result = await approvals_router.approve_approval(
+        str(uuid.uuid4()),
+        request,  # type: ignore[arg-type]
+        approvals_router.ApprovalApproveRequest(),
+        db_mgr=object(),  # type: ignore[arg-type]
+        mcp_mgr=object(),  # type: ignore[arg-type]
+        callback_actor=approvals_router._TELEGRAM_CALLBACK_ACTOR if authenticated else None,
+    )
+
+    assert result == "ok"
+    assert seen["check_presented_digests"] is authenticated
