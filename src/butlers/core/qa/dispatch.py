@@ -69,6 +69,7 @@ from butlers.core.healing.dispatch import (
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
+    PublicationLineageHeld,
     count_active_attempts,
     create_dispatch_event,
     create_or_join_attempt,
@@ -3495,17 +3496,32 @@ async def dispatch_qa_investigation(
         # Use a synthetic session_id since QA dispatch has no session_id.
         synthetic_session_id = uuid.uuid4()
 
-        attempt_id, is_new = await create_or_join_attempt(
-            pool=pool,
-            fingerprint=fp,
-            butler_name=finding.source_butler,
-            severity=finding.severity,
-            exception_type=finding.exception_type,
-            call_site=finding.call_site,
-            session_id=synthetic_session_id,
-            sanitized_msg=finding.event_summary,
-            qa_patrol_id=patrol_id,
-        )
+        try:
+            attempt_id, is_new = await create_or_join_attempt(
+                pool=pool,
+                fingerprint=fp,
+                butler_name=finding.source_butler,
+                severity=finding.severity,
+                exception_type=finding.exception_type,
+                call_site=finding.call_site,
+                session_id=synthetic_session_id,
+                sanitized_msg=finding.event_summary,
+                qa_patrol_id=patrol_id,
+                enforce_publication_hold=True,
+            )
+        except PublicationLineageHeld:
+            # An unresolved publication holds this lineage (REQ-qa-publication-
+            # authority-006): no attempt row exists, so nothing needs cleanup.
+            logger.warning("QA dispatch held: ambiguous publication for fingerprint=%s", fp[:12])
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "publication_held")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="qa", decision="publication_held"
+                )
+            return QaDispatchResult(accepted=False, fingerprint=fp, reason="publication_held")
 
         if not is_new:
             logger.debug("QA dispatch skipped: already investigating fingerprint=%s", fp[:12])
