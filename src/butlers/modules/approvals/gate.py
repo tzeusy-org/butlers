@@ -40,6 +40,7 @@ from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.approvals.rules import (
+    claim_rule_use_sql,
     constraint_pins_value,
     match_rules_from_list,
     parse_constraints,
@@ -810,8 +811,11 @@ def _make_gate_wrapper(
                     tool_name,
                 )
 
+        rule_claimed = False
+        rule_exhausted = False
         if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
-            # Target with a matching standing rule: auto-approve.
+            # Target with a matching standing rule: claim one use atomically with the
+            # approved-action insert, so racing calls cannot exceed max_uses.
             rule_id = matching_rule["id"]
 
             if tool_name == "relationship_assert_fact":
@@ -820,12 +824,17 @@ def _make_gate_wrapper(
                 tool_args = await prepare_rule_assertion(pool, action_id, tool_args, rule_id)
                 safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
-            await pool.execute(
+            # One statement: the conditional use_count claim and the approved-action
+            # insert commit together or not at all (no row claimed -> nothing inserted).
+            claimed_row = await pool.fetchrow(
+                "WITH claimed AS (" + claim_rule_use_sql(rule_param=9, now_param=7) + ") "
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
                 "requested_at, expires_at, approval_rule_id, decided_by, why, evidence, "
                 "blast_radius, reversibility) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                "SELECT $1::uuid, $2::text, $3::jsonb, $4::text, $5::uuid, $6::text, "
+                "$7::timestamptz, $8::timestamptz, claimed.id, $10::text, $11::text, "
+                "$12::jsonb, $13::text, $14::text FROM claimed RETURNING id",
                 action_id,
                 tool_name,
                 safe_tool_args,
@@ -841,6 +850,21 @@ def _make_gate_wrapper(
                 dossier.blast_radius,
                 dossier.reversibility,
             )
+            rule_claimed = claimed_row is not None
+            if not rule_claimed:
+                rule_exhausted = True
+                if tool_name == "relationship_assert_fact":
+                    from butlers.tools.relationship.fact_authority import release_rule_assertion
+
+                    # Park the already-prepared args, but not the standing-rule decision.
+                    await release_rule_assertion(pool, action_id)
+                logger.info(
+                    "Gate: standing rule %s is exhausted or expired for tool %r; parking",
+                    rule_id,
+                    tool_name,
+                )
+
+        if rule_claimed:
             await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
                 pool,
@@ -900,6 +924,8 @@ def _make_gate_wrapper(
             pend_reason = "safety-critical arg not pinned by standing rule: " + ", ".join(
                 unpinned_critical
             )
+        elif rule_exhausted:
+            pend_reason = "standing rule exhausted"
         elif resolved_contact is None:
             pend_reason = "unresolvable target"
         else:

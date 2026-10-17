@@ -229,7 +229,13 @@ async def test_list_actions_returns_paginated_structure(app):
         (
             "/api/approvals/rules",
             "POST",
-            {"tool_name": "x", "arg_constraints": {}, "description": "test", "max_uses": -1},
+            {
+                "butler": "general",
+                "tool_name": "x",
+                "arg_constraints": {},
+                "description": "test",
+                "max_uses": -1,
+            },
             400,
         ),
         (f"/api/approvals/rules/{uuid4()}/revoke", "POST", None, 404),
@@ -3205,3 +3211,111 @@ async def test_dispatch_approved_action_outcome_notify_passes_origin_butler():
 
     assert mock_execute.await_args.kwargs["origin_butler"] == "relationship"
     assert outcome.kind == "executed"
+
+
+# ---------------------------------------------------------------------------
+# POST /rules names its butler and validates like the MCP tool (bu-s11n0s.17)
+# ---------------------------------------------------------------------------
+
+
+def _rules_app(app):
+    """Two butlers (home first, general second), each with its own marked connection."""
+    from butlers.api.routers import approvals as approvals_router
+
+    approvals_router._TABLE_CACHE.clear()
+    conns = {}
+    pools = {}
+    for name in ("home", "general"):
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(return_value=True)
+        conns[name] = conn
+        pool = AsyncMock()
+        pool.acquire = MagicMock(side_effect=lambda c=conn: _AcquireCtx(c))
+        pools[name] = pool
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["home", "general"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+    return conns
+
+
+class _AcquireCtx:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *a):
+        pass
+
+
+_RULE_BODY = {
+    "tool_name": "email_send_message",
+    "arg_constraints": {"to": {"type": "exact", "value": "a@example.com"}},
+    "description": "d",
+    "max_uses": 1,
+}
+
+
+async def _post_rule(app, body):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.post("/api/approvals/rules", json=body)
+
+
+async def test_create_rule_requires_butler(app):
+    _rules_app(app)
+    assert (await _post_rule(app, _RULE_BODY)).status_code == 422
+
+
+async def test_create_rule_writes_into_the_named_butlers_pool_not_the_first(app):
+    conns = _rules_app(app)
+    created = {
+        "id": str(uuid4()),
+        "tool_name": "email_send_message",
+        "arg_constraints": _RULE_BODY["arg_constraints"],
+        "description": "d",
+        "created_at": _NOW,
+        "max_uses": 1,
+        "use_count": 0,
+        "active": True,
+    }
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.create_approval_rule",
+        new=AsyncMock(return_value=created),
+    ) as create:
+        resp = await _post_rule(app, {**_RULE_BODY, "butler": "general"})
+    assert resp.status_code == 200
+    assert create.await_args.args[0] is conns["general"]
+
+
+async def test_create_rule_unknown_butler_is_404(app):
+    _rules_app(app)
+    assert (await _post_rule(app, {**_RULE_BODY, "butler": "nope"})).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "overrides,fragment",
+    [
+        ({"arg_constraints": {"to": {"type": "any"}}}, "exact or pattern"),
+        ({"max_uses": None}, "bounded scope"),
+    ],
+    ids=["no-narrow-constraint", "unbounded"],
+)
+async def test_create_rule_high_risk_tool_is_validated_like_the_mcp_tool(app, overrides, fragment):
+    from butlers.config import ApprovalRiskTier
+
+    _rules_app(app)
+    with patch(
+        "butlers.api.routers.approvals._risk_tier_for_butler_tool",
+        return_value=ApprovalRiskTier.HIGH,
+    ):
+        resp = await _post_rule(app, {**_RULE_BODY, **overrides, "butler": "general"})
+    assert resp.status_code == 400
+    assert fragment in resp.json()["detail"]

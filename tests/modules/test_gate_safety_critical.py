@@ -67,7 +67,7 @@ def _rule(arg_constraints: dict[str, Any]) -> dict[str, Any]:
 def _make_pool(rules: list[dict[str, Any]]) -> AsyncMock:
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rules)
-    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})  # use claimed
     pool.execute = AsyncMock(return_value=None)
     return pool
 

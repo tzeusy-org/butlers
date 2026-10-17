@@ -365,6 +365,23 @@ async def approved_rule_confirmation(
     return report
 
 
+async def release_rule_assertion(pool: Any, action_id: uuid.UUID) -> None:
+    """Drop the standing-rule decision of an assertion whose rule claim was lost.
+
+    ``prepare_rule_assertion`` commits the decision before the gate claims the
+    rule's use.  When the claim loses (the rule was exhausted, deactivated or
+    expired meanwhile) the action parks for the owner instead; the stale
+    ``standing_rule`` decision would otherwise block ``record_admitted_approval``
+    (it only writes while ``decision_report IS NULL``) and the owner's approval
+    could never execute.
+    """
+    await pool.execute(
+        "UPDATE relationship.fact_approval_context SET decision_report=NULL "
+        "WHERE action_id=$1 AND decision_report->>'confirmation_source'='standing_rule'",
+        action_id,
+    )
+
+
 async def prepare_rule_assertion(
     pool: Any,
     action_id: uuid.UUID,

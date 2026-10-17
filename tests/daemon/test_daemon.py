@@ -1913,6 +1913,7 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
     non_owner = MagicMock(roles=["contact"])
     standing_rule = MagicMock(id="rule-123")
     match_rules = AsyncMock(return_value=standing_rule)
+    claim_rule_use = AsyncMock(return_value=True)
     hook_pool = patches["mock_pool"]
     hook_runtime = approval_hooks.register_approval_hooks(
         hook_pool,
@@ -1927,6 +1928,7 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
                 new=AsyncMock(return_value=non_owner),
             ),
             patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+            patch("butlers.modules.approvals.rules.claim_rule_use", new=claim_rule_use),
         ):
             result = await route_execute_fn(
                 schema_version="route.v1",
@@ -1964,6 +1966,7 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
 
     assert result["status"] == "ok"
     match_rules.assert_awaited_once()
+    claim_rule_use.assert_awaited_once()
     telegram_module._send_message.assert_awaited_once()
 
     # Spec: REQ-core-notify-032; the same non-email adapter stays blocked after a park.

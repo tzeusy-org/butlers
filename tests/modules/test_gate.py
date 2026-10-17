@@ -867,3 +867,67 @@ class TestNotifySecondaryOwnerChannel:
             )
         assert result.get("status") == "pending_approval"
         assert "action_id" in result
+
+
+class TestStandingRuleUseClaim:
+    """bu-s11n0s.17: a rule use is claimed atomically with the approved-action insert."""
+
+    async def _call(self, *, claim_row):
+        from datetime import UTC, datetime
+
+        pool = _make_pool(fetchrow_return=claim_row)
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": uuid.uuid4(),
+                    "tool_name": "telegram_send_message",
+                    "arg_constraints": {"chat_id": {"type": "any"}},
+                    "description": "r",
+                    "created_at": datetime.now(UTC),
+                    "expires_at": None,
+                    "max_uses": 1,
+                    "use_count": 0,
+                    "active": True,
+                }
+            ]
+        )
+        wrapper = _make_gate_wrapper(
+            tool_name="telegram_send_message",
+            original_fn=_make_original_fn(),
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+            butler_name="home",
+        )
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+            patch(
+                "butlers.modules.approvals.gate.execute_approved_action",
+                new=AsyncMock(return_value=MagicMock(success=True, result={"status": "sent"})),
+            ) as execute,
+        ):
+            result = await wrapper(
+                chat_id="1",
+                message="hi",
+                _why="The contact requested this update.",
+                _evidence=[],
+            )
+        return pool, result, execute
+
+    async def test_claimed_rule_use_auto_approves_with_one_claim_statement(self) -> None:
+        pool, result, execute = await self._call(claim_row={"id": uuid.uuid4()})
+        assert result == {"status": "sent"}
+        execute.assert_awaited_once()
+        claim_sql = pool.fetchrow.await_args.args[0]
+        assert "UPDATE approval_rules SET use_count = use_count + 1" in claim_sql
+        assert "INSERT INTO pending_actions" in claim_sql
+
+    async def test_exhausted_rule_parks_and_never_executes(self) -> None:
+        _pool, result, execute = await self._call(claim_row=None)
+        assert result.get("status") == "pending_approval"
+        execute.assert_not_awaited()
