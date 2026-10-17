@@ -378,8 +378,8 @@ async def set_context(
     If the signal was previously superseded, ``superseded_at`` is cleared.
     ``set_at`` records when the current value began: re-asserting an unchanged,
     still-active value keeps it (only ``expires_at`` is refreshed), while a changed
-    value or a reactivated superseded row restarts it. The insight broker measures
-    its max-hold from ``set_at``, so refreshes must not reset it (bu-r9mlu3).
+    value, a reactivated superseded row or an expired row restarts it. The insight
+    broker measures its max-hold from ``set_at``, so refreshes must not reset it (bu-r9mlu3).
     DND is the safety-critical exception: it requires a stable action identity
     and is delegated to the database-owned guard/receipt gateway.
 
@@ -461,12 +461,13 @@ async def set_context(
         ON CONFLICT (signal_type, set_by_butler) DO UPDATE
             SET value         = EXCLUDED.value,
                 -- set_at marks when the signal's current value began. A re-assertion of an
-                -- unchanged, still-active value keeps it so consumers measuring continuous
-                -- activity (the insight broker's max-hold) are not reset by every refresh;
-                -- expires_at is still refreshed below.
+                -- unchanged, still-active value (not superseded, not expired) keeps it so
+                -- consumers measuring continuous activity (the insight broker's max-hold)
+                -- are not reset by every refresh; expires_at is still refreshed below.
                 set_at        = CASE
                     WHEN public.user_context.value IS DISTINCT FROM EXCLUDED.value
                         OR public.user_context.superseded_at IS NOT NULL
+                        OR public.user_context.expires_at <= EXCLUDED.set_at
                     THEN EXCLUDED.set_at
                     ELSE public.user_context.set_at
                 END,

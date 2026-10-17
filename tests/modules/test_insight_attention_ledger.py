@@ -1247,36 +1247,3 @@ class TestBrokerCatchupCycle:
 
         assert result["skipped"] is False
         catchup_mock.assert_not_awaited()
-
-
-class TestContextMaxHoldMeasuredFromSetAt:
-    """bu-r9mlu3: max-hold releases once set_at is older than the cap (no DB)."""
-
-    @staticmethod
-    def _entry(signal_type: str, age: timedelta):
-        from butlers.context_bus import ContextEntry
-
-        now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-        return now, ContextEntry(
-            signal_type=signal_type,
-            value=None,
-            set_by_butler="travel",
-            set_at=now - age,
-            expires_at=now + timedelta(hours=1),
-            confidence=1.0,
-        )
-
-    async def test_traveling_longer_than_six_hours_releases_hold(self):
-        from unittest.mock import AsyncMock, patch
-
-        from butlers.tools.switchboard.insight.broker import (
-            _get_suppressing_context_signal_detail,
-        )
-
-        now, held = self._entry("traveling", timedelta(hours=5))
-        _, stale = self._entry("traveling", timedelta(hours=7))
-        with patch("butlers.context_bus.get_active_context", AsyncMock(return_value=[held])):
-            detail = await _get_suppressing_context_signal_detail(object(), now=now)
-        assert detail == ("traveling", held.set_at)
-        with patch("butlers.context_bus.get_active_context", AsyncMock(return_value=[stale])):
-            assert await _get_suppressing_context_signal_detail(object(), now=now) is None

@@ -65,7 +65,7 @@ The permission mapping SHALL be:
 - **THEN** the write succeeds because general is authorized for all signal types
 
 ### Requirement: TTL Semantics
-Every context signal SHALL have an `expires_at` timestamp. There SHALL be no indefinite signals. Each signal type SHALL have a default TTL and a maximum TTL. If `expires_at` is not provided, the default TTL SHALL be applied from `set_at`. If the requested TTL exceeds the maximum, it SHALL be clamped to the maximum. A signal is considered **active** when `superseded_at IS NULL AND expires_at > now()`.
+Every context signal SHALL have an `expires_at` timestamp. There SHALL be no indefinite signals. Each signal type SHALL have a default TTL and a maximum TTL. If `expires_at` is not provided, the default TTL SHALL be applied from the time of the assertion. If the requested TTL exceeds the maximum, it SHALL be clamped to the maximum. A signal is considered **active** when `superseded_at IS NULL AND expires_at > now()`.
 
 Default and maximum TTLs:
 - `traveling`: default 24h, max 30d
@@ -134,7 +134,7 @@ The system SHALL provide an `is_user_in_context(pool, signal_type, min_confidenc
 - **THEN** `is_user_in_context(pool, "meeting", min_confidence=0.2)` returns `True`
 
 ### Requirement: Set Context Signal
-The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field SHALL always be set to the current time on upsert. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
+The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field marks the start of the current activation: it SHALL be reset to the current time when the value changes, the row was superseded, or the row had expired, and SHALL be kept on an unchanged re-assertion of an active row. `expires_at` SHALL be refreshed on every assertion, so the TTL is measured from the latest assertion. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
 
 #### Scenario: New signal created
 - **WHEN** no existing signal exists for the `(signal_type, set_by_butler)` pair
@@ -142,7 +142,15 @@ The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_
 
 #### Scenario: Existing signal updated
 - **WHEN** a signal already exists for the `(signal_type, set_by_butler)` pair
-- **THEN** the existing row is updated with new `value`, `set_at`, `expires_at`, `confidence`, `metadata`, and `superseded_at = NULL`
+- **THEN** the existing row is updated with new `value`, `expires_at`, `confidence`, `metadata`, and `superseded_at = NULL`, and `set_at` is reset to the current time because the value changed
+
+#### Scenario: Unchanged active signal re-asserted
+- **WHEN** a signal is active (not superseded, not expired) and `set_context()` is called with the same `value`
+- **THEN** `set_at` is kept and `expires_at` is refreshed, so consumers measuring continuous activity are not reset
+
+#### Scenario: Expired signal re-asserted
+- **WHEN** a signal's row has expired (`expires_at` is not after now) and `set_context()` is called with the same `value`
+- **THEN** `set_at` is reset to the current time, starting a new activation
 
 #### Scenario: Previously cleared signal re-activated
 - **WHEN** a signal was cleared (superseded_at is set) and `set_context()` is called again
