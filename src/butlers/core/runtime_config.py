@@ -20,12 +20,67 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Literal
 
 import asyncpg
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.config import RuntimeSeedConfig
 
 logger = logging.getLogger(__name__)
+
+
+class GoalBudgetLimits(BaseModel):
+    """Explicit dark-build limits; no launch defaults or authority live here."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    max_invocations: int = Field(ge=0, le=2**63 - 1, strict=True)
+    max_children: int = Field(ge=0, le=2**63 - 1, strict=True)
+    max_calls: int = Field(ge=0, le=2**63 - 1, strict=True)
+    max_tokens: int = Field(ge=0, le=2**63 - 1, strict=True)
+    max_spend: Decimal = Field(ge=0)
+    deadline_seconds: int = Field(gt=0, le=2**31 - 1, strict=True)
+    invocation_max_turns: int = Field(ge=0, le=2**63 - 1, strict=True)
+    invocation_max_tokens: int = Field(ge=0, le=2**63 - 1, strict=True)
+
+
+class OriginAdmissionLimits(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    origin: Literal["owner", "obligation", "third_party", "staffer"]
+    new_goals: int = Field(ge=0, le=2**63 - 1, strict=True)
+    per_source: int = Field(ge=0, le=2**63 - 1, strict=True)
+    window_seconds: int = Field(gt=0, le=2**31 - 1, strict=True)
+    budget: GoalBudgetLimits
+
+
+class GoalAdmissionConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    version: str = Field(min_length=1)
+    chain_limit: int = Field(default=2, ge=0, le=2**31 - 1, strict=True)
+    origins: tuple[OriginAdmissionLimits, ...]
+
+    @model_validator(mode="after")
+    def all_origins_once(self) -> GoalAdmissionConfig:
+        names = [entry.origin for entry in self.origins]
+        if len(names) != 4 or set(names) != {"owner", "obligation", "third_party", "staffer"}:
+            raise ValueError("admission requires each origin exactly once")
+        return self
+
+
+async def read_goal_admission_config(connection: asyncpg.Connection) -> GoalAdmissionConfig:
+    """Read a fresh Switchboard snapshot in the caller's admission transaction.
+
+    Deliberately bypass RuntimeConfigAccessor's legacy stale-cache fallback.
+    NULL/missing/malformed data refuses admission; nothing seeds launch limits.
+    """
+    value = await connection.fetchval(
+        "SELECT goal_admission_config FROM switchboard.runtime_config "
+        "WHERE butler_name = 'switchboard' FOR SHARE"
+    )
+    if value is None:
+        raise ValueError("goal admission limits are not configured")
+    return GoalAdmissionConfig.model_validate(value)
 
 
 @dataclass(frozen=True)

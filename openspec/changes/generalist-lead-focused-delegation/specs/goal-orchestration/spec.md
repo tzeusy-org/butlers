@@ -102,6 +102,21 @@ Scope: v1-mandatory
 - **WHEN** a lead is replaced after a runtime failure
 - **THEN** the replacement uses the durable goal identity and previously consumed budget under one fenced active ownership slot
 
+#### Scenario: New-goal quotas preserve isolated owner capacity
+- **WHEN** concurrent admissions count new goals against explicit versioned origin and source limits
+- **THEN** they lock and charge the same captured fixed UTC window, persist that window and serialize the final slot
+- **AND** non-owner origins cannot use owner capacity, while joins/refusals consume no new-goal slot
+- **AND** missing/invalid/unreadable limits refuse without stale-cache fallback; no numeric launch default is implied
+- **AND** accepted source dedupe returns the same goal without reserving twice, repeated attempts return their exact decision, and later retries of a retryable refusal retain the same durable source key
+
+#### Scenario: An owner reply retains an existing goal's authority
+- **WHEN** trusted infrastructure matches an incoming verified owner reply to an exact server-held delivery/effect, recipient channel/entity and live input-accepting prompt
+- **THEN** admission locks the referenced goal before the effect, rechecks expiry/liveness under lock and attaches the unique incoming source to that same goal
+- **AND** origin, ceiling, cause and budget remain unchanged, exposure only increases, and no invocation or approval is created
+- **AND** a terminal or expired prompt follows ordinary new-owner-goal admission retaining the delivery/effect reference without a caused-goal link
+- **AND** unknown, foreign or mismatched bindings follow ordinary verified message admission without guessed continuity; concurrent Stop and join serialize on the goal
+
+
 ### Requirement: Results and effects have honest durable outcomes
 Children SHALL return evidence references, uncertainty, unresolved constraints,
 and recorded effect status. The lead SHALL reconcile those results before

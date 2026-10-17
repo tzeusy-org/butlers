@@ -437,3 +437,15 @@ their separate authority contract or equate the trusted migration owner with run
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+### Ordinary owner-held goal ledger
+
+The dark RFC0038 ledger (`sw_047`) follows the existing `sw_035` enabled,
+non-FORCE RLS pattern. The trusted migration login owns the five tables and can
+use ordinary `row_security=off` backup; only the exact Switchboard runtime passes
+the command policies. Replay `init-db.sql` and test real runtime identities,
+including denied connector/Chronicler identities and owner memberships. Verify
+the existing complete backup and restore scripts retain every ledger row, owner,
+policy and constraint. No backup exclusion or new privileged owner is needed.
+Downgrade refuses durable goals/admission history. `core_266` likewise refuses
+to discard configured admission limits. These migrations do not activate callers.
