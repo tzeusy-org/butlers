@@ -5,7 +5,7 @@
   "decision": {
     "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the bu-mc01y5 coordinator after independent review",
     "date": "2026-10-15",
-    "reference": "Authorization bead bu-s55lzi for implementation bead bu-mc01y5.13 (PR #4609, dispatcher git subprocesses are isolated in the shared QA clone). Reviewed before: main d54670d49 (PR base f240eb56e); approved subject: PR #4609 head 8ec6dd67dd88a783b827827d34fd7caec9783675 updated from main. Governing requirement REQ-qa-investigation-dispatch-001 (Investigation Agent Sandbox), bound in both the baseline spec and the open change confine-qa-publication-authority; both copies already carry the ID and change only inside the block. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+    "reference": "Authorization bead bu-s55lzi for implementation bead bu-mc01y5.13 (PR #4609, dispatcher git subprocesses are isolated in the shared QA clone). Reviewed before: main 3592d3e6346b8b9785eca691afc6d67ae2855f5c; approved subject: PR #4609 head 0d37f9413021ee86b1c35cb4c7e46e76e2e93efe (a merge of that main), per bu-4kyppr. Governing requirement REQ-qa-investigation-dispatch-001 (Investigation Agent Sandbox), bound in both the baseline spec and the open change confine-qa-publication-authority; both copies already carry the ID and change only inside the block. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
   },
   "owners": [
     {
@@ -104,11 +104,11 @@
       "path": "src/butlers/core/qa/dispatch.py",
       "before": {
         "mode": "100644",
-        "sha256": "d8f1b91c846f9c010166d7f8f65e5f78c464fe84d13dd460e772a14bffa31c68"
+        "sha256": "33e3ab2821e85fe9d2728214ead2d4cc748324bc84fccb2b104f95b50e5f68da"
       },
       "after": {
         "mode": "100644",
-        "sha256": "eb0682c2f028bc499debaf77fdcb8122e41b8577a57f40a2104fe064587d737a"
+        "sha256": "fee027e7cb55d3ccedeb087f98bb6a2bd9d94bbcca23e4d67448f230acc18c30"
       }
     },
     {
