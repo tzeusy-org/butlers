@@ -4751,3 +4751,184 @@ class TestDecompositionEmptyMetric:
             assert "butlers.pipeline.decomposition_empty" not in data
         finally:
             _reset_metrics_global_state()
+
+
+def _ingress_pipeline(existing: dict[str, Any] | None = None) -> tuple[MessagePipeline, AsyncMock]:
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=[existing, {"request_id": "req-1"}])
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    pool.acquire.return_value = ctx
+    pipeline = MessagePipeline(
+        pool, AsyncMock(), source_butler="switchboard", enable_ingress_dedupe=True
+    )
+    return pipeline, conn
+
+
+async def _accept(pipeline: MessagePipeline, text: str):
+    return await pipeline._accept_ingress(
+        message_text=text,
+        args={"source_channel": "email", "source_identity": "sender@example.com"},
+        source_metadata={},
+        source="email",
+        chat_id=None,
+    )
+
+
+async def test_accept_ingress_binds_scrubbed_text_and_keeps_dedupe_reuse() -> None:
+    pipeline, conn = _ingress_pipeline()
+    record = await _accept(pipeline, "Your code is 482913")
+
+    assert record is not None and record.decision == "accepted"
+    insert_args = conn.fetchrow.await_args_list[1].args
+    raw_payload, normalized_text = insert_args[3], insert_args[4]
+    assert "482913" not in str(raw_payload) + normalized_text
+    assert "[auth-code withheld" in normalized_text
+    assert raw_payload["content"] == normalized_text
+
+    reuse, conn = _ingress_pipeline(existing={"request_id": "req-0"})
+    record = await _accept(reuse, "Your code is 482913")
+    assert record is not None and record.decision == "deduped"
+    assert conn.fetchrow.await_count == 1
+
+
+async def test_ordinary_numbers_survive_all_inbound_writers() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+    text = "Invoice 482913 total 20.50"
+    pipeline, conn = _ingress_pipeline()
+    await _accept(pipeline, text)
+    assert conn.fetchrow.await_args_list[1].args[4] == text
+
+    dl_conn = AsyncMock()
+    dl_conn.fetchrow = AsyncMock(return_value={"id": "dl-1"})
+    await capture_to_dead_letter(
+        dl_conn,
+        original_request_id=UUID(int=1),
+        source_table="message_inbox",
+        failure_reason="boom",
+        failure_category="retry_exhausted",
+        retry_count=1,
+        last_retry_at=None,
+        original_payload={"content": text},
+        request_context={},
+        error_details={},
+    )
+    assert json.loads(dl_conn.fetchrow.await_args.args[7]) == {"content": text}
+
+    replay_conn = _replay_conn({"content": text})
+    await replay_dead_letter_request(
+        replay_conn, dead_letter_id=UUID(int=2), operator_identity="op", reason="r"
+    )
+    assert _replayed_insert(replay_conn)[3] == text
+
+
+def _replay_conn(original_payload: dict[str, Any]) -> AsyncMock:
+    from uuid import UUID
+
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": UUID(int=2),
+            "original_request_id": UUID(int=1),
+            "source_table": "message_inbox",
+            "original_payload": json.dumps(original_payload),
+            "request_context": json.dumps({}),
+            "replay_eligible": True,
+            "replayed_at": None,
+        }
+    )
+    return conn
+
+
+def _replayed_insert(conn: AsyncMock) -> tuple[Any, ...]:
+    call = next(
+        c for c in conn.execute.await_args_list if "INTO switchboard.message_inbox" in c.args[0]
+    )
+    return call.args[1:]
+
+
+async def test_dead_letter_capture_stores_scrubbed_original_payload() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+
+    dl_conn = AsyncMock()
+    dl_conn.fetchrow = AsyncMock(return_value={"id": "dl-1"})
+    await capture_to_dead_letter(
+        dl_conn,
+        original_request_id=UUID(int=1),
+        source_table="message_inbox",
+        failure_reason="boom",
+        failure_category="retry_exhausted",
+        retry_count=1,
+        last_retry_at=None,
+        original_payload={"content": "Your code is 482913", "message_text": "Your code is 482913"},
+        request_context={},
+        error_details={},
+    )
+    assert "482913" not in dl_conn.fetchrow.await_args.args[7]
+
+
+async def test_dead_letter_replay_scrubs_legacy_raw_payload() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+    # A legacy pre-fix dead letter still holds raw text; replay scrubs it on reinsert.
+    conn = _replay_conn({"content": "Your code is 482913"})
+    result = await replay_dead_letter_request(
+        conn, dead_letter_id=UUID(int=2), operator_identity="op", reason="r"
+    )
+    assert result["success"] is True
+    _, _, raw_payload, normalized_text, _ = _replayed_insert(conn)
+    assert "482913" not in raw_payload + normalized_text
+    assert "[auth-code withheld" in normalized_text
+
+
+async def test_process_routes_scrubbed_text_and_withholds_it_on_detector_failure(
+    mocked_pipeline_source,
+) -> None:
+    """The routing prompt gets the placeholder, never the code; a detector failure withholds."""
+    prompts: list[str] = []
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        prompts.append(kwargs["prompt"])
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    tool_args = {
+        "source_channel": "email",
+        "source_identity": "sender@example.com",
+        "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+    }
+    with patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new=AsyncMock(return_value=_MOCK_BUTLERS),
+    ):
+        await pipeline.process(
+            "Your code is 482913",
+            tool_args=dict(tool_args),
+            message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+        )
+        with patch(
+            "butlers.modules.pipeline.scrub_message_text", side_effect=RuntimeError("482913")
+        ):
+            await pipeline.process(
+                "Your code is 482913",
+                tool_args=dict(tool_args),
+                message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+            )
+
+    assert len(prompts) == 2
+    assert all("482913" not in prompt for prompt in prompts)
+    assert "[auth-code withheld" in prompts[0]
+    assert "[content withheld]" in prompts[1]

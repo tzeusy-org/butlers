@@ -274,10 +274,16 @@ def scrub_stored_record(
         result["payload"], json_hits = scrub_json(
             raw_payload["payload"], provider_domain=domain, aggressive=aggressive
         )
+    content_hits: list[BearerArtifact] = []
+    # Legacy writers store the message text at the top level as ``content``.
+    if isinstance(raw_payload.get("content"), str):
+        result["content"], content_hits = scrub_text(
+            raw_payload["content"], provider_domain=domain, aggressive=aggressive
+        )
     new_text, text_hits = scrub_text(normalized_text, provider_domain=domain, aggressive=aggressive)
     # The payload subtree embeds normalized_text, so one artifact can hit in both;
     # count the text hits (or the raw-only hits) once.
-    return result, new_text, text_hits or json_hits
+    return result, new_text, text_hits or json_hits or content_hits
 
 
 def scrub_filtered_preview(
