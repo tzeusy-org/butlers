@@ -1571,12 +1571,10 @@ async def get_workspace_invitations(
     try:
         source_rows, source_failed = await _fetch_sources(db, lane="user")
         degraded.update(source_failed)
+        # The event survivor and logical source owner have independent freshness
+        # rankings. A response must use the schema containing this exact entry.
         owners = {
-            row["source_key"]: row.get("db_butler") or row.get("butler_name")
-            for row in _select_canonical_source_rows(
-                source_rows,
-                core_calendar_butlers=_calendar_core_enabled_butlers(),
-            )
+            (row.get("db_butler"), row["source_key"]): row.get("db_butler") for row in source_rows
         }
     except Exception:
         owners = {}
@@ -1592,7 +1590,8 @@ async def get_workspace_invitations(
     response_owners = _calendar_response_enabled_butlers()
     entries = []
     for row in invitation_read.rows[:limit]:
-        if not owners.get(row["source_key"]):
+        owner = owners.get((row.get("db_butler"), row["source_key"]))
+        if not owner:
             degraded.add("calendar source ownership")
         metadata = _normalize_json_object(row.get("event_metadata"))
         organizer = metadata.get("organizer")
@@ -1633,9 +1632,9 @@ async def get_workspace_invitations(
                 timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
                 organizer=organizer.strip() if isinstance(organizer, str) else None,
                 organizer_source=organizer_source,
-                butler_name=owners.get(row["source_key"]),
+                butler_name=owner,
                 conflict_issues=issues,
-                response_configured=owners.get(row["source_key"]) in response_owners,
+                response_configured=owner in response_owners and row.get("writable") is True,
             )
         )
     has_more = len(invitation_read.rows) > limit
@@ -2529,6 +2528,95 @@ async def _calendar_response_review_pool(
     # Carry the admitted immutable binding through the later dossier read.
     # That read uses another acquisition and must not display a changed action.
     return pool, expected
+
+
+async def _read_response_command(
+    db: DatabaseManager, command_id: UUID, owner: str
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Repeat the admitted immutable binding on the final receipt acquisition."""
+    from butlers.modules.calendar_response import _digest
+
+    pool, expected = await _calendar_response_review_pool(db, command_id, owner)
+    try:
+        row = await pool.fetchrow(
+            "SELECT action_type,action_payload,action_result FROM calendar_action_log WHERE id=$1",
+            command_id,
+        )
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
+        )
+    except Exception:
+        raise HTTPException(503, "response_review_unavailable") from None
+    if row is None or pending is None:
+        raise HTTPException(503, "response_review_unavailable")
+    payload = _normalize_json_object(row["action_payload"])
+    command = _normalize_json_object(payload.get("command"))
+    if (
+        row["action_type"] != "workspace_user_respond"
+        or command.get("owner") != owner
+        or _digest(command) != payload.get("digest")
+        or {
+            **_normalize_json_object(command.get("arguments")),
+            "_command_id": str(command_id),
+            "_command_digest": payload.get("digest"),
+        }
+        != expected
+        or pending["tool_name"] != "calendar_respond"
+        or _normalize_json_object(pending["tool_args"]) != expected
+    ):
+        raise HTTPException(409, "response_review_binding_unverified")
+    return payload, _normalize_json_object(row["action_result"]), pending["status"]
+
+
+@router.get("/responses/{command_id}", response_model=ApiResponse[CalendarRespondResponse])
+async def get_response_receipt(
+    command_id: UUID,
+    source_butler: str = Query(..., min_length=1, max_length=64),
+    inverse: bool = Query(False),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarRespondResponse]:
+    """Read the exact retained response or its server-bound inverse, without dispatch.
+
+    The original identity survives a lost undo reply and removal of the inbox
+    row. A reservation without a prepared approval is unavailable, never an
+    applied receipt or permission to reserve another inverse.
+    """
+    payload, receipt, decision = await _read_response_command(db, command_id, source_butler)
+    if inverse:
+        original_id = command_id
+        try:
+            command_id = UUID(payload["inverse_claim"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HTTPException(409, "response_inverse_unavailable") from None
+        payload, receipt, decision = await _read_response_command(db, command_id, source_butler)
+        if _normalize_json_object(payload.get("command")).get("inverse_of") != str(original_id):
+            raise HTTPException(409, "response_inverse_binding_unverified")
+    status = receipt.get("status")
+    reason = receipt.get("reason")
+    if not status:
+        if payload.get("phase") in {"egress_started", "uncertain"}:
+            status = "uncertain"
+        elif decision in {"rejected", "expired"}:
+            status, reason = "rejected", "response_approval_" + decision
+        elif decision in {"pending", "approved"}:
+            status = "pending_approval" if decision == "pending" else "approved"
+        else:
+            raise HTTPException(503, "response_receipt_unavailable")
+    return ApiResponse(
+        data=CalendarRespondResponse(
+            status=status,
+            command_id=command_id,
+            approval_id=command_id,
+            source_butler=source_butler,
+            reason=reason,
+            projection_available=receipt.get("projection_available") is True,
+            undo_available=status == "applied"
+            and isinstance(receipt.get("before"), dict)
+            and not receipt.get("undo")
+            and not payload.get("inverse_claim")
+            and not _normalize_json_object(payload.get("command")).get("inverse_of"),
+        )
+    )
 
 
 async def _respond_through_approval(
