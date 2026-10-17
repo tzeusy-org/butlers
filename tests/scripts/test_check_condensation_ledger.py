@@ -1039,7 +1039,9 @@ _FORGED_ID = "REQ-" + "forged-001"
 _OTHER_ID = "REQ-" + "other-001"
 
 
-def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=()):
+def _contract_repository(
+    tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=(), conftest=False
+):
     """Build real protected authority separately from its candidate request."""
     import contract_evolution as evolution
 
@@ -1078,6 +1080,8 @@ def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=F
     helper_body = helper.read_bytes()
     if candidate_helper:
         helper.unlink()
+    if conftest:
+        (root / "tests/conftest.py").write_text("import pytest\n")
     base = commit("complete original contract")
     if candidate_helper:
         helper.write_bytes(helper_body)
@@ -1124,6 +1128,7 @@ def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=F
                 "pyproject.toml",
                 "uv.lock",
                 (evolution.REQUESTS + "example.json"),
+                *(("tests/conftest.py",) if conftest else ()),
                 *(("scripts/contract_lifecycle.py",) if candidate_helper else ()),
             )
             if path not in omit
@@ -1872,3 +1877,27 @@ def test_stale_base_still_counts_a_loss_the_pull_request_introduces(tmp_path):
     root, base, landed = _landed_retirement(tmp_path, extra_loss=True)
     with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
         ledger.verify(root, base, [], trusted=landed)
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+@pytest.mark.parametrize("fresh_base", [False, True])
+def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(tmp_path, change, fresh_base):
+    """bu-1bxczh: a conftest.py change is attributed to every owner below it."""
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(
+        tmp_path, conftest=True
+    )
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    conftest = root / "tests/conftest.py"
+    if change == "edit":
+        conftest.write_text(
+            "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip():\n    pytest.skip()\n"
+        )
+    else:
+        conftest.unlink()
+    _commit_all(root, "pull request changes only the ancestor conftest")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(
+            root, landed if fresh_base else base, [], contract_directory=output, trusted=landed
+        )

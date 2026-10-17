@@ -551,6 +551,12 @@ def _already_landed(
             trusted_owner = record_at(root, trusted, owner_path)
             if trusted_owner is None or current_record(root, owner_path) != trusted_owner:
                 return False
+            # destructive_changes attributes an ancestor conftest.py change to every owner
+            # below it, so an added, edited or deleted ancestor conftest is not public history.
+            for parent in PurePosixPath(owner_path).parents:
+                context = (parent / "conftest.py").as_posix()
+                if record_at(root, trusted, context) != current_record(root, context):
+                    return False
         for row in authority["contracts"]:
             target = root / ledger.public_path(row["path"])
             if target.is_symlink() or not target.is_file():
