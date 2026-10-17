@@ -19,9 +19,11 @@ Row security is the durable fence.  ``scripts/init-db.sql`` re-grants
 public-schema DML to every runtime role on each run and a policy is not a
 grant, so a re-run cannot widen what the policies refuse.  The QA role is the
 only writer; every role may read (the hold must be visible to any dispatcher).
-FORCE applies the policies to the table owner as well.  No runtime role holds
-TRUNCATE or DELETE; PostgreSQL's implicit owner TRUNCATE right cannot be revoked
-and is deliberately not trigger-guarded here, because existing fixtures clear
+FORCE applies the policies to the table owner as well.  The bootstrap re-grants
+DELETE, so rows cannot be deleted only because no DELETE policy exists.  TRUNCATE is
+not a row operation and no policy applies to it: the owner/runtime login keeps it (and
+ALTER/DROP POLICY); no runtime path truncates.  That right cannot be revoked and is
+deliberately not trigger-guarded here, because existing fixtures clear
 ``healing_attempts`` with ``TRUNCATE ... CASCADE``.  The table is therefore
 unreadable to ``deploy/backup/pg_dump.sh``'s dump role and is on its
 exclusion list; the restore fence that re-establishes holds belongs to
@@ -83,6 +85,37 @@ def _for_existing_role(role: str, statement: str) -> None:
         $$
         """
     )
+
+
+def _core_266_installation_count() -> int:
+    """Count schema-local core chains that still depend on the shared table (core_246 pattern)."""
+    bind = op.get_bind()
+    schemas = bind.exec_driver_sql(
+        """
+        SELECT namespace.nspname
+        FROM pg_class version_table
+        JOIN pg_namespace namespace ON namespace.oid = version_table.relnamespace
+        WHERE version_table.relname = 'alembic_version'
+          AND version_table.relkind IN ('r', 'p')
+          AND namespace.nspname NOT LIKE 'pg_%%'
+          AND namespace.nspname <> 'information_schema'
+        """
+    ).scalars()
+    quote = bind.dialect.identifier_preparer.quote
+    count = 0
+    for schema in schemas:
+        installed = bind.exec_driver_sql(
+            f"""
+            SELECT EXISTS (
+                SELECT 1 FROM {quote(schema)}.alembic_version
+                WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
+                    THEN substring(version_num FROM 6)::integer >= 266
+                    ELSE false END
+            )
+            """
+        ).scalar()
+        count += int(bool(installed))
+    return count
 
 
 def upgrade() -> None:
@@ -172,6 +205,10 @@ def downgrade() -> None:
     op.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_266:qa-publication', 0))"
     )
+    # The core chain runs once per butler schema over one shared table. Only the last
+    # schema to leave core_266 may hold-check and drop it; earlier ones still run head code.
+    if _core_266_installation_count() > 1:
+        return
     op.execute(
         f"""
         DO $$

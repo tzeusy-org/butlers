@@ -35,10 +35,13 @@ the hold lives in the ledger and survives them. Only a recorded reconciliation r
 
 Only `butler_qa_rw` can insert or update rows: forced row security admits no other writer, because
 `scripts/init-db.sql` re-grants public-schema DML to every runtime role on each run and a policy is
-not a grant. Every runtime role can read the ledger so any dispatcher sees a hold. No role has DELETE
-or TRUNCATE; PostgreSQL's implicit owner TRUNCATE right cannot be revoked and is not guarded.
+not a grant. Every runtime role can read the ledger so any dispatcher sees a hold. The bootstrap
+re-grants DELETE, so rows cannot be deleted only because no DELETE policy exists. Residual: the
+owner/runtime login keeps TRUNCATE (an implicit right that cannot be revoked and is not guarded) and
+ALTER/DROP POLICY; no runtime path truncates.
 
-The downgrade drops the table only while no row is `egress_started` or `ambiguous`; otherwise it
+The core chain runs once per butler schema over one shared table, so only the last schema to leave
+`core_266` drops it (earlier schemas leave it in place). That downgrade drops the table only while no row is `egress_started` or `ambiguous`; otherwise it
 raises and each held operation needs a manual, recorded reconciliation first. Rows are never deleted
 automatically.
 
