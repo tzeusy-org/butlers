@@ -469,9 +469,11 @@ def _detect_change_type(
     new_parents = file_data.get("parents", cached.parents) or []
     new_shared = file_data.get("shared", cached.shared)
 
-    # The persisted cache holds scrubbed names, so compare in the scrubbed domain
-    # (scrubbing is idempotent). The raw name is never persisted.
-    name_changed = _comparable_name(new_name) != _comparable_name(cached.name)
+    # A raw in-memory cache detects every real rename. A cache restored from the
+    # store holds scrubbed names, so fall back to the scrubbed comparison only when
+    # the raw names differ. The raw name is never persisted. Residue: the first
+    # change after a restart where only a withheld span changed reads as unchanged.
+    name_changed = new_name != cached.name and _comparable_name(new_name) != cached.name
     parents_changed = set(new_parents) != set(cached.parents)
     sharing_changed = new_shared != cached.shared
 

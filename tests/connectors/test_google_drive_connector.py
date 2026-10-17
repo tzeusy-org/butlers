@@ -461,3 +461,8 @@ async def test_scrubbed_cache_reloaded_after_restart_does_not_fake_a_rename() ->
     assert _detect_change_type(change, cached) == _CHANGE_TYPE_MODIFIED
     change["file"]["name"] = "Quarterly plan.txt"
     assert _detect_change_type(change, cached) == _CHANGE_TYPE_RENAMED
+
+    # In steady state the raw in-memory cache sees a rename that only changes a withheld span.
+    live = _make_cached(name="Code of Conduct 2025.pdf")
+    change["file"]["name"] = "Code of Conduct 2026.pdf"
+    assert _detect_change_type(change, live) == _CHANGE_TYPE_RENAMED
