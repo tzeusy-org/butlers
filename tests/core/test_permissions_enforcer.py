@@ -1,6 +1,6 @@
 """Unit tests for the public.permissions runtime enforcer.
 
-Covers the opt-in-deny semantics and the fail-open contract of
+Covers the opt-in-deny semantics and the fail-closed contract of
 ``butlers.core.permissions.check_permission`` / ``require_permission`` without a
 real database (asyncpg pool mocked).
 
