@@ -389,11 +389,11 @@ def _resolve_observed_at(
             continue
         try:
             parsed = parsedate_to_datetime(_header_str_value(header))
+            if parsed.tzinfo is None:
+                break
+            parsed = parsed.astimezone(UTC)
         except (TypeError, ValueError, IndexError, OverflowError):
             break
-        if parsed.tzinfo is None:
-            break
-        parsed = parsed.astimezone(UTC)
         if _DATE_HEADER_EARLIEST <= parsed <= received_at + _DATE_HEADER_MAX_SKEW:
             return parsed, OBSERVED_AT_DATE_HEADER
         break

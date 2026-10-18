@@ -154,3 +154,68 @@ async def test_envelope_with_present_internal_date_logs_nothing_and_is_unchanged
         envelope = await runtime._build_ingest_envelope(_message(str(INTERNAL_MS)), None)
     assert envelope["event"]["observed_at"] == INTERNAL_DT.isoformat()
     assert not [r for r in caplog.records if "internalDate" in r.getMessage()]
+
+
+OVERFLOW_DATE = "Fri, 31 Dec 9999 23:59:59 -0100"
+
+
+def test_date_header_that_overflows_on_utc_conversion_falls_back_to_receipt_time() -> None:
+    observed, source = _resolve_observed_at(_message(date_header=OVERFLOW_DATE), NOW)
+    assert (observed, source) == (NOW, OBSERVED_AT_RECEIPT_TIME)
+
+
+async def test_envelope_with_an_overflowing_date_header_is_still_built(
+    runtime: GmailConnectorRuntime,
+) -> None:
+    before = datetime.now(UTC)
+    envelope = await runtime._build_ingest_envelope(_message(date_header=OVERFLOW_DATE), None)
+    observed = datetime.fromisoformat(envelope["event"]["observed_at"])
+    assert before <= observed <= datetime.now(UTC)
+
+
+async def _filtered_row(
+    runtime: GmailConnectorRuntime, message: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> tuple:
+    from unittest.mock import AsyncMock, patch
+
+    from butlers.ingestion_policy import PolicyDecision
+
+    with (
+        caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"),
+        patch.object(runtime, "_fetch_message", new_callable=AsyncMock, return_value=message),
+        patch.object(
+            runtime._ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="block", matched_rule_type="sender_domain"),
+        ),
+    ):
+        await runtime._ingest_single_message("msg-1")
+    rows = runtime._filtered_event_buffer._rows
+    assert len(rows) == 1
+    return rows[0]
+
+
+async def test_filtered_path_uses_the_date_header_and_logs_the_source(
+    runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+) -> None:
+    row = await _filtered_row(runtime, _message(date_header=GOOD_DATE), caplog)
+    assert row[9]["event"]["observed_at"] == GOOD_DATE_UTC.isoformat()
+    assert any(OBSERVED_AT_DATE_HEADER in r.getMessage() for r in caplog.records)
+
+
+async def test_filtered_path_without_any_usable_time_is_receipt_time_not_1970(
+    runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+) -> None:
+    before = datetime.now(UTC)
+    row = await _filtered_row(runtime, _message(), caplog)
+    observed = datetime.fromisoformat(row[9]["event"]["observed_at"])
+    assert before <= observed <= datetime.now(UTC)
+    assert any(OBSERVED_AT_RECEIPT_TIME in r.getMessage() for r in caplog.records)
+
+
+async def test_filtered_path_with_a_present_internal_date_is_unchanged_and_silent(
+    runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+) -> None:
+    row = await _filtered_row(runtime, _message(str(INTERNAL_MS)), caplog)
+    assert row[9]["event"]["observed_at"] == INTERNAL_DT.isoformat()
+    assert not [r for r in caplog.records if "internalDate" in r.getMessage()]
