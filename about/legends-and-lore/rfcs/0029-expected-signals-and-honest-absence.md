@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-09-03
 
-Governing doctrine: [vision.md, What Success Looks Like](../../heart-and-soul/vision.md#what-success-looks-like) (the lead reports partial or unknown outcomes rather than asserting them) and [architecture.md, The Core Loop](../../heart-and-soul/architecture.md#the-core-loop) (reconcile evidence before recording an outcome).
+Governing doctrine: [vision.md rule 4, the daemon is deterministic infrastructure](../../heart-and-soul/vision.md#non-negotiable-rules) (expected-signal and gap checks are deterministic, testable daemon logic) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (the signal state lives in the owning butler's schema).
 
 ## Context
 

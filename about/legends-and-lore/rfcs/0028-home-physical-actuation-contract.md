@@ -4,7 +4,7 @@
 
 **Date:** 2026-09-03
 
-Governing doctrine: [security.md, Goal and Delegation Authority](../../heart-and-soul/security.md#goal-and-delegation-authority) (consequential and protected actuation need owner approval; physical-actuation contracts continue to bind) and [security.md, Approval Gates](../../heart-and-soul/security.md#approval-gates) (the gate is enforced outside the prompt).
+Governing doctrine: [security.md, Goal and Delegation Authority](../../heart-and-soul/security.md#goal-and-delegation-authority) (owner approval for consequential and protected actuation is exposure-conditioned; physical-actuation contracts continue to bind) and [security.md, Approval Gates](../../heart-and-soul/security.md#approval-gates) (the gate is enforced outside the prompt).
 
 ## Context
 
