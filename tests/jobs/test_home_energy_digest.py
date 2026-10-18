@@ -6,19 +6,26 @@ _build_digest_message, run_energy_digest, and daemon registry.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.connectors.home_assistant_statistics import HAStatisticsError
+from butlers.core.baselines import compute_baselines, score
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
     _fetch_weekly_statistics,
     _is_energy_entity,
     run_energy_digest,
+)
+from butlers.jobs.home_baselines import (
+    EnergyFinding,
+    anomalies_from,
+    energy_metric,
+    scored_week_anchor,
 )
 
 pytestmark = pytest.mark.unit
@@ -311,6 +318,46 @@ async def test_fetch_weekly_statistics_preserves_hourly_data_when_daily_fetch_fa
         "statistics": {"sensor.energy": {"weekly_sum": 4.5}},
         "unsupported_entity_ids": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# detect_anomalies (now anomalies_from: a device above its own usual range)
+# ---------------------------------------------------------------------------
+
+_ANCHOR = scored_week_anchor(datetime(2026, 10, 19, 6, tzinfo=UTC))
+
+
+def _device_finding(kwh: float, history: list[float]) -> EnergyFinding:
+    metric = energy_metric("energy.device:sensor.hvac")
+    samples = {_ANCHOR - timedelta(days=7 * (i + 1)): v for i, v in enumerate(history)}
+    now = datetime(2026, 10, 12, 6, tzinfo=UTC)
+    (baseline,) = compute_baselines(metric, samples, as_of=_ANCHOR, now=now)
+    return EnergyFinding(
+        "energy.device:sensor.hvac",
+        "sensor.hvac",
+        "HVAC",
+        kwh,
+        score(metric, kwh, baseline, now=now),
+        baseline,
+    )
+
+
+def test_detect_anomalies():
+    """Thresholds still grade a device: inside its usual range none, above it anomaly, 2x high."""
+    steady = [20.0, 22.0, 21.0, 19.0, 23.0, 21.0]
+
+    assert anomalies_from([_device_finding(22.0, steady)]) == []
+    (anomaly,) = anomalies_from([_device_finding(30.0, steady)])
+    assert anomaly["severity"] == "anomaly"
+    (high,) = anomalies_from([_device_finding(50.0, steady)])
+    assert high["severity"] == "high"
+
+
+def test_detect_anomalies_edge_cases():
+    """No ready band -> no anomaly; a zero centre is skipped."""
+    assert anomalies_from([_device_finding(100.0, [])]) == []
+    assert anomalies_from([_device_finding(100.0, [10.0, 11.0])]) == []
+    assert anomalies_from([_device_finding(100.0, [0.0, 0.0, 0.0, 0.0, 0.0])]) == []
 
 
 # ---------------------------------------------------------------------------
