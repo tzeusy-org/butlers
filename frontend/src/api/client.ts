@@ -5322,10 +5322,35 @@ export function updateModelPriority(
   );
 }
 
+/**
+ * One verify-all probe's server-side budget: the 45s probe request plus the 5s readiness check
+ * (`DEFAULT_REQUEST_TIMEOUT_S` and `DEFAULT_READINESS_TIMEOUT_S` in
+ * `src/butlers/core/runtime_probe_control/client.py`).
+ */
+export const VERIFY_ALL_PROBE_BUDGET_MS = 50_000;
+
+/**
+ * The longest run of catalog models sharing one allowance account that a verify-all sweep is
+ * sized for. The server groups rows by `COALESCE(allowance_account, runtime_type)` and probes a
+ * group one row after another, so a sweep lasts as long as its longest group. The seeded catalog
+ * (`model_catalog_defaults.toml`, no allowance labels) has 8 enabled `codex` rows, 4 `opencode`
+ * and 2 `api`; `tests/api/test_verify_all_timeout_covers_seed_catalog.py` fails if a seed group
+ * outgrows this value. Raise it when a provider account ever carries more enabled models.
+ */
+export const VERIFY_ALL_MAX_SERIAL_PROBES = 8;
+
+/**
+ * How long the synchronous verify-all call waits: the server's worst case, probe budget times
+ * the longest serial group (400 seconds). The default 15s timeout showed a false timeout toast
+ * while the server kept probing.
+ */
+export const VERIFY_ALL_TIMEOUT_MS = VERIFY_ALL_PROBE_BUDGET_MS * VERIFY_ALL_MAX_SERIAL_PROBES;
+
 /** POST /api/settings/models/verify-all — re-verify every enabled model */
 export function verifyAllModels(): Promise<ApiResponse<VerifyAllResult>> {
   return apiFetch<ApiResponse<VerifyAllResult>>("/settings/models/verify-all", {
     method: "POST",
+    timeoutMs: VERIFY_ALL_TIMEOUT_MS,
   });
 }
 

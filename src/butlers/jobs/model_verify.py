@@ -61,9 +61,10 @@ async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     """Run one verify-all sweep against the shared credential pool.
 
     Returns a summary dict ``{total, ok, failed, unavailable}``, or ``None`` if no
-    shared pool is configured (mirrors ``run_secrets_lifecycle_check``'s
-    no-pool short-circuit). Never raises — a failure inside the verification
-    core is logged and swallowed so the loop is never killed by one bad tick.
+    shared pool is configured (mirrors ``run_secrets_lifecycle_check``'s no-pool
+    short-circuit) or another sweep holds the cross-process lock (the tick is skipped and
+    logged). Never raises — a failure inside the verification core is logged and swallowed
+    so the loop is never killed by one bad tick.
     """
     try:
         pool = db.credential_shared_pool()
@@ -74,9 +75,13 @@ async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     # Local import: avoids a module-import-time cycle between the jobs
     # package and the API router package (mirrors the local `deliver` import
     # pattern used throughout butlers.core.*_attention modules).
-    from butlers.api.routers.model_settings import run_verify_all_models
+    from butlers.api.routers.model_settings import VerifyAllAlreadyRunning, run_verify_all_models
 
-    result = await run_verify_all_models(pool, audit_actor=_AUDIT_ACTOR, caller=_CALLER)
+    try:
+        result = await run_verify_all_models(pool, audit_actor=_AUDIT_ACTOR, caller=_CALLER)
+    except VerifyAllAlreadyRunning:
+        logger.info("model_verify_sweep: another verify-all sweep is running; skipping this tick")
+        return None
     return {
         "total": result.total,
         "ok": result.ok,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -61,6 +61,13 @@ async def _run(monkeypatch, specs, *, fail_first: bool = False):
     client = _GatedClient(group_of, {rows[0]["id"]} if fail_first else None)
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)
+    # The sweep holds a Postgres advisory lock on one acquired connection (bu-3rd8wy).
+    lock_connection = AsyncMock()
+    lock_connection.fetchval = AsyncMock(return_value=True)
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=lock_connection)
+    acquired.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquired)
     monkeypatch.setattr(model_settings, "_probe_client", lambda caller: client)
     monkeypatch.setattr(model_settings.audit, "append", AsyncMock(return_value=1))
     result = await model_settings.run_verify_all_models(pool)
