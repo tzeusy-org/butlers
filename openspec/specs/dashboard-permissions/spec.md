@@ -89,6 +89,7 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **THEN** the resulting row in `public.permissions` is explicit (not inherited) and the matrix re-fetch shows the cell as foreground.
 
 ### Requirement: Runtime Permission Enforcement
+The runtime enforcer (`butlers.core.permissions.check_permission` / `require_permission`) SHALL treat an unreadable permission store as a denial for every caller (spawn, cross-butler routing, notify, email, calendar and Telegram effects). A readable store with no row for the pair SHALL remain default-allow, because that states only that the owner has not expressed an opinion.
 An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`.
 
 ID: REQ-dashboard-permissions-002
@@ -107,6 +108,19 @@ Scope: v1-mandatory
 #### Scenario: Effect paths refuse an unreadable store
 - **WHEN** an email, calendar or Telegram effect path checks its permission and the pool is missing, the read raises, or the row is malformed
 - **THEN** `require_permission` raises `PermissionUnavailable` before the external effect
+
+#### Scenario: Missing pool is denied
+- **WHEN** `check_permission` is called with no pool
+- **THEN** it returns `allowed=False`, `unavailable=True` and reason `permission store unavailable`
+- **AND** `require_permission` raises `PermissionUnavailable`
+
+#### Scenario: Failed lookup is denied
+- **WHEN** the `public.permissions` read raises, or returns a row whose `granted` is not a boolean or whose `reason` is neither text nor null
+- **THEN** `check_permission` returns `allowed=False`, `unavailable=True` and logs an error that carries no row contents or raw exception text
+
+#### Scenario: Missing row is default-allow
+- **WHEN** the read succeeds and returns no row for the butler and permission
+- **THEN** `check_permission` returns `allowed=True`, `explicit=False` and `unavailable=False`
 
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.

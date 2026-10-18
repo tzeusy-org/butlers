@@ -27,6 +27,9 @@ from butlers.core.spawner import Spawner
 from butlers.core.utils import generate_uuid7_string
 from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 from tests.daemon.test_route_execute_conversation_anchor import (
     _make_butler_toml,
     _NoopLeaseHeartbeat,

@@ -47,6 +47,9 @@ from butlers.core.spawner import (
     _build_env,
     _merge_tool_call_records,
 )
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytest_plugins = ("tests.core.spawner_fixtures",)
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]

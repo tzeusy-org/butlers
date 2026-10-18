@@ -111,6 +111,16 @@ from butlers.storage import S3BlobStore
 
 logger = logging.getLogger(__name__)
 
+_AUDIT_POOL_RETRY_INITIAL_S = 60.0
+_AUDIT_POOL_RETRY_MAX_S = 600.0
+
+
+def _monotonic() -> float:
+    """Clock seam for the registry-pool retry deadline, so tests patch it without touching
+    the event loop's own ``time.monotonic``."""
+    return time.monotonic()
+
+
 _MCP_SERVER_START_TIMEOUT_S = 5.0
 _MCP_SERVER_START_POLL_INTERVAL_S = 0.01
 
@@ -267,6 +277,11 @@ class ButlerDaemon:
         # Switchboard-schema pool (butler_registry) used by the scheduler loop to
         # gate scheduled dispatch on eligibility_state. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
+        # Retry state for a registry pool that failed at startup (see
+        # _resolve_eligibility_pool): monotonic deadline and the next backoff.
+        self._audit_pool_retry_at: float = 0.0
+        self._audit_pool_retry_task: asyncio.Task | None = None
+        self._audit_pool_backoff_s: float = _AUDIT_POOL_RETRY_INITIAL_S
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
         # Cached park -> Switchboard delivery boundary (bu-mda0r). Built once
@@ -810,6 +825,45 @@ class ButlerDaemon:
         )
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
+    def _resolve_eligibility_pool(self) -> asyncpg.Pool | None:
+        """Return the registry pool for the scheduler gate, retrying a failed startup.
+
+        While ``_audit_pool`` is ``None`` the scheduler gate stays closed (ticks are
+        skipped, ``next_run_at`` preserved). Past the backoff deadline one background
+        :meth:`_retry_audit_pool` is started; success is cached so the first tick after
+        recovery dispatches. The backoff doubles from 60 s to a 10 minute cap and
+        logs ERROR while the pool is unavailable.
+        """
+        if self._audit_pool is not None:
+            return self._audit_pool
+        task = self._audit_pool_retry_task
+        if (task is None or task.done()) and _monotonic() >= self._audit_pool_retry_at:
+            self._audit_pool_retry_task = asyncio.create_task(
+                self._retry_audit_pool(), name=f"audit-pool-retry-{self.config.name}"
+            )
+        return None
+
+    async def _retry_audit_pool(self) -> None:
+        pool = None
+        if self.db is not None and self.db.pool is not None:
+            try:
+                pool = await self._create_audit_pool(self.db.pool)
+            except Exception:
+                logger.exception("Registry pool retry failed for %s", self.config.name)
+        if pool is not None:
+            self._audit_pool = pool
+            self._audit_pool_backoff_s = _AUDIT_POOL_RETRY_INITIAL_S
+            logger.info("Registry pool recovered for %s; scheduler gate readable", self.config.name)
+            return
+        delay = self._audit_pool_backoff_s
+        self._audit_pool_retry_at = _monotonic() + delay
+        self._audit_pool_backoff_s = min(delay * 2, _AUDIT_POOL_RETRY_MAX_S)
+        logger.error(
+            "Registry pool unavailable for %s; scheduled ticks stay gated, retrying in %.0fs",
+            self.config.name,
+            delay,
+        )
+
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
 
@@ -1191,19 +1245,25 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
-        await _background.scheduler_loop(
-            pool=self.db.pool,
-            dispatch_fn=self._dispatch_scheduled_task,
-            interval=self.config.scheduler.tick_interval_seconds,
-            butler_name=self.config.name,
-            tick_fn=_tick,
-            get_switchboard_client=lambda: daemon.switchboard_client,
-            get_db=lambda: daemon.db,
-            prompt_hooks=runtime_context.prompt_hooks,
-            completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon._audit_pool,
-            default_timezone=runtime_context.default_timezone,
-        )
+        try:
+            await _background.scheduler_loop(
+                pool=self.db.pool,
+                dispatch_fn=self._dispatch_scheduled_task,
+                interval=self.config.scheduler.tick_interval_seconds,
+                butler_name=self.config.name,
+                tick_fn=_tick,
+                get_switchboard_client=lambda: daemon.switchboard_client,
+                get_db=lambda: daemon.db,
+                prompt_hooks=runtime_context.prompt_hooks,
+                completion_hooks=runtime_context.completion_hooks,
+                get_eligibility_pool=daemon._resolve_eligibility_pool,
+                require_eligibility_gate=True,
+                default_timezone=runtime_context.default_timezone,
+            )
+        finally:
+            retry = self._audit_pool_retry_task
+            if retry is not None and not retry.done():
+                retry.cancel()
 
     def _resolve_memory_module(self) -> Any | None:
         """Return the started memory module instance, or ``None``.
