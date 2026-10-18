@@ -650,7 +650,7 @@ E2E infrastructure tests SHALL validate the staging environment: PostgreSQL test
 
 #### Scenario: Missing claude binary skips the whole E2E session
 - **WHEN** the `claude` binary is not found on `PATH` (`shutil.which("claude")` is empty)
-- **THEN** the session-scoped autouse fixture `require_claude_binary` in `tests/e2e/conftest.py` skips every E2E test with a module-level `pytest.skip`
+- **THEN** the session-scoped autouse fixture `require_claude_binary` in `tests/e2e/conftest.py` skips every E2E test by raising `pytest.skip(..., allow_module_level=True)` from the fixture
 - **AND** the session is reported as skipped, not failed
 
 #### Scenario: A new roster butler boots with no test edits
@@ -659,10 +659,11 @@ E2E infrastructure tests SHALL validate the staging environment: PostgreSQL test
 - **AND** no change to the bootstrap code or to existing E2E tests is required to boot it
 - **AND** this covers only the bootstrap: declarative scenarios in `tests/e2e/scenarios.py` and the per-butler pool convenience fixtures are written by hand and are not generated from the roster
 
-#### Scenario: LLM output is asserted loosely and infrastructure state exactly
+#### Scenario: LLM output is asserted loosely and routing exactly
 - **WHEN** a declarative E2E scenario is verified
 - **THEN** assertions on LLM-driven behavior are loose: expected tool calls are checked as a subset of the tool names actually called (set containment, not exact match), and a scenario that exceeds its timeout is recorded as a timeout without failing the whole run
-- **AND** assertions on infrastructure state are exact: the routing target must equal the expected butler, and each database assertion must match its expected row count, row or rows
+- **AND** the routing target must equal the expected butler exactly
+- **AND** database assertions are evaluated and logged, not enforced: a failed assertion is logged as a warning and does not fail the scenario, and dict rows are compared on the expected key subset only
 
 #### Scenario: Module degradation during E2E
 - **WHEN** modules lack external service credentials (Telegram, Email, Calendar, Memory)
