@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
@@ -140,3 +141,13 @@ async def test_ordinary_failure_keeps_generic_error_and_flag_resets():
     # A later unrelated failure must not inherit the stall marker.
     await engine.record_failure(state_store=store, expected_state=state, expired_cursor=False)
     assert pool.conn.executes[-1][1][-1] == DEFAULT_FAILURE_ERROR
+
+
+async def test_entity_vanished_after_anchor_check_records_stall_error():
+    engine, pool, store, state, _ = _setup(["a"])
+    pool.fetchrow.return_value = {"local_entity_id": str(uuid.uuid4()), "live": True}
+    pool.fetchval = AsyncMock(return_value=None)
+    with pytest.raises(ContactsSyncError):
+        await engine(CanonicalContact(external_id="a"))
+    await engine.record_failure(state_store=store, expected_state=state, expired_cursor=False)
+    assert pool.conn.executes[-1][1][-1] == ANCHOR_STALL_ERROR
