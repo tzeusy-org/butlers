@@ -74,6 +74,7 @@ def _anomalous_work_balance() -> LaneBalance:
         baseline_seconds=8 * 3600,
         delta_seconds=-8 * 3600,
         baseline_sample_days=14,
+        state="below",
     )
 
 

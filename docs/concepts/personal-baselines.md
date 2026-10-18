@@ -28,5 +28,15 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
+## Chronicles lane balance (slice 5)
+
+The Chronicler `/balance` and `/trends` endpoints score each lane's day against the same scorer
+(`src/butlers/chronicler/balance.py`). The band is the median and MAD of the lane's per-day seconds over
+the lookback days before the scored day (28 by default); a materialized rollup day is an observed day,
+and a lane with fewer than seven of them reads `insufficient_history` with no center and no anomaly.
+The center is returned as `baseline_seconds`, with `state`, `band_low`, `band_high` and
+`baseline_sample_days` beside it. It computes per request and persists nothing. Session spend is not
+scored.
+
 Home energy, Finance spend and the dashboard band are later slices; see
 `openspec/changes/add-personal-baselines/proposal.md`.

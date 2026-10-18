@@ -11,4 +11,6 @@
 - [ ] 2.1 Slice 2: `metric_baseline_get`, Health baselines API, measurements-tab band.
 - [ ] 2.2 Slice 3: Home energy on the scorer.
 - [ ] 2.3 Slice 4: Finance anomaly detection and briefing on the scorer.
-- [ ] 2.4 Slice 5: chronicler balance lanes and session spend.
+- [x] 2.4 Slice 5: chronicler balance lanes on the scorer (bu-q7vx1q.80). Session spend is dropped: no
+  surface on main claims a session's spend is unusual, so there is nothing to score and a detector
+  would be a new measurement producer (a spec-first bead if the owner wants one).

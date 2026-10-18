@@ -6746,16 +6746,16 @@ export interface ChroniclerSourceStateRow {
 
 /**
  * One lane's balance for the target day, from GET /api/chronicler/balance.
- * Baseline is a trailing rolling-window mean over the same materialized
- * per-day rollups the backend's daily rollup job writes.
+ * Baseline is the owner's personal band (median and MAD over the lookback) of the same
+ * materialized per-day rollups the backend's daily rollup job writes.
  */
 export interface ChroniclerBalanceLaneRow {
   lane: string;
   seconds: number;
   /**
-   * Trailing rolling-window mean seconds for this lane, or null when there is
-   * no materialized rollup history yet within the lookback window — NOT the
-   * same as a real 0 baseline.
+   * Band center (median seconds) for this lane, or null when there is too
+   * little materialized rollup history in the lookback window — NOT the same
+   * as a real 0 baseline.
    */
   baseline_seconds: number | null;
   /** `seconds - baseline_seconds`. Null whenever `baseline_seconds` is null. */

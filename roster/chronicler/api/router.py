@@ -2016,8 +2016,8 @@ async def get_rollups(
 #
 # bu-jc6htw.2 (Chronicler IEA p9b, split from old p9 per eng-bar review).
 # Both endpoints read chronicler.daily_rollups (the same materialized
-# per-day/per-lane totals GET /rollups reads) and derive a trailing rolling
-# "usual" baseline via balance.compute_daily_balance — see balance.py's
+# per-day/per-lane totals GET /rollups reads) and derive the personal-baseline
+# "usual" band via balance.compute_daily_balance — see balance.py's
 # module docstring for why this does NOT depend on the separate memory
 # write-back loop (tasks.md S8, bu-93y4rt).
 
@@ -2056,10 +2056,11 @@ async def get_daily_balance(
     rolling baseline ("vs usual").
 
     ``date`` uses the same local-day semantics as ``GET /rollups``
-    (``rollups.DEFAULT_TIMEZONE``). The baseline is the trailing mean over
-    ``lookback_days`` materialized prior days for each lane — a lane with no
-    baseline history yet reports ``baseline_seconds=null`` rather than a
-    fabricated 0 (see ``BalanceLaneRow`` docstring).
+    (``rollups.DEFAULT_TIMEZONE``). The baseline is the owner's personal band
+    (median and MAD, ``butlers.core.baselines``) over the ``lookback_days``
+    prior days for each lane — a lane with too little history yet reports
+    ``state="insufficient_history"`` and ``baseline_seconds=null`` rather than
+    a fabricated 0 (see ``BalanceLaneRow`` docstring).
 
     Mirrors ``GET /rollups``'s three-state day status
     (``materialized``/``not_yet_materialized``/``unknown``) and the
@@ -2100,12 +2101,17 @@ async def get_daily_balance(
         lanes: list[BalanceLaneRow] = []
         if status == "materialized":
             day_seconds_by_lane = {r.lane: r.seconds for r in target_rows}
-            baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+            baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
             for r in baseline_rows:
-                baseline_seconds_by_lane[r.lane].append(r.seconds)
+                baseline_samples_by_lane[r.lane][r.local_date] = r.seconds
             dark_sources = _dark_sources_from_flags(target_flags)
 
-            for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+            for lb in compute_daily_balance(
+                day_seconds_by_lane,
+                baseline_samples_by_lane,
+                local_date=balance_date,
+                lookback_days=lookback_days,
+            ):
                 lanes.append(
                     BalanceLaneRow(
                         lane=lb.lane,
@@ -2113,6 +2119,9 @@ async def get_daily_balance(
                         baseline_seconds=lb.baseline_seconds,
                         delta_seconds=lb.delta_seconds,
                         baseline_sample_days=lb.baseline_sample_days,
+                        state=lb.state,
+                        band_low=lb.band_low,
+                        band_high=lb.band_high,
                         unavailable=bool(sources_for_lane(lb.lane) & dark_sources),
                     )
                 )
@@ -2154,11 +2163,11 @@ async def get_trends(
     """Return week/month-grained per-lane balance trends, streaks, and anomalies.
 
     Each day in the window gets the same vs-baseline treatment as
-    ``GET /balance`` (trailing ``lookback_days`` mean, ``feeder_dark``
-    cross-reference). ``streak_days`` is the trailing run of consecutive
+    ``GET /balance`` (personal band over the trailing ``lookback_days``,
+    ``feeder_dark`` cross-reference). ``streak_days`` is the trailing run of consecutive
     non-zero-activity days ending at ``end_date``. ``anomalies`` flags days
-    whose delta clears ``balance.is_lane_anomalous``'s thresholds — a day
-    needs a full-size baseline sample before it can be flagged, so the start
+    that fall outside the lane's personal band (``balance.is_lane_anomalous``)
+    — a lane needs enough baseline days before it can be scored, so the start
     of a rollup history never produces spurious anomalies.
     """
     if window not in _TRENDS_WINDOW_DAYS:
@@ -2226,16 +2235,21 @@ async def get_trends(
                 day_seconds_by_lane = {r.lane: r.seconds for r in day_rows}
                 baseline_start = current - timedelta(days=lookback_days)
                 baseline_end = current - timedelta(days=1)
-                baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+                baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
                 for d in range(lookback_days):
                     day_in_baseline = baseline_end - timedelta(days=d)
                     if day_in_baseline < baseline_start:
                         break
                     for r in rows_by_date.get(day_in_baseline, []):
-                        baseline_seconds_by_lane[r.lane].append(r.seconds)
+                        baseline_samples_by_lane[r.lane][day_in_baseline] = r.seconds
                 dark_sources = _dark_sources_from_flags(flags_by_date.get(current, []))
 
-                for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+                for lb in compute_daily_balance(
+                    day_seconds_by_lane,
+                    baseline_samples_by_lane,
+                    local_date=current,
+                    lookback_days=lookback_days,
+                ):
                     unavailable = bool(sources_for_lane(lb.lane) & dark_sources)
                     lane_series[lb.lane].append(
                         TrendLaneDay(
@@ -2244,6 +2258,7 @@ async def get_trends(
                             seconds=lb.seconds,
                             baseline_seconds=lb.baseline_seconds,
                             delta_seconds=lb.delta_seconds,
+                            state=lb.state,
                             unavailable=unavailable,
                         )
                     )
@@ -2256,7 +2271,7 @@ async def get_trends(
                                 seconds=lb.seconds,
                                 baseline_seconds=lb.baseline_seconds,
                                 delta_seconds=lb.delta_seconds,
-                                direction="spike" if lb.delta_seconds > 0 else "drop",
+                                direction="spike" if lb.state == "above" else "drop",
                             )
                         )
             else:

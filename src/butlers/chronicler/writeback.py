@@ -552,11 +552,18 @@ async def run_day_close_writeback(
 
     day_seconds_by_lane = {r.lane: r.seconds for r in day_rollups}
     baseline_by_lane: dict[str, list[int]] = {lane: [] for lane in LANES}
+    baseline_samples: dict[str, dict[date, int]] = {lane: {} for lane in LANES}
     for r in baseline_rollups:
         if r.lane in baseline_by_lane:
             baseline_by_lane[r.lane].append(r.seconds)
+            baseline_samples[r.lane][r.local_date] = r.seconds
 
-    balances = compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+    balances = compute_daily_balance(
+        day_seconds_by_lane,
+        baseline_samples,
+        local_date=day_date,
+        lookback_days=baseline_lookback_days,
+    )
 
     insights = synthesize_lane_skew_insights(day_date, balances)
     sleep_window = [*baseline_by_lane.get("sleep", []), day_seconds_by_lane.get("sleep", 0)]

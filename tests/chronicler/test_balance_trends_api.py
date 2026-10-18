@@ -124,11 +124,10 @@ async def test_balance_not_yet_materialized_day_returns_empty_lanes(
 async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    rollups = [
-        _rollup(date(2026, 7, 5), "sleep", 25200),
-        _rollup(date(2026, 6, 20), "sleep", 28800),
-        _rollup(date(2026, 6, 21), "sleep", 30600),
-    ]
+    rollups = [_rollup(date(2026, 7, 5), "sleep", 25200)]
+    # Seven prior days: enough history for a personal band (median 28800).
+    for i, seconds in enumerate([28800, 30600, 28800, 30600, 28800, 30600, 28800], start=1):
+        rollups.append(_rollup(date(2026, 7, 5) - timedelta(days=i), "sleep", seconds))
     app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     assert resp.status_code == 200
@@ -139,9 +138,9 @@ async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_kee
 
     sleep = lanes_by_name["sleep"]
     assert sleep["seconds"] == 25200
-    assert sleep["baseline_seconds"] == pytest.approx(29700.0)
-    assert sleep["delta_seconds"] == pytest.approx(25200 - 29700.0)
-    assert sleep["baseline_sample_days"] == 2
+    assert sleep["baseline_seconds"] == pytest.approx(28800.0)
+    assert sleep["delta_seconds"] == pytest.approx(25200 - 28800.0)
+    assert sleep["baseline_sample_days"] == 7
 
     # No activity today, but baseline history exists -> zero with context.
     work = lanes_by_name["work"]

@@ -640,22 +640,30 @@ class RollupsResponse(BaseModel):
 class BalanceLaneRow(BaseModel):
     """One lane's balance for the target day, from GET /api/chronicler/balance.
 
-    Baseline is a trailing rolling-window mean over ``chronicler.daily_rollups``
-    (see ``balance.compute_daily_balance``) — the same materialized per-day
-    totals ``GET /api/chronicler/rollups`` reads, so this surface can never
-    diverge from the rollup numbers a client already renders elsewhere.
+    Baseline is the owner's personal band (median and MAD over the lookback
+    window, ``butlers.core.baselines``) of ``chronicler.daily_rollups`` (see
+    ``balance.compute_daily_balance``) — the same materialized per-day totals
+    ``GET /api/chronicler/rollups`` reads, so this surface can never diverge
+    from the rollup numbers a client already renders elsewhere.
     """
 
     lane: str
     seconds: int = 0
     baseline_seconds: float | None = None
-    """Trailing rolling-window mean seconds for this lane, or null when there
-    is no materialized rollup history yet within the lookback window — not
+    """The band center (median seconds) for this lane, or null when the lane
+    has too little materialized rollup history in the lookback window — not
     the same as a real 0 baseline."""
     delta_seconds: float | None = None
     """``seconds - baseline_seconds``. Null whenever ``baseline_seconds`` is
     null."""
     baseline_sample_days: int = 0
+    """Prior materialized days the band rests on (``n_observed``)."""
+    state: str = "insufficient_history"
+    """``within`` / ``above`` / ``below`` / ``insufficient_history`` — what
+    the day can honestly be called against the band."""
+    band_low: float | None = None
+    band_high: float | None = None
+    """The usual range in seconds; null unless the band is ready."""
     unavailable: bool = False
     """True when a source contributing to this lane is ``feeder_dark`` for
     the target day (mirrors ``RollupLaneRow.unavailable``) — render this as
@@ -698,6 +706,8 @@ class TrendLaneDay(BaseModel):
     seconds: int = 0
     baseline_seconds: float | None = None
     delta_seconds: float | None = None
+    state: str | None = None
+    """``BalanceLaneRow.state`` for a materialized day; null otherwise."""
     unavailable: bool = False
     """See ``BalanceLaneRow.unavailable`` — same feeder_dark cross-reference,
     evaluated per day."""
@@ -718,9 +728,9 @@ class TrendLaneSeries(BaseModel):
 class TrendAnomaly(BaseModel):
     """One day where a lane's total deviated sharply from its baseline.
 
-    Flagged by ``balance.is_lane_anomalous`` — requires both a minimum
-    baseline sample size and a delta clearing an absolute-and-relative
-    threshold, so early-history noise never produces a fabricated anomaly.
+    Flagged by ``balance.is_lane_anomalous`` — the day falls outside the lane's
+    personal band, and a lane needs enough baseline days to have one, so
+    early-history noise never produces a fabricated anomaly.
     """
 
     lane: str
@@ -729,7 +739,7 @@ class TrendAnomaly(BaseModel):
     baseline_seconds: float
     delta_seconds: float
     direction: str
-    """``"spike"`` when seconds > baseline, ``"drop"`` when seconds < baseline."""
+    """``"spike"`` when above the band, ``"drop"`` when below it."""
 
 
 class TrendsResponse(BaseModel):
