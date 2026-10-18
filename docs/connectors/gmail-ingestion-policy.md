@@ -138,6 +138,13 @@ apply. If the snapshot is not loaded the rule stays in force and the drop keeps 
 classification. WhatsApp and Drive apply the rule as written until they carry a known-contact
 signal (bu-q7vx1q.42).
 
+The connector also sends the classification to the Switchboard as `control.known_contact` (only
+when the snapshot is loaded) so a flagged global `skip` rule is passed over there as well; an absent
+value leaves the rule in force. The classification comes from the raw `From` header with no SPF,
+DKIM or DMARC check (Gmail filters upstream), so a forged known-contact `From` on a domain without
+DMARC enforcement can bypass an "except people I know" rule, whether it matches on content, header
+or label. The impact is ingestion only: it grants no action authority.
+
 ## Metrics
 
 `src/butlers/connectors/gmail_policy.py` emits `butlers_connector_gmail_tier_assigned_total`

@@ -568,6 +568,9 @@ class IngestionRuleTestEnvelope(BaseModel):
     headers: dict[str, str] = {}
     mime_parts: list[str] = []
     raw_key: str = ""
+    known_contact: bool | None = None
+    """Optional: pretend the sender is (``true``) or is not (``false``) a known contact, to try
+    a rule's "except people I know" option. Omitted means unclassified, so the rule applies."""
 
 
 class IngestionRuleTestRequest(BaseModel):

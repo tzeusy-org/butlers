@@ -93,7 +93,7 @@ Scope: v1-mandatory
 
 ### Requirement: Block and skip rules may except people the owner knows
 
-A `block` or `skip` ingestion rule SHALL accept an optional per-rule boolean `except_known_contacts`, stored in the rule's condition and absent unless true. The Switchboard rule API SHALL persist and return it and SHALL refuse it with 422 on any other action, including when an action change would strand it. The policy evaluator SHALL pass over a matching rule that carries it only when the envelope's `known_contact` is `true`, and SHALL continue evaluating later rules. `known_contact` SHALL be `true` or `false` only from a loaded known-contact snapshot and `None` otherwise: a stranger, an unclassified sender and an unflagged rule SHALL keep today's behavior, so unknown classification leaves the rule in force and the drop keeps its unknown classification. The option SHALL default off, SHALL change no existing rule, and SHALL add no known-contact source and no global floor. The Gmail connector SHALL set `known_contact` from the snapshot it already uses for the known-contact marker; other connectors apply the rule as written until they supply the signal.
+A `block` or `skip` ingestion rule SHALL accept an optional per-rule boolean `except_known_contacts`, stored in the rule's condition and absent unless true. The Switchboard rule API SHALL persist and return it and SHALL refuse it with 422 on any other action, including when an action change would strand it. The policy evaluator SHALL pass over a matching rule that carries it only when the envelope's `known_contact` is `true`, and SHALL continue evaluating later rules. `known_contact` SHALL be `true` or `false` only from a loaded known-contact snapshot and `None` otherwise: a stranger, an unclassified sender and an unflagged rule SHALL keep today's behavior, so unknown classification leaves the rule in force and the drop keeps its unknown classification. The option SHALL default off, SHALL change no existing rule, and SHALL add no known-contact source and no global floor. The Gmail connector SHALL set `known_contact` from the snapshot it already uses for the known-contact marker; other connectors apply the rule as written until they supply the signal. The connector SHALL also send the classification as the boolean `control.known_contact` on the `ingest.v1` envelope, only when the snapshot is loaded, and the Switchboard SHALL read it into the envelope it evaluates against global rules, so a flagged global `skip` rule is passed over too; an absent or non-boolean value SHALL leave the rule in force. `known_contact` is taken from the raw `From` header with no SPF, DKIM or DMARC check, and Gmail filters upstream: a forged known-contact `From` on a domain without DMARC enforcement can bypass an `except_known_contacts` rule, whether it matches on content, header or label. The impact is ingestion only and grants no action authority.
 
 ID: REQ-ingestion-policy-004
 Source: bu-q7vx1q.88.3; bu-q7vx1q.4 move #4 slice S3; surface-known-contact-drops proposal deferred slices
@@ -109,6 +109,12 @@ Scope: v1-mandatory
 - **WHEN** the rule is unflagged, the sender is not a known contact, or the snapshot is not loaded
 - **THEN** the rule applies as written
 - **AND** a drop with an unloaded snapshot keeps its unknown classification
+
+#### Scenario: The classification reaches the Switchboard's global rules
+
+- **WHEN** a known contact's message matches a flagged global `skip` rule and the envelope carries `control.known_contact: true`
+- **THEN** the Switchboard SHALL pass the rule over
+- **AND** an envelope without the field, or with `false`, SHALL still be skipped
 
 #### Scenario: The option is only valid on block and skip
 

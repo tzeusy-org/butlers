@@ -2997,6 +2997,7 @@ async def test_ingestion_rule(
         headers=body.envelope.headers,
         mime_parts=body.envelope.mime_parts,
         raw_key=body.envelope.raw_key,
+        known_contact=body.envelope.known_contact,
     )
 
     decision = evaluator.evaluate(envelope)
