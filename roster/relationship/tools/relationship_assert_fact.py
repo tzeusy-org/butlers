@@ -804,9 +804,11 @@ async def _lock_fact_entities(
     with another writer. The subject and, for ``object_kind='entity'``, the
     object entity are locked; a missing entity row simply locks nothing.
 
-    Locking is all this does. A write that waits for a merge still proceeds
-    against the tombstoned source afterwards (``metadata.merged_into``); whether
-    the writer should refuse or follow the merge is bu-gm93xc.
+    Locking is all this does. A write that waited for a merge is refused by
+    :func:`butlers.tools.relationship.fact_authority.locked_report` once the
+    lock is held: it re-reads ``metadata.merged_into`` on the subject and an
+    entity object and raises ``EntityTombstonedError`` rather than follow the
+    merge (bu-gm93xc).
 
     Retract/verify-only paths write no FK column and take no entity lock, so
     they cannot join the cycle. Must run inside the caller's transaction.
@@ -1104,6 +1106,7 @@ async def _upsert_fact(
         object=object,
         object_kind=object_kind,
         src=src,
+        refuse_tombstoned=True,
     )
     if predicate in IDENTITY_PREDICATES:
         from butlers.tools.relationship.identity_slots import lock_identity_slot
@@ -2463,6 +2466,7 @@ async def assert_prefers_channel(
             object=channel,
             object_kind="literal",
             src=src,
+            refuse_tombstoned=True,
         )
         from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
 
