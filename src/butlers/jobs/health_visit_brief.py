@@ -127,19 +127,23 @@ _SERIES: tuple[_Series, ...] = (
     ),
 )
 
-# Appointments on Health's calendar: timed, non-cancelled events the owner has not declined, on
-# the butler-specific calendar source whose ``butler_name`` is ``health``. That covers an
-# appointment Health booked (``calendar_create_event`` titles it ``BUTLER: ...`` and marks it
-# butler-generated) and one the owner added to that calendar. Health's own scheduled-task and
-# reminder mirrors are also butler-generated but carry no ``BUTLER:`` title, so they are
-# excluded. Every other calendar source (primary, shared, subscribed) triggers nothing in S1.
-# A recurring series contributes its instances. ``event_id`` is the key the brief is recorded
-# under.
+# Appointments Health booked: timed, non-cancelled events the owner has not declined, on the
+# butler-specific calendar source whose ``butler_name`` is ``health``. That source is the one
+# Butlers calendar every calendar butler shares, so a booking is identified structurally by
+# Health's own ``calendar_action_log`` row (``workspace_user_create``, applied,
+# ``origin_ref`` = the provider event id). That row exists only for events Health booked, so
+# other butlers' bookings, Health's schedule and reminder mirrors, and owner-added events
+# trigger nothing, and it survives an owner renaming the event. Every other calendar source
+# (primary, shared, subscribed) triggers nothing in S1. A recurring series contributes its
+# instances. ``event_id`` is the key the brief is recorded under.
 _SOURCE_AND_KIND = """
           AND cs.butler_name = 'health'
           AND COALESCE(cs.metadata->>'butler_specific', 'false') = 'true'
-          AND (COALESCE(ce.metadata->>'butler_generated', 'false') <> 'true'
-               OR upper(left(ce.title, 7)) = 'BUTLER:')
+          AND EXISTS (
+              SELECT 1 FROM calendar_action_log al
+              WHERE al.action_type = 'workspace_user_create'
+                AND al.action_status = 'applied'
+                AND al.origin_ref = ce.origin_ref)
           AND NOT EXISTS (
               SELECT 1 FROM jsonb_array_elements(
                   CASE WHEN jsonb_typeof(ce.metadata->'attendees') = 'array'
@@ -458,10 +462,10 @@ async def _trend_lines(
                     f"no baseline yet ({baseline.n_observed} days of readings before this period)"
                 )
             elif baseline.center is not None and baseline.dispersion is not None:
+                low, high = baseline.band  # the range the verdict itself uses
                 baseline_text = (
-                    f"usual {baseline.center:.{series.decimals}f} {unit} "
-                    f"(+/- {baseline.dispersion:.{series.decimals}f}), latest is "
-                    f"{deviation.state.value} it"
+                    f"usual range {low:.{series.decimals}f} to "
+                    f"{high:.{series.decimals}f} {unit}, latest is {deviation.state.value} it"
                 )
             baseline_info = {
                 "state": deviation.state.value,
