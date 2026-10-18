@@ -125,12 +125,30 @@ def test_a_landed_request_alone_admits_nothing_once_its_owner_moves(tmp_path):
 
 
 def test_a_landed_request_with_edited_authority_bytes_is_still_reproven(tmp_path):
-    """bu-vdgxlp: only byte-identical landed authority is skipped; an edit is refused as before."""
-    root, base, trusted, _ = _evolve_again(tmp_path)
+    """bu-vdgxlp: only byte-identical landed authority is skipped; an edit is refused as before.
+
+    The candidate-only request is removed so the landed pair is the only authority in play; with
+    it present the changed-authorization sweep would refuse first and hide the predicate.
+    """
+    root, base, trusted, request_path = _evolve_again(tmp_path)
+    request_path.unlink()
     authorization = root / "tests/contract-evolution-authorizations/example-change.json"
     authorization.write_text(authorization.read_text().replace("Owner", "Someone"))
     _commit_all(root, "candidate edits the landed authorization")
     output = tmp_path / "proofs"
     output.mkdir()
     with pytest.raises(ledger.EvidenceError, match="changed-protected-contract-authority"):
+        ledger.verify(root, base, [], contract_directory=output, trusted=trusted)
+
+
+def test_a_landed_request_with_edited_request_bytes_is_still_reproven(tmp_path):
+    """bu-vdgxlp: an edited landed request is re-proven against the new base and refused."""
+    root, base, trusted, request_path = _evolve_again(tmp_path)
+    request_path.unlink()
+    landed = root / "tests/contract-evolution-requests/example.json"
+    landed.write_text(landed.read_text().replace('"timeout_s": 60', '"timeout_s": 61'))
+    _commit_all(root, "candidate edits the landed request")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError, match="stale-or-unchanged-authorized-contract"):
         ledger.verify(root, base, [], contract_directory=output, trusted=trusted)

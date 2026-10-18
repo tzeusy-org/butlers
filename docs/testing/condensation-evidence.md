@@ -373,11 +373,13 @@ instead of re-proving it, only from bytes committed at the trusted parent:
   compared; ordinary CI runs the owners against them. The owners are then admitted
   without a fresh proof and without holding the candidate's unrelated delta to the
   request. If the request or authorization is candidate-only or edited, the
-  ordinary fresh proof applies and refuses as before. If the request and
+  ordinary fresh proof applies: a valid fresh request is admitted by it, an
+  invalid or stale one refuses as before. If the request and
   authorization are byte-identical at the trusted parent but the candidate touched
   another compared input (`_landed_bytes_unchanged`), the landed request is skipped:
   it is not re-proven against the newer base and it admits nothing. The owners'
-  current losses then need a candidate-only request, otherwise the ledger refuses
+  current losses must then be admitted by another source: a candidate-only fresh
+  request, a condensation ledger, or a retirement. Otherwise the ledger refuses
   `unproven-test-or-assertion-loss` (bu-vdgxlp; governed by REQ-testing-053).
 - Retirement: when every manifest owner is already absent from the trusted parent
   and the candidate (`_retired_in_public_history`), the base owner hash and the
