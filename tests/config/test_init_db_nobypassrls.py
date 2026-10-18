@@ -63,37 +63,36 @@ def test_every_normal_role_normalization_in_init_db_strips_bypassrls():
     assert missing == []
 
 
-def _fake_connection(bypassing_role: str | None) -> MagicMock:
+def _identity_connection() -> MagicMock:
     connection = MagicMock()
-    seen: list[dict] = []
 
     def execute(statement, params=None):
-        sql = str(statement)
         result = MagicMock()
-        if "rolsuper FROM" in sql:
+        if "rolsuper FROM" in str(statement):
             result.one.return_value = ("butlers", False)
-        elif "rolbypassrls" in sql:
-            seen.append(params)
-            result.scalar_one_or_none.return_value = bypassing_role
         return result
 
     connection.execute.side_effect = execute
-    connection.seen = seen
     return connection
 
 
-def test_prerequisite_refuses_naming_a_normal_role_that_still_bypasses_rls(monkeypatch):
-    monkeypatch.setattr(prereq, "_true", lambda *_args, **_kwargs: True)
-    connection = _fake_connection("butler_health_rw")
-    with pytest.raises(BootstrapPrerequisiteError, match="butler_health_rw.*BYPASSRLS"):
-        prereq.check_bootstrap_connection(connection)
+def _recording_true(monkeypatch, base_profile_result: bool) -> list[tuple[str, dict]]:
+    calls: list[tuple[str, dict]] = []
+
+    def fake_true(_connection, sql, params=None):
+        calls.append((sql, params or {}))
+        return base_profile_result if sql is prereq._BASE_PROFILE else True
+
+    monkeypatch.setattr(prereq, "_true", fake_true)
+    return calls
 
 
-def test_prerequisite_checks_the_normal_roles_and_passes_when_none_bypass(monkeypatch):
-    monkeypatch.setattr(prereq, "_true", lambda *_args, **_kwargs: True)
-    connection = _fake_connection(None)
-    prereq.check_bootstrap_connection(connection)
-    (params,) = connection.seen
+def test_base_profile_covers_bypassrls_for_the_migration_login_and_normal_roles(monkeypatch):
+    calls = _recording_true(monkeypatch, True)
+    prereq.check_bootstrap_connection(_identity_connection())
+    (base,) = [(sql, params) for sql, params in calls if sql is prereq._BASE_PROFILE]
+    sql, params = base
+    assert "bypassing.rolbypassrls" in sql
     assert params["migration_role"] == "butlers"
     assert {
         "butler_health_rw",
@@ -102,6 +101,12 @@ def test_prerequisite_checks_the_normal_roles_and_passes_when_none_bypass(monkey
         "dashboard_auth_api",
         "restore_drill_executor",
     } <= set(params["normal_roles"])
+
+
+def test_prerequisite_refuses_when_the_base_profile_finds_a_bypassing_role(monkeypatch):
+    _recording_true(monkeypatch, False)
+    with pytest.raises(BootstrapPrerequisiteError, match="missing or untrusted"):
+        prereq.check_bootstrap_connection(_identity_connection())
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +193,7 @@ def test_prerequisite_refuses_a_bypassing_role_until_bootstrap_is_rerun(bootstra
     check_bootstrap_database(db_url)
 
     _set_bypass(bootstrap_url, ("butler_health_rw",))
-    with pytest.raises(BootstrapPrerequisiteError, match="butler_health_rw"):
+    with pytest.raises(BootstrapPrerequisiteError, match="missing or untrusted"):
         check_bootstrap_database(db_url)
 
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)

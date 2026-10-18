@@ -141,19 +141,14 @@ AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'dashboard_auth_ap
     AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls)
 AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'butler_calendar_rw'
     AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication))
-"""
-
-# Forced row-level security (the DND boundary, PR #3729) only binds roles that do not
-# bypass it. The managed bootstrap strips BYPASSRLS from every normal role it
-# normalizes; a role that still has it was never bootstrapped or was re-granted.
-# Only fixed bootstrap names and the actual migration login are ever reported.
-_NORMAL_BYPASSRLS_ROLES = """
-SELECT role.rolname FROM pg_catalog.pg_roles AS role
-WHERE role.rolbypassrls
-  AND (role.rolname = :migration_role
-       OR role.rolname = ANY(CAST(:normal_roles AS pg_catalog.text[])))
-ORDER BY role.rolname
-LIMIT 1
+-- Forced row-level security (the DND boundary, PR #3729) only binds roles that do not
+-- bypass it. The managed bootstrap strips BYPASSRLS from every normal role it
+-- normalizes; a role that still has it was never bootstrapped or was re-granted.
+AND NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles AS bypassing
+    WHERE bypassing.rolbypassrls
+      AND (bypassing.rolname = :migration_role
+           OR bypassing.rolname = ANY(CAST(:normal_roles AS pg_catalog.text[]))))
 """
 _RESTORE_DRILL_ROLES = (
     "restore_drill_executor",
@@ -390,20 +385,12 @@ def check_bootstrap_connection(connection: Connection) -> None:
                 + [{"role": "connector_writer", "schema": "connectors"}]
             ),
             "defaults": json.dumps(_default_profile()),
+            "normal_roles": _normal_roles(),
         }
         if not _true(connection, _BASE_PROFILE, params) or not _true(
             connection, _DEFAULT_ACLS, params
         ):
             raise BootstrapPrerequisiteError("missing or untrusted")
-        bypassing = connection.execute(
-            text(_NORMAL_BYPASSRLS_ROLES),
-            {
-                "migration_role": migration_role,
-                "normal_roles": _normal_roles(),
-            },
-        ).scalar_one_or_none()
-        if bypassing is not None:
-            raise BootstrapPrerequisiteError(f"found normal role {bypassing} with BYPASSRLS")
         for admin, filename in _ADMINS:
             if _true(connection, _INSTALLED[admin]):
                 valid = _true(connection, _finalized_predicate(filename), params)

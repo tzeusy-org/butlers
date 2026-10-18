@@ -315,7 +315,7 @@ LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the dis
 maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
 (the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
 and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
-row-level security binds them; online migration admission refuses, naming the role,
+row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
 if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or

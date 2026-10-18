@@ -202,7 +202,7 @@ Scope: v1-mandatory
 #### Scenario: Normal roles end bootstrap without BYPASSRLS
 - **WHEN** a normal runtime, connector or migration role already exists with `BYPASSRLS` and the managed bootstrap runs
 - **THEN** the role ends `NOBYPASSRLS` and a rerun changes nothing, so the forced-RLS DND boundary again filters that role's direct DML
-- **AND** until the bootstrap is rerun, online admission refuses with a bounded prerequisite error naming the role, and passes once the role is normalized
+- **AND** until the bootstrap is rerun, online admission refuses with a bounded "missing or untrusted" prerequisite error, and passes once the role is normalized
 
 #### Scenario: Partial bootstrap and misleading objects do not satisfy admission
 - **WHEN** required managed catalog entries are absent or have wrong ownership, signatures, definer mode, pinned search path, membership or required privileges, including a caller-owned lookalike, a temporary/catalog shadow, or a caller-writable completion marker
