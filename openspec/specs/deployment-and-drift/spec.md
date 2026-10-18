@@ -230,6 +230,21 @@ re-run at any point in the pipeline.
 - **AND** a failed deploy is therefore always visible in the ledger — never
   silently absent
 
+#### Scenario: A Helm release is recorded as a deploy attempt, success or failure
+
+- **WHEN** `make deploy-<env>` (or `make ship-<env>`) runs a Helm release of
+  `deploy/helm/butlers`
+- **THEN** it appends exactly one `public.deployments` row with `source:
+  "deploy"` and `serving_mode: "image"`, written by `butlers deployments
+  record` inside the `dashboard-api` pod so no database credential leaves the
+  cluster
+- **AND** the row has `result: "success"` only after both `dashboard-api` and
+  `butlers-up` rollouts finished, and `result: "failed"` when `helm upgrade`
+  or either rollout failed
+- **AND** the target exits with the release's own status; an unreachable pod
+  prints that no row was recorded and a failed write after a successful release
+  only warns, so a failed release is never reported as success
+
 #### Scenario: The migration_head read resolves the core chain from a schema that tracks it
 
 - **WHEN** the `butlers deploy` verb reads `migration_head` for a ledger row

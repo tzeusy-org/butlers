@@ -31,10 +31,9 @@ secrets-%:
 image-%:
 	../../../scripts/k8s/build-push.sh $*
 
+# Wrapped so each release leaves one public.deployments row (success or failed).
 deploy-%:
-	helm upgrade --install $(RELEASE_NAME) . --create-namespace $(call helm_args,$*)
-	kubectl -n $(NAMESPACE_$*) rollout status deploy/dashboard-api --timeout=10m
-	kubectl -n $(NAMESPACE_$*) rollout status deploy/butlers-up --timeout=10m
+	../../../scripts/k8s/record-deploy.sh $(NAMESPACE_$*) $(TAG) $(RELEASE_NAME) -- $(call helm_args,$*)
 
 # Build + push images for the current commit, then deploy them. Migrations run
 # in dashboard-api's initContainer on every rollout. Run under `bws run`.

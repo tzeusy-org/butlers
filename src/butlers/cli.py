@@ -366,6 +366,68 @@ def deploy(
 
 
 @cli.group()
+def deployments() -> None:
+    """Deployment ledger commands."""
+
+
+@deployments.command("record")
+@click.option(
+    "--source",
+    type=click.Choice(["deploy"]),
+    required=True,
+    help="Ledger source; only 'deploy' (a Helm release) is recorded by this verb",
+)
+@click.option(
+    "--result",
+    type=click.Choice(["success", "failed"]),
+    required=True,
+    help="Outcome of the release (success only after both rollouts finished)",
+)
+@click.option(
+    "--git-sha",
+    default=None,
+    help="Released git SHA; defaults to this process's GIT_SHA (the pod's image tag)",
+)
+def deployments_record(source: str, result: str, git_sha: str | None) -> None:
+    """Append one deploy row to public.deployments.
+
+    Run inside the dashboard-api pod (``kubectl exec``), which already holds the
+    database credentials, so none leave the cluster. Exits non-zero when the row
+    could not be written.
+    """
+    try:
+        row_id = asyncio.run(_record_deploy_row(source=source, result=result, git_sha=git_sha))
+    except Exception as exc:
+        click.echo(f"Failed to record deployment: {type(exc).__name__}: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Recorded deployment {row_id} (source={source}, result={result})")
+
+
+async def _record_deploy_row(*, source: str, result: str, git_sha: str | None) -> str:
+    """Write one image-served ``source='deploy'`` ledger row and return its id."""
+    from butlers.core.deploy import _make_pool
+    from butlers.core.deployments import (
+        record_deployment,
+        resolve_core_migration_head,
+        resolve_git_sha,
+    )
+
+    pool = await _make_pool()
+    try:
+        return await record_deployment(
+            pool,
+            git_sha=git_sha or resolve_git_sha(),
+            migration_head=await resolve_core_migration_head(pool),
+            result=result,
+            source=source,
+            serving_mode="image",
+            serving_worktree=None,
+        )
+    finally:
+        await pool.close()
+
+
+@cli.group()
 def db() -> None:
     """Database management commands."""
 
