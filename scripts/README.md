@@ -261,7 +261,7 @@ omitted from this human command index; they are not maintainer entry points.
 | Script | Purpose and invocation boundary |
 | --- | --- |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | Ratchets prohibited em dashes in doctrine and roster prose; frontend user-facing copy is enforced separately by ESLint. Use `make check-em-dashes` or the script while editing the scanned prose. |
-| [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | Confirms archived OpenSpec requirements reached their canonical specs; run as the archived-requirements CI guard. |
+| [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | Confirms archived OpenSpec requirements reached their canonical specs, honouring the reviewed renamed-capability map in `archived-capability-homes.json` (a row whose target spec is missing fails closed); run as the archived-requirements CI guard. |
 | [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | Confirms requirement IDs cited by tests resolve to a live or active definition; run as the cited-requirements CI guard. |
 | [`check_countable_tasks.py`](check_countable_tasks.py) | Fails when an unarchived change's tasks cannot be counted by the archive gate; use `make check-countable-tasks` before archival work. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | Finds module-level Python definitions that would silently shadow each other after a merge; use `make check-duplicate-names` as the local or CI duplicate-name guard. |

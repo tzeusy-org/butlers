@@ -3,6 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-03-24
 **Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session dispatch and spawner triggers; daemon lifecycle and scheduler phases remain).
+Governing doctrine: [vision.md rule 4, the daemon is deterministic infrastructure](../../heart-and-soul/vision.md#non-negotiable-rules) and [architecture.md, The Butler-as-Daemon Model](../../heart-and-soul/architecture.md#the-butler-as-daemon-model), which this RFC realizes as the startup, trigger and shutdown contract.
 
 ## Summary
 

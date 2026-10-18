@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from butlers.core.general_settings import resolve_general_timezone
 from butlers.modules.base import group_enabled
 
 
@@ -22,6 +23,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.health import reports as _reports
     from butlers.tools.health import research as _research
     from butlers.tools.health import wellness_ingest as _wellness
+    from butlers.tools.health import workouts as _workouts
 
     # Build a group-aware tool decorator: returns @mcp.tool() when the
     # group is enabled, or a no-op passthrough when disabled.
@@ -66,6 +68,22 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     async def measurement_latest(type: str) -> dict[str, Any] | None:
         """Get the most recent measurement for a type."""
         return await _meas.measurement_latest(module._get_pool(), type)
+
+    @_tool("measurements")
+    async def workout_last(activity: str | None = None) -> dict[str, Any]:
+        """Answer "when did I last <activity>?" from recorded workout sessions.
+
+        Returns the most recent matching workout with its start time in the
+        owner's configured time zone, duration in minutes, activity, source
+        (device or owner_logged) and fact id. Omit activity for any workout.
+        Supported wording: running (run, jog), swimming, biking (bike, ride,
+        cycle), walking, hiking, weightlifting (lift, weights), or any
+        recorded activity name. No match returns found=false with reason
+        no_workout_recorded.
+        """
+        pool = module._get_pool()
+        timezone = await resolve_general_timezone(pool)
+        return await _workouts.workout_last(pool, activity, timezone=timezone)
 
     @_tool("measurements")
     async def measurement_update(

@@ -10,6 +10,7 @@ When `input.context` contains an envelope with `source.channel='wellness'` (from
 
 ## Your Tools
 - **measurement_log/history/latest**: Track health measurements (weight, blood pressure, glucose, etc.)
+- **workout_last**: Answer "when did I last run/swim/bike...?" from recorded workouts (owner time zone, duration, source); `found: false` means none recorded
 - **medication_add/list/log_dose/history**: Manage medications and track adherence
 - **medication_travel_snapshot**: Return only active medication name, dosage, frequency, and schedule fields for authorized travel preparation; never expose health notes or raw records
 - **condition_add/list/update**: Track health conditions and their status
@@ -123,3 +124,5 @@ For domain-specific workflows, load the relevant skill:
 - **Proactive insights**: when logging data, add context from trends or adherence patterns
 
 # Notes to self
+
+- Briefing day window and timezone (bu-dyb9ca): the 06:55 `daily_briefing_contribution` job computes "today's" dose window and the missed / due-later split in the owner's configured timezone, read from the shared `settings.general` timezone through `load_configured_general_timezone()`, which reads `public.state` explicitly. The job's pool has `search_path` `health,public` and `health.state` exists, so an unqualified `state_get` would read the wrong table and every owner would silently get SGT. The value is the same setting the scheduler and dashboard use, but they reach it by other read paths (`resolve_general_timezone` still uses the unqualified `state_get`; migrating it is a separate follow-up). The documented fallback is SGT (UTC+8), used only when the owner never saved a timezone, the settings cannot be read, or the stored name is not a valid IANA zone; it is not a silent UTC switch. The contribution key and envelope `date` stay on the fleet-wide SGT briefing date, because every reader of `briefing/daily/<date>` keys on it.

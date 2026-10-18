@@ -1731,6 +1731,43 @@ async def ingestion_dropped_known_summary(
     return {"dropped": int(row["dropped"]), "episodes": int(row["episodes"])}
 
 
+async def ingestion_dropped_known_episodes(
+    pool: asyncpg.Pool, *, from_dt: datetime, to_dt: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Group unanswered known-contact drops by ``(filter_reason, sender_identity)``.
+
+    Same marker, open statuses and window semantics as
+    :func:`ingestion_dropped_known_summary`; each row is one episode with its drop
+    ``count`` and the first/last ``received_at``. Raises on database failure.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT filter_reason, sender_identity, count(*) AS dropped,
+               min(received_at) AS first_received_at, max(received_at) AS last_received_at
+        FROM connectors.filtered_events
+        WHERE received_at >= $1
+          AND received_at <= $3
+          AND status = ANY($2::text[])
+          AND full_payload #>> '{drop_context,important_dropped}' = 'true'
+        GROUP BY filter_reason, sender_identity
+        ORDER BY filter_reason, sender_identity
+        """,
+        from_dt,
+        _DROPPED_KNOWN_OPEN_STATUSES,
+        to_dt or datetime.now(UTC),
+    )
+    return [
+        {
+            "filter_reason": row["filter_reason"],
+            "sender_identity": row["sender_identity"],
+            "count": int(row["dropped"]),
+            "first_received_at": row["first_received_at"],
+            "last_received_at": row["last_received_at"],
+        }
+        for row in rows
+    ]
+
+
 async def ingestion_classification_uncertainty(
     pool: asyncpg.Pool,
     *,

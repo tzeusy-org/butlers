@@ -571,6 +571,26 @@ def _already_landed(
     return True
 
 
+def _landed_bytes_unchanged(
+    root: Path, trusted: str, path: str, request: dict, request_record: dict
+) -> bool:
+    """True when the trusted parent carries this exact request and authorization bytes.
+
+    Unlike :func:`_already_landed` this does not look at the owners or contracts, so it stays
+    true after a candidate moves something the request covers. Such a request is public
+    history, not a claim: it can no longer be re-proven against the new base and it admits
+    nothing by itself.
+    """
+    try:
+        if record_at(root, trusted, path) != {k: request_record[k] for k in ("mode", "sha256")}:
+            return False
+        name = AUTHORIZATIONS + request["authorization"] + ".json"
+        authority_record = record_at(root, trusted, name)
+        return authority_record is not None and current_record(root, name) == authority_record
+    except (ledger.EvidenceError, KeyError, TypeError, ValueError, UnicodeError, AttributeError):
+        return False
+
+
 def fresh_accounts(
     root: Path, base: str, trusted: str, losses: dict, directory: Path, *, reports=None
 ) -> set[str]:
@@ -592,6 +612,12 @@ def fresh_accounts(
             if admitted & set(request["owners"]):
                 raise ledger.EvidenceError("duplicate-contract-owner-account")
             admitted.update(request["owners"])
+            continue
+        if trusted is not None and _landed_bytes_unchanged(
+            root, trusted, path, request, request_record
+        ):
+            # Landed, but the candidate touched an owner or contract it covers. Do not re-prove
+            # it and do not admit its owners: their current losses need a candidate-only request.
             continue
         started = time.monotonic()
         with bounded(request["timeout_s"]):
