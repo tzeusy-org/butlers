@@ -22,9 +22,11 @@ capabilities. Their stored text SHALL carry the invoking goal's taint stamp, so
 a draft or proposal built from captured third-party content stays tainted. Owner
 confirmation makes a revision the preparation target but does not clear taint:
 a revision confirmed through a goal's approved call keeps that goal's taint
-stamp. Only an owner-authored revision, one the owner enters or edits on the
-owner surface and writes through an owner-origin dashboard call
-(REQ-capability-authorization-007), is untainted. Both confirmation paths
+stamp. Only an owner-authored revision is untainted: clauses the owner enters on the
+owner surface, or edits starting from an owner-authored revision, written
+through an owner-origin dashboard call (REQ-capability-authorization-007).
+Editing a goal-drafted revision is an RFC 0021 edit of that goal's stored call
+and keeps its lineage and taint. Both confirmation paths
 exist: a goal-drafted revision is confirmed through a parked effect, and an
 owner-authored revision is confirmed by the owner's own submit, which is the
 server-recorded per-event approval. Confirming a revision is an owner decision
@@ -78,9 +80,14 @@ Scope: v1-mandatory
 - **AND** after confirmation through that goal's approved call the revision keeps the taint stamp
 
 #### Scenario: An owner-authored revision is untainted
-- **WHEN** the owner enters or edits clauses on the owner surface and submits them
+- **WHEN** the owner enters clauses on the owner surface, or edits an owner-authored revision, and submits them
 - **THEN** the owner-origin dashboard call writes the revision untainted and the submit is the per-event approval
 - **AND** no goal is involved
+
+#### Scenario: Editing a goal-drafted revision does not launder it
+- **WHEN** the owner edits a revision that a goal drafted
+- **THEN** the edit is an RFC 0021 edit of that goal's stored call and the revision keeps the goal's lineage and taint
+- **AND** a trivial dashboard edit never makes the exposed goal's text untainted
 
 ### Requirement: [TARGET-STATE] Evidence coverage uses source-owned version and read authority
 
