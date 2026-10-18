@@ -61,8 +61,12 @@ MUST NOT use runtime coercion for invalid or legacy-shaped evidence.
 
 When the gate parks a pending action, the module SHALL emit exactly one
 deterministic, templated owner notification through the standard delivery plane
-(`notify.v1` envelope with `intent = "approval_request"`), rendering the
-decision dossier and the action's expiry. The push MUST be deterministic daemon
+(`notify.v1` envelope with `intent = "approval_request"`), rendering the exact
+stored call (recipients and content from the stored `tool_args` through the
+per-tool preview registry), the model-written decision dossier as labelled
+claims, and the action's expiry. The push MUST offer Approve and Reject only
+when the whole stored call is shown within the card budget; otherwise it offers
+Open only. The push MUST be deterministic daemon
 infrastructure — no LLM session composes it. Push delivery MUST respect the
 approvals quiet-hours policy by deferring (not dropping) the push, MUST NOT
 re-push for the same action on retries or edits, and MUST collapse bursts: when
@@ -73,8 +77,10 @@ window are replaced by a single digest message with a dashboard deep link.
 
 - **WHEN** a gated call parks as a pending action outside quiet hours
 - **THEN** exactly one `approval_request` notification targeting the owner is
-  submitted for delivery, containing the tool name, `why`, blast radius,
-  reversibility, and expiry
+  submitted for delivery, containing the stored call's recipients and content
+  (or, when it cannot be shown whole, the tool name and an Open-only notice),
+  the `why`, blast radius and reversibility as labelled assistant claims, and
+  expiry
 - **AND** subsequent lifecycle events for that action (retry, edit, decision)
   emit no further approval-request push
 
