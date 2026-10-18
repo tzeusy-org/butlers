@@ -188,6 +188,11 @@ async def test_dispatch_qa_gate_rejections():
         ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
         patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.dispatch.get_recent_attempt",
             new_callable=AsyncMock,
             return_value={"status": "failed"},
@@ -212,6 +217,11 @@ async def test_dispatch_qa_gate_rejections():
             return_value=(uuid.uuid4(), True),
         ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch(
             "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),
@@ -372,6 +382,11 @@ async def test_dispatch_qa_success_and_never_raises():
             return_value=(attempt_id, True),
         ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch(
             "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),

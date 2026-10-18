@@ -74,6 +74,7 @@ from butlers.core.healing.tracking import (
     create_dispatch_event,
     create_or_join_attempt,
     delete_orphaned_attempt,
+    get_publication_hold,
     get_recent_attempt,
     record_phase_session,
     update_attempt_status,
@@ -3608,9 +3609,20 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         # Gate 7: Cooldown gate
         # ---------------------------------------------------------------
-        recent = await get_recent_attempt(pool, fp, config.cooldown_minutes)
-        if recent is not None:
-            logger.debug("QA dispatch skipped: cooldown active for fingerprint=%s", fp[:12])
+        # An unresolved publication outlives the cooldown window, so it is checked
+        # explicitly and never inferred from the (expired) attempt window.
+        publication_held = await get_publication_hold(pool, fp)
+        recent = (
+            None
+            if publication_held
+            else await get_recent_attempt(pool, fp, config.cooldown_minutes)
+        )
+        if publication_held or recent is not None:
+            logger.debug(
+                "QA dispatch skipped: %s for fingerprint=%s",
+                "publication hold" if publication_held else "cooldown active",
+                fp[:12],
+            )
             await delete_orphaned_attempt(pool, attempt_id)
             try:
                 await update_finding_dedup_reason(pool, finding_id, "cooldown")

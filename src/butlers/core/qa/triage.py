@@ -25,7 +25,11 @@ from dataclasses import dataclass, field
 
 import asyncpg
 
-from butlers.core.healing.tracking import get_active_attempt, get_recent_attempt
+from butlers.core.healing.tracking import (
+    get_active_attempt,
+    get_publication_hold,
+    get_recent_attempt,
+)
 from butlers.core.qa.dismissals import is_dismissed
 from butlers.core.qa.findings import insert_finding
 from butlers.core.qa.models import QaFinding
@@ -211,17 +215,20 @@ async def triage_findings(
         # Gate 3: Cooldown check
         # ------------------------------------------------------------------
         if dedup_reason is None:
-            recent = await get_recent_attempt(pool, fp, cooldown_minutes)
-            if recent is not None:
-                # A lineage held by an ambiguous publication outlives the window.
-                dedup_reason = (
-                    "publication_held" if recent.get("publication_held") is True else "cooldown"
-                )
-                logger.debug(
-                    "Triage: dedup fingerprint=%s reason=cooldown closed_at=%s",
-                    fp[:12],
-                    recent.get("closed_at"),
-                )
+            # A lineage held by an ambiguous publication outlives the window, so the
+            # hold is checked explicitly, not inferred from the attempt lookup.
+            if await get_publication_hold(pool, fp):
+                dedup_reason = "publication_held"
+                logger.debug("Triage: dedup fingerprint=%s reason=publication_held", fp[:12])
+            else:
+                recent = await get_recent_attempt(pool, fp, cooldown_minutes)
+                if recent is not None:
+                    dedup_reason = "cooldown"
+                    logger.debug(
+                        "Triage: dedup fingerprint=%s reason=cooldown closed_at=%s",
+                        fp[:12],
+                        recent.get("closed_at"),
+                    )
 
         # ------------------------------------------------------------------
         # Persist the finding

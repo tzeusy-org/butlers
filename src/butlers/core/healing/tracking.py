@@ -516,9 +516,9 @@ async def get_recent_attempt(
     """Return the most recent terminal attempt for *fingerprint* closed within the window.
 
     Used for cooldown gate checks: prevents re-investigating an error that was
-    recently resolved (or failed) within *window_minutes*.  A lineage held by an
-    unresolved publication is returned as ``{"publication_held": True, ...}``
-    regardless of the window, so cooldown expiry never releases it.
+    recently resolved (or failed) within *window_minutes*.  It reports only the real
+    attempt: a lineage held by an unresolved publication outlives the window, so the
+    cooldown/dedup gates ask :func:`get_publication_hold` explicitly beside this call.
 
     Parameters
     ----------
@@ -534,11 +534,6 @@ async def get_recent_attempt(
     HealingAttemptRow or None
         The most recently closed terminal attempt, or None if none exists.
     """
-    if await get_publication_hold(pool, fingerprint):
-        # An unresolved publication outlives the cooldown window: report it as
-        # the blocking record so every cooldown gate treats the lineage as held.
-        return {"publication_held": True, "fingerprint": fingerprint}
-
     row = await pool.fetchrow(
         """
         SELECT *

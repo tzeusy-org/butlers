@@ -50,6 +50,7 @@ from butlers.core.healing.tracking import (
     create_or_join_attempt,
     delete_orphaned_attempt,
     get_attempt,
+    get_publication_hold,
     get_recent_attempt,
     get_recent_terminal_statuses,
     record_phase_session,
@@ -1174,10 +1175,18 @@ async def dispatch_healing(
         # -------------------------------------------------------------------
         # Gate 7: Cooldown gate
         # -------------------------------------------------------------------
-        recent = await get_recent_attempt(pool, fp.fingerprint, config.cooldown_minutes)
-        if recent is not None:
+        # An unresolved publication outlives the cooldown window, so it is checked
+        # explicitly and never inferred from the (expired) attempt window.
+        publication_held = await get_publication_hold(pool, fp.fingerprint)
+        recent = (
+            None
+            if publication_held
+            else await get_recent_attempt(pool, fp.fingerprint, config.cooldown_minutes)
+        )
+        if publication_held or recent is not None:
             logger.debug(
-                "Healing dispatch skipped: cooldown active for fingerprint=%s",
+                "Healing dispatch skipped: %s for fingerprint=%s",
+                "publication hold" if publication_held else "cooldown active",
                 fp.fingerprint[:12],
             )
             await delete_orphaned_attempt(pool, attempt_id)

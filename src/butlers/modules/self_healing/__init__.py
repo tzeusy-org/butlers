@@ -17,7 +17,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.core.healing import get_active_attempt, get_recent_attempt, list_attempts
+from butlers.core.healing import (
+    get_active_attempt,
+    get_publication_hold,
+    get_recent_attempt,
+    list_attempts,
+)
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 
@@ -343,7 +348,10 @@ class SelfHealingModule(Module):
             }
 
         if fingerprint:
-            # Return the most recent attempt for this specific fingerprint
+            # Return the most recent attempt for this specific fingerprint, plus whether
+            # an unresolved QA publication holds the lineage (reported separately: the
+            # hold never replaces the real attempt).
+            publication_held = await get_publication_hold(self._pool, fingerprint)
             attempt = await get_recent_attempt(
                 self._pool,
                 fingerprint,
@@ -355,10 +363,12 @@ class SelfHealingModule(Module):
             if attempt is None:
                 return {
                     "attempts": [],
+                    "publication_held": publication_held,
                     "message": f"No healing attempts found for fingerprint {fingerprint[:12]}",
                 }
             return {
                 "attempts": [_serialize_attempt(attempt)],
+                "publication_held": publication_held,
                 "message": "Found healing attempt",
             }
 

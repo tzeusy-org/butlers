@@ -268,6 +268,11 @@ async def test_flagged_event_emitted_for_novel_finding_after_attempt_claim() -> 
         ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
         patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.dispatch.get_recent_attempt",
             new_callable=AsyncMock,
             return_value=None,
