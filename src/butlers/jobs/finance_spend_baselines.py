@@ -17,15 +17,14 @@ bought only now and then stays ``insufficient_history`` instead of being called 
 
 No LLM and no cross-schema read.
 
-Measurability is deliberately not judged through the expected-signal tri-state. That evaluation
-needs the band's samples to come from stored rows written by one identifiable connector producer
-(``source`` and ``source_endpoint_identity``) and a consumer that could read that producer's
-silence as "normal". Transactions carry neither: they arrive from several sources (bank sync,
-email, manual entry, imports) with no producer identity column, so every band would fail closed
-as ``producer_unknown`` and stay unmeasurable for good. Bands are therefore scored as measurable,
-and the honesty the tri-state would add is carried by what is here instead: ``min_n`` and
-coverage (``insufficient_history``), the 14-day staleness rule, and consumers that surface
-above-band claims only. Nothing here ever says spending is "normal" or "within range".
+Measurability is deliberately not judged through the expected-signal tri-state. Transactions
+carry a server-attested ``expected_signal_source`` per row, but a category's weeks usually mix
+producers (owner entries, imports, the Gmail connector), so most bands would resolve no single
+producer and read unmeasurable. More to the point, no consumer here can read a silent producer as
+"normal": the scan and the briefing surface only above-band claims, so missing rows can only
+suppress a claim, never create one. Bands are therefore scored as measurable, and ``min_n``,
+coverage (``insufficient_history``), the 14-day staleness rule and the above-only consumers carry
+the honesty instead. Nothing here ever says spending is "normal" or "within range".
 """
 
 from __future__ import annotations

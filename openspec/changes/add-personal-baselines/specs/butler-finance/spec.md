@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Finance Memory Taxonomy
-The finance butler SHALL use a merchant-centric memory taxonomy with financial predicates including analytics-specific predicates.
+The finance butler SHALL use a merchant-centric memory taxonomy with financial predicates including analytics-specific predicates. Spending baselines SHALL NOT be stored as memory facts: category spend baselines live in `metric_baselines` (personal baselines) and merchant baselines are computed inline.
 
 #### Scenario: Memory classification
 - **WHEN** the finance butler extracts facts
@@ -9,5 +9,3 @@ The finance butler SHALL use a merchant-centric memory taxonomy with financial p
 - **AND** merchant category mappings SHALL be stored in `finance.merchant_mappings` (dedicated table), NOT as memory facts
 - **AND** budget targets SHALL be stored in `finance.budgets` (dedicated table), NOT as memory facts
 - **AND** account balance snapshots SHALL be stored in `finance.balance_snapshots` (dedicated table), NOT as memory facts
-
-Spending baselines SHALL NOT be stored as memory facts: category spend baselines live in `metric_baselines` (personal baselines) and merchant baselines are computed inline.
