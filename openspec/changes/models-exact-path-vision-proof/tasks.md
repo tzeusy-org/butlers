@@ -14,6 +14,6 @@
 - [ ] 3.2 Independently reconcile every adopted outcome, source receipt and separately authorized operational receipt; no all-disabled/source-only completion.
 
 ## 4. Amendment 1 adoption (RFC 0036 / D18)
-- [ ] 4.1 Owner adopts or declines Amendment 1. Decline returns the program to commissioning a new executor review or stopping it.
-- [ ] 4.2 Before adoption, re-check `generalist-lead-focused-delegation` still defines model functions as in RFC 0038 D18 and that no active change edits the same `models-vision-proof`, `model-catalog` "Model Catalog Capability Envelope" or "Fit Before Ranking" blocks.
+- [ ] 4.1 Owner adopts or declines Amendment 1 (proposal.md owner questions). Adopting replaces the generalist ledger row's owner-goal disposition; declining keeps that row and returns the program to commissioning a new executor review or stopping it.
+- [ ] 4.2 Before adoption, re-check the `generalist-lead-focused-delegation` ledger (`collision-dispositions.md`, `models-exact-path-vision-proof` row) still carries the corrected D18 model-function disposition and that change still defines model functions and the runtime-adapter tool-less mode as in RFC 0038 D18, and that no active change edits the same `models-vision-proof`, `model-catalog` "Model Catalog Capability Envelope" or "Fit Before Ranking" blocks.
 - [ ] 4.3 After adoption, update `docs/runtime/model-routing.md` (vision paragraph) to the model-function description.

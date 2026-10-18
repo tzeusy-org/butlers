@@ -34,7 +34,7 @@ Scope: v1-mandatory
 #### Scenario: Vision capability requires exact-path evidence
 - **WHEN** a catalog row declares `capabilities.vision = true`
 - **THEN** the declaration is backed by an end-to-end probe of that exact `runtime_type`, `model_id`, runtime/CLI version, and account path
-- **AND** the probe proves the exact model reads an inline image on that tuple by requiring an answer available only from the image bytes, not from prompt text or attachment metadata, through a tool-less single-turn structured-output model function (RFC 0038 D18); MCP image delivery is pinned separately by the existing `attachment_view` wire-shape tests
+- **AND** the probe proves the exact model reads an inline image on that tuple by requiring an answer available only from the image bytes, not from prompt text or attachment metadata, through the runtime adapter's tool-less single-turn structured-output model-function mode (RFC 0038 D18); the server-side `attachment_view` wire shape is pinned separately by existing tests, and runtime-side forwarding of an MCP image block into inference is an accepted unproven residual, not evidence
 - **AND** a text-only model verification, model-brand claim, direct `attachment_view()` unit test, or adapter-wide capability assumption is insufficient evidence
 - **AND** rows without that evidence retain unknown vision support and remain excluded from image-bearing external dispatches
 
