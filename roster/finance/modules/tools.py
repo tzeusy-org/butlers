@@ -259,6 +259,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         metadata: str | None = None,
         autopay: bool | None = None,
         predicted: bool | None = None,
+        payment_destination: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a bill obligation.
 
@@ -287,9 +288,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         predicted: Set true only for pattern-based predictions tracked as bills.
             Prefer NOT tracking predictions (predict_bills is read-only); this keeps
             any that are tracked out of the actionable list. Omit to leave unchanged.
+        payment_destination: The account number, IBAN or payment handle the bill asks
+            the owner to pay, exactly as the bill shows it. Pass it whenever the bill
+            states one. It is fingerprinted and never stored, logged or returned; the
+            bill is stamped with destination_verdict: "known", "new_for_counterparty"
+            (a different destination than this payee's earlier bills; tell the owner
+            and suggest confirming by phone before paying) or "unverifiable" (first
+            destination seen for this payee, or it could not be checked). Omit when
+            the bill shows no destination.
 
         Returns: {id, payee, amount, currency, due_date, frequency, status, autopay,
-            predicted, ...}
+            predicted, destination_verdict, ...}
         """
         return await _bills.track_bill(
             module._get_pool(),
@@ -308,6 +317,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             metadata=_parse_metadata(metadata),
             autopay=autopay,
             predicted=predicted,
+            payment_destination=payment_destination,
         )
 
     @_tool("bills")
