@@ -1,6 +1,6 @@
 """Tests for butlers.jobs.home — run_energy_digest and helpers.
 
-Covers _is_energy_entity, _compute_device_totals, detect_anomalies,
+Covers _is_energy_entity, _compute_device_totals,
 _build_digest_message, run_energy_digest, and daemon registry.
 """
 
@@ -18,7 +18,6 @@ from butlers.jobs.home import (
     _compute_device_totals,
     _fetch_weekly_statistics,
     _is_energy_entity,
-    detect_anomalies,
     run_energy_digest,
 )
 
@@ -30,7 +29,6 @@ def _make_pool(
     snapshot_count=5,
     snapshot_rows=None,
     state_rows=None,
-    facts_rows=None,
     ha_status="healthy",
 ) -> Any:
     pool = MagicMock()
@@ -43,8 +41,6 @@ def _make_pool(
         q = query.lower()
         if "ha_entity_snapshot" in q:
             return [r for r in (snapshot_rows or [])]
-        if "facts" in q and "energy_baseline" in q:
-            return [r for r in (facts_rows or [])]
         return []
 
     async def _fetchrow(query, *args, **kwargs):
@@ -75,21 +71,19 @@ def _make_energy_row(entity_id, state="10.5", friendly_name=None) -> dict:
     return {"entity_id": entity_id, "state": state, "attributes": attrs}
 
 
-def _make_totals(items):
-    total = sum(kwh for _, kwh in items)
-    return [
-        {
-            "entity_id": eid,
-            "friendly_name": eid,
-            "weekly_kwh": kwh,
-            "share_pct": kwh / total * 100 if total > 0 else 0.0,
-        }
-        for eid, kwh in items
-    ]
+def _finding(key, entity_id, name, kwh, history):
+    """A scored finding from a real baseline over ``history`` weekly values."""
+    from datetime import date, timedelta
 
+    from butlers.core.baselines import compute_baselines, score
+    from butlers.jobs.home_baselines import EnergyFinding, energy_metric
 
-def _make_baselines(items):
-    return {eid: {"content": f"{kwh:.1f} kWh weekly baseline"} for eid, kwh in items}
+    metric = energy_metric(key)
+    as_of = date(2026, 10, 12)
+    samples = {as_of - timedelta(days=7 * (i + 1)): v for i, v in enumerate(history)}
+    now = datetime(2026, 10, 12, 6, tzinfo=UTC)
+    (baseline,) = compute_baselines(metric, samples, as_of=as_of, now=now)
+    return EnergyFinding(key, entity_id, name, kwh, score(metric, kwh, baseline, now=now), baseline)
 
 
 # ---------------------------------------------------------------------------
@@ -320,37 +314,6 @@ async def test_fetch_weekly_statistics_preserves_hourly_data_when_daily_fetch_fa
 
 
 # ---------------------------------------------------------------------------
-# detect_anomalies
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "weekly_kwh, baseline_kwh, expected_count, expected_severity",
-    [
-        (50.0, 45.0, 0, None),  # below threshold → no anomaly
-        (60.0, 50.0, 1, "anomaly"),  # at 20% threshold → anomaly
-        (100.0, 50.0, 1, "high"),  # at 100% threshold → high
-    ],
-)
-def test_detect_anomalies(weekly_kwh, baseline_kwh, expected_count, expected_severity):
-    """detect_anomalies classifies anomalies at correct thresholds."""
-    totals = _make_totals([("sensor.hvac", weekly_kwh)])
-    baselines = _make_baselines([("sensor.hvac", baseline_kwh)])
-    result = detect_anomalies(totals, baselines, anomaly_pct=20.0, high_severity_pct=100.0)
-    assert len(result) == expected_count
-    if expected_severity:
-        assert result[0]["severity"] == expected_severity
-
-
-def test_detect_anomalies_edge_cases():
-    """No baseline → no anomaly; zero baseline → skipped."""
-    totals = _make_totals([("sensor.hvac", 100.0)])
-    assert detect_anomalies(totals, {}, anomaly_pct=20.0, high_severity_pct=100.0) == []
-    baselines_zero = {"sensor.hvac": {"content": "0 kWh weekly baseline"}}
-    assert detect_anomalies(totals, baselines_zero, anomaly_pct=20.0, high_severity_pct=100.0) == []
-
-
-# ---------------------------------------------------------------------------
 # _build_digest_message
 # ---------------------------------------------------------------------------
 
@@ -425,15 +388,28 @@ async def test_run_energy_digest_full_run_with_anomalies():
         },
         "unsupported_entity_ids": [],
     }
-    baselines = {
-        "sensor.hvac_energy": {"content": "50.0 kWh weekly baseline"},
-        "sensor.water_heater_energy": {"content": "100.0 kWh weekly baseline"},
-    }
+    findings = [
+        _finding("energy.total", None, "House total", 320.0, [150.0] * 6),
+        _finding(
+            "energy.device:sensor.hvac_energy",
+            "sensor.hvac_energy",
+            "HVAC Energy",
+            120.0,
+            [50.0] * 6,
+        ),
+        _finding(
+            "energy.device:sensor.water_heater_energy",
+            "sensor.water_heater_energy",
+            "Water Heater",
+            200.0,
+            [100.0] * 6,
+        ),
+    ]
 
     with (
         patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch(
-            "butlers.credential_store.resolve_owner_entity_info",
+            "butlers.jobs.home.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="token_value",
         ),
@@ -443,14 +419,14 @@ async def test_run_energy_digest_full_run_with_anomalies():
             return_value=weekly_stats,
         ),
         patch(
-            "butlers.jobs.home._load_energy_baselines",
+            "butlers.jobs.home.fetch_weekly_history",
             new_callable=AsyncMock,
-            return_value=baselines,
+            return_value={},
         ),
         patch(
-            "butlers.jobs.home._load_energy_thresholds",
+            "butlers.jobs.home.score_energy_week",
             new_callable=AsyncMock,
-            return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
+            return_value=(findings, True),
         ),
         patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
     ):
@@ -459,7 +435,10 @@ async def test_run_energy_digest_full_run_with_anomalies():
     assert "error" not in result
     assert result["total_kwh"] == pytest.approx(320.0, abs=0.1)
     assert result["devices_ranked"] == 2 and result["anomalies_found"] == 2
-    assert mock_store.await_count == 5
+    assert result["baseline_updated"] is True
+    # Only the two spike facts: the prose energy_baseline facts are no longer written.
+    assert mock_store.await_count == 2
+    assert {call.kwargs["predicate"] for call in mock_store.await_args_list} == {"energy_spike"}
     assert all(call.kwargs["source_butler"] == "home" for call in mock_store.await_args_list)
 
 
@@ -489,9 +468,9 @@ async def test_run_energy_digest_rejects_all_unsupported_statistics():
             },
         ),
         patch(
-            "butlers.jobs.home._load_energy_baselines",
+            "butlers.jobs.home.score_energy_week",
             new_callable=AsyncMock,
-        ) as mock_load_baselines,
+        ) as mock_score,
         patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
     ):
         result = await run_energy_digest(pool, None)
@@ -503,7 +482,7 @@ async def test_run_energy_digest_rejects_all_unsupported_statistics():
     notification = mock_notify.await_args.args[1]
     assert "cumulative-energy statistics" in notification
     assert "energy helper" in notification
-    mock_load_baselines.assert_not_awaited()
+    mock_score.assert_not_awaited()
     mock_store.assert_not_awaited()
 
 
@@ -534,15 +513,9 @@ async def test_run_energy_digest_mixed_statistics_is_visibly_partial():
             },
         ),
         patch(
-            "butlers.jobs.home._load_energy_baselines",
+            "butlers.jobs.home.score_energy_week",
             new_callable=AsyncMock,
-            return_value={},
-        ) as mock_load_baselines,
-        patch(
-            "butlers.jobs.home._load_energy_thresholds",
-            new_callable=AsyncMock,
-            return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
-        ),
+        ) as mock_score,
         patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
     ):
         result = await run_energy_digest(pool, None)
@@ -561,7 +534,7 @@ async def test_run_energy_digest_mixed_statistics_is_visibly_partial():
     assert "Total:" not in notification
     assert "vs baseline" not in notification
     assert "%" not in notification
-    mock_load_baselines.assert_not_awaited()
+    mock_score.assert_not_awaited()
     assert all(call.kwargs["subject"] != "overall" for call in mock_store.await_args_list)
 
 
