@@ -218,7 +218,7 @@ BEGIN
     -- dashboard/runtime processes. It must never retain a privileged recovery
     -- capability that could bypass the isolated executor boundary.
     EXECUTE format(
-        'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB NOBYPASSRLS',
         _migration_user
     );
 
@@ -247,7 +247,7 @@ BEGIN
         -- every cluster-level privilege while preserving their LOGIN and
         -- INHERIT semantics and the migration user's explicit memberships.
         EXECUTE format(
-            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB NOBYPASSRLS',
             _role
         );
     END LOOP;
@@ -257,7 +257,7 @@ BEGIN
     -- it remains a normal login with no cluster-level recovery capability.
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _optional_calendar_role) THEN
         EXECUTE format(
-            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB NOBYPASSRLS',
             _optional_calendar_role
         );
     END IF;
@@ -275,7 +275,7 @@ BEGIN
     -- Preserve the provisioner's LOGIN/CREATEDB attributes on re-runs while
     -- continuously repairing the remaining least-privilege attributes.
     EXECUTE format(
-        'ALTER ROLE %I NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION',
+        'ALTER ROLE %I NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS',
         _restore_drill_executor_role
     );
 
@@ -290,7 +290,7 @@ BEGIN
         RAISE NOTICE 'Created restore-drill interface owner "%"', _restore_drill_executor_owner_role;
     END IF;
     EXECUTE format(
-        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB NOBYPASSRLS',
         _restore_drill_executor_owner_role
     );
     -- The public-audit projection uses a second, purpose-bound NOLOGIN owner.
@@ -304,7 +304,7 @@ BEGIN
         RAISE NOTICE 'Created restore-drill audit projection writer "%"', _restore_drill_audit_writer_role;
     END IF;
     EXECUTE format(
-        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB NOBYPASSRLS',
         _restore_drill_audit_writer_role
     );
     EXECUTE format(

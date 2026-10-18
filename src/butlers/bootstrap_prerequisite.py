@@ -143,6 +143,24 @@ AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'butler_calend
     AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication))
 """
 
+# Forced row-level security (the DND boundary, PR #3729) only binds roles that do not
+# bypass it. The managed bootstrap strips BYPASSRLS from every normal role it
+# normalizes; a role that still has it was never bootstrapped or was re-granted.
+# Only fixed bootstrap names and the actual migration login are ever reported.
+_NORMAL_BYPASSRLS_ROLES = """
+SELECT role.rolname FROM pg_catalog.pg_roles AS role
+WHERE role.rolbypassrls
+  AND (role.rolname = :migration_role
+       OR role.rolname = ANY(CAST(:normal_roles AS pg_catalog.text[])))
+ORDER BY role.rolname
+LIMIT 1
+"""
+_RESTORE_DRILL_ROLES = (
+    "restore_drill_executor",
+    "restore_drill_executor_owner",
+    "restore_drill_executor_audit_writer",
+)
+
 _DEFAULT_ACLS = """
 WITH required AS (
     SELECT * FROM pg_catalog.jsonb_to_recordset(CAST(:defaults AS pg_catalog.jsonb))
@@ -320,6 +338,14 @@ def _default_profile() -> list[dict[str, str]]:
     return result
 
 
+def _normal_roles() -> list[str]:
+    return (
+        [f"butler_{s}_rw" for s in _BUTLERS]
+        + ["connector_writer", "butler_calendar_rw", "dashboard_auth_api"]
+        + list(_RESTORE_DRILL_ROLES)
+    )
+
+
 def check_bootstrap_connection(connection: Connection) -> None:
     """Inspect this actual connection before online migration side effects.
 
@@ -369,6 +395,15 @@ def check_bootstrap_connection(connection: Connection) -> None:
             connection, _DEFAULT_ACLS, params
         ):
             raise BootstrapPrerequisiteError("missing or untrusted")
+        bypassing = connection.execute(
+            text(_NORMAL_BYPASSRLS_ROLES),
+            {
+                "migration_role": migration_role,
+                "normal_roles": _normal_roles(),
+            },
+        ).scalar_one_or_none()
+        if bypassing is not None:
+            raise BootstrapPrerequisiteError(f"found normal role {bypassing} with BYPASSRLS")
         for admin, filename in _ADMINS:
             if _true(connection, _INSTALLED[admin]):
                 valid = _true(connection, _finalized_predicate(filename), params)
