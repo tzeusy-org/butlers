@@ -84,10 +84,10 @@ Infrastructure-only entries remain in canonical FastMCP `tools/list` and remain 
 existing authenticated callers even though their metadata marks them unsuitable for future LLM
 presentation.
 
-The adapter work described by RFC 0027 is not implemented in this slice. No runtime host consumes
-the catalog yet, and there is no host allowlist, search corpus, deferred schema loading, provider
-admission, or native Tool Search activation. Spawned sessions therefore retain the existing
-canonical MCP behavior until that separately reviewed adapter work lands.
+RFC 0038 broker-side discovery (bu-r980fk) supersedes the spawner-side adapter work described by
+RFC 0027. No runtime host consumes the catalog yet, and there is no host allowlist, search corpus,
+deferred schema loading, provider admission, or native Tool Search activation. Spawned sessions
+therefore retain the existing canonical MCP behavior until the broker endpoint lands.
 
 ## Verification
 

@@ -58,8 +58,8 @@ FastMCP manager reference. Failed construction publishes no partial catalog, and
 not enumerate or invoke handlers.
 
 FastMCP remains the only execution registry. Its `tools/list` result stays complete and calls keep
-resolving through the final registered handler. The catalog is an input for the separately planned
-adapter presentation layer; this implementation does not filter host-visible tools, render a
+resolving through the final registered handler. The catalog is an input for the broker-side discovery
+corpus (RFC 0038, bu-r980fk); this implementation does not filter host-visible tools, render a
 search corpus, enable native tool search, or change canonical list/call behavior.
 
 ## Core vs Module Tools

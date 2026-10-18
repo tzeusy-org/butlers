@@ -295,3 +295,35 @@ mandates native deferral is skipped under that policy. Registered handlers,
 session history, and in-flight plans are not rewritten. A migration downgrade
 removes the new fields only after all rows use verified eager behavior or are
 marked ineligible.
+
+## Reconciliation (bu-ondtw.8, 2026-10-18)
+
+RFC 0038's owner-signed hard cutover (2026-10-14) moves discovery from the
+spawner to the broker endpoint. This change was reconciled against what landed
+on main and archived. The decisions above that describe spawner-side per-attempt
+planning, receipts, replay, native admission, and the canary are superseded and
+no longer normative; the broker-side equivalents are owned by bu-r980fk (with
+bu-kiuh8v for runtime adapters).
+
+Landed and synced to `openspec/specs/`:
+
+- Policy field (bu-ondtw.2, PR #4091): `runtime_config.tool_exposure_policy`
+  through `runtime-config-table`, `runtime-config-api`,
+  `runtime-config-dashboard-ui`, and `core-daemon` (runtime seed).
+- Metadata and catalog (bu-ondtw.3, PR #4244): `core-modules` Tool Exposure
+  Metadata; new `core-tool-discovery` with the immutable catalog, the
+  exhaustive presentation inventory, and skill identity.
+- Core Tool Surface (`core-daemon`): only the inventory classification of
+  `route.execute` and `cancel_session` is synced.
+
+Removed from the deltas and re-homed to RFC 0038 (bu-r980fk): the
+`core-spawner` and `session-process-logs` deltas, and in `core-tool-discovery`
+the per-invocation exposure policy planning, capability negotiation, native Tool
+Search, replay-safe failure handling, content-blind evidence, and the native
+verification gate. Layered-surface and handler-authority clauses that bound
+those mechanisms to an attempt artifact were rewritten to the catalog form.
+
+Not synced because it is unlanded or unverified: the unavailable-policy card
+scenario (the card falls back to `eager_filtered` when the field is absent) and
+the full merged-tree core tool inventory refresh in the `core-daemon` delta
+(the mechanically derived inventory is authoritative).

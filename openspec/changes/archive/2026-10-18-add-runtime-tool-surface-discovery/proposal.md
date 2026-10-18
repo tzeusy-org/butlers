@@ -1,3 +1,5 @@
+> **Reconciled 2026-10-18 (bu-ondtw.8):** the spawner-side planning, receipt, replay, and native-admission parts of this proposal are superseded by RFC 0038 broker-side discovery (bu-r980fk). Only the landed policy field, tool metadata, catalog, inventory, and skill-identity requirements were synced. See design.md "Reconciliation".
+
 ## Why
 
 [Observed] Butlers' live development fleet currently exposes 1,133 MCP tools

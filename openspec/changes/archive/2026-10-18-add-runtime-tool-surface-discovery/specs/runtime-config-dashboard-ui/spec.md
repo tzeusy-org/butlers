@@ -12,7 +12,7 @@ Scope: v1-mandatory
 - **WHEN** the user opens the Management tab for a butler
 - **THEN** the `RuntimeConfigCard` SHALL show current runtime config values (`core_groups`, `max_concurrent`, `max_queued`) from the DB with editable fields
 - **AND** the resolved model and `session_timeout_s` are shown read-only with an "edit in models" link to the Models tab
-- **AND** `tool_exposure_policy` SHALL be shown as an editable `Eager filtered` or `Automatic verified discovery` choice with concise fallback guidance
+- **AND** `tool_exposure_policy` SHALL be shown as an editable `Eager filtered` or `Automatic verified discovery` choice with concise guidance
 
 #### Scenario: Card distinguishes declaration, decision, and registration
 - **WHEN** the user opens the Management tab for a butler
@@ -25,20 +25,11 @@ Scope: v1-mandatory
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
 - **THEN** the field SHALL show a visual indicator that changes require a daemon restart
 
-#### Scenario: Hot exposure policy shows next-session behavior
+#### Scenario: Hot exposure policy shows restart behavior
 
 - **WHEN** `tool_exposure_policy` is displayed or changed
-- **THEN** the card SHALL state that the setting applies to newly planned sessions without a daemon restart
-- **AND** `auto` SHALL be described as verified-native-when-available with a
-  separately verified eager fallback only when one is available, otherwise the
-  tuple is unavailable/ineligible, not as a guarantee that native discovery
-  will run
-
-#### Scenario: Unavailable policy is not presented as active
-
-- **WHEN** the runtime-config GET request fails or returns degraded/unavailable evidence
-- **THEN** the card SHALL show the policy as unavailable rather than substituting `eager_filtered` or `auto`
-- **AND** it SHALL not present an unconfirmed value as the effective runtime policy
+- **THEN** the card SHALL state that the setting needs no daemon restart
+- **AND** `auto` SHALL be described as conditional, not as a guarantee that native discovery will run
 
 ### Requirement: Config tab supports inline editing
 
@@ -63,7 +54,7 @@ Scope: v1-mandatory
 #### Scenario: Hot policy save does not claim restart
 
 - **WHEN** the user saves only `tool_exposure_policy`
-- **THEN** the UI SHALL confirm that the policy applies to subsequent sessions
+- **THEN** the UI SHALL confirm the save and state that no daemon restart is needed
 - **AND** it SHALL not show a restart-required notification
 
 #### Scenario: Failed policy save preserves confirmed state

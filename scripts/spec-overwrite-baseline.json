@@ -1,18 +1,4 @@
 {
-  "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
-    {
-      "digest": "5bbbc3c1bd8f",
-      "excerpt": "- **WHEN** migration core_022 runs on a butler schema",
-      "kind": "clause",
-      "scenario": "Table created by migration"
-    },
-    {
-      "digest": "990958a4cb4d",
-      "excerpt": "- **THEN** the `session_process_logs` table is created with the specified schema and index",
-      "kind": "clause",
-      "scenario": "Table created by migration"
-    }
-  ],
   "amend-secrets-inventory-label-minimization/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
     {
       "digest": "176715cfc640",
@@ -2919,6 +2905,44 @@
       "excerpt": "Per-assertion provenance SHALL additionally be stamped on the fact row itself as `assert_origin` (`direct` or `approv...",
       "kind": "prose",
       "scenario": null
+    }
+  ],
+  "generalist-lead-focused-delegation/runtime-config-api/PATCH runtime config endpoint": [
+    {
+      "digest": "d53a7ed54073",
+      "excerpt": "ID: REQ-runtime-config-api-002 Source: RFC 0007 \u00a7Dashboard API Surface; RFC 0027 \u00a7Exposure Planning State Machine Sco...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "c5e8a1c7995f",
+      "excerpt": "- **AND** `tool_exposure_policy` SHALL also be accepted as `eager_filtered` or `auto`",
+      "kind": "clause",
+      "scenario": "Accepted fields"
+    },
+    {
+      "digest": "48feef4009cb",
+      "excerpt": "- **AND** the historical no-hot-fields clause is superseded for new fields only: hot `catalog_read_sensitivity` and `...",
+      "kind": "clause",
+      "scenario": "All managed fields are cold"
+    },
+    {
+      "digest": "c5f7e180aa93",
+      "excerpt": "- **AND** the same validation SHALL accept `graph` and `fleet_cases`, completing parity with all fourteen registered ...",
+      "kind": "clause",
+      "scenario": "delegation is a known core group"
+    },
+    {
+      "digest": "fa349ec31bf1",
+      "excerpt": "\"Hot exposure policy applies without restart\" is not in the block",
+      "kind": "scenario",
+      "scenario": "Hot exposure policy applies without restart"
+    },
+    {
+      "digest": "308016e5a2d9",
+      "excerpt": "\"Invalid exposure policy is rejected\" is not in the block",
+      "kind": "scenario",
+      "scenario": "Invalid exposure policy is rejected"
     }
   ],
   "generalist-lead-focused-delegation/runtime-opencode/Temporary Config File Generation": [

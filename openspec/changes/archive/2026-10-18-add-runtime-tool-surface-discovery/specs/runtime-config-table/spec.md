@@ -14,10 +14,10 @@ Each butler schema SHALL contain a `runtime_config` table with typed columns for
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
 - The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns, including `core_groups_narrowing_reason` and the resolved core-group source/diff metadata used for operator visibility.
-- It SHALL additionally expose the typed `tool_exposure_policy` value so the per-invocation runtime plan reads the DB-backed operational authority.
+- It SHALL additionally expose the typed `tool_exposure_policy` value so consumers read the DB-backed operational value through the accessor, which bypasses the TTL cache for this field.
 
 ID: REQ-runtime-config-table-001
-Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases
+Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases; RFC 0027 §Exposure Planning State Machine (bu-ondtw.2, PR #4091)
 Scope: v1-mandatory
 
 #### Scenario: Table creation via migration
@@ -32,4 +32,4 @@ Scope: v1-mandatory
 
 - **WHEN** the additive migration runs against an existing `runtime_config` row
 - **THEN** `tool_exposure_policy` is populated as `eager_filtered`
-- **AND** accepting or deploying the schema change does not activate native discovery
+- **AND** the migration changes no session behavior

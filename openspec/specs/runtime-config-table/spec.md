@@ -7,22 +7,23 @@ Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor`
 
 ### Requirement: Runtime config table exists per butler schema
 
-Each butler schema SHALL contain a `runtime_config` table with typed columns for all operational config fields. The table holds exactly one row per butler, keyed by `butler_name`.
-
-Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases
-Scope: v1-mandatory
-
-Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
+Each butler schema SHALL contain a `runtime_config` table with typed columns for all operational config fields. The table holds exactly one row per butler, keyed by `butler_name`. Its columns SHALL be `butler_name`, nullable `core_groups`, nullable `core_groups_narrowing_reason`, `catalog_read_sensitivity` constrained to `normal|internal|confidential`, `max_concurrent`, `max_queued`, `tool_exposure_policy` constrained to `eager_filtered|auto`, `seeded_at`, and `updated_at`, with the defaults detailed below.
+- Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
 - `butler_name text PRIMARY KEY`
 - `core_groups text[]` (nullable; NULL means all groups enabled)
 - `core_groups_narrowing_reason text` (nullable; non-empty text is required for a DB-owned narrowing to remain effective)
 - `catalog_read_sensitivity text NOT NULL DEFAULT 'normal'` (one of `normal`, `internal`, `confidential`)
 - `max_concurrent int NOT NULL DEFAULT 3`
 - `max_queued int NOT NULL DEFAULT 10`
+- `tool_exposure_policy text NOT NULL DEFAULT 'eager_filtered'` constrained to `eager_filtered` or `auto`
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
+- The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns, including `core_groups_narrowing_reason` and the resolved core-group source/diff metadata used for operator visibility.
+- It SHALL additionally expose the typed `tool_exposure_policy` value so consumers read the DB-backed operational value through the accessor, which bypasses the TTL cache for this field.
 
-The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns, including `core_groups_narrowing_reason` and the resolved core-group source/diff metadata used for operator visibility.
+ID: REQ-runtime-config-table-001
+Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases; RFC 0027 §Exposure Planning State Machine (bu-ondtw.2, PR #4091)
+Scope: v1-mandatory
 
 #### Scenario: Table creation via migration
 - **WHEN** the Alembic migration runs against a butler database
@@ -31,6 +32,12 @@ The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors the
 #### Scenario: Table has at most one row
 - **WHEN** the daemon seeds the table
 - **THEN** there SHALL be exactly one row keyed by the butler's name
+
+#### Scenario: Existing row receives conservative policy
+
+- **WHEN** the additive migration runs against an existing `runtime_config` row
+- **THEN** `tool_exposure_policy` is populated as `eager_filtered`
+- **AND** the migration changes no session behavior
 
 ### Requirement: RuntimeConfigAccessor provides cached read access
 
