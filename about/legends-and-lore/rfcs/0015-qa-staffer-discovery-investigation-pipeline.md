@@ -327,8 +327,8 @@ The QA Staffer integrates with the project's observability stack:
 - `qa.investigation` — root span (not a child of `qa.patrol`; investigations outlive the patrol).
   Attributes: `qa.attempt_id`, `qa.fingerprint`, `qa.source_butler`, `qa.severity`.
 
-**Prometheus metrics (low-cardinality per RFC 0005 — no UUIDs, fingerprints, or butler names
-as label values):**
+**Prometheus metrics (prometheus_client instruments are outside the RFC 0005 catalog; they follow
+its cardinality design rule, so no UUIDs, fingerprints, or butler names as label values):**
 
 | Metric | Type | Labels |
 |---|---|---|
