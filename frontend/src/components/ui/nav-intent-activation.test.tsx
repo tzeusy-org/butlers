@@ -94,6 +94,12 @@ describe("RowLink activation warmup", () => {
     expect(events).toEqual(["warm", "activate"])
   })
 
+  it.each(["Enter", " "])("nested fallback %j key without prior focus warms before onActivate", (key) => {
+    // No focus first: the key press alone must start the warmup, not a focus-started cycle.
+    fireEvent.keyDown(renderNested(), { key })
+    expect(events).toEqual(["warm", "activate"])
+  })
+
   it("anchor click warms before the caller's onClick", () => {
     render(
       <MemoryRouter>
