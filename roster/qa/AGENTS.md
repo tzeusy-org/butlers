@@ -50,15 +50,11 @@ step sequence of each, consult the `patrol-operations` skill.
   allowlisted environment with no daemon secrets, plus command-line config that
   neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass`
   and the `ext::` and `git://` transports): the main refresh, follow-up fetch/worktree
-  preparation, the worktree create/remove/reap helpers and the managed-clone refresh.
-  Residual, not covered: (a) `_capture_commit_diff_snapshot` runs `git diff` with the
-  full daemon environment, so a planted `diff.external` runs with daemon secrets
-  (bu-mc01y5.13); (b) `_detect_no_op_branch` runs `git log` unhardened with the agent
-  environment, which holds no secrets; (c) the follow-up and main-refresh fetches, whose
-  argv retained tests pin, so a planted `remote.origin.uploadpack` is not neutralised
-  there (they hold no secrets); (d) `url.*.insteadOf` and `filter.*` config; (e) the
-  self-healing `git push` path (bu-uhaiq7). This does not activate the publisher or
-  change live credentials.
+  preparation, the worktree create/remove/reap helpers, the managed-clone refresh and the
+  commit diff snapshot (`--no-ext-diff --no-textconv`) and no-op branch detection
+  (`--no-show-signature`). Named-remote fetches pin `--upload-pack=git-upload-pack`.
+  Residual, not covered: (a) `url.*.insteadOf` and `filter.*` config; (b) the
+  self-healing `git push` path (bu-uhaiq7). This does not activate the publisher or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First

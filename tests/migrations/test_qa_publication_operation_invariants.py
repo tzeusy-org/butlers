@@ -321,3 +321,187 @@ def test_core_267_shared_guard_survives_all_but_the_last_schema_downgrade(
             assert _guard_objects(conn) == (1, 1, 1)
     finally:
         engine.dispose()
+
+
+# --- core_268: set-once new_object_id, result/stage CHECK, held-row delete guard ---
+
+
+def test_new_object_id_is_set_once(db_url: str, operation: uuid.UUID) -> None:
+    _update_as_qa(db_url, operation, _EGRESS)
+
+    _update_as_qa(db_url, operation, f"{_SUCCEEDED}, new_object_id = 'pr-7'")
+    _update_as_qa(db_url, operation, "new_object_id = 'pr-7'")
+
+    _refused(db_url, operation, "new_object_id = 'pr-8'", "new_object_id is set-once")
+    _refused(db_url, operation, "new_object_id = NULL", "new_object_id is set-once")
+
+
+@pytest.mark.parametrize(
+    ("prior", "assignment"),
+    [
+        ((), "result = 'success'"),
+        ((_EGRESS,), "result = 'failed'"),
+        ((_EGRESS,), "stage = 'succeeded', stage_order = 3, result = 'failed'"),
+        ((_EGRESS,), "stage = 'failed', stage_order = 3, result = 'ambiguous'"),
+        ((_EGRESS,), "stage = 'ambiguous', stage_order = 3, result = 'success'"),
+        ((_EGRESS,), "stage = 'succeeded', stage_order = 3"),
+        (
+            (_EGRESS,),
+            "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_absent', "
+            "reconciled_at = now(), result = 'success'",
+        ),
+    ],
+    ids=[
+        "bound-with-result",
+        "egress-with-result",
+        "succeeded-with-failed",
+        "failed-with-ambiguous",
+        "ambiguous-with-success",
+        "succeeded-without-result",
+        "reconciled-from-egress-with-success",
+    ],
+)
+def test_result_must_match_stage(
+    db_url: str, operation: uuid.UUID, prior: tuple[str, ...], assignment: str
+) -> None:
+    for step in prior:
+        _update_as_qa(db_url, operation, step)
+
+    _refused(db_url, operation, assignment, "ck_qa_publication_operations_stage_result")
+
+
+@pytest.mark.parametrize(
+    ("prior", "assignment"),
+    [
+        ((_EGRESS, _SUCCEEDED), "result = NULL"),
+        ((_EGRESS, _SUCCEEDED), "result = 'failed'"),
+        (
+            (_EGRESS, _AMBIGUOUS),
+            "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_absent', "
+            "reconciled_at = now(), result = 'success'",
+        ),
+        ((_EGRESS, _AMBIGUOUS), "result = NULL"),
+    ],
+    ids=["erase-succeeded", "rewrite-succeeded", "reconcile-rewrites-ambiguous", "erase-ambiguous"],
+)
+def test_result_is_set_once(
+    db_url: str, operation: uuid.UUID, prior: tuple[str, ...], assignment: str
+) -> None:
+    for step in prior:
+        _update_as_qa(db_url, operation, step)
+
+    _refused(db_url, operation, assignment, "result is set-once")
+
+
+def test_reconciled_row_keeps_the_outcome_it_was_reached_from(
+    db_url: str, operation: uuid.UUID
+) -> None:
+    _update_as_qa(db_url, operation, _EGRESS)
+    _update_as_qa(db_url, operation, _AMBIGUOUS)
+    _update_as_qa(db_url, operation, _ABSENT)
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            result = conn.exec_driver_sql(
+                f"SELECT result FROM {_TABLE} WHERE id = '{operation}'"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert result == "ambiguous"
+
+
+def _superuser_url(postgres_container, db_url: str) -> str:
+    """The container's privileged login on the same database: it bypasses row security."""
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    return migration_bootstrap_db_url(postgres_container, db_url.rsplit("/", 1)[1])
+
+
+@pytest.mark.parametrize("held", [(_EGRESS,), (_EGRESS, _AMBIGUOUS)], ids=["egress", "ambiguous"])
+def test_held_row_cannot_be_deleted_even_by_a_superuser(
+    postgres_container, db_url: str, operation: uuid.UUID, held: tuple[str, ...]
+) -> None:
+    for step in held:
+        _update_as_qa(db_url, operation, step)
+
+    engine = create_engine(_superuser_url(postgres_container, db_url))
+    try:
+        with pytest.raises(DBAPIError, match="a held row cannot be deleted"):
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"DELETE FROM {_TABLE} WHERE id = '{operation}'")
+    finally:
+        engine.dispose()
+
+    assert _stage_of(db_url, operation) in {"egress_started", "ambiguous"}
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [(), (_EGRESS, _SUCCEEDED), (_EGRESS, _AMBIGUOUS, _FOUND)],
+    ids=["bound", "done", "reconciled"],
+)
+def test_non_held_row_can_still_be_deleted(
+    postgres_container, db_url: str, operation: uuid.UUID, steps: tuple[str, ...]
+) -> None:
+    for step in steps:
+        _update_as_qa(db_url, operation, step)
+
+    engine = create_engine(_superuser_url(postgres_container, db_url))
+    try:
+        with engine.begin() as conn:
+            deleted = conn.exec_driver_sql(f"DELETE FROM {_TABLE} WHERE id = '{operation}'")
+            assert deleted.rowcount == 1
+    finally:
+        engine.dispose()
+
+
+def _hardening_objects(conn) -> tuple[int, int, bool, int]:
+    delete_trigger = conn.exec_driver_sql(
+        "SELECT count(*) FROM pg_trigger WHERE tgname = 'qa_publication_operations_no_held_delete' "
+        "AND NOT tgisinternal"
+    ).scalar_one()
+    constraint = conn.exec_driver_sql(
+        "SELECT count(*) FROM pg_constraint "
+        "WHERE conname = 'ck_qa_publication_operations_stage_result'"
+    ).scalar_one()
+    set_once = conn.exec_driver_sql(
+        "SELECT bool_or(position('set-once' in prosrc) > 0) FROM pg_proc "
+        "WHERE proname = 'qa_publication_operations_guard'"
+    ).scalar_one()
+    guard = conn.exec_driver_sql(
+        "SELECT count(*) FROM pg_trigger WHERE tgname = 'qa_publication_operations_guard' "
+        "AND NOT tgisinternal"
+    ).scalar_one()
+    return delete_trigger, constraint, bool(set_once), guard
+
+
+def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
+    postgres_container,
+) -> None:
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            assert _hardening_objects(conn) == (1, 1, True, 1)
+
+        # The other schema still runs core_268 code, so everything stays.
+        command.downgrade(general, "core_267")
+        with engine.connect() as conn:
+            assert _hardening_objects(conn) == (1, 1, True, 1)
+
+        # The last schema leaves: core_268 objects go and the core_267 guard is restored.
+        command.downgrade(switchboard, "core_267")
+        with engine.connect() as conn:
+            assert _hardening_objects(conn) == (0, 0, False, 1)
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert _hardening_objects(conn) == (1, 1, True, 1)
+    finally:
+        engine.dispose()

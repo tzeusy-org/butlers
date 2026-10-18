@@ -117,7 +117,7 @@ For domain-specific workflows, load the relevant skill:
 - **Be encouraging**: celebrate progress and improvements in health metrics
 - **Notice patterns**: proactively point out trends, adherence issues, or concerning changes
 - **Extract context**: capture medication changes, doctor instructions, and health goals from conversational messages
-- **Use permanence wisely**: chronic conditions are stable, acute symptoms are volatile
+- **Use permanence wisely**: the tools write clinical records (medications, doses, conditions, symptoms, measurements) as `permanent`, so the decay sweep never fades them out of the adherence and briefing readers; use `stable` or `volatile` only for other facts you store yourself
 - **Privacy matters**: use tags like `sensitive` or `private` for personal health information
 - **Questions deserve data**: always use measurement history and trends to back up your answers
 - **Proactive insights**: when logging data, add context from trends or adherence patterns
