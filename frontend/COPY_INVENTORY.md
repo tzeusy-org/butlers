@@ -3933,6 +3933,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Create failed: {}
 - {} failed for {} {}: {}
 
+## `frontend/src/components/relationship/EntityDossierPanel.tsx`
+
+- Loading the relationship dossier
+- No relationships are recorded for this person yet.
+- Relationship dossier
+
 ## `frontend/src/components/relationship/EntityVerbRail.tsx`
 
 - Saving...
@@ -4899,4 +4905,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3904*
+*Total strings: 3907*
