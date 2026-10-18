@@ -2063,7 +2063,11 @@ class ButlerDaemon:
                     and client is None
                 ):
                     client = LocalSwitchboardClient(self.mcp)
-                wire_fn(self.spawner, repo_root, switchboard_client=client)
+                wire_kwargs: dict[str, Any] = {"switchboard_client": client}
+                if "switchboard_client_getter" in inspect.signature(wire_fn).parameters:
+                    # Late-bound: the heartbeat loop replaces the attribute on reconnect.
+                    wire_kwargs["switchboard_client_getter"] = lambda: self.switchboard_client
+                wire_fn(self.spawner, repo_root, **wire_kwargs)
                 logger.debug(
                     "Wired runtime into module '%s' (switchboard_client=%s)",
                     mod.name,

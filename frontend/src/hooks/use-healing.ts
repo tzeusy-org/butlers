@@ -12,14 +12,15 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getHealingDispatchEvents, type HealingDispatchEventsParams } from "@/api/index.ts";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
+// No fleet event type covers healing gate evaluations, so this local poll is the primary path.
+const HEALING_DISPATCH_EVENTS_POLL_MS = 30_000;
 
 export function useHealingDispatchEvents(params: HealingDispatchEventsParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["healing-dispatch-events", params],
     queryFn: () => getHealingDispatchEvents(params),
-    refetchInterval,
+    refetchInterval: HEALING_DISPATCH_EVENTS_POLL_MS,
   });
 }
 

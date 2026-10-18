@@ -82,6 +82,13 @@ after rollback. A stale job snapshot SHALL NOT move an answered debrief back to 
 - **THEN** the tool SHALL return `invalid` after any transaction has rolled back and SHALL create no item from that answer
 - **AND** current attendee/null and declared-sphere validation SHALL remain in force
 
+#### Scenario: Counterparty no longer active refuses the answer
+
+- **WHEN** an answer names a counterparty whose posture is no longer `active` (`memorial`, `quiet` or `no_contact`) at answer time
+- **THEN** the tool SHALL return `invalid` with a fixed reason that does not state the posture, SHALL create no commitment from that answer, and SHALL leave the debrief answerable
+- **AND** posture SHALL be read on the answer transaction's connection under the debrief row lock, through the same active-posture predicate the prompt path uses
+- **AND** a null counterparty and an `active` counterparty SHALL behave as before, and a later answer without that item MAY be captured
+
 #### Scenario: Lost acknowledgment does not permit a second answer
 
 - **WHEN** the client loses the result while a complete answer is being committed and retries

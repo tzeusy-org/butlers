@@ -1,0 +1,695 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-svqpzo-3-fail-closed-gates-20261018",
+  "bead": "bu-eyx4dg",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-18",
+    "reference": "Authorization bead bu-eyx4dg for implementation bead bu-svqpzo.3 (PR #4622, permission, spend and pause gates fail closed when their state is unreadable). Reviewed before: main 7cfd3b301 plus this manifest PR's spec edits (the REQ-catalog-token-limits-001/-002 ID headers, the matching generalist-lead-focused-delegation delta line, and the base form of REQ-dashboard-permissions-002 'Runtime Permission Enforcement', which carries only the clauses true on main and kept by PR #4622: explicit grant allows, explicit revoke denies, effect paths refuse an unreadable store; no default-allow or fail-open clause); approved subject: PR #4622 head after its author edits (review bu-77vnvq), merged with that main plus the request file. Governing requirements REQ-catalog-token-limits-001 (Pre-Spawn Quota Check) and REQ-catalog-token-limits-002 (Truthful ledger pricing for the monthly ceiling) of openspec/specs/catalog-token-limits/spec.md, and REQ-dashboard-permissions-002 of openspec/specs/dashboard-permissions/spec.md, whose evolution from effect-only to every-caller fail-closed is the authorized change. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_check_monthly_ceiling_unit_behaviors",
+      "after": "tests/core/test_model_routing_quota.py::test_check_monthly_ceiling_unit_behaviors",
+      "contracts": [
+        "REQ-catalog-token-limits-002"
+      ],
+      "reason": "The removed assertions (allowed=True and one warning when the ceiling read raises) pinned the fail-open gap. REQ-catalog-token-limits-002 now requires a denied, unavailable CeilingStatus logged at error; the fast-path, over/under-pricing and unmeasurable assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source",
+      "after": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source",
+      "contracts": [
+        "REQ-catalog-token-limits-002"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling",
+      "after": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling",
+      "contracts": [
+        "REQ-catalog-token-limits-002"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_raises_rather_than_fails_open",
+      "after": "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_raises_rather_than_fails_open",
+      "contracts": [
+        "REQ-catalog-token-limits-002"
+      ],
+      "reason": "Only the docstring changes: it described the spawn gate as failing open on a ledger outage, which REQ-catalog-token-limits-002 now forbids; the raise assertion is unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_quota_no_limits_row_fast_path",
+      "after": "tests/core/test_model_routing_quota.py::test_quota_no_limits_row_fast_path",
+      "contracts": [
+        "REQ-catalog-token-limits-001"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_quota_reset_and_window_exclusion",
+      "after": "tests/core/test_model_routing_quota.py::test_quota_reset_and_window_exclusion",
+      "contracts": [
+        "REQ-catalog-token-limits-001"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_quota_unit_behaviors",
+      "after": "tests/core/test_model_routing_quota.py::test_quota_unit_behaviors",
+      "contracts": [
+        "REQ-catalog-token-limits-001"
+      ],
+      "reason": "The removed assertions (allowed=True and one warning when the quota read raises) pinned the fail-open gap. REQ-catalog-token-limits-001 now requires a denied, unavailable QuotaStatus logged at error; the QuotaStatus field and record_token_usage best-effort assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_quota_within_limits_and_exceeded",
+      "after": "tests/core/test_model_routing_quota.py::test_quota_within_limits_and_exceeded",
+      "contracts": [
+        "REQ-catalog-token-limits-001"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_model_routing_quota.py::test_record_token_usage_and_reflected_in_quota",
+      "after": "tests/core/test_model_routing_quota.py::test_record_token_usage_and_reflected_in_quota",
+      "contracts": [
+        "REQ-catalog-token-limits-001"
+      ],
+      "reason": "Only the module docstring changes ('fail-open on DB error' becomes 'fail-closed on DB error', decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_effect_permission_policy_is_transient_and_rechecks",
+      "after": "tests/core/test_permissions_enforcer.py::test_effect_permission_policy_is_transient_and_rechecks",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "The removed fail_closed=True arguments selected the effect-only fail-closed mode. REQ-dashboard-permissions-002 makes every caller fail closed, so the parameter is removed; every allow, deny, unavailable, recheck and cancellation assertion is kept."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_granted_row_allows",
+      "after": "tests/core/test_permissions_enforcer.py::test_granted_row_allows",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "Only module context changes: the docstring's 'fail-open contract' becomes 'fail-closed contract' and the stale comment above pytestmark about retained fail-open narratives is removed (decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_no_row_is_default_allow",
+      "after": "tests/core/test_permissions_enforcer.py::test_no_row_is_default_allow",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "Only module context changes: the docstring's 'fail-open contract' becomes 'fail-closed contract' and the stale comment above pytestmark about retained fail-open narratives is removed (decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_require_permission_passes_on_grant",
+      "after": "tests/core/test_permissions_enforcer.py::test_require_permission_passes_on_grant",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "Only module context changes: the docstring's 'fail-open contract' becomes 'fail-closed contract' and the stale comment above pytestmark about retained fail-open narratives is removed (decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_require_permission_raises_on_deny",
+      "after": "tests/core/test_permissions_enforcer.py::test_require_permission_raises_on_deny",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "Only module context changes: the docstring's 'fail-open contract' becomes 'fail-closed contract' and the stale comment above pytestmark about retained fail-open narratives is removed (decision D2); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "tests/core/test_permissions_enforcer.py::test_revoked_row_denies",
+      "after": "tests/core/test_permissions_enforcer.py::test_revoked_row_denies",
+      "contracts": [
+        "REQ-dashboard-permissions-002"
+      ],
+      "reason": "Only module context changes: the docstring's 'fail-open contract' becomes 'fail-closed contract' and the stale comment above pytestmark about retained fail-open narratives is removed (decision D2); the test body and its assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/catalog-token-limits/spec.md",
+      "id": "REQ-catalog-token-limits-001",
+      "before_sha256": "ab455a8072f001337a416cea9e8f2f359d0debd9f33e36f655b5ae9fd2dac080",
+      "after_sha256": "c965c6c3b9e58ce83c138142e6905d9a1d5e1679e319a2a97e21ba9ad0cd42b4"
+    },
+    {
+      "path": "openspec/specs/catalog-token-limits/spec.md",
+      "id": "REQ-catalog-token-limits-002",
+      "before_sha256": "f7733a8b7a89f82bad9244b64d756d2e04b1512ad69563519c4b24dfa946c205",
+      "after_sha256": "bf692c20932659eeb6c17f7fe2f6d7bb426712b4f4423a88502a58b539bc8e45"
+    },
+    {
+      "path": "openspec/specs/dashboard-permissions/spec.md",
+      "id": "REQ-dashboard-permissions-002",
+      "before_sha256": "a2aac7112d37a5f88df0c27b83467e01685e8565c7a36a94416ab132a2cee661",
+      "after_sha256": "1970163310d559146d6049c44edc1b718807c3c0dab8d214fa5c5b4bae9a707f"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/runtime/model-routing.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "5d8b1bb36b0105b6c68e9bbc94529db552497019d5ff0109ff30900034519d98"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5df3244ac0bf5df8c4eedc633dacf18124471e7254a868023a32396a6e516739"
+      }
+    },
+    {
+      "path": "docs/runtime/scheduler-execution.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "b5f23c568230202dfc63f3fe123b89c482ccbba3a1c49e270f1ba46ec2917998"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5b71733e12ed3072252eba37956dc0b6732ff403a5529f013e22f83a8c4b1fcd"
+      }
+    },
+    {
+      "path": "openspec/changes/generalist-lead-focused-delegation/specs/catalog-token-limits/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "810efc9ea800ba068a4ef495d6c6edaa3afcc88e50dbd380f9807b367f14d5ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ba893dfc0104cbd0dfbd5d65446200179dcc6473a92224e2a8f57ae4034b953a"
+      }
+    },
+    {
+      "path": "openspec/specs/core-scheduler/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "cf0a074f33d43b76655110838b5038ff93df8fe7b45d7dd3f787bcbf0263fff1"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "df5d9d014955269fc13442db9c812a93ef7a8be5705cae2fe1af0e0bd49d5c7b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/travel/tools/health.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "ea8087219543b5fc9b6c548f598ee548c5908873d50b8484941d016908782760"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c96955e620ec9927a304de9425fa4abcb29fa952d79787935dc9bc9630b1c0eb"
+      }
+    },
+    {
+      "path": "src/butlers/background.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "cd1bd0d760c3e78647793771985385b0cd7be878ecbdbef68e274588c73fe1ad"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f54be17c1ded074e9edd6670b8a86fa24b4367990ed87f676a556e55e279d81b"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/discretion_dispatcher.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b345b11153e040cba748fd5149d721e5f0c73262cbb2499b6b10ec5b087cbff6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "01f8f28e7fbafe81e8d61c4b1d31acab2490511600c6160cc0423871c7007b78"
+      }
+    },
+    {
+      "path": "src/butlers/core/model_routing.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e67b9342fe9af4cb713d3d7517dee8d54fb6c33fc1e23483f0281c857ab7cbe7"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c84ff49ec41989a50fe35d15c1d4c3a4b6d7b8e8b3b60befe78778ec8ea71cd9"
+      }
+    },
+    {
+      "path": "src/butlers/core/permissions.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "99feaea0daa9271c104c9a42f9a1d899315276bb665ee9481d7f86fcb94a09f6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1bb3547fb9453c38200cdbd626222cc13cf3d2671d21b741af4b7b5f29394767"
+      }
+    },
+    {
+      "path": "src/butlers/core/scheduler.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b70639a1030f2b7baf648c52a5b7bd884011ac1f1d14675f44a734b386531b85"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0ee8576839cbdc505979c1dca1bc2b4cd33c638da5801eecaa83c216761ba7df"
+      }
+    },
+    {
+      "path": "src/butlers/core/spawner.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b81f9c6fa4a72c1abda122e284667f988b8b7df6180eb19456e929621d0a4860"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d82881fa83d14e635ed2ea8c548d9002a5e496d22c04d463106cc6b10e2fb310"
+      }
+    },
+    {
+      "path": "src/butlers/core_tools/_dashboard_system_answer.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "109f453cf85502c518036468652d348ad45a5ae861563e9c0a39a16c2a77c87a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9e67a0a86e16fdd7d4ea9f403541455f345fcdc13ad7ffd4b7bc682037baa360"
+      }
+    },
+    {
+      "path": "src/butlers/core_tools/_notifications.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "90ee4196e5ae8ae056a120adc5e59924f55d961f0e75384e8ff7e0ff0ad114f4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "40b5619df93fb0bdf786025577b32b901e1e7c68269748fe7c23a26f5a375874"
+      }
+    },
+    {
+      "path": "src/butlers/core_tools/_switchboard.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "d89fff736c9413550f9872d38f855ac198c450db270a5e90743505a1b1312a19"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2fbb11a3006d5eb6602ac0f12a4f147b9bc6fac40702df2fcef70c09d007573d"
+      }
+    },
+    {
+      "path": "src/butlers/daemon.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "64fe93de3820a0e8905b1dafe076bc1ba3ef705e2b7651ce22c378d26b48f13c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "861149d8aea2dae363f6027be0786a815c72868e71660a0c581cdb3ba550b740"
+      }
+    },
+    {
+      "path": "src/butlers/modules/calendar.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c8c010ee1ccdc45ea381f502c4f1b2e01834a95750876b3e40b9b254c1478fe6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b729f2b26755647de9689c58aa26db8f6a0e0fe439a361debfb8511f364cb4bd"
+      }
+    },
+    {
+      "path": "src/butlers/modules/email.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "ddf5e20784c0049bc8cc5698f4f60a7ddadf8b9da807e6cb1afbd557ee77cdb5"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "75939b93fee95f596de96bd611abc4453e9c98c41c918aba07e5b8a17e5f2c8a"
+      }
+    },
+    {
+      "path": "src/butlers/modules/telegram.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a5093759caf0774a5c085d0c41a920ef01ae519b86b8379e8b2a32983cb70021"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "12ecf19bd0487db95f5b4ee7bdcc4453ab3ec9f59f0e4edf3a6cfbeef3be51da"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-svqpzo-3-fail-closed-gates-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "a953f8f1c26c8ba60e987775515d9522472874b87f033e30094823f088032ce1"
+      }
+    },
+    {
+      "path": "tests/core/spawner_permission_store.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "0b26c2d153c946bdf075b914f1bd477263392dc5240b42a15ee32068ebf34415"
+      }
+    },
+    {
+      "path": "tests/core/test_active_session_detection.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "8f9ffbda58ed40c64b033a28cdc43c8c5fe4ed057259a119b43a1cff19f7c615"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "38a4e243df7732030bd6cfa053db4ac1688873ba436f6baf1e714db2d4593998"
+      }
+    },
+    {
+      "path": "tests/core/test_core_scheduler.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "ac25c9e3231e3a362eb2f3e10cedffc9aba8e82850c235a2441fb2f975b7bd4c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5c00aac94183031378ec8851f16350dcfc93c83c09306fd8e171268a0354cf13"
+      }
+    },
+    {
+      "path": "tests/core/test_core_spawner.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "db58085c4832b0919a8755991400231497b3beca028541fee048c6d4dbaabedb"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "058cb58348c188e4fd7e4b94e4cfc0b655579c3c3f190afbcc1f6f3112b23724"
+      }
+    },
+    {
+      "path": "tests/core/test_model_routing_quota.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "d175409e85b8717ba6ed234068d9f951a71e7cc5b76565180265aba66a0cddbe"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "24a0e8e065a659011a20106e18e6f30efa02d0d906ab64ed9296787e5c5eca2b"
+      }
+    },
+    {
+      "path": "tests/core/test_permissions_enforcer.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "62f511eeb27b123f2089da0df2fd8452c72661d2f0e680b598275f92c1120029"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "471ca89eca8b6a92b31f151d5533fe458ddb1abc545456a0ebc2e58ac6cd1bd6"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_ceiling_enforcement.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4e96d468b259cd0ca2f23cad349e5e11add9fc8848c5da11ee9165fcce34f89d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ef9536143288fc8c03e86336fd9ade9ea6e42a7550cbf9a88ac99617e16226e7"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_conversation_resume.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "f8dbb5d4347428fbfbf99d994d94a196d86304d04ad1f31bc4392b4ab7d20ac5"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1bfa0abf8578a721316e2780d180ee6e8c93dcd9a204e34ea88bcc8e2e701a99"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_dispatch_attempt_provenance.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c684ddf0b5efff8f4d2f35d1c0ea87fe4165d72e4d5b878fc5ca9c2582218879"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c70d20e8cc4e8fceaf712eee48690d79540a895609af09069fe932b46264fcdc"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_dispatch_failures.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "d482d6e1426bd846a4907697aacbbbd8e07684c5f8e2f3e7c70a41eff4d65b1c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "8ed7052c88a4843bf39a5306f5eb357ba994b7430a686e50a7aa0fd776b5c3be"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_episode_storage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4470202af31eae61c44fa6d7f5cce513aa7252ab6978e8f693ae69f840502408"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2800da11ffbba3cc14c1916045387a4106153fb2013b9ae741badabf23dcf59c"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_failover_verification.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "799175ff77c652b636aaa3053ad480d0cb71cf877a851c946adf7164d789af2a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "359ba8574dde99a5c7b9a401007a2b9bfe96204446a5aeda265372b408e09fc4"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_failure_tool_call_retention.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "1e124929689c80aa23aae5e21123e84618c90e8cf7403ec8655cbbeade93f38f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "8e2a1e9f07c74c18674c845a880c48d147dc160e4209e1394c3d83714f032de3"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_guardrails.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b6ba49b33452cc3512d12744f307791d5ce23036a68acd6af717f692ebfeeab6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2a01949bdaf9bf4a2aeb33cce94ea850cfc73924fd76293a54b8ebc493e4e439"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_per_call_cap_enforcement.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "8bb48ea01eb9c0687182ca734f6bb874990fb45fc52d2da2e832cf1a76b9a904"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e19c3d7bac91142e99c9ea4e83a0a3f9ab65bc9f31b0a9c5e213cdc500284a2f"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_permission_enforcement.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "f0ce1c921bb4a66356070d8f4e9180037cc97c904d2de477b8b47ef1726f3acc"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d2316144eb615e26c2713a8b6e1256a6d1f1027b613571ef3ab5e9d6f49cf5e9"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_quota_ceiling_fold.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "466166fd840c68938f7303e7f4168be66e19a96343d23f7f96cb08c12fd4e7d5"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4d42cf59593d3d86a5b18e02cf7f29a8f784f92bbf2055b18ffcc04c7b25c571"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_quota_enforcement.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c2b294a5ce4e5c87ec187f927f67b20ec476300c08ac8fa506c16448e82dbea7"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d260e1dd5fb60fc3d99e7ce73c46c5a7d137d391c34e8a4897a89dc2ef6cb091"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_request_id_minting.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "0d3fd542ea8bcf08a35a63142abc043e53be98dc54f76693975b688e8a9271df"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "54d1d26723bf74384a6c7bde814bddde96ced1ea8dd1fbc028dbbc1d0666dadb"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_same_tier_failover.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9a89d542938cf586b3af97247d558053fd193c8d74de1f01e6a81ce54bc6c2c5"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "cfd64eedd2c6f94665859f63795cf2b64acdc9b0e91afe9f6a9ea5655cbc5113"
+      }
+    },
+    {
+      "path": "tests/core/test_spawner_speculative_prewarm.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "13a635608f9f25773ea693cc029a2b1596ec4065bfee88a44942f2aadb8ed2b6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0f5e55d09f6c40d787ba891a0d0ee7d3ac216ae70954b77ba09d384b5eae51f5"
+      }
+    },
+    {
+      "path": "tests/daemon/test_dashboard_lane_tools.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "0bd3008fe8c6a04eddf9eb352f971d2a0c5c0f75d93837b47a18adf76835fa5d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d400bf75e57f3779e8c0749e4f45b36e7f757032b5a7c35b01d73ed27af33cf0"
+      }
+    },
+    {
+      "path": "tests/daemon/test_route_execute_conversation_anchor.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "48d1e96a8273a9577ccc593823a55ba293b7a44f7e4ff9f8deb430d446e86614"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e0e448c52c245573827251b0fae2637f5a4bddaf1afd8b0e1252d663756794fa"
+      }
+    },
+    {
+      "path": "tests/daemon/test_scheduler_loop.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4847c0a0ef607f9775155d975f2d07f629718dc3b5310d57343b0ae26d69871a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "43d4c0bf93f45ea767c8d7d6e5ad0965ad7ebe73a1d862bc260aac9f21415560"
+      }
+    },
+    {
+      "path": "tests/integration/permission_store_table.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "185d104ba59a0cc980c2942e4bd3b117a454bd00241abf821af36a60e92e11e7"
+      }
+    },
+    {
+      "path": "tests/integration/test_email_outbound_safety.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fe7c9146870450038fce004a62bd49e5b2b99559158d269ba40dc7b3f3845535"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4f51afa717607380f406c60abba5d7b6fa5b8726165cf192f2cabb9de761e688"
+      }
+    },
+    {
+      "path": "tests/integration/test_pending_actions_writers_jsonb_roundtrip.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "6a554174d43d124272c99422e2d8531f24da26b9394ac240272bfe07bdc7c2cd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eafab8d861f32fa7519fd19a8410d570c5e4215e60c12a1de8f363fe11cec1d9"
+      }
+    },
+    {
+      "path": "tests/integration/test_telegram_conversation_resume_composition.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "de1347cd83ab573c90e4cded26d8bf878956c5d489880701604d8a07d1dbe606"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a426cc001fba592f29e6c626c5172110673c378272523f3ccf6271c69a1704fe"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

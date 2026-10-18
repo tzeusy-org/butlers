@@ -798,6 +798,12 @@ degrades to UNATTRIBUTED + lower confidence"). `episode_entities` gets a
 `role='participant'` row only when resolved; the owner row is always written
 via the usual `upsert_owner_episode_entity` convention.
 
+**Atomic owner link:** `upsert_owner_episode_entity` is a plain execute. Every owner-only
+adapter calls it inside `async with owner_episode_transaction(conn):` together with its
+`upsert_episode`, so a failed link write rolls the episode back (a savepoint when the adapter
+is already in a transaction, as in comms, sessions and owntracks_ssid).
+`tests/chronicler/test_owner_episode_atomicity_guard.py` fails on a call outside that block.
+
 **Scheduling:** `chronicler_project_comms` job, `*/15 * * * *` (matches
 `chronicler_project_sessions`'s cadence: messaging activity is higher-frequency
 than the `*/30 * * * *` sources).

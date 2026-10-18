@@ -49,6 +49,9 @@ DEBRIEF_CONFIDENCE = 0.9
 
 _ANSWERABLE_STATES = ("pending", "expired")
 
+#: Fixed, content-blind refusal when a named counterparty is no longer ``active``.
+_COUNTERPARTY_UNAVAILABLE = "counterparty is not available for commitments"
+
 
 async def meeting_debrief_pending(pool: asyncpg.Pool) -> dict[str, Any]:
     """List prompted, unanswered debriefs in the order the owner was shown them.
@@ -146,6 +149,8 @@ async def meeting_debrief_answer(
     (``summary`` plus optional ``kind``, ``direction``, ``counterparty_entity_id``,
     ``deadline``, ``sphere``) opens a commitment whose evidence names the meeting.
     Returns ``{"status": "none_agreed"|"captured"|"already_answered"|"not_found"|"invalid"}``.
+    A counterparty whose posture is no longer ``active`` refuses the whole answer as ``invalid``;
+    the debrief stays answerable and the reason never states the posture.
     """
     try:
         debrief_uuid = uuid.UUID(str(debrief_id))
@@ -193,6 +198,13 @@ async def meeting_debrief_answer(
             ]
             for creation in creations:
                 validate_commitment_creation(**creation)
+
+            # Posture may have changed since the prompt. Read it on this transaction's
+            # connection, under the debrief row lock, through the prompt path's predicate.
+            # The reason is fixed and never states the posture.
+            named = {c["counterparty_entity_id"] for c in creations if c["counterparty_entity_id"]}
+            if named and named - await active_entity_ids(conn, named):
+                raise ValueError(_COUNTERPARTY_UNAVAILABLE)
 
             opened = []
             for creation in creations:
