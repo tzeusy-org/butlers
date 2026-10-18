@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: check-lock check-format lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -196,6 +196,13 @@ check-em-dashes:
 check-spec-overwrites:
 	python3 scripts/check_spec_overwrites.py
 
+# Regression guard for bu-xjs98p.1: every ADDED or MODIFIED requirement block in an active
+# change must carry ID, Source and Scope trace lines, or be frozen in
+# scripts/requirement-trace-baseline.json. Mirrors the requirement-trace step of the CI
+# `guards` job.
+check-requirement-trace:
+	python3 scripts/check_requirement_trace_lines.py
+
 # Regression gate for bu-n58sv: validate every canonical spec and unarchived
 # change with OpenSpec's strict RFC-2119 and scenario-shape checks. Keep the
 # command explicit so a bare `openspec validate --strict` cannot silently
@@ -227,7 +234,7 @@ check-duplicate-names:
 # PATH; everything else is a plain python3 script. The frontend-copy inventory
 # check regenerates the committed file and fails on any diff, exactly as CI
 # does, so run it on a clean worktree or expect the diff to be yours.
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links check-condensation-ledger
+check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links check-condensation-ledger
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py

@@ -289,6 +289,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_spec_overwrites.py
 
+      # bu-xjs98p.1: new and edited requirements in active changes carry identity. Every
+      # ADDED/MODIFIED block needs ID, Source and Scope lines unless it is frozen in the
+      # content-addressed baseline (scripts/requirement-trace-baseline.json); editing a frozen
+      # block makes it carry the lines. Source scan only; no CLI needed.
+      - name: Check ADDED/MODIFIED requirements carry ID, Source and Scope lines
+        id: requirement_trace
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_requirement_trace_lines.py
+
       # Strict OpenSpec validation gate for bu-n58sv. The repository carries
       # both canonical specs and active deltas; validating both prevents
       # RFC-2119/prose and scenario-loss debt from accumulating behind scoped
@@ -436,6 +445,7 @@ jobs:
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
             spec_overwrites=${{ steps.spec_overwrites.outcome }}
+            requirement_trace=${{ steps.requirement_trace.outcome }}
             openspec_strict=${{ steps.openspec_strict.outcome }}
             archived_requirements=${{ steps.archived_requirements.outcome }}
             countable_tasks=${{ steps.countable_tasks.outcome }}
