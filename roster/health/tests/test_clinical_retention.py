@@ -154,8 +154,14 @@ def _run_migration_sql() -> list[str]:
 async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_else(pool) -> None:
     await _write_every_clinical_record(pool)
     # Re-create the pre-fix state: decaying classes, faded and expired rows.
+    # Historical write classes: doses and symptoms 'standard'; the rest 'stable'.
     await pool.execute(
-        "UPDATE facts SET permanence = 'standard', decay_rate = 0.008 WHERE scope = 'health'"
+        "UPDATE facts SET permanence = 'standard', decay_rate = 0.008 "
+        "WHERE predicate IN ('took_dose', 'symptom')"
+    )
+    await pool.execute(
+        "UPDATE facts SET permanence = 'stable', decay_rate = 0.002 "
+        "WHERE predicate IN ('medication', 'condition') OR predicate = 'measurement_weight'"
     )
     await _age(pool, "took_dose", validity="fading")
     await _age(pool, "symptom", validity="expired")
@@ -171,7 +177,10 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
         "validity, confidence, importance, source_butler) VALUES "
         "('c1', 'control_note', 'x', 'health', 'standard', 0.008, 'fading', 1.0, 5.0, 'health'), "
         "('c2', 'took_dose', 'x', 'general', 'standard', 0.008, 'fading', 1.0, 5.0, 'general'), "
-        "('c3', 'took_dose', 'x', 'health', 'standard', 0.008, 'superseded', 1.0, 5.0, 'health')"
+        "('c3', 'took_dose', 'x', 'health', 'standard', 0.008, 'superseded', 1.0, 5.0, 'health'), "
+        # Wellness ingest shares the measurement_* names but writes 'standard'.
+        "('w1', 'measurement_resting_hr', 'x', 'health', 'standard', 0.008, 'fading', 1.0, 5.0, "
+        "'health')"
     )
 
     for sql in _run_migration_sql():
@@ -179,7 +188,7 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
 
     clinical = await pool.fetch(
         "SELECT predicate, permanence, decay_rate, validity, metadata FROM facts "
-        "WHERE subject NOT IN ('c1', 'c2', 'c3')"
+        "WHERE subject NOT IN ('c1', 'c2', 'c3', 'w1')"
     )
     assert {r["predicate"] for r in clinical} >= {
         "medication",
@@ -192,17 +201,51 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
     assert all(r["permanence"] == "permanent" and r["decay_rate"] == 0.0 for r in current)
     # Only superseded history may stay out of 'active'.
     assert {r["validity"] for r in clinical} <= {"active", "superseded"}
-    assert all(r["validity"] == "active" for r in clinical if r["predicate"] != "medication")
+    for predicate in ("took_dose", "symptom", "measurement_weight"):
+        assert {r["validity"] for r in clinical if r["predicate"] == predicate} == {"active"}
+    for predicate in ("medication", "condition"):
+        live = [r for r in clinical if r["predicate"] == predicate and r["validity"] == "active"]
+        assert len(live) == 1
     symptom = next(r for r in clinical if r["predicate"] == "symptom")
     assert "archived_at" not in symptom["metadata"]
     untouched = {
         r["subject"]: (r["permanence"], r["validity"])
         for r in await pool.fetch(
-            "SELECT subject, permanence, validity FROM facts WHERE subject IN ('c1', 'c2', 'c3')"
+            "SELECT subject, permanence, validity FROM facts "
+            "WHERE subject IN ('c1', 'c2', 'c3', 'w1')"
         )
     }
     assert untouched == {
         "c1": ("standard", "fading"),
         "c2": ("standard", "fading"),
         "c3": ("standard", "superseded"),
+        "w1": ("standard", "fading"),
+    }
+
+
+async def test_health_003_does_not_revive_an_expired_record_with_a_newer_successor(pool) -> None:
+    await pool.execute(
+        "INSERT INTO facts (subject, predicate, content, scope, permanence, decay_rate, "
+        "validity, confidence, importance, source_butler, created_at) VALUES "
+        # Deleted by the owner after it expired: v2 is a newer retracted row for the same key.
+        "('gone', 'medication', 'v1', 'health', 'stable', 0.002, 'expired', 1.0, 5.0, 'health', "
+        "now() - interval '300 days'), "
+        "('gone', 'medication', 'v2', 'health', 'stable', 0.002, 'retracted', 1.0, 5.0, 'health', "
+        "now() - interval '200 days'), "
+        # An expired record with no successor returns.
+        "('kept', 'medication', 'v1', 'health', 'stable', 0.002, 'expired', 1.0, 5.0, 'health', "
+        "now() - interval '300 days')"
+    )
+
+    for sql in _run_migration_sql():
+        await pool.execute(sql)
+
+    state = {
+        (r["subject"], r["content"]): r["validity"]
+        for r in await pool.fetch("SELECT subject, content, validity FROM facts")
+    }
+    assert state == {
+        ("gone", "v1"): "expired",
+        ("gone", "v2"): "retracted",
+        ("kept", "v1"): "active",
     }

@@ -14,7 +14,9 @@ write ``permanent`` (decay_rate 0, which the sweep never selects).
 
 This migration corrects rows written before that change.  For every clinical fact
 (``scope = 'health'`` and predicate ``medication``, ``took_dose``, ``condition``,
-``symptom`` or ``measurement_*``) that is still current (``validity`` active,
+``symptom`` or ``measurement_*`` written as ``stable`` by ``measurement_log``;
+wellness ingest rows share the ``measurement_*`` names but were written as
+``standard`` and are left alone) that is still current (``validity`` active,
 fading or expired):
 
 * ``permanence`` becomes ``permanent`` and ``decay_rate`` 0, so no later sweep
@@ -22,13 +24,17 @@ fading or expired):
 * ``fading`` and ``expired`` return to ``active``.  The only writer of a fact
   ``expired`` state for these predicates is the decay sweep; its
   ``archived_at`` / ``archived_content`` marks are removed with it.  An expired
-  property fact (no ``valid_at``) returns only when no live row holds its
-  uniqueness key and no newer expired row competes for it, so the active-key
-  unique indexes cannot fail the migration; a point-in-time fact always returns.
+  property fact (no ``valid_at``) returns only when it is the newest row for its
+  uniqueness key (no live row holds the key, and no newer row of any state
+  follows it), so the active-key unique indexes cannot fail the migration and a
+  record the owner later retracted or superseded stays gone; a point-in-time
+  fact always returns.
 
 Superseded and retracted rows, other scopes and other predicates are untouched.
-Health facts are classified confidential and never reach ``public.memory_catalog``,
-so there is no catalog row to restore.
+Health facts other than measurements are classified confidential and have no
+``public.memory_catalog`` row; measurements stay at ``normal`` sensitivity on
+purpose, so a faded measurement's catalog row may be stale.  This migration does
+not write ``public.memory_catalog``; that repair is tracked in bu-l5l9ln.
 
 Guarded with ``to_regclass`` (a schema without the memory ``facts`` table is a
 no-op) and idempotent.  There is no downgrade of the data: the previous state was
@@ -68,7 +74,9 @@ def upgrade() -> None:
             WHERE f.scope = 'health'
               AND (
                   f.predicate IN ('medication', 'took_dose', 'condition', 'symptom')
-                  OR f.predicate LIKE 'measurement\\_%'
+                  -- measurement_log wrote 'stable'; wellness ingest (google_health,
+                  -- home_assistant) writes measurement_* as 'standard' and stays as is.
+                  OR (f.predicate LIKE 'measurement\\_%' AND f.permanence = 'stable')
               )
               AND (
                   f.validity IN ('active', 'fading')
@@ -77,8 +85,9 @@ def upgrade() -> None:
                       AND (
                           -- Point-in-time facts have no uniqueness rule.
                           f.valid_at IS NOT NULL
-                          -- A property fact returns only when no live row holds its key
-                          -- and no newer expired row competes for it.
+                          -- A property fact returns only when it is the newest row for its
+                          -- key: no live row holds the key and no newer row of any state
+                          -- (a retracted or superseded successor) follows it.
                           OR NOT EXISTS (
                               SELECT 1 FROM facts o
                               WHERE o.id <> f.id
@@ -95,8 +104,7 @@ def upgrade() -> None:
                                 )
                                 AND (
                                     o.validity IN ('active', 'fading')
-                                    OR (o.validity = 'expired'
-                                        AND (o.created_at, o.id) > (f.created_at, f.id))
+                                    OR (o.created_at, o.id) > (f.created_at, f.id)
                                 )
                           )
                       )
