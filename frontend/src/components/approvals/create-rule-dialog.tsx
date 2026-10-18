@@ -108,6 +108,7 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
               id="butler"
               className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
               value={form.butler}
+              disabled={!butlersQuery.data}
               onChange={(e) => setForm((f) => ({ ...f, butler: e.target.value }))}
             >
               <option value="">Select a butler</option>
@@ -117,17 +118,19 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
                 </option>
               ))}
             </select>
-            {butlersQuery.isError ? (
+            {butlersQuery.isLoading && (
+              <p className="text-muted-foreground text-xs mt-1">Loading butlers</p>
+            )}
+            {butlersQuery.isError && (
               <SourceDegradedNote
                 label="Butlers"
+                onRetry={() => void butlersQuery.refetch()}
                 className="mt-1"
-                onRetry={() => butlersQuery.refetch()}
               />
-            ) : (
-              <p className="text-muted-foreground text-xs mt-1">
-                The butler whose approvals own this rule.
-              </p>
             )}
+            <p className="text-muted-foreground text-xs mt-1">
+              The butler whose approvals own this rule.
+            </p>
           </div>
 
           <div>

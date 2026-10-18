@@ -1373,6 +1373,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Auto-approve matching tool calls without manual review.
 - Butler
 - Select a butler
+- Loading butlers
 - The butler whose approvals own this rule.
 - Tool Name
 - Description
@@ -4898,4 +4899,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3903*
+*Total strings: 3904*
