@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core import fleet_conditions
-from butlers.core.control_plane_identity import ShadowCycle
+from butlers.core.control_plane_identity import ShadowCycle, UnreadyDaemon
 
 pytestmark = pytest.mark.unit
 
 
-def _cycle(complete: bool = True) -> ShadowCycle:
-    return ShadowCycle(complete, 3, 3 if complete else 2, 0, 3, ())
+def _cycle(complete: bool = True, unready: tuple[UnreadyDaemon, ...] = ()) -> ShadowCycle:
+    return ShadowCycle(complete, 3, 3 if complete else 2, 0, 3 - len(unready), unready)
 
 
 def _row(butler: str | None) -> dict:
@@ -28,6 +28,7 @@ async def _run(
     complete: bool = True,
     handoff: bool = True,
     pass_signal: bool = True,
+    unready: tuple[UnreadyDaemon, ...] = (),
 ) -> list[str]:
     if handoff:
         monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", "1")
@@ -45,7 +46,7 @@ async def _run(
     ):
         await fleet_conditions.reconcile_fleet_condition(
             object(),
-            _cycle(complete),
+            _cycle(complete, unready),
             frozenset({"health", "finance"}),
             (lambda name: retired) if pass_signal else None,
         )
@@ -85,3 +86,25 @@ async def test_controller_after_cycle_passes_the_signal(monkeypatch) -> None:
         after = fleet_conditions.controller_after_cycle(object(), [], seen)
         await after(object(), _cycle())
     assert pass_fn.call_args.args[-1] is seen
+
+
+async def test_expected_but_unready_butler_never_resolves_by_retirement(monkeypatch) -> None:
+    # The expected-set guard is the backstop when a roster directory name differs from
+    # the butler name: an expected, unready butler must stay open whatever the signal says.
+    unready = (UnreadyDaemon("health", "stale", None),)
+    assert await _run(monkeypatch, butler="health", retired=True, unready=unready) == []
+
+
+def test_app_wires_the_retirement_signal_into_the_controller() -> None:
+    import ast
+    import inspect
+
+    from butlers.api import app
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(app)))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "controller_after_cycle"
+    ]
+    assert len(calls) == 1
+    assert ast.unparse(calls[0].args[-1]) == "get_discovery_diagnostics().is_retired"
