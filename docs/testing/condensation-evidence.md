@@ -166,9 +166,10 @@ required CI guard) therefore also runs `scripts/frontend_test_deletions.py` afte
 verdict. It derives case ids `<path>::<describe> > <it>` for every
 `frontend/**/*.{test,spec}.{ts,tsx,mjs}` file at the exact base and in the working tree. An id
 whose live count dropped is a loss: a deleted case or file, a case that becomes `.skip`,
-`.todo` or `.fails` (or sets `{ skip | todo | fails: true }` in an options object), or a
-commented-out case. An inline `.each([...])` table counts one case per top-level row, so
-removing a row is a loss. Added cases and untouched files never need evidence.
+`.todo`, `.fails`, `.skipIf` or `.runIf` (or sets `{ skip | todo | fails: true }` in an options
+object), or a commented-out case. An inline `.each([...])` table counts one case per top-level
+row, so removing a row is a loss; an inline `describe.each` table multiplies the cases nested
+in it. Added cases and untouched files never need evidence.
 
 A loss is excused only by a mapping file that the same change adds under
 `tests/frontend-test-deletions/`:
@@ -185,8 +186,7 @@ Limits: the scanner is a small lexer, not a TypeScript parser, and a case with a
 title is counted as `<dynamic>`. These forms still pass silently (follow-up bu-9faxpx): weakening
 a case's body, `it("x")` with no function, `if (false)` wrappers, vitest `include`/`exclude`
 edits, `.each` tables given as an identifier, spread or tagged template (counted as one row),
-conditional `skipIf`/`runIf`, and the node:test cases in
-`frontend/scripts/worktree-tooling-contract.mjs`. This does not run any frontend test.
+and the node:test cases in `frontend/scripts/worktree-tooling-contract.mjs`. This does not run any frontend test.
 
 ## Independently authorized contract evolution
 
