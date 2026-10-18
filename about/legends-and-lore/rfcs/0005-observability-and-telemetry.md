@@ -166,15 +166,15 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 |------------|------|--------|-------------|
 | `butlers.switchboard.ingest_result` | Counter | `source`, `outcome` | Ingest boundary outcomes |
 | `butlers.switchboard.thread_affinity.hit` | Counter | `source` (constant `email`), `destination_butler`, `policy_tier` (constant `affinity`), `schema_version` (constant `thread_affinity.v1`) | Thread affinity routing hit |
-| `butlers.switchboard.thread_affinity.miss` | Counter | `source`, `reason`, `schema_version` | Thread affinity miss (reason: `no_thread_id`, `no_history`, `conflict`, `disabled`, `error`) |
-| `butlers.switchboard.thread_affinity.stale` | Counter | `source`, `schema_version` | Historical match outside TTL |
+| `butlers.switchboard.thread_affinity.miss` | Counter | `source` (constant `email`), `reason`, `schema_version` (constant `thread_affinity.v1`) | Thread affinity miss (reason: `no_thread_id`, `no_history`, `conflict`, `disabled`, `error`) |
+| `butlers.switchboard.thread_affinity.stale` | Counter | `source` (constant `email`), `schema_version` (constant `thread_affinity.v1`) | Historical match outside TTL |
 | `butlers.switchboard.triage.rule_matched` | Counter | `rule_type`, `action`, `source_channel` | Triage rule match |
 | `butlers.switchboard.triage.pass_through` | Counter | `source_channel`, `reason` | Triage pass-through |
 | `butlers.switchboard.triage.evaluation_latency_ms` | Histogram | `result` | End-to-end triage latency |
 
 #### Switchboard Routing Metrics
 
-`SwitchboardTelemetry` (`roster/switchboard/tools/routing/telemetry.py`) owns these instruments. Its `_ALLOWED_ATTRIBUTE_KEYS` set drops any other key, lowercases values, and truncates them to 64 characters.
+`SwitchboardTelemetry` (`roster/switchboard/tools/routing/telemetry.py`) owns these instruments. Calls through `SwitchboardTelemetry.attrs()` (today only the route path in `roster/switchboard/tools/routing/route.py`) keep only `_ALLOWED_ATTRIBUTE_KEYS`, lowercase values, and truncate them to 64 characters. The ingress path in `src/butlers/modules/pipeline.py` passes its own attribute dict straight to seven of these instruments (`message_received`, `message_deduplicated`, `ingress_accept_latency_ms`, `lifecycle_transition`, `routing_decision_latency_ms`, `fallback_to_general` and `end_to_end_latency_ms`), so that filter does not apply there.
 
 | Instrument | Type | Labels | Description |
 |------------|------|--------|-------------|
@@ -198,7 +198,7 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 | `butlers.switchboard.inflight_requests` | Observable gauge | `schema_version` | Inflight switchboard requests |
 | `butlers.switchboard.circuit_open_targets` | Observable gauge | `schema_version` | Circuit-open downstream targets |
 
-"Allowed keys" means the subset of `source`, `destination_butler`, `outcome`, `lifecycle_state`, `error_class`, `policy_tier`, `fanout_mode`, `model_family`, `prompt_version` and `schema_version` that the call site supplies. Of these, `model_family`, `prompt_version` and `schema_version` are filled from caller-supplied tool arguments on the ingress path (`src/butlers/modules/pipeline.py`) and are not yet bounded by a closed set, so they are not in the permitted list above.
+"Allowed keys" means the subset of `source`, `destination_butler`, `outcome`, `lifecycle_state`, `error_class`, `policy_tier`, `fanout_mode`, `model_family`, `prompt_version` and `schema_version` that the call site supplies. Of these, `source`, `policy_tier`, `model_family`, `prompt_version` and `schema_version` are read from tool arguments on the ingress path (`src/butlers/modules/pipeline.py`; the `pipeline.process` MCP tool takes `source_channel` as free text) and are not bounded there. `model_family`, `prompt_version`, `schema_version` and `source` are not in the permitted list above, and `policy_tier` is permitted only where it comes from the validated envelope's `PolicyTier` set. The production ingest worker supplies none of the four tier and version arguments, so they take constant defaults today; the fix is tracked in bu-dr89b5.
 
 #### Ingestion Metrics
 
@@ -231,7 +231,7 @@ The counter is best-effort and recorded after the failure is logged: an emission
 
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, currently `closure`; an unsupported value is rejected before emission). Also permitted, each with the bound that keeps it safe: `operation` (the handler name of an ingestion Timeline GET route, a code-defined set), `scope_type` (`global` or `connector:<connector type>`, endpoint identity stripped), `lifecycle_state` (a closed set of code-defined request lifecycle names), `fanout_mode` (a closed set of code-defined fanout names), `kind` (the three bearer-scrub artifact kinds), `tier` (the closed `Complexity` tier set), and `from_model` / `to_model` (model catalog IDs, bounded like `model`).
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier` (the validated `PolicyTier` set; see the ingress note under Switchboard Routing Metrics), `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, currently `closure`; an unsupported value is rejected before emission). Also permitted, each with the bound that keeps it safe: `operation` (the handler name of an ingestion Timeline GET route, a code-defined set), `scope_type` (`global` or `connector:<connector type>`, endpoint identity stripped), `lifecycle_state` (a closed set of code-defined request lifecycle names), `fanout_mode` (a closed set of code-defined fanout names), `kind` (the three bearer-scrub artifact kinds), `tier` (the closed `Complexity` tier set), and `from_model` / `to_model` (model catalog IDs, bounded like `model`).
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 
