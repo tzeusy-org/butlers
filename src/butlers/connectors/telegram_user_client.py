@@ -838,19 +838,15 @@ class TelegramUserClientConnector:
         logger.info("Flushing all %d chat buffers (%s)", len(chat_ids), reason)
         await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
 
-    def _batch_participants(self, messages: list[Any] | None) -> list[str]:
-        """Sorted sender ids of a batch; the service sender when it took part."""
-        ids: set[str] = set()
+    def _batch_has_service_sender(self, messages: list[Any] | None) -> bool:
+        """Whether the login-code service sender (777000) wrote any batch message."""
         for m in messages or ():
             try:
-                sid = self._extract_sender_identity(m)
+                if self._extract_sender_identity(m) == TELEGRAM_SERVICE_SENDER:
+                    return True
             except Exception:
                 continue
-            if sid:
-                ids.add(str(sid))
-        if TELEGRAM_SERVICE_SENDER in ids:
-            return [TELEGRAM_SERVICE_SENDER]
-        return sorted(ids)
+        return False
 
     def _record_batch_filtered_event(
         self,
@@ -876,9 +872,10 @@ class TelegramUserClientConnector:
             subject_or_preview: Optional subject or preview text.
             status: Row status; default "filtered", use "error" for processing failures.
             error_detail: Optional exception message or validation error text.
-            messages: The buffered batch messages. Their sender ids are stored as
-                ``sender.participants`` so a 777000 login-code batch is scrubbed
-                like the envelope: preview, payload and ``error_detail``.
+            messages: The buffered batch messages. When the 777000 login-code
+                service sender took part, ``sender.participants`` records it so
+                the row is scrubbed like the envelope: preview, payload and
+                ``error_detail``.
         """
         payload = FilteredEventBuffer.full_payload(
             channel=self._config.channel,
@@ -891,9 +888,11 @@ class TelegramUserClientConnector:
             sender_identity=sender_identity,
             raw={},
         )
-        participants = self._batch_participants(messages)
-        if participants:
-            payload["sender"]["participants"] = participants
+        if self._batch_has_service_sender(messages):
+            # ingest.v1 types participants as {sender_id: display_name}; replay
+            # validates the stored payload, so keep that shape. Only the service
+            # sender is recorded: other senders' ids are not added to the row.
+            payload["sender"]["participants"] = {TELEGRAM_SERVICE_SENDER: TELEGRAM_SERVICE_SENDER}
         self._filtered_event_buffer.record(
             external_message_id=batch_event_id,
             source_channel=self._config.channel,
