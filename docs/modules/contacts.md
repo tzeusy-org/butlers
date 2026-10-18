@@ -110,12 +110,18 @@ None. The contacts module is a leaf module.
   complete-full-fetch receipt after all pages and local contact applications finish. Incremental sync
   never infers absence, including an empty unchanged-hash result; the current Telegram incremental
   implementation still returns the full list even when its hash is unchanged.
-- A full empty list refuses deletion even if its hash matches. A loss strictly greater than half the
-  pre-cycle active Telegram links also refuses: `max_shrink_fraction` defaults to `0.5`, is finite in
+- A full empty list refuses deletion even if its hash matches. A removed fraction strictly greater than
+  half also refuses, where removed is the set of pre-cycle active Telegram links absent from the
+  snapshot, `|active - present| / |active|`, so contacts added in the same snapshot cannot offset
+  removals; an empty active set deletes nothing. `max_shrink_fraction` defaults to `0.5`, is finite in
   `[0, 1)`, and accepts equality. This allows ordinary individual removals while parking substantial
   list loss; it is an implementation sanity parameter, not permission to delete entities or facts.
   Refusals log `contact_sync_absence_refused` with a bounded reason and counts. Safe positive work
   and an otherwise successful cursor may persist when only absence inference is refused.
+- A reappearing Telegram contact whose inactive local anchor entity was merged away or deleted fails
+  closed every cycle until an operator repairs the link. The failed cycle records the content-free
+  `contacts_sync_state.last_error` value `contacts source anchor unavailable` (instead of the generic
+  `contacts sync failed`) and logs `contact_sync_anchor_stalled` with a bounded reason, no ids.
 - Accepted absence marks only the configured account's active Telegram source links, preserving
   entities, Telegram handles and Google/other-provider links. `contact_sync_deleted_source` records
   new transitions after commit. Absence changes, affected version-cache eviction and successful

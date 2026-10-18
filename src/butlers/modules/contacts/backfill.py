@@ -31,6 +31,8 @@ import asyncpg
 
 from butlers.modules.contacts.owner import ContactsLookupAmbiguous, ContactsOwner
 from butlers.modules.contacts.sync import (
+    ANCHOR_STALL_ERROR,
+    DEFAULT_FAILURE_ERROR,
     CanonicalContact,
     ContactsSyncError,
     ContactsSyncMode,
@@ -1017,6 +1019,7 @@ class ContactBackfillEngine:
         ):
             raise ValueError("max_shrink_fraction must be finite and in [0, 1)")
         self._max_shrink_fraction = max_shrink_fraction
+        self._anchor_stalled = False
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
@@ -1031,6 +1034,7 @@ class ContactBackfillEngine:
         """Snapshot local source anchors before a configured Telegram cycle fetches."""
         if provider != "telegram" or provider != self._provider or account_id != self._account_id:
             raise ContactsSyncError("contacts batch scope does not match configured backfill")
+        self._anchor_stalled = False
         rows = await self._pool.fetch(
             "SELECT external_contact_id,local_entity_id,source_etag,last_seen_at,deleted_at "
             "FROM contacts_source_links WHERE provider=$1 AND account_id=$2",
@@ -1040,7 +1044,12 @@ class ContactBackfillEngine:
         return {row["external_contact_id"]: dict(row) for row in rows}
 
     def _refuse_absence(
-        self, reason: str, *, baseline_count: int | None, present_count: int | None
+        self,
+        reason: str,
+        *,
+        baseline_count: int | None,
+        present_count: int | None,
+        removed_count: int | None = None,
     ) -> None:
         logger.warning(
             "contact_sync_absence_refused",
@@ -1050,6 +1059,7 @@ class ContactBackfillEngine:
                 "account_id": self._account_id,
                 "baseline_count": baseline_count,
                 "present_count": present_count,
+                "removed_count": removed_count,
             },
         )
 
@@ -1076,11 +1086,17 @@ class ContactBackfillEngine:
             if not present:
                 self._refuse_absence("empty_full", baseline_count=len(active), present_count=0)
                 accept_absence = False
-            elif active and (len(active) - len(present)) / len(active) > self._max_shrink_fraction:
-                self._refuse_absence(
-                    "sharp_shrink", baseline_count=len(active), present_count=len(present)
-                )
-                accept_absence = False
+            elif active:
+                # Set-based: contacts added this cycle must not offset removals.
+                removed = set(active) - present
+                if len(removed) / len(active) > self._max_shrink_fraction:
+                    self._refuse_absence(
+                        "sharp_shrink",
+                        baseline_count=len(active),
+                        present_count=len(present),
+                        removed_count=len(removed),
+                    )
+                    accept_absence = False
         deleted = []
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -1153,13 +1169,33 @@ class ContactBackfillEngine:
         expired_cursor: bool,
     ) -> None:
         self._refuse_absence("cycle_failed", baseline_count=None, present_count=None)
+        stalled, self._anchor_stalled = self._anchor_stalled, False
         if isinstance(state_store, ContactsSyncStateStore) and state_store._pool is self._pool:
             await state_store.record_failure(
                 provider=self._provider,
                 account_id=self._account_id,
                 expected_state=expected_state,
                 expired_cursor=expired_cursor,
+                last_error=ANCHOR_STALL_ERROR if stalled else DEFAULT_FAILURE_ERROR,
             )
+
+    def _flag_anchor_stall(self, reason: str) -> None:
+        """Make a fail-closed reappearance stall visible on the sync state row.
+
+        A reappearing contact whose anchor entity was merged away or deleted
+        fails every cycle until an operator repairs the link. The failure is
+        recorded as a distinct, content-free ``last_error`` code instead of the
+        generic failure text; the log carries no external id or entity id.
+        """
+        self._anchor_stalled = True
+        logger.warning(
+            "contact_sync_anchor_stalled",
+            extra={
+                "reason": reason,
+                "provider": self._provider,
+                "account_id": self._account_id,
+            },
+        )
 
     async def _reappearing_anchor(self, contact: CanonicalContact) -> uuid.UUID | None:
         """A positive Telegram reappearance resumes only its exact inactive local anchor."""
@@ -1176,6 +1212,7 @@ class ContactBackfillEngine:
         if row is None:
             return None
         if not row["local_entity_id"] or not row["live"]:
+            self._flag_anchor_stall("anchor_unavailable")
             raise ContactsSyncError("inactive contact source anchor unavailable")
         return uuid.UUID(str(row["local_entity_id"]))
 
@@ -1222,6 +1259,7 @@ class ContactBackfillEngine:
             )
             if not exists:
                 if reappearing is not None:
+                    self._flag_anchor_stall("entity_unavailable")
                     raise ContactsSyncError("reappearing contact entity became unavailable")
                 logger.warning(
                     "ContactBackfill: resolved local_id=%s via %s but entity missing; "
