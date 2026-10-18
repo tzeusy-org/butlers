@@ -1,0 +1,371 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-ly3lv5-14-accepted-ingest-reply-20261019",
+  "bead": "bu-ly3lv5.14",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-vkkip2 for implementation bead bu-ly3lv5.14 (PR #4742, route every connector ingest submit through one status-checking helper so only an accepted Switchboard ingest reply counts as a submission). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-m0jwd1; approved subject: PR #4742 head 8c2d75af0f98952c595d54f8d015aaa1ae938bed plus the reviewer-computed clause (spec-clause.patch) and request. Governing requirement REQ-connector-base-spec-008 (Connector as Ingestion Primitive) in openspec/specs/connector-base-spec/spec.md, whose ID-only header lands in this same change; the change adds one scenario inside the block. The 7 owners are setup-only retained-test edits that replace non-conforming mock replies with the real Switchboard reply {\"status\": \"accepted\"}; no assertion changes. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/connectors/test_activitywatch_connector.py::test_process_window_event_keeps_raw_url_and_title_out_of_ingest_envelope",
+      "after": "tests/connectors/test_activitywatch_connector.py::test_process_window_event_keeps_raw_url_and_title_out_of_ingest_envelope",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the mocked ingest reply becomes {\"status\": \"accepted\"}, the reply Switchboard returns. submit_ingest now treats a non-dict reply as a rejected submission, so the bare AsyncMock result would fail the event before the envelope-privacy assertions run. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_home_assistant_measurement_history.py::test_history_event_uses_existing_wellness_envelope_with_measurement_timestamp",
+      "after": "tests/connectors/test_home_assistant_measurement_history.py::test_history_event_uses_existing_wellness_envelope_with_measurement_timestamp",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the mocked ingest reply is {\"status\": \"accepted\"}. An unconfigured AsyncMock returns a non-dict that submit_ingest rejects, so the history emission would report failure and skip the checkpoint and envelope the test pins. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_home_assistant_measurement_history.py::test_history_rows_use_historical_metadata_and_checkpoint_noneligible_transition",
+      "after": "tests/connectors/test_home_assistant_measurement_history.py::test_history_rows_use_historical_metadata_and_checkpoint_noneligible_transition",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the mocked ingest reply is {\"status\": \"accepted\"}. An unconfigured AsyncMock returns a non-dict that submit_ingest rejects, so the history emission would report failure and skip the checkpoint and envelope the test pins. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_home_assistant_wellness.py::test_dual_emission_ordering",
+      "after": "tests/connectors/test_home_assistant_wellness.py::test_dual_emission_ordering",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the fake call_tool returns {\"status\": \"accepted\"} instead of None. submit_ingest treats a None reply as a rejected submission, which would fail these emission-ordering and failure-isolation cases for the wrong reason. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_home_assistant_wellness.py::test_no_promotion_when_disabled",
+      "after": "tests/connectors/test_home_assistant_wellness.py::test_no_promotion_when_disabled",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the fake call_tool returns {\"status\": \"accepted\"} instead of None. submit_ingest treats a None reply as a rejected submission, which would fail these emission-ordering and failure-isolation cases for the wrong reason. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_home_assistant_wellness.py::test_secondary_failure_returns_false",
+      "after": "tests/connectors/test_home_assistant_wellness.py::test_secondary_failure_returns_false",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the fake call_tool returns {\"status\": \"accepted\"} instead of None. submit_ingest treats a None reply as a rejected submission, which would fail these emission-ordering and failure-isolation cases for the wrong reason. No assertion changes."
+    },
+    {
+      "before": "tests/connectors/test_live_listener_connector.py::test_process_segment_logs_ids_and_length_not_transcript",
+      "after": "tests/connectors/test_live_listener_connector.py::test_process_segment_logs_ids_and_length_not_transcript",
+      "contracts": [
+        "REQ-connector-base-spec-008"
+      ],
+      "reason": "Setup only: the mocked ingest reply moves from {\"status\": \"ok\"}, which Switchboard never returns and submit_ingest rejects as an unknown status, to {\"status\": \"accepted\"}. No assertion changes."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/connector-base-spec/spec.md",
+      "id": "REQ-connector-base-spec-008",
+      "before_sha256": "13e1352a01fbc747848e22c3ba0f9ff344170b5eaeba27b3a9fad7ad8bd0e21f",
+      "after_sha256": "44298cc4abf18be0e3834b388cd4e6d00ee116c2982fc36fa8d3426ed1a7c970"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/connectors/overview.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "41da7a56937a3d3adbe1d815d1d645056d8a5c991fbdc2829d8ecedf712ba5eb"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5cb6f6359b360e292c3dd35c853f91ba367ed8e968b29fdd66f9bf82ab1ca382"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/README.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "560fc5338129e1b3f3ebda39d5391526b844318650fce8d2783c07bf34997cc3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "19aee67a30e603fa52b5e20f2c12fc060545bee114f46f50b7eef88c8b549fee"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/activitywatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "31413a5d0c3f456f1b35409a94cb932283826f80d6164d0df916503455b60725"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2aa1cdd8dc06036ab0d0915df9200f9bcf241d8f6e6376ec732a0c70c0282950"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/discord_user.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "55cf1fe6b61c183118653234127c11ab632c3aba3931ca9c31bb3287f166286d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "21cbb0b6b52ed7375e25f379a8c71069ca91097d4061c7486513b6fa7aef4b1c"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/gmail.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "32a4c4c86a430ced4489ff8271b5a4a74ebaa847e7a22e5f15158713d40a18e7"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f872daa43c37444262c636c1d1bbf3e6024ba0f9b5b86103e45c846433bdaab3"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/google_calendar.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5a5b0f2fc42670f004899ed69efd7a02182a4dffe6e0e57363f149be56633a27"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4cba6e33f664a1b7f508372fab4e1c25e449e7843dfab093b1e97f59154a0c65"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/google_drive.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "db6e2cbe5906bd972d0089a285ee98551f12548150d19793af63c1f6cbb2e79b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1888d0f2492c82d251ce2f28b53aea1c2af6a95f0211067cdeb74c550ccc40e3"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/google_health.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "09522e82f4af2c361b554140a18967ce2a187d2298caf45c30a37fbc8ce63360"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3d44f28199ec52e9eed0d5bef71774d8235c7db65a50c230c40efa38dfd07e9f"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/home_assistant.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c66e64d94408ffa91943e1efd8643bc375a6fba9f86d1e71e909c18d0abab403"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "62dd47f3152f8a0f506d28b2e452e5c162c9a78e8c24c3cb20d83b651bb2d3a7"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/ingest_submit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "13a34901d46f78e08cf7c3edcdefe40bb81df7282469cd295c3146183a720d2c"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/live_listener/connector.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "1cca8cf9fb53bab1ee62a6cf384d791245c99553cc6040c6565bb94a3c4fdc1c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "741deb1a7169533062afe1f997145e9602ac4707787637eb89e9751cd834816a"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/owntracks.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5380d34c67d32d97c2a7ea470dc949921f84700383ad547a61dce916ce3722f3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "62c70511e1d17e44986c761d919f63322022102945b461009fbdd77a9752ede9"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/spotify.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fbced07b1f3a2a9ecf731e65e0527f075e59cef46fd3f73f06fa6a100945748d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f26e8e70870919fac34b4144b99c4e0d2cfd3b9257d63f211a5be8e91a602712"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/steam.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fda5df3e7aabdd856117e43357773775c8ca44f8d02c896e66eef8761924a2a0"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4c21ee6679d6000520b671782212d2df3dd0c91aeda2119d4bca15fac2da7730"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/telegram_bot.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b405b4a55c9679d68e92c6fb24b1b3a187715438e72d5dcf53c01fb0f8593776"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e9dbfc0b320bc1b13a3fa97051253789dc502cfda023226bf2e5f9e4fd1eb2e5"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/telegram_user_client.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7790136fd9a1057d95f07a2761ba391860cad82d5d6ff2beb7fc5c817b960726"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0adcc33a9163eb3c2348b25be9efe735635ec21de5ca6176a9911268af100e7b"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/whatsapp_user_client.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5ce6cdffaa9d0bfae2ba508720330661079f24453f5165ad1b76e179eeeef5fd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a1369e751a44af3529f41084405ac3c1b09c7fd58c907a0597c03ac776deaf89"
+      }
+    },
+    {
+      "path": "tests/connectors/test_activitywatch_connector.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "20c02a8f359954f6b9ad70bce9fca276c8797b889167a88d5588e5deb13c74e1"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1a4b91c09fb1d45a42f3c863a8156b151b69fb7b55e7879c5591ae4dee3aba16"
+      }
+    },
+    {
+      "path": "tests/connectors/test_home_assistant_measurement_history.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "62d06549cce9ad6145e6da61d006627962e8f104c18b3ef7169ab6299ce0ede6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4ff1540483a04ce6f45033b57fcbf975b5cacd7b088b4052082abb94ecc7c5f0"
+      }
+    },
+    {
+      "path": "tests/connectors/test_home_assistant_wellness.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "d89f16a9778c71d40ee8b1fd3ad69087336008194e59159cea18a20270792579"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "78d7d0aff2a924873b3a535c9ca83e144b2edddba9e75544a493ba367974341d"
+      }
+    },
+    {
+      "path": "tests/connectors/test_ingest_submit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "95bcad500c9ba1e923d69c24b29f60ca7384e0be93909238e343703dc4774c09"
+      }
+    },
+    {
+      "path": "tests/connectors/test_ingest_submit_connector_paths.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "b0351837661262a4986a20802ffa0d14f78a257fb90505dbc651c118c8cc1198"
+      }
+    },
+    {
+      "path": "tests/connectors/test_live_listener_connector.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "23a836e7b3518849a0f800b38612a10d097a1863880d193a72008740e6f74178"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "af03b7de9edf2c1a72ea348fea055e470190e36b1c9c8b812a9fdeaeeb9ea08d"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-ly3lv5-14-accepted-ingest-reply-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "9afb7532094202a9d384aa1ce9d4e908f1aa1f5c9ad05e80dc3c1a8b437f7be8"
+      }
+    },
+    {
+      "path": "tests/contracts/test_connector_ingest_submit_guard.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "07b0d53c550fbd411d2b59b33bac47e58cc80bb144c11eef556fb43a89e2fb67"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
