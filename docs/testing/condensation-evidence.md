@@ -158,6 +158,36 @@ production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
 
+## Frontend test-case deletions
+
+The Python definition scan above sees pytest definitions only. The same
+`check_condensation_ledger.py` entry point (so `make check-condensation-ledger` and the
+required CI guard) therefore also runs `scripts/frontend_test_deletions.py` after the Python
+verdict. It derives case ids `<path>::<describe> > <it>` for every
+`frontend/**/*.{test,spec}.{ts,tsx,mjs}` file at the exact base and in the working tree. An id
+whose live count dropped is a loss: a deleted case or file, a case that becomes `.skip`,
+`.todo`, `.fails`, `.skipIf` or `.runIf` (or sets `{ skip | todo | fails: true }` in an options
+object), or a commented-out case. An inline `.each([...])` table counts one case per top-level
+row, so removing a row is a loss; an inline `describe.each` table multiplies the cases nested
+in it. Added cases and untouched files never need evidence.
+
+A loss is excused only by a mapping file that the same change adds under
+`tests/frontend-test-deletions/`:
+
+```json
+{"deleted": {"<lost id>": {"successors": ["<live id>"], "reason": "why the successor covers it"}}}
+```
+
+Every lost id needs an entry, every entry must be a real loss, and each successor must be a
+live id that is not itself lost. Mapping files already on the base excuse nothing, so a later
+deletion is never hidden by an old entry. The Python ledger result and its output are
+unchanged; a frontend refusal prints `{"status": "REFUSED", "category": ...}` and exits 1.
+Limits: the scanner is a small lexer, not a TypeScript parser, and a case with a non-literal
+title is counted as `<dynamic>`. These forms still pass silently (follow-up bu-9faxpx): weakening
+a case's body, `it("x")` with no function, `if (false)` wrappers, vitest `include`/`exclude`
+edits, `.each` tables given as an identifier, spread or tagged template (counted as one row),
+and the node:test cases in `frontend/scripts/worktree-tooling-contract.mjs`. This does not run any frontend test.
+
 ## Independently authorized contract evolution
 
 On 2026-10-15 the repository owner answered **Yes** to the narrow policy amendment

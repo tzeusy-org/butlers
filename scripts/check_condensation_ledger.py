@@ -2311,6 +2311,8 @@ def main(argv=None):
     parser.add_argument("--expected-head")
     parser.add_argument("--source-head")
     args = parser.parse_args(argv)
+    import frontend_test_deletions as frontend
+
     try:
         root = args.repo_root.resolve()
         base = args.base
@@ -2340,6 +2342,11 @@ def main(argv=None):
         result = verify(
             root, base, [*args.ledger, *fresh], contract_directory=directory, trusted=trusted
         )
+        # Frontend test cases are outside the Python definition scan; see the module doc.
+        frontend.check(root, base)
+    except frontend.FrontendDeletionError as exc:
+        print(json.dumps({"status": "REFUSED", "category": str(exc)}))
+        return 1
     except EvidenceError as exc:
         print(json.dumps({"status": "REFUSED", "category": str(exc)}))
         return 1
