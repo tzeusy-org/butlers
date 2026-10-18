@@ -14,6 +14,7 @@ from butlers.tools.relationship.entity_merge import merge_entity_pair
 from butlers.tools.relationship.fact_authority import EntityTombstonedError
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
+    assert_prefers_channel,
     relationship_assert_fact,
 )
 from roster.relationship.tests.test_contacts_merge_no_stranded_triples import (  # noqa: F401
@@ -124,6 +125,28 @@ async def test_write_queued_behind_a_committing_merge_is_refused_after_the_lock(
     assert (
         await pool.fetchval(
             "SELECT count(*) FROM relationship.entity_facts WHERE object = 'race@x.test'"
+        )
+        == 0
+    )
+
+
+async def test_prefers_channel_on_a_tombstoned_subject_is_refused_as_tombstoned(pool):
+    source = await _insert_entity(pool, name="pref source", roles=[])
+    survivor = await _insert_entity(pool, name="pref survivor", roles=[])
+    await relationship_assert_fact(pool, source, "has-email", "pref@x.test", src="test")
+    await merge_entity_pair(pool, source_entity_id=source, target_entity_id=survivor)
+
+    with pytest.raises(EntityTombstonedError) as caught:
+        await assert_prefers_channel(pool, source, "email")
+
+    # The refusal, not the reachability error: the merge moved the contact fact away.
+    assert caught.value.code == "entity_tombstoned" and caught.value.side == "subject"
+    assert caught.value.survivor_id == str(survivor)
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM relationship.entity_facts "
+            "WHERE predicate = 'prefers-channel' AND subject = ANY($1::uuid[])",
+            [source, survivor],
         )
         == 0
     )

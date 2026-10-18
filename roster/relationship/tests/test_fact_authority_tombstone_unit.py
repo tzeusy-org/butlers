@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import uuid
 
 import pytest
@@ -81,3 +82,26 @@ async def test_non_write_paths_still_reach_a_tombstoned_entity() -> None:
     conn = _Conn({subject: "x"})
     await _lock(conn, subject, "a@x.test")  # retract/confirm paths do not set the flag
     assert conn.calls == ["lock"]
+
+
+async def test_prefers_channel_refuses_a_tombstoned_subject_before_reachability(
+    monkeypatch,
+) -> None:
+    writer = importlib.import_module("butlers.tools.relationship.relationship_assert_fact")
+
+    async def _no_op(*args, **kwargs):
+        return None
+
+    async def _unreachable(*args, **kwargs):
+        return False  # a merge moved the contact fact to the survivor
+
+    monkeypatch.setattr(writer, "_validate_predicate", _no_op)
+    monkeypatch.setattr(writer, "_entity_has_reachability_fact", _unreachable)
+    subject, survivor = uuid.uuid4(), uuid.uuid4()
+    conn = _Conn({subject: str(survivor)})
+
+    with pytest.raises(EntityTombstonedError) as caught:
+        await writer.assert_prefers_channel(None, subject, "email", conn=conn)
+
+    assert caught.value.survivor_id == str(survivor)
+    assert conn.calls == ["lock", "read"]

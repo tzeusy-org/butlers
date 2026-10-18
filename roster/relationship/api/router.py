@@ -2256,8 +2256,6 @@ async def dismiss_queue_entity(
             verified=False,
         )
     except ValueError as exc:
-        if _is_entity_tombstoned(exc):
-            raise _entity_tombstoned_response(exc) from exc
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid_predicate", "message": str(exc)},
