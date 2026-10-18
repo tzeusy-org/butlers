@@ -2183,7 +2183,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Butlers, status board
 - The staff, at a glance
-- {} of {} reporting healthy
 
 ## `frontend/src/components/butlers/StatusBoardCell.tsx`
 
@@ -2606,7 +2605,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - No activity recorded for this window.
 - Location points appear when the chronicler detects travel or place events.
-- Location map
 
 ## `frontend/src/components/chronicles/RecentDaysIndex.tsx`
 
@@ -4914,4 +4912,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3916*
+*Total strings: 3914*
