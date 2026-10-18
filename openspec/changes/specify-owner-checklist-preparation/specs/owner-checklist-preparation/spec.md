@@ -19,9 +19,16 @@ silently truncating.
 
 Checklist drafting, revision and match proposal are General `record`
 capabilities. Their stored text SHALL carry the invoking goal's taint stamp, so
-a draft or proposal built from captured third-party content stays tainted until
-the owner confirms it. Confirming a revision is an owner decision under the
-confirmation requirement below, never a model action.
+a draft or proposal built from captured third-party content stays tainted. Owner
+confirmation makes a revision the preparation target but does not clear taint:
+a revision confirmed through a goal's approved call keeps that goal's taint
+stamp. Only an owner-authored revision, one the owner enters or edits on the
+owner surface and writes through an owner-origin dashboard call
+(REQ-capability-authorization-007), is untainted. Both confirmation paths
+exist: a goal-drafted revision is confirmed through a parked effect, and an
+owner-authored revision is confirmed by the owner's own submit, which is the
+server-recorded per-event approval. Confirming a revision is an owner decision
+under the confirmation requirement below, never a model action.
 
 ID: REQ-owner-checklist-preparation-001
 Source: heart-and-soul/vision.md Rules 1 and 6; RFC 0038 D2, D4 and D6; bu-ijzgu6 owner-adopted text (PR #4217)
@@ -68,6 +75,12 @@ Scope: v1-mandatory
 - **WHEN** a goal exposed to captured third-party content drafts clauses or proposes matches
 - **THEN** the stored draft and proposals MUST carry that goal's taint stamp
 - **AND** they MUST NOT become an owner-confirmed revision or match without the owner's confirmation
+- **AND** after confirmation through that goal's approved call the revision keeps the taint stamp
+
+#### Scenario: An owner-authored revision is untainted
+- **WHEN** the owner enters or edits clauses on the owner surface and submits them
+- **THEN** the owner-origin dashboard call writes the revision untainted and the submit is the per-event approval
+- **AND** no goal is involved
 
 ### Requirement: [TARGET-STATE] Evidence coverage uses source-owned version and read authority
 
@@ -96,9 +109,16 @@ when its identifier is known. Until both this pre-read authority and a
 source-owned version/read fence exist, a Finance or Travel match MUST remain
 `unavailable` for coverage.
 
-Source-owned fence operations are not model-reachable. General's deterministic
+The read-only specialist resolution (least clause-relevant fact, immutable
+version, current read authority, bounded label) is a goal-plane capability
+called inside that owner-selected grant with a verified assertion. A version or
+fact relayed by a goal to General is a proposal, not evidence. Source-owned
+prepare and release operations are not model-reachable. General's deterministic
 code SHALL obtain them only through named, allowlisted service-plane endpoints
-that start no goal and no reasoning session.
+that start no goal and no reasoning session. They accept only a version General
+already holds and return only an opaque fence or a content-blind refusal: no
+label, fact, existence signal or version. A clause becomes `covered` only
+against a version the owning source has itself verified through prepare.
 
 ID: REQ-owner-checklist-preparation-002
 Source: heart-and-soul/architecture.md §Why MCP as the Universal Interface; RFC 0038 D2, D4 and D7; REQ-capability-authorization-004 and -007; bu-ijzgu6 owner-adopted text (PR #4217)
@@ -125,6 +145,11 @@ Scope: v1-mandatory
 - **THEN** the source owner MUST refuse before returning even a specialist label, existence signal, clause fact, or version
 - **AND** absent, mismatched, revoked, expired, unreadable, or fabricated authority MUST yield only a content-blind typed refusal with packet revision and history unchanged
 
+#### Scenario: The service plane is never a disclosure path
+- **WHEN** General's deterministic code calls a source-owned prepare or release endpoint
+- **THEN** the endpoint returns only an opaque fence or a content-blind refusal
+- **AND** a model-relayed version never makes a clause `covered`
+
 #### Scenario: Specialist read failure does not become coverage
 - **WHEN** the owning specialist refuses, times out, loses read authority, or reports a changed version
 - **THEN** an unreadable or unauthorized match MUST be `unavailable`, while a readable changed version MUST be `needs_review`
@@ -139,13 +164,21 @@ Scope: v1-mandatory
 
 An LLM MAY propose matches but MUST NOT mint an owner-confirmed preparation
 receipt. Confirming a checklist revision and issuing a preparation receipt SHALL
-each be a General `record` capability that is park-only for every goal origin
-and exposure state: the call parks as a per-event owner approval through the
-approvals module and SHALL NOT be satisfied by a standing rule. The approval
-SHALL present the exact checklist revision, ordered active clause decisions,
-excluded-clause provenance, accepted source versions and canonical payload
-digest on the owner surface, and on approval the stored call, or the owner's
-edit of it, SHALL execute rather than any call a model re-issues. General SHALL
+each be a General `record` capability whose catalog entry declares an
+always-per-event approval mode: the broker applies it as park-only in every
+grant, whatever the origin or exposure, so the call parks as a per-event owner
+approval through the approvals module and SHALL NOT be satisfied by a standing
+rule. That mode is an addition this change depends on and does not itself
+define (see the proposal). The owner's own submit on the owner surface is an
+owner-origin dashboard call and is the server-recorded per-event approval
+without a goal. The confirm and issue call arguments SHALL carry the exact
+checklist revision digest, ordered active clause decisions, excluded-clause
+manifest and provenance, and accepted source versions, so the approval digest
+binds them together with the operation identity and canonical payload digest.
+The approval SHALL present the same items on the owner surface, and on approval
+the stored call, or the owner's edit of it, SHALL execute rather than any call a
+model re-issues. At execution General SHALL refuse with a re-prepare result when
+current state differs from those arguments. General SHALL
 issue one immutable receipt and exportable index only for an executed call whose
 verified assertion carries the approval reference covering the exact call
 digest. A caller-supplied actor, confirmation flag, source reference, or
@@ -161,7 +194,7 @@ always require the owner's per-event approval, and an approval of an effect an
 exposed invocation requested SHALL NOT count toward standing-rule promotion.
 
 ID: REQ-owner-checklist-preparation-003
-Source: heart-and-soul/vision.md Rules 1 and 6; RFC 0038 D4, D6, D13 and D19; REQ-capability-authorization-010 and -014; bu-ijzgu6 owner-adopted text (PR #4217)
+Source: heart-and-soul/vision.md Rules 1 and 6; RFC 0038 D4, D6, D13 and D19; REQ-capability-authorization-007, -010 and -014; bu-n7zmbp.2; bu-ijzgu6 owner-adopted text (PR #4217)
 Scope: v1-mandatory
 
 #### Scenario: Exact confirmed complete packet receives one immutable receipt
@@ -187,7 +220,12 @@ Scope: v1-mandatory
 #### Scenario: An exposed goal prepares but cannot confirm
 - **WHEN** a goal exposed to captured third-party content prepares a packet and requests a receipt
 - **THEN** the request MUST park for the owner's per-event approval and MUST NOT be approved by any standing rule
-- **AND** the exposed goal's drafts and proposals remain tainted until the owner confirms them
+- **AND** the exposed goal's drafts and proposals remain tainted, including after the owner approves them
+
+#### Scenario: Approval binds the shown state
+- **WHEN** another goal re-prepares the packet after the owner saw the approval
+- **THEN** execution compares current state with the approved call arguments and refuses with a re-prepare result
+- **AND** no receipt is issued for state the owner did not see
 
 #### Scenario: Export retains source trace without public disclosure
 - **WHEN** the owner exports a confirmed packet index
@@ -196,9 +234,11 @@ Scope: v1-mandatory
 
 ### Requirement: [TARGET-STATE] Current completion is revision-fenced and replay-safe
 
-General SHALL compare the current checklist revision, owner confirmation,
-accepted match manifest, and every accepted source version/read fence at the
-final commit boundary, when the approved call executes. An edit, privacy change
+General SHALL compare the approved call's arguments (checklist revision digest,
+clause decisions, exclusion manifest, accepted match manifest, accepted source
+versions) with the current checklist revision, owner confirmation, accepted
+match manifest, and every accepted source version/read fence at the final commit
+boundary, when the approved call executes. An edit, privacy change
 or source change between preparation and that boundary MUST refuse a
 current-complete receipt even when the checklist revision itself did not change,
 and the owner SHALL be told to prepare again. Equal-revision contenders MUST NOT
@@ -270,7 +310,7 @@ such as re-evaluating the current projection after a source change, SHALL run
 in deterministic job mode with no reasoning session and SHALL NOT admit a goal.
 
 ID: REQ-owner-checklist-preparation-005
-Source: heart-and-soul/vision.md Rules 1 and 4; RFC 0038 D2, D5 and D18; bu-ijzgu6 owner-adopted text (PR #4217)
+Source: heart-and-soul/vision.md Rules 1 and 4; RFC 0038 D2 and D5; bu-ijzgu6 owner-adopted text (PR #4217)
 Scope: v1-mandatory
 
 #### Scenario: Preparation does not claim submission
