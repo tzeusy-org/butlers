@@ -8,6 +8,7 @@ the stored name is not a valid zone.
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -158,6 +159,21 @@ async def test_dst_transition_day_window_is_the_actual_local_day(instant, start,
     assert got_end - got_start == timedelta(hours=hours)
 
 
+docker_available = shutil.which("docker") is not None
+
+
+async def test_owner_zone_read_is_schema_qualified_to_public_state():
+    """A revert to the unqualified ``state`` read fails here, without Docker."""
+    pool = _pool({"timezone": "Europe/Berlin"})
+
+    await owner_briefing_zone(pool)
+
+    sql = pool.fetchval.call_args[0][0]
+    assert "public.state" in sql
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
 async def test_owner_zone_comes_from_public_state_not_the_butlers_own_state_table(
     provisioned_postgres_pool,
 ) -> None:
@@ -171,15 +187,16 @@ async def test_owner_zone_comes_from_public_state_not_the_butlers_own_state_tabl
         "updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
     )
     async with provisioned_postgres_pool(schema="health") as pool:
+        await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
         await pool.execute(create.format("public"))
         await pool.execute(create.format("health"))
         await pool.execute(
-            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1::jsonb)",
-            '{"timezone": "Europe/Berlin"}',
+            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
+            {"timezone": "Europe/Berlin"},
         )
         await pool.execute(
-            "INSERT INTO health.state (key, value) VALUES ('settings.general', $1::jsonb)",
-            '{"timezone": "America/Los_Angeles"}',
+            "INSERT INTO health.state (key, value) VALUES ('settings.general', $1)",
+            {"timezone": "America/Los_Angeles"},
         )
 
         zone = await owner_briefing_zone(pool)
