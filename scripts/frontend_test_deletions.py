@@ -11,14 +11,15 @@ successor ids and a reason.  Mapping files already on the base excuse nothing, s
 later deletion is never hidden by an old entry.
 
 A case that stops being live counts as a loss: it is deleted, its file is deleted, it
-becomes ``.skip``/``.todo``/``.fails`` (or sets ``{ skip | todo | fails: true }`` in an options
-object), or it is commented out.  An inline ``.each([...])`` table counts one case per top-level
-row, so removing a row is a loss.
+becomes ``.skip``/``.todo``/``.fails``/``.skipIf``/``.runIf`` (or sets
+``{ skip | todo | fails: true }`` in an options object), or it is commented out.
+An inline ``.each([...])`` table counts one case per top-level row, so removing a row
+is a loss; a ``describe.each`` table multiplies the cases nested in it.
 
 Remaining silent forms (follow-up bu-9faxpx): weakening a case's body, ``it("x")`` with no
 function, ``if (false)`` wrappers, vitest ``include``/``exclude`` edits, ``.each`` tables given as
-an identifier, a spread or a tagged template (counted as one row), conditional ``skipIf``/``runIf``,
-and the node:test cases in ``frontend/scripts/worktree-tooling-contract.mjs``.
+an identifier, a spread or a tagged template (counted as one row), and the node:test cases in
+``frontend/scripts/worktree-tooling-contract.mjs``.
 
 The scanner is a small lexer (comments, strings, templates and regex literals are
 skipped, parentheses are balanced), not a TypeScript parser.  Cases whose title is
@@ -36,8 +37,8 @@ from pathlib import Path, PurePosixPath
 MAPPING_DIRECTORY = "tests/frontend-test-deletions"
 _CASE_FILE = re.compile(r"^frontend/.+\.(test|spec)\.(ts|tsx|mjs)$")
 _CALLS = {"describe", "it", "test"}
-_NOT_LIVE = {"skip", "todo", "fails"}
 _OPTION_FLAGS = {"skip", "todo", "fails"}
+_NOT_LIVE = _OPTION_FLAGS | {"skipIf", "runIf"}
 _REGEX_PRECEDERS = {"(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "return", "=>"}
 
 
@@ -215,7 +216,8 @@ def case_ids(path: str, source: str) -> Counter:
     """Count live case ids; ``.skip``/``.todo`` cases are not live."""
     tokens = tokenize(source)
     found: Counter = Counter()
-    contexts: list[tuple[str, int]] = []  # (describe title, paren depth that closes it)
+    # (describe title, paren depth that closes it, rows of an inline describe.each table)
+    contexts: list[tuple[str, int, int]] = []
     depth, i = 0, 0
     while i < len(tokens):
         kind, text = tokens[i]
@@ -245,13 +247,16 @@ def case_ids(path: str, source: str) -> Counter:
                 )
                 title = "<dynamic>" if title is None else title
                 live = not (set(modifiers) & _NOT_LIVE) and not _options_not_live(tokens, j)
-                chain = " > ".join([*(t for t, _ in contexts), title])
+                chain = " > ".join([*(t for t, _, _ in contexts), title])
                 if text == "describe":
                     if live:
-                        contexts.append((title, depth + 1))
-                else:
-                    if live:
-                        found[f"{path}::{chain}"] += rows
+                        contexts.append((title, depth + 1, rows))
+                elif live:
+                    outer = 1
+                    for _, _, context_rows in contexts:
+                        outer *= context_rows
+                    found[f"{path}::{chain}"] += rows * outer
+                i = j - 1  # resume at the call paren, not inside the consumed modifier groups
         i += 1
     return found
 

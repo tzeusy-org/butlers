@@ -300,3 +300,60 @@ def test_fails_and_option_object_weakening_forms_are_not_live(weakened: str) -> 
 )
 def test_options_that_do_not_weaken_the_case_stay_live(live: str) -> None:
     assert len(fe.case_ids(PATH, f'describe("S", () => {{ {live} }});')) == 1
+
+
+@pytest.mark.parametrize(
+    "weakened",
+    [
+        'it.skipIf(true)("x", () => {});',
+        'it.runIf(false)("x", () => {});',
+        'it.skipIf(process.env.CI)("x", () => {});',
+    ],
+)
+def test_conditional_skip_and_run_forms_are_not_live(weakened: str) -> None:
+    assert not fe.case_ids(PATH, f'describe("S", () => {{ {weakened} }});')
+
+
+def test_describe_each_keeps_its_title_and_multiplies_nested_cases() -> None:
+    source = """\
+describe("Outer", () => {
+  describe.each([[1], [2], [3]])("d %s", (n) => {
+    it("x", () => {});
+    it.each([[1], [2]])("y %s", () => {});
+  });
+  it("after", () => {});
+});
+"""
+    ids = fe.case_ids(PATH, source)
+    assert ids[f"{PATH}::Outer > d %s > x"] == 3
+    assert ids[f"{PATH}::Outer > d %s > y %s"] == 6
+    assert ids[f"{PATH}::Outer > after"] == 1
+
+
+def test_describe_skip_if_keeps_the_describe_title_scoping_balanced() -> None:
+    source = """\
+describe("Outer", () => {
+  describe.skipIf(false)("gated", () => {
+    it("x", () => {});
+  });
+  it("after", () => {});
+});
+"""
+    ids = fe.case_ids(PATH, source)
+    assert ids[f"{PATH}::Outer > after"] == 1
+    assert f"{PATH}::Outer > gated > x" not in ids
+
+
+def test_removing_a_describe_each_row_is_refused(repo: Path) -> None:
+    source = """\
+describe("Outer", () => {
+  describe.each([[1], [2]])("d %s", () => {
+    it("x", () => {});
+  });
+});
+"""
+    _write(repo, source)
+    _git(repo, "commit", "-qam", "describe each")
+    _write(repo, source.replace("[[1], [2]]", "[[1]]"))
+    with pytest.raises(fe.FrontendDeletionError, match="without-successor-mapping"):
+        fe.check(repo, "HEAD")
