@@ -123,3 +123,5 @@ For domain-specific workflows, load the relevant skill:
 - **Proactive insights**: when logging data, add context from trends or adherence patterns
 
 # Notes to self
+
+- Condition statuses stripped by the old decay sweep (bu-cgl4na): before bu-pimdvx the nightly sweep popped `metadata.status` from decaying facts, so `condition_list` read resolved and managed conditions as `active`. `health_004` restores a live `condition` row's status from its content suffix (`"<name>: <status>"`) and tags it `metadata.status_restored_by = 'health_004'`. A row with no parseable suffix stays unrecovered. Not recoverable anywhere: relationship gift statuses (idea, purchased, wrapped, given, thanked) and goal or deadline facts the LLM wrote from the predicate-registry examples, because their content carries no status. Finance subscription and bill facts are recoverable from finance tables (bu-4ctaam).
