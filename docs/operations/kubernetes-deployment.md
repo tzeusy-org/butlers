@@ -173,6 +173,19 @@ credential leaves the cluster. The target keeps the release's exit status; if th
 unreachable it prints that no row was recorded, and a failed write after a good release only
 warns. Boot rows (`source='boot'`) are separate: a pod restart is not a release.
 
+### Running the CLI in a pod
+
+The app image puts `/app/.venv/bin` on `PATH`, so the CLI runs directly:
+
+```bash
+kubectl -n <namespace> exec deploy/dashboard-api -- butlers <cmd>
+```
+
+Do not use `uv run --frozen --no-dev butlers` for this: `uv run` re-syncs and reinstalls the
+local package inside the running container's venv on every exec. The image entrypoint still
+starts the daemon through `uv run`; `scripts/k8s/record-deploy.sh` execs
+`/app/.venv/bin/butlers` explicitly, so it also works on images built before the `PATH` change.
+
 ### Iterating on a change
 
 Commit, then ship the commit from `deploy/helm/butlers`:

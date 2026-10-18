@@ -60,6 +60,11 @@ COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev ${EXTRAS:+--extra "$EXTRAS"}
 
+# The project venv's console scripts on PATH, so `kubectl exec <pod> -- butlers <cmd>` works
+# without `uv run` (which re-syncs the venv inside the running container). Appended, not
+# prepended: `python`, `uv` and the other tools keep resolving exactly as before.
+ENV PATH="$PATH:/app/.venv/bin"
+
 # 4. Supporting files (alembic, scripts — change rarely)
 COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
