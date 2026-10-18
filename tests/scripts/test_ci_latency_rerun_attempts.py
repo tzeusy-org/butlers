@@ -199,3 +199,17 @@ def test_rerun_attempt_is_a_documented_reason():
     docs = (Path(__file__).resolve().parents[2] / "docs/operations/ci-latency.md").read_text()
     assert "`rerun-attempt`" in docs
     assert "bu-eb32hj" not in docs
+
+
+def test_report_md_states_that_rerun_earlier_attempts_are_read(tmp_path):
+    fetch = fetcher(
+        [competitor(900, attempt=2)],
+        attempt_jobs={900: LATEST_ONLY},
+        all_jobs={900: EARLIER_ATTEMPT},
+    )
+
+    latency.write_report(observe(fetch), tmp_path)
+
+    markdown = (tmp_path / "report.md").read_text()
+    assert "earlier attempts" in markdown
+    assert "Only each other run's latest attempt" not in markdown

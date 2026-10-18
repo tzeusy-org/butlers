@@ -294,7 +294,10 @@ def attribute(read, repository, samples, sample_jobs):
                         # attempt, so read every attempt in the same single bounded page.
                         rerun = run["run_attempt"] > 1
                         if rerun:
-                            endpoint = f"repos/{repository}/actions/runs/{key}/jobs?filter=all&per_page=100"
+                            endpoint = (
+                                f"repos/{repository}/actions/runs/{key}/"
+                                "jobs?filter=all&per_page=100"
+                            )
                         else:
                             endpoint = (
                                 f"repos/{repository}/actions/runs/{key}/attempts/"
@@ -557,8 +560,9 @@ def write_report(report, output):
         lines += [
             "Shard scheduling wait attribution: jobs executing on a runner when each merge_group "
             "run's shards were created, by triggering event (own run excluded). Unattributable "
-            "samples are counted, not dropped, with the cause of each recorded. Only each other "
-            "run's latest attempt is read. Extra job reads: "
+            "samples are counted, not dropped, with the cause of each recorded. Each other run's "
+            "latest attempt is read, and a re-run's earlier attempts too (one filter=all page). "
+            "Extra job reads: "
             f"{attribution['job_reads']} of "
             f"{attribution['job_read_budget']}; run-index pages: {attribution['run_index_pages']}"
             + ("; run index truncated" if attribution["run_index_truncated"] else "")
