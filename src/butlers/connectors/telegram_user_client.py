@@ -1459,10 +1459,16 @@ class TelegramUserClientConnector:
                     raw_for_error = message.to_dict() if hasattr(message, "to_dict") else {}
                 except Exception:
                     raw_for_error = {}
+                # The real sender lets the buffer scrub a 777000 login code as
+                # aggressively as the normal path; a failed lookup stays "unknown".
+                try:
+                    error_sender = self._extract_sender_identity(message)
+                except Exception:
+                    error_sender = "unknown"
                 self._filtered_event_buffer.record(
                     external_message_id=msg_id_str,
                     source_channel=self._config.channel,
-                    sender_identity="unknown",
+                    sender_identity=error_sender,
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -1472,7 +1478,7 @@ class TelegramUserClientConnector:
                         external_event_id=msg_id_str,
                         external_thread_id=None,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=error_sender,
                         raw=raw_for_error,
                     ),
                     status="error",
