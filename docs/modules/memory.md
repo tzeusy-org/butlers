@@ -107,8 +107,8 @@ recording the fact reference, a value excerpt and the fact's server-stamped auth
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
 A closure that raises never fails the fact write: the write commits, the gap stays open, and
-`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`) is incremented next to a
-warning log.
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, per `butler`) is incremented after a
+warning log; a failure to record the counter is logged and never fails the write.
 
 When `store_fact` creates a registered inverse or symmetric narrative edge, the generated
 active row also answers the original object's gap. Its citation is the inverse row's own UUID,
