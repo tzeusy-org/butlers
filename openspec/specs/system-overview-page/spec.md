@@ -531,8 +531,9 @@ the dashboard instead of only via direct database access.
   has been raised for this condition" and marks the tile degraded
 - **AND** the same condition still inside that bound reports `within_grace` and
   renders calmly
-- **AND** a condition resolved inside that bound with no marker carries no attention
-  line, because nothing should have paged
+- **AND** a condition resolved inside that bound (its active time at most the grace
+  plus one controller pass) with no marker carries no attention line, because nothing
+  should have paged; one resolved after that bound keeps `not_raised`
 - **AND** an unreadable attention projection still reports `unavailable`, which wins
   over `not_raised`
 - **AND** the grace reuses the producer's own constant and this surface sends no page
