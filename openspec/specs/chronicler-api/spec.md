@@ -727,6 +727,8 @@ ingestion errors are surfaced without direct database access.
 A read endpoint SHALL return the day's per-lane balance annotated against the
 owner's rolling baseline ("vs usual").
 
+ID: REQ-chronicler-api-013
+
 #### Scenario: Balance returns deltas vs usual
 
 - **WHEN** a client requests the daily balance for a date
@@ -738,6 +740,8 @@ owner's rolling baseline ("vs usual").
 
 A read endpoint SHALL return week- and month-grained balance trends, streaks, and
 anomalies derived from the chronicler's own synthesized baselines.
+
+ID: REQ-chronicler-api-014
 
 #### Scenario: Week trends return per-lane series
 
