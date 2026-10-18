@@ -24,7 +24,8 @@ tasks for the `[Unknown]`s and the follow-on implementation work that adoption u
       `public.expected_signals` today; REQ-connector-silent-source-001 needs one per evaluated source.
 - [ ] 2.4 Whether operator-paused or maintenance state exists per connector ("where supported" in
       connector-base-spec) and where it is read.
-- [ ] 2.5 Which table `roster/switchboard/api/router.py:1132` orders by `observed_at` from.
+- [x] 2.5 Closed: `roster/switchboard/api/router.py:1132` is unrelated to the dashboard ordering
+      question; dashboard reads order on `public.ingestion_events.received_at` (design.md).
 - [ ] 2.6 Whether the Telegram user client is heartbeating while silent (the bead reports it dark
       since 2026-07-18). Needs a separately authorized content-blind operational packet; do not infer
       a Telegram lapse case from this spec.

@@ -116,7 +116,7 @@ stale on source time. A provider-reported correction or edit SHALL be a new even
 provider identity and its own source time, and SHALL NOT overwrite the original event's fields.
 
 ID: REQ-connector-event-clock-004
-Source: bu-h40h2b.12 Slice A acceptance 1 and 2; [Observed] Telegram edits, Calendar `updated` and Drive `modifiedTime` already enter the idempotency key (src/butlers/connectors/google_calendar.py, google_drive.py)
+Source: bu-h40h2b.12 Slice A acceptance 1 and 2; [Observed] Calendar `updated` and Drive `modifiedTime` already enter the idempotency key (src/butlers/connectors/google_calendar.py, google_drive.py); Telegram edits currently share the original message's key and are deduplicated against it (telegram_bot.py:1835/1863, ingest.py:285-286; bu-gteg0f), so the corrected-event rule is a requirement on that fix, not current behavior
 Scope: v1-mandatory
 
 #### Scenario: Redelivery does not rewrite

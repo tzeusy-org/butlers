@@ -5,10 +5,12 @@ the source the system holds, and whether a sense is alive. The dashboard shows c
 times as if they were coverage (bu-h40h2b.12, waiting since 2026-09-14).
 
 - **One clock.** `ingest.v1` carries `event.observed_at`, which the base spec defines as "when the
-  connector observed the event". Connectors use it two ways: Gmail, Home Assistant and the live
-  listener put a source-stated time in it, while Telegram (bot and user client), Discord, Steam,
+  connector observed the event". Connectors use it two ways: Gmail and Home Assistant (WebSocket
+  `time_fired`; the REST poll puts poll time) put a source-stated time in it, while Telegram (bot and user client), Discord, Steam,
   Spotify, OwnTracks, ActivityWatch, Google Calendar, Google Drive and Google Health put in their
-  own poll or receive time; WhatsApp does both (design.md survey). The Switchboard stamps its own
+  own poll or receive time; WhatsApp does both, and the live listener
+  stamps a monotonic-clock reading as if it were an epoch time, so its envelopes are dated 1970
+  plus host uptime (bu-0wearu; design.md survey). The Switchboard stamps its own
   `received_at`, persists it on `public.ingestion_events`, and every dashboard read orders on it.
   `observed_at` is persisted only inside `message_inbox.raw_payload`. A replayed year of email
   therefore lands "today" with no source time anywhere a reader can query.

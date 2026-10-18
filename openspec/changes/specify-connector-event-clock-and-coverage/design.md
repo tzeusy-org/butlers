@@ -30,7 +30,7 @@ payload already carries. Cursor: what is persisted via `switchboard.connector_re
 
 | Connector | `observed_at` today | Source time in hand (unused for the clock) | Cursor |
 | --- | --- | --- | --- |
-| Gmail | source-stated (`internalDate`, `gmail.py:2552`; `now()` on parse error `:2581`) | `internalDate` is used; `Date` header parsed at `:2555` | `{history_id, last_updated_at}`, opaque sequence token |
+| Gmail | source-stated (`internalDate`, `gmail.py:2552`; `now()` on parse error `:2581`; a missing `internalDate` defaults to `0`, giving 1970, bu-wngqm2) | `internalDate` is used; the `Date` header is present but unread | `{history_id, last_updated_at}`, opaque sequence token |
 | Telegram bot | receipt (`now()`, `telegram_bot.py:1916`) | `message.date` inside the raw update | `{last_update_id}`, sequence |
 | Telegram user client | receipt (`now()`, `:2004`; batch flush `:1203`) | Telethon `message.date` (read at `:686`, `:1124`) | `{last_message_id, telethon_update_state{pts,qts,date,seq}}`, sequence plus opaque |
 | WhatsApp user client | mixed: bridge `timestamp` for single events (`:2038-2045`), `now()` for batches (`:1879`) | per-message timestamps collected at `:1914`, `:1950` | `{last_event_id}`, opaque bridge id |
@@ -41,17 +41,17 @@ payload already carries. Cursor: what is persisted via `switchboard.connector_re
 | Spotify | poll (`spotify.py:2487`) | per-item `played_at` (parsed at `:2767`) | `after` epoch ms, a time |
 | OwnTracks | receipt (`now()`, `owntracks.py:1286`) | device `tst` (epoch seconds, used in the idempotency key) | `str(tst)`, a time |
 | ActivityWatch | poll (`activitywatch.py:904`) | event `timestamp` and `duration` | ISO timestamp, a time |
-| Live listener | source-stated (`offset_ts`, `live_listener/connector.py:550`) | n/a | `{last_utterance_ts,...}` session state only |
+| Live listener | connector-derived and defective: `time.monotonic()` (`live_listener/connector.py:451`) read as an epoch by `fromtimestamp` (`:550`), so the time is 1970 plus host uptime (bu-0wearu) | n/a | `{last_utterance_ts,...}` session state only |
 | Google Calendar | poll (`google_calendar.py:526`) | event `updated` (in the idempotency key) | `syncToken`, opaque |
 | Google Drive | poll (`google_drive.py:664`) | `modifiedTime` (in the idempotency key) | `page_token`, opaque |
 | Google Health | poll (`google_health.py:1951`) | record interval times (referenced by filters at `:322`, `:394`) | `record_id`, opaque identity |
 
 Not examined: `bridge_manager.py`, `owner_outbound_events.py`. Reading of the table: twelve of fifteen
-rows already hold a stated source time they do not use for `observed_at`; three already put one there
-(Gmail, Home Assistant WebSocket, live listener).
+rows already hold a stated source time they do not use for `observed_at`; two already put one there
+(Gmail, Home Assistant WebSocket). The live listener's value looks source-stated but is not (bu-0wearu).
 
-Every connector heartbeat proves process liveness, the connector's self-reported health and a copy of
-its cursor (`heartbeat.py:137,339-341`). It does not prove that source events were seen.
+Every connector heartbeat proves process liveness, the connector's self-reported health, a copy of
+its cursor and its counters (`heartbeat.py:137,339-341`). It does not prove that source events were seen.
 
 ## Decisions
 
