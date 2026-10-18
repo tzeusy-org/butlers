@@ -8,6 +8,8 @@ Defines the shared interface contract that ALL connectors must implement. Connec
 ### Requirement: Connector as Ingestion Primitive
 A connector SHALL be a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It SHALL be transport-only: read, normalize, filter, submit, checkpoint.
 
+ID: REQ-connector-base-spec-008
+
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
 - **THEN** it reads source events from the external system, normalizes each to an `ingest.v1` envelope, evaluates active source filters (dropping messages that fail the filter gate before any Switchboard call), submits passing envelopes to the Switchboard's canonical ingest API via MCP, persists a crash-safe resume checkpoint, enforces rate limiting against both source API and Switchboard, sends periodic heartbeats for liveness tracking, exports Prometheus metrics, persists filtered/errored events to `connectors.filtered_events` via batch flush, and drains the replay queue for pending re-ingestion requests
