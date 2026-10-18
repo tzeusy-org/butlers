@@ -247,7 +247,7 @@ def _dedupe_text(envelope: IngestEnvelopeV1) -> tuple[str, bool]:
         scrubbed = scrub_message_text(
             text,
             source={"provider": envelope.source.provider},
-            sender={"identity": envelope.sender.identity},
+            sender=envelope.sender.model_dump(exclude_none=True),
         )
     except Exception:
         logger.warning("Bearer scrub failed while deriving dedupe key; using constant text")
