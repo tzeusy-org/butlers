@@ -46,8 +46,3 @@ export function readAllowance(account: AllowanceAccount, nowMs: number): Allowan
     label: allowanceSourceLabel(account.reset_source),
   };
 }
-
-/** Accounts that currently need the owner's eye (exhausted or unknown). */
-export function accountsOutOfAllowance(accounts: AllowanceAccount[]): AllowanceAccount[] {
-  return accounts.filter((a) => a.state === "exhausted");
-}

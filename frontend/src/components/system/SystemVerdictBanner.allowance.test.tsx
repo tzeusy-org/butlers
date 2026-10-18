@@ -65,6 +65,30 @@ describe("SystemVerdictBanner allowance source", () => {
     expect(container.textContent).not.toContain("Instance healthy");
   });
 
+  it("treats an unknown-state account as unknown, never all-clear", () => {
+    setAllowance({
+      data: { data: { available: true, accounts: [{
+        account_key: "acct-u", state: "unknown", reset_at: null,
+        reset_source: "unknown", first_seen_at: "x", updated_at: "x", entries: [],
+      }] } },
+    });
+    const { container } = renderBanner();
+    expect(container.textContent).toContain("acct-u allowance unknown");
+    expect(container.textContent).not.toContain("Instance healthy");
+  });
+
+  it("reads a passed reset as should be back, like the strip", () => {
+    setAllowance({
+      data: { data: { available: true, accounts: [{
+        account_key: "acct-p", state: "exhausted", reset_at: "2026-10-18T11:00:00Z",
+        reset_source: "parsed", first_seen_at: "x", updated_at: "x", entries: [],
+      }] } },
+    });
+    const { container } = renderBanner();
+    expect(container.textContent).toContain("acct-p out of allowance, should be back");
+    expect(container.textContent).not.toContain("reset time unknown");
+  });
+
   it("never reads all-clear when the allowance table is unreadable", () => {
     setAllowance({ data: { data: { available: false, accounts: [] } } });
     const { container } = renderBanner();
