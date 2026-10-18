@@ -41,7 +41,7 @@ def _security_opts(tmp_path: Path, *extra_env: str) -> dict[str, list[str]]:
         encoding="utf-8",
     )
     docker_home = tmp_path / "docker-home"
-    docker_home.mkdir()
+    docker_home.mkdir(exist_ok=True)
     completed = subprocess.run(
         [
             docker,
@@ -68,7 +68,7 @@ def _security_opts(tmp_path: Path, *extra_env: str) -> dict[str, list[str]]:
     )
     assert completed.returncode == 0, completed.stderr
     services = json.loads(completed.stdout)["services"]
-    return {name: services[name]["security_opt"] for name in (*_DASHBOARD_SERVICES, "butlers-up")}
+    return {name: service.get("security_opt") for name, service in services.items()}
 
 
 def test_unset_variable_keeps_apparmor_unconfined_on_both_dashboard_services(tmp_path) -> None:
@@ -78,11 +78,21 @@ def test_unset_variable_keeps_apparmor_unconfined_on_both_dashboard_services(tmp
         assert options[service][0] == "apparmor:unconfined"
 
 
-def test_variable_selects_the_scoped_profile_on_both_dashboard_services_only(tmp_path) -> None:
-    options = _security_opts(tmp_path, f"BUTLERS_DASHBOARD_APPARMOR_PROFILE={_PROFILE}")
+def test_empty_variable_is_treated_as_unset(tmp_path) -> None:
+    options = _security_opts(tmp_path, "BUTLERS_DASHBOARD_APPARMOR_PROFILE=")
 
     for service in _DASHBOARD_SERVICES:
-        assert options[service][0] == f"apparmor:{_PROFILE}"
-        assert "systempaths=unconfined" in options[service]
-        assert any(item.startswith("seccomp:") for item in options[service])
-    assert options["butlers-up"] == ["apparmor:unconfined"]
+        assert options[service][0] == "apparmor:unconfined"
+
+
+def test_variable_selects_the_scoped_profile_on_both_dashboard_services_only(tmp_path) -> None:
+    default = _security_opts(tmp_path)
+    selected = _security_opts(tmp_path, f"BUTLERS_DASHBOARD_APPARMOR_PROFILE={_PROFILE}")
+
+    for service in _DASHBOARD_SERVICES:
+        assert selected[service][0] == f"apparmor:{_PROFILE}"
+        assert "systempaths=unconfined" in selected[service]
+        assert any(item.startswith("seccomp:") for item in selected[service])
+    others = set(default) - set(_DASHBOARD_SERVICES)
+    assert others == set(selected) - set(_DASHBOARD_SERVICES)
+    assert {name: selected[name] for name in others} == {name: default[name] for name in others}
