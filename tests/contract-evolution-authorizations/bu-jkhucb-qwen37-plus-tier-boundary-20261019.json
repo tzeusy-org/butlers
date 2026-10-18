@@ -1,0 +1,123 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-jkhucb-qwen37-plus-tier-boundary-20261019",
+  "bead": "bu-jkhucb",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-0gy2i8 for implementation bead bu-jkhucb (PR #4743, OpenCode Go Qwen3.7 Plus upper pricing tier starts strictly above 256K, so exactly 256000 context tokens bill the lower tier). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-izzsar; approved subject: PR #4743 head fd03ef56adf8a367083177bd52b8fac65cbc39cd plus the reviewer-computed clause (spec-clause.patch) and request. Governing requirement REQ-dashboard-api-072 (Pricing and Cost Estimation) in openspec/specs/dashboard-api/spec.md, whose ID-only header lands in this same change; the change adds one scenario inside the block. The provider card does not define K; the clause records the coordinator decision to count K as 1,000 tokens (repo convention, as for the 100001 threshold), which bills 256001-262144 tokens at the upper tier if 1,024 were meant. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/api/test_pricing.py::TestPricingDependency::test_repo_default_opencode_go_canonical_identifier_resolves",
+      "after": "tests/api/test_pricing.py::TestPricingDependency::test_repo_default_opencode_go_canonical_identifier_resolves",
+      "contracts": [
+        "REQ-dashboard-api-072"
+      ],
+      "reason": "The Qwen3.7 Plus upper tier now starts at context_threshold 256001 because the OpenCode Go card bands it as '> 256K tokens' and tier selection is inclusive, so exactly 256000 context tokens bill at the lower tier. The retained upper-tier probe moves from context_tokens=256_000 to 256_001 and keeps the same 6.0 USD expectation; the lower-tier probe and the flat minimax assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/dashboard-api/spec.md",
+      "id": "REQ-dashboard-api-072",
+      "before_sha256": "fdaea752ff9835f3e5f0a3be30b8dae569997324e4cf04ad53eb3ebb53f0418e",
+      "after_sha256": "e21a7e1db7057c7e26731cc77060044be3d378b46d78e54d284a9109be6ca74b"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "pricing.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "f6be1f04985fde137232e1d0d36064f5364fa26e87e30e3e8409ced2fbe53d84"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f6ebe29c70c6b1c3dc7d0b70cf99bcc84f073f15cab72ef51147f8959d29c18b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/core/pricing.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e4559b949f1e7ac2d8d182eb24672ad42510e37620964ea81027c81526e8a883"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e4559b949f1e7ac2d8d182eb24672ad42510e37620964ea81027c81526e8a883"
+      }
+    },
+    {
+      "path": "tests/api/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      }
+    },
+    {
+      "path": "tests/api/test_pricing.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4190f55a85dbc00f4455439217e7684b1b13cb738a517c2a003f1f5199a62331"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3529bea976a3cc92bf48384b9b0996d2f4e90aa056ff75980442edd1ff9834ce"
+      }
+    },
+    {
+      "path": "tests/api/test_pricing_qwen37_plus_tier_boundary.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "f058165c02babae709314a68682916a76a8bac57d4ce7bc2f911f29a785660ce"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-jkhucb-qwen37-plus-tier-boundary-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "cefcd1a31e5a5e90537804da91d12ad1377b80bab12ab7b139233b1c3ce4a0bc"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

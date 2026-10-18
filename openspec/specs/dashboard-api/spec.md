@@ -716,6 +716,8 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 ### Requirement: Pricing and Cost Estimation
 `src/butlers/core/pricing.py` SHALL load per-model token pricing from `pricing.toml` and expose cost estimation for session cost calculation.
 
+ID: REQ-dashboard-api-072
+
 #### Scenario: Pricing config loading
 - **WHEN** `load_pricing()` is called at startup
 - **THEN** the `pricing.toml` file is parsed from the repo root
