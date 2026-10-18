@@ -32,6 +32,7 @@ from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
+from butlers.jobs.finance_spend_baselines import money, score_week_to_date, usual_range_words
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -460,8 +461,8 @@ async def run_finance_briefing_contribution(
 
     Queries:
     - Bills due within 48 hours (status = 'pending' or 'overdue')
-    - Spending anomalies: transactions in the past 7 days that are 2x the 30-day rolling average
-      for the same category
+    - Spending anomalies: categories with spend in the past 7 days whose week-to-date spend is
+      above the stored personal baseline band for that category and currency
     - Subscription renewals this week (next_renewal within 7 days)
     """
     del job_args
@@ -497,56 +498,29 @@ async def run_finance_briefing_contribution(
             }
         )
 
-    # --- Spending anomalies: 2x rolling average ---
-    # Baseline: transactions from 30-37 days ago (7-day-excluded prior period).
-    # Recent: transactions from 7 days ago to now.
-    # Divide each sum by its actual window length to get a true daily average.
-    thirty_days_ago = now_utc - timedelta(days=30)
-    seven_days_ago = now_utc - timedelta(days=7)
-    baseline_window_days = max((seven_days_ago - thirty_days_ago).total_seconds() / 86400.0, 1.0)
-
-    anomaly_rows = await pool.fetch(
-        """
-        WITH rolling_avg AS (
-            SELECT category,
-                   SUM(amount) / $3::double precision AS daily_avg
-            FROM transactions
-            WHERE direction = 'debit'
-              AND posted_at >= $1
-              AND posted_at < $2
-            GROUP BY category
-            HAVING COUNT(*) > 0
-        ),
-        recent_spend AS (
-            SELECT category,
-                   SUM(amount) / 7.0 AS daily_recent
-            FROM transactions
-            WHERE direction = 'debit'
-              AND posted_at >= $2
-            GROUP BY category
+    # --- Spending above the owner's usual range (week-bucket personal baselines) ---
+    # Categories with spend in the last 7 days, this week's spend so far against the stored
+    # per-currency band. Only an `above` state is reported; thin or stale history is omitted,
+    # never called an anomaly (bu-q7vx1q.79).
+    anomaly_findings = [
+        finding
+        for finding in await score_week_to_date(
+            pool,
+            now=now_utc,
+            zone=await owner_briefing_zone(pool),
+            active_since=now_utc - timedelta(days=7),
         )
-        SELECT r.category,
-               r.daily_recent,
-               a.daily_avg,
-               r.daily_recent / NULLIF(a.daily_avg, 0) AS ratio
-        FROM recent_spend r
-        JOIN rolling_avg a ON r.category = a.category
-        WHERE a.daily_avg > 0
-          AND r.daily_recent >= a.daily_avg * 2
-        ORDER BY ratio DESC
-        """,
-        thirty_days_ago,
-        seven_days_ago,
-        baseline_window_days,
-    )
+        if finding.is_anomaly
+    ]
 
-    for row in anomaly_rows:
-        ratio = float(row["ratio"]) if row["ratio"] is not None else 0.0
+    for finding in anomaly_findings:
         highlights.append(
             {
                 "category": "spending",
                 "text": (
-                    f"Spending anomaly in {row['category']}: {ratio:.1f}x daily average this week"
+                    f"Spending above your usual range in {finding.category}: "
+                    f"{money(finding.currency, finding.week_spend)} so far this week, "
+                    f"{usual_range_words(finding)}"
                 ),
                 "priority": "medium",
             }
@@ -586,8 +560,8 @@ async def run_finance_briefing_contribution(
     bill_count = len(bills_rows)
     if bill_count:
         parts.append(f"{bill_count} bill(s) due within 48h.")
-    if anomaly_rows:
-        parts.append(f"{len(anomaly_rows)} spending anomaly/ies detected.")
+    if anomaly_findings:
+        parts.append(f"{len(anomaly_findings)} spending anomaly/ies detected.")
     if sub_rows:
         parts.append(f"{len(sub_rows)} subscription renewal(s) this week.")
     summary = " ".join(parts) if parts else "No finance updates today."
@@ -606,7 +580,7 @@ async def run_finance_briefing_contribution(
         "date": today_str,
         "has_updates": has_updates,
         "bills_due_48h": bill_count,
-        "spending_anomalies": len(anomaly_rows),
+        "spending_anomalies": len(anomaly_findings),
         "subscription_renewals": len(sub_rows),
     }
 
