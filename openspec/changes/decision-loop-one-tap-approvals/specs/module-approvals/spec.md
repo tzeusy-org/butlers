@@ -69,6 +69,10 @@ re-push for the same action on retries or edits, and MUST collapse bursts: when
 more than 3 actions park within a 10-minute window, subsequent pushes in the
 window are replaced by a single digest message with a dashboard deep link.
 
+ID: REQ-module-approvals-005
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 exact-call approval cards
+Scope: v1-mandatory
+
 #### Scenario: Park emits one approval-request push
 
 - **WHEN** a gated call parks as a pending action outside quiet hours
