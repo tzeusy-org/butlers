@@ -116,21 +116,12 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
 - **Affected RFCs**: none amended by this draft. A future implementation PR should record the
   spine's wire contract as a new RFC (next free number: **0033**, since 0001-0032 are taken) per
   `design.md` D1, rather than amending RFC 0021 (a materially different trust model — see D1).
-- **`core-skills` / `k3s-deployment-helm-chart` sequencing (named, not silent)**: this draft's
-  `core-skills` delta is authored as a full superset — it carries forward, verbatim, every
-  scenario the unarchived `k3s-deployment-helm-chart` change's own `AGENTS.md Read/Write Access`
-  MODIFIED block already defines (the DB-fallback-on-read-only-filesystem behavior), and adds
-  the new runtime-tool-surface boundary scenario on top. Both changes still modify the *same*
-  requirement name against the *same* current baseline, which `check-spec-overwrites`
-  (`scripts/check_spec_overwrites.py`) and `openspec archive` treat as an ordinary two-change
-  collision, not a conflict this draft can resolve unilaterally by archive order. This is named
-  here as the exact prerequisite: whichever of the two changes archives second MUST rebase its
-  `core-skills` delta onto the requirement text the other one left in `openspec/specs/` before
-  archiving (mechanical, since this draft's DB-fallback scenarios are copied verbatim from
-  `k3s-deployment-helm-chart`'s own text — see `design.md` D13). No implementation may treat either
-  change as archived out of this order. **Update 2026-09-26:** `k3s-deployment-helm-chart` was
-  abandoned and removed (bu-60pwv6.3), so this sequencing no longer applies; the copied
-  DB-fallback scenarios are dropped under task 2.5 (bu-60pwv6.27).
+- **`core-skills` delta**: this draft's `core-skills` delta carries the current canonical
+  `AGENTS.md Read/Write Access` requirement plus only this spine's own [TARGET-STATE] paragraph and
+  its two [TARGET-STATE] scenarios (the runtime-tool-surface boundary). The unarchived
+  `k3s-deployment-helm-chart` change was abandoned and removed (bu-60pwv6.3), so no cross-change
+  sequencing applies; the DB-fallback text once copied from it was dropped under task 2.5
+  (bu-60pwv6.27).
 - **QA publisher primitives**: remain QA-owned. This draft names the exact primitives (managed
   clone, isolated worktree, path allowlist, minimal-credential environment,
   anonymize/validate_anonymized, GitHub publish-and-reconcile) as substrate a future PR adapter
