@@ -83,9 +83,12 @@ BEGIN
     -- Keep exact text lookup: casting a configured name first can truncate it.
     IF _amendment_oid IS NOT NULL THEN
         SELECT oid INTO _bootstrap_oid FROM pg_roles WHERE rolname = current_user;
+        -- BYPASSRLS is tolerated here only: this script strips it from the ordinary
+        -- migration login in the role normalization below, before ownership moves.
+        -- The ownership block further down still refuses a bypassing target.
         SELECT oid,
                rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
-                                    OR rolreplication OR rolbypassrls)
+                                    OR rolreplication)
           INTO _amendment_target_oid, _amendment_target_safe
           FROM pg_roles WHERE rolname::text = _amendment_target;
         IF NOT COALESCE(_amendment_target_safe, false)

@@ -150,6 +150,20 @@ def _bypassing(bootstrap_url: str, roles: tuple[str, ...]) -> set[str]:
         engine.dispose()
 
 
+def _insight_amendments_owner(bootstrap_url: str) -> str | None:
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                    "WHERE oid = to_regclass('public.insight_amendments')"
+                )
+            ).scalar_one_or_none()
+    finally:
+        engine.dispose()
+
+
 @needs_postgres
 def test_bootstrap_rerun_strips_bypassrls_from_existing_normal_roles(bootstrapped_db):
     _db_url, bootstrap_url, migration_user = bootstrapped_db
@@ -160,6 +174,9 @@ def test_bootstrap_rerun_strips_bypassrls_from_existing_normal_roles(bootstrappe
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)
 
     assert _bypassing(bootstrap_url, roles) == set()
+    # The amendment-owner preflight tolerates the bypassing login because the same run
+    # strips it; ownership still ends with the (now ordinary) migration login.
+    assert _insight_amendments_owner(bootstrap_url) == migration_user
     # Idempotent: a second run is a no-op.
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)
     assert _bypassing(bootstrap_url, roles) == set()
