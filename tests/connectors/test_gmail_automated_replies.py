@@ -13,6 +13,7 @@ from butlers.connectors.gmail_policy import (
     INGESTION_TIER_SKIP,
     LabelFilterPolicy,
     PolicyTierAssigner,
+    _gmail_tier_counter,
     detect_automated_reply,
     evaluate_message_policy,
 )
@@ -40,6 +41,13 @@ def _evaluate(message: dict[str, Any]):
     )
 
 
+def _counter(ingestion_tier: str, reason: str) -> float:
+    """Current value of the tier counter for the test endpoint."""
+    return _gmail_tier_counter.labels(
+        endpoint_identity="test", ingestion_tier=ingestion_tier, reason=reason
+    )._value.get()
+
+
 def _header(name: str, value: str) -> dict[str, str]:
     return {"name": name, "value": value}
 
@@ -48,7 +56,6 @@ def _header(name: str, value: str) -> dict[str, str]:
     ("headers", "expected_kind"),
     [
         ([_header("Auto-Submitted", "auto-replied")], "auto_reply"),
-        ([_header("auto-submitted", "auto-generated; reason=x")], "auto_reply"),
         ([_header("X-Autoreply", "yes")], "auto_reply"),
         ([_header("X-Autorespond", "yes")], "auto_reply"),
         ([_header("Precedence", "auto_reply")], "auto_reply"),
@@ -63,6 +70,12 @@ def _header(name: str, value: str) -> dict[str, str]:
         ),
         # Ordinary mail stays ordinary.
         ([_header("Auto-Submitted", "no")], None),
+        # RFC 3834 auto-generated mail (alerts, receipts) belongs to the owner's rules.
+        ([_header("Auto-Submitted", "auto-generated")], None),
+        ([_header("auto-submitted", "auto-generated; reason=receipt")], None),
+        ([_header("Auto-Submitted", "auto-notified")], None),
+        ([_header("List-Id", "News <news.example.com>"), _header("Precedence", "list")], None),
+        ([_header("List-Id", "News <news.example.com>")], None),
         ([_header("Precedence", "bulk")], None),
         ([_header("Precedence", "list")], None),
         ([_header("Content-Type", "multipart/report; report-type=disposition-notification")], None),
@@ -70,9 +83,14 @@ def _header(name: str, value: str) -> dict[str, str]:
     ],
 )
 def test_automated_messages_ingest_as_metadata_only_with_their_reason(headers, expected_kind):
+    reason = expected_kind or "pass_through"
+    tier = "metadata" if expected_kind else "full"
+    before = _counter(tier, reason)
+
     result = _evaluate(_message(headers))
 
     assert result.automated_kind == expected_kind
+    assert _counter(tier, reason) == before + 1
     if expected_kind is None:
         assert result.ingestion_tier == INGESTION_TIER_FULL
         assert result.triage_action == "pass_through"

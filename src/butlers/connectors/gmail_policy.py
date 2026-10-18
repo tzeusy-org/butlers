@@ -349,7 +349,8 @@ def detect_automated_reply(headers: Any, *, mime_types: Iterable[str] = ()) -> A
     1. RFC 3464 bounce: ``Content-Type: multipart/report`` with
        ``report-type=delivery-status``, or a ``mailer-daemon``/``postmaster`` sender
        with a ``message/delivery-status`` part (``mime_types``).
-    2. RFC 3834 ``Auto-Submitted`` with any value other than ``no``.
+    2. RFC 3834 ``Auto-Submitted: auto-replied``.  ``auto-generated`` mail (alerts and
+       receipts) is NOT an automated reply: the owner's ingestion rules route it.
     3. ``X-Autoreply`` or ``X-Autorespond`` present.
     4. ``Precedence: auto_reply``.
 
@@ -368,8 +369,9 @@ def detect_automated_reply(headers: Any, *, mime_types: Iterable[str] = ()) -> A
         isinstance(m, str) and m.strip().lower() == "message/delivery-status" for m in mime_types
     ):
         return "bounce"
-    auto_submitted = h.get("auto-submitted", "").split(";", 1)[0].strip().lower()
-    if auto_submitted and auto_submitted != "no":
+    # Only ``auto-replied`` is an answer to a person.  ``auto-generated`` (alerts, receipts)
+    # and every other value stay with the owner's ingestion rules.
+    if h.get("auto-submitted", "").split(";", 1)[0].strip().lower() == "auto-replied":
         return "auto_reply"
     if "x-autoreply" in h or "x-autorespond" in h:
         return "auto_reply"

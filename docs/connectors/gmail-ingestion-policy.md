@@ -79,12 +79,15 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
 
 - Bounce: `Content-Type: multipart/report` with `report-type=delivery-status`, or a
   `mailer-daemon`/`postmaster` sender with a `message/delivery-status` part.
-- Auto-reply: `Auto-Submitted` other than `no`, `X-Autoreply`, `X-Autorespond`, or
-  `Precedence: auto_reply`. `Precedence: bulk` and `list` are not automated replies.
+- Auto-reply: `Auto-Submitted: auto-replied`, `X-Autoreply`, `X-Autorespond`, or
+  `Precedence: auto_reply`. `Auto-Submitted: auto-generated` (alerts, receipts), `Precedence: bulk`
+  and `list`, and list mail are not automated replies; the owner's ingestion rules route them.
 - The slim envelope carries `control.automated_kind` (`auto_reply` or `bounce`), and the tier
   counter reason is the same value. A global `skip` still wins; `route_to`,
   `low_priority_queue` and `pass_through` do not raise the message to Tier 1. Missing or
   malformed headers are ordinary mail.
+- `automated_kind` is asserted by the sender's headers: a hint for admission, not evidence.
+  Anything that acts on it must authenticate and bind the message first.
 
 ### Tier 3
 
