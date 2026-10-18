@@ -438,6 +438,7 @@ async def _make_schema(pool: asyncpg.Pool) -> None:
             state        TEXT,
             attributes   JSONB,
             last_updated TIMESTAMPTZ,
+            last_changed TIMESTAMPTZ,
             captured_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
