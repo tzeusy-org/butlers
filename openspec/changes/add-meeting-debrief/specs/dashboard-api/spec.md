@@ -36,8 +36,9 @@ Scope: v1-mandatory
 
 #### Scenario: Reply goes through the pinned conversation
 - **WHEN** the owner sends "send Sam the deck by Friday" on a debrief
-- **THEN** the dashboard posts `"[debrief:<debrief_id>] <title> (<date>): send Sam the deck by Friday"` to the Relationship pinned conversation, carrying the debrief's stable id because batch numbers restart at 1 per prompt batch
-- **AND** the reply is reported sent only once the stream yields `dispatch_accepted`; an `error` event or a stream that ends first is a failure
+- **THEN** the dashboard posts `"[debrief:<debrief_id>] send Sam the deck by Friday"` to the Relationship pinned conversation, carrying the debrief's stable id because batch numbers restart at 1 per prompt batch
+- **AND** the message SHALL NOT carry the calendar title, attendees or any other invite-controlled text, which stays tool data from `meeting_debrief_pending`
+- **AND** the reply is reported sent only once the stream yields `dispatch_accepted` or `message_complete`; an `error` event or a stream that ends with neither is a failure
 - **AND** on failure the text is kept with an inline error and a retry reuses the same message id, and on success the pending list is refetched
 
 #### Scenario: Duplicate batch numbers do not misroute a reply
