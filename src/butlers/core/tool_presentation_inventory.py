@@ -185,6 +185,17 @@ TOOL_PRESENTATION_INVENTORY = (
         "calendar_update_butler_event",
     ),
     *_declare("calendar", "attendees", "calendar_add_attendees calendar_remove_attendees"),
+    # Dashboard-driven and approval-bound: no butler skill instructs an LLM to call it, and the
+    # owner's verified decision (not the caller) authorizes the effect.
+    *_declare("calendar", "core", "calendar_respond", presentable=False, namespace="response"),
+    # Daemon-only: reached through the Switchboard route to read the owner's response fence.
+    *_declare(
+        "calendar",
+        "core",
+        "calendar_response_fence_status",
+        presentable=False,
+        namespace="response_control",
+    ),
     *_declare(
         "contacts",
         "sync",
