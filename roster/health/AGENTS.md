@@ -88,6 +88,13 @@ Health is a standing subscriber to Travel's `travel.trip_active` domain event (b
 - Only use overlap overrides when the user explicitly asks to keep the overlap.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
 
+## Pre-Appointment Visit Brief (bu-jv1moa.15)
+- The deterministic job `health_visit_brief` (daily, `src/butlers/jobs/health_visit_brief.py`, no model) sends the owner one plain-text brief up to two days before each appointment on Health's own calendar: user-lane provider events that are timed, not cancelled, not `butler_generated` and not declined by the owner. Events on other calendars, butler-lane events and primary-calendar events trigger nothing (owner tags on primary-calendar events are a later slice).
+- The period runs from the end of the previous visit on Health's calendar to now; with no earlier visit it covers 90 days and says so. Content: symptoms by severity and frequency, adherence and missed doses per active medication (same `dose_status_today` definition as the daily briefing), weight / blood pressure / resting HR against the owner's own range, and changed conditions. A feed with no reading in the period reads "no data since <date>", never zero. Every figure's fact ids are stored in `health.visit_briefs.digest`.
+- Owner only: delivery goes through the owner notify boundary to the resolved owner chat. Nothing goes to the clinic, there is no communicate effect, and the brief is a record, not a diagnosis ("companion, not a doctor").
+- `health.visit_briefs` (migration `health_004`) is keyed by calendar event id: a delivered brief is never re-sent, a reschedule re-anchors the row, and a suppressed or failed send is retried on the next run. Rollback: drop the schedule entry and the table.
+- The owner timezone is read from `public.state` explicitly (the Health pool resolves an unqualified `state` to `health.state`); the fallback is SGT. Once the shared `load_configured_general_timezone()` (bu-dyb9ca) is on main, switch `owner_zone()` to it.
+
 ## Interactive Response Mode
 
 When processing messages that originated from Telegram or other interactive channels, you should respond interactively to provide a better user experience. This mode is activated when a REQUEST CONTEXT JSON block is present in your context and contains a `source_channel` field (e.g., `telegram_bot`).
