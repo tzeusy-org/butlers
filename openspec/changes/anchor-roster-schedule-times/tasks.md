@@ -5,7 +5,7 @@
 
 ## 2. Roster anchoring
 
-- [x] 2.1 Anchor `eod-tomorrow-prep` (23:00) and `upcoming-travel-check` (08:00) to owner-local.
+- [x] 2.1 Anchor `eod-tomorrow-prep` (23:00) to owner-local; keep `upcoming-travel-check` at `0 0 * * *` pinned to `Etc/UTC` (08:00 SGT).
 - [x] 2.2 Pin `Etc/UTC` on the infrastructure schedules commented in UTC.
 
 ## 3. Always-quiet warning
