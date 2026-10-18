@@ -136,3 +136,51 @@ async def test_withholding_logs_nothing(caplog) -> None:
         )
 
     assert "Hidden Name" not in caplog.text and "new@example.test" not in caplog.text
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["row-order-a", "row-order-b"])
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        _person("shared@example.test", "no_contact"),
+        _person("shared@example.test", "memorial"),
+        _person("shared@example.test", "quiet"),
+        _person("shared@example.test", "active", owner=True),
+    ],
+    ids=["no_contact", "memorial", "quiet", "owner"],
+)
+async def test_shared_email_is_withheld_if_any_claimant_is_inactive_or_owner(
+    blocker, reverse
+) -> None:
+    active_duplicate = _person("shared@example.test", "active")
+    people = [blocker, active_duplicate]
+    if reverse:
+        people.reverse()
+
+    assert await _shown([_stranger("shared@example.test")], people) == []
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["row-order-a", "row-order-b"])
+async def test_shared_email_with_only_active_claimants_is_shown(reverse) -> None:
+    people = [_person("shared@example.test", "active"), _person("shared@example.test", "active")]
+    if reverse:
+        people.reverse()
+
+    assert await _shown([_stranger("shared@example.test")], people) == ["shared@example.test"]
+
+
+async def test_resolver_merges_shared_email_claimants_fail_closed() -> None:
+    from butlers.jobs.meeting_debrief import _merge_claimants
+
+    def claimant(entity_id: str, posture: str, *, owner: bool = False) -> dict[str, Any]:
+        return {"entity_id": entity_id, "name": "N", "posture": posture, "is_owner": owner}
+
+    quiet = claimant("b", "quiet")
+    owner = claimant("a", "active", owner=True)
+    active = claimant("c", "active")
+
+    assert _merge_claimants([active, quiet, owner]) == owner  # the owner outranks other blockers
+    assert _merge_claimants([quiet, active]) == quiet
+    ambiguous = _merge_claimants([active, {**active, "entity_id": "d"}])
+    assert ambiguous["entity_id"] is None and ambiguous["posture"] == "active"
+    assert _merge_claimants([active]) == active

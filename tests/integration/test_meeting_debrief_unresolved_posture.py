@@ -99,3 +99,15 @@ async def test_attendee_unresolved_at_snapshot_and_later_active_is_still_named(p
     await _later_person(pool, "friend@example.test", "active")
 
     assert _names(await meeting_debrief_pending(pool)) == ["friend@example.test"]
+
+
+@pytest.mark.parametrize("blocking_first", [True, False], ids=["blocker-first", "blocker-last"])
+async def test_shared_email_with_a_no_contact_claimant_is_withheld_in_either_row_order(
+    pool, blocking_first
+) -> None:
+    await _snapshot(pool, {"entity_id": None, "name": "Shared", "email": "shared@example.test"})
+    order = ["no_contact", "active"] if blocking_first else ["active", "no_contact"]
+    for posture in order:
+        await _later_person(pool, "shared@example.test", posture)
+
+    assert _names(await meeting_debrief_pending(pool)) == []
