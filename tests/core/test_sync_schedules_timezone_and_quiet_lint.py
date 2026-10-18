@@ -168,7 +168,59 @@ async def test_explicit_zone_drives_next_run_and_is_stored() -> None:
     assert sentinel == {"UTC"}
 
 
-@pytest.mark.parametrize("bad", ["Not/AZone", "", 5])
+@pytest.mark.parametrize("bad", ["Not/AZone", 5])
 async def test_invalid_schedule_timezone_is_rejected(bad: Any) -> None:
     with pytest.raises(ValueError, match="timezone"):
         await _sync([_schedule("bad", "0 4 * * *", timezone=bad)])
+
+
+@pytest.mark.parametrize("sentinel", ["UTC", "utc", "", "  "])
+async def test_sentinel_schedule_timezone_is_refused_naming_etc_utc(sentinel: str) -> None:
+    with pytest.raises(ValueError, match=r"Etc/UTC"):
+        await _sync([_schedule("bad", "0 4 * * *", timezone=sentinel)])
+
+
+class _ExistingRowPool(_FakePool):
+    """Reports one existing TOML row identical to the schedule except for its timezone."""
+
+    def __init__(self, stored_timezone: str, schedule: dict[str, Any]) -> None:
+        super().__init__()
+        self._row = {
+            "id": uuid.uuid4(),
+            "name": schedule["name"],
+            "source": "toml",
+            "cron": schedule["cron"],
+            "prompt": schedule["prompt"],
+            "dispatch_mode": "prompt",
+            "job_name": None,
+            "job_args": None,
+            "complexity": "workhorse",
+            "enabled": True,
+            "task_type": "cron",
+            "max_token_budget": None,
+            "continuity": False,
+            "timezone": stored_timezone,
+        }
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return [self._row] if "name = ANY" in sql else []
+
+
+@pytest.mark.parametrize(
+    ("stored", "declared", "expect_update"),
+    [("UTC", "Etc/UTC", True), ("Etc/UTC", None, True), ("Etc/UTC", "Etc/UTC", False)],
+)
+async def test_a_changed_timezone_alone_updates_the_existing_row(
+    stored: str, declared: str | None, expect_update: bool
+) -> None:
+    schedule = _schedule("infra", "15 4 * * *")
+    if declared is not None:
+        schedule["timezone"] = declared
+    pool = _ExistingRowPool(stored, schedule)
+    await sync_schedules(pool, [schedule], default_timezone="Asia/Singapore")  # type: ignore[arg-type]
+    updated = [sql for sql, _ in pool.executed if "UPDATE scheduled_tasks" in sql]
+    assert bool(updated) is expect_update
+    if expect_update:
+        assert any(
+            args[1] == (declared or "UTC") for sql, args in pool.executed if "SET timezone" in sql
+        )

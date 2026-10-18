@@ -511,9 +511,15 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
     raw_timezone = entry.get("timezone")
     schedule_timezone: str | None = None
     if raw_timezone is not None:
-        if not isinstance(raw_timezone, str) or not raw_timezone.strip():
-            raise ConfigError(f"{entry_path}.timezone must be a non-empty string when set")
+        if not isinstance(raw_timezone, str):
+            raise ConfigError(f"{entry_path}.timezone must be a string when set")
         schedule_timezone = raw_timezone.strip()
+        if not schedule_timezone or schedule_timezone.upper() == "UTC":
+            raise ConfigError(
+                f"{entry_path}.timezone {raw_timezone!r} is the follow-the-owner sentinel and "
+                'would be silently re-resolved to the owner timezone; use "Etc/UTC" to pin UTC '
+                "or omit the key"
+            )
         try:
             ZoneInfo(schedule_timezone)
         except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:

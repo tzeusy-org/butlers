@@ -22,7 +22,7 @@ Each synced task gets a computed `next_run_at` based on its cron expression and 
 
 ### Schedule timezone
 
-Hour-pinned cron fields are evaluated in the owner's configured general timezone, so `0 23 * * *` fires at 23:00 owner-local. A `[[butler.schedule]]` entry may set `timezone` (an IANA name) to pin its own zone instead, and sync stores it on the row. Use this for infrastructure schedules whose comment states a UTC time. Pin real UTC with `timezone = "Etc/UTC"`: the literal `"UTC"` (like an empty or missing value) is the sentinel that follows the owner timezone, so it cannot pin. An unknown zone is a config error.
+Hour-pinned cron fields are evaluated in the owner's configured general timezone, so `0 23 * * *` fires at 23:00 owner-local. A `[[butler.schedule]]` entry may set `timezone` (an IANA name) to pin its own zone instead, and sync stores it on the row. Use this for infrastructure schedules whose comment states a UTC time. Pin real UTC with `timezone = "Etc/UTC"`: the literal `"UTC"` (like an empty or missing value) is the sentinel that follows the owner timezone, so it cannot pin. `timezone = "UTC"` (any case) or a blank value is refused with an error naming `Etc/UTC`, as is an unknown zone. A change to only the declared timezone updates the existing row.
 
 ### Always-quiet warning
 

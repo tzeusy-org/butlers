@@ -11,3 +11,8 @@
 ## 3. Always-quiet warning
 
 - [x] 3.1 Warn once per sync for a notifying prompt-mode schedule that only fires inside the quiet window.
+
+## 4. Sentinel guard
+
+- [x] 4.1 Refuse `UTC`/blank `timezone` in the parser and in sync with an error naming `Etc/UTC`.
+- [x] 4.2 Update an existing row when only its timezone changes.
