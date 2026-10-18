@@ -2099,10 +2099,18 @@ class TelegramUserClientConnector:
                 },
             )
         except Exception as exc:
+            # Identifiers only: an ingest rejection echoes envelope text (pydantic input_value,
+            # "Ingest tool error: ..."), which can carry a 777000 login code. The exception is
+            # re-raised for the caller; its text is never logged here.
+            _event = envelope.get("event") if isinstance(envelope, dict) else None
             logger.error(
                 "Failed to submit to Switchboard ingest",
                 extra={
-                    "error": str(exc),
+                    "error_class": type(exc).__name__,
+                    "raised_at": _raise_site(exc),
+                    "external_event_id": _event.get("external_event_id")
+                    if isinstance(_event, dict)
+                    else None,
                     "endpoint_identity": self._config.endpoint_identity,
                 },
             )
