@@ -235,6 +235,28 @@ All metrics MUST use low-cardinality attributes only. Permitted attributes: `but
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 
+### Prometheus Client Instruments (Out of Scope)
+
+This RFC governs OpenTelemetry instruments only: the catalog above and the Cardinality Discipline permitted-attribute list apply to instruments created through the OpenTelemetry meter. Instruments created with `prometheus_client`, either through `butlers.metrics_registry` (`get_or_create_counter`, `get_or_create_gauge`, `get_or_create_histogram`, `get_or_create_summary`) or by direct `Counter(...)`, `Gauge(...)` and `Histogram(...)` calls, are out of scope and are NOT cataloged here.
+
+Reasons:
+
+- **Different pipeline.** They are exposed by a `/metrics` endpoint and pulled by Prometheus. They are not exported over OTLP, so the permitted-attribute list does not constrain them.
+- **Roughly 80 instruments, mostly connector-owned.** Most live under `src/butlers/connectors/`. The rest are in the switchboard runtime-attention worker, `core/dispatch_outcomes.py`, the audit and home-person-mapping API routers, the chronicler calendar adapter, the QA dispatch and module, and approvals delivery lifecycle and recovery. A second catalog here would duplicate their definitions and drift.
+- **Little of it is read.** `observability/prometheus/prometheus.yml` scrapes only connector health endpoints, and the only prometheus_client metric any in-repo Grafana dashboard references is `chronicler_episode_participants_resolved_total` (`observability/grafana/butlers-chronicler.json`).
+
+Governing places:
+
+- `src/butlers/metrics_registry.py` owns registration and idempotent get-or-create semantics.
+- `observability/prometheus/prometheus.yml` defines what is scraped.
+- `docs/connectors/metrics.md` and `docs/connectors/overview.md` document the connector instruments and their labels.
+
+Constraints that still apply to these instruments:
+
+- The "MUST NEVER" attribute list above is a design rule for every metric backend: no request IDs, raw sender identities, message text, session or trace IDs, UUIDs or timestamps as label values.
+- A prometheus_client instrument that is later scraped and read by an in-repo dashboard or alert SHOULD be reviewed against that rule, and promoted into the catalog above if it becomes part of the supported observability surface.
+- Label values for these instruments are not validated against the permitted-attribute list. Some connector labels (for example `endpoint_identity`, `media_type`) are not bounded by that list; tracked as follow-ups rather than governed here.
+
 ### Gauge Registration
 
 On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpDownCounters so that idle butlers appear in Prometheus/Grafana variable queries like `label_values(..., butler)`.
