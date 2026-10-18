@@ -201,5 +201,6 @@ async def test_dropped_known_watch_opens_updates_resolves_reopens_and_stays_quie
         + [dict(row) for row in await _candidates(pool)],
         default=str,
     )
-    for private in (_SENDER, _OTHER_SENDER, "private subject", "private body"):
+    filter_reason = FilteredEventBuffer.reason_policy_rule("connector_rule", "block", "sender")
+    for private in (_SENDER, _OTHER_SENDER, "private subject", "private body", filter_reason):
         assert private not in stored

@@ -42,8 +42,9 @@ logger = logging.getLogger(__name__)
 SOURCE = "switchboard:dropped-known"
 IDENTITY_VERSION = 1
 WINDOW = timedelta(days=7)
-#: The owner is told on the opened transition; the ledger's own L1 timer adds no delay.
-_GRACE_S = 0.0
+#: The owner is told on the opened transition regardless of grace; this only sets when the
+#: ledger's L1 escalation becomes due, matching the broker default and the other producers.
+_GRACE_S = 3600.0
 _CATEGORY = "dropped-known"
 _PRIORITY = 40
 _MESSAGE = "Mail from someone you know was dropped by a filter rule. Review it in Filters."
