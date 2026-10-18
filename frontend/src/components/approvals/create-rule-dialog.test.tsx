@@ -76,8 +76,11 @@ describe("CreateRuleDialog", () => {
   it("disables the selector while the butlers list loads", () => {
     butlersState.current = { isLoading: true };
     render(<CreateRuleDialog open onOpenChange={() => {}} />);
+    fillRule();
 
     expect((screen.getByLabelText("Butler") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText("Loading butlers")).toBeTruthy();
+    const submit = screen.getByRole("button", { name: "Create rule" });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
   });
 });
