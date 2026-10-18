@@ -312,3 +312,126 @@ def test_in_process_session_outside_the_guard_keeps_its_routing_context(
         assert get_current_runtime_session_routing_context() == _OWNER_CONTEXT
     finally:
         reset_current_runtime_session_id(token)
+
+
+# ---------------------------------------------------------------------------
+# Edges of the binding-only rule: expiry, rebound transport, flag reset (bu-x8l4os)
+# ---------------------------------------------------------------------------
+
+
+async def _observe_with_guard(
+    guard: _McpRuntimeSessionGuard, scope: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str]:
+    """Run one request through *guard* and report what a tool would see inside it."""
+    from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    seen: list[tuple[dict[str, Any] | None, str]] = []
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        authority = await resolve_content_authority(object())
+        seen.append((get_current_runtime_session_routing_context(), authority.authority))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard._app = app
+    await guard(scope, _empty_receive, _discard_send)
+    return seen[0]
+
+
+async def test_expired_invocation_token_leaves_the_locator_unbound(owner_session: str) -> None:
+    import dataclasses
+    import time
+
+    from butlers.core import fact_authority
+
+    token = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        live = fact_authority._invocations[token]
+        fact_authority._invocations[token] = dataclasses.replace(
+            live, deadline=time.monotonic() - 1
+        )
+        context, authority = await _observe_authority(
+            _http_scope(
+                query_string=f"runtime_session_id={owner_session}".encode(),
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), token.encode())],
+            )
+        )
+    finally:
+        fact_authority.settle_invocation(token)
+
+    assert context is None
+    assert authority == "third_party"
+
+
+async def test_rebound_transport_session_leaves_the_locator_unbound(owner_session: str) -> None:
+    from butlers.core import fact_authority
+
+    guard = _McpRuntimeSessionGuard(_discard_send, butler_name="relationship")
+    transport = (b"mcp-session-id", b"admitted-transport")
+    first = await fact_authority.register_invocation(
+        "relationship", "first-invocation", source_endpoint=None, routed=True
+    )
+    second = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        # The transport session is admitted to the first invocation.
+        await _observe_with_guard(
+            guard,
+            _http_scope(
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), first.encode())]
+                + [transport]
+            ),
+        )
+        # A different, valid invocation cannot take that transport over, so its locator
+        # stays diagnostic.
+        context, authority = await _observe_with_guard(
+            guard,
+            _http_scope(
+                query_string=f"runtime_session_id={owner_session}".encode(),
+                headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), second.encode())]
+                + [transport],
+            ),
+        )
+    finally:
+        fact_authority.settle_invocation(first)
+        fact_authority.settle_invocation(second)
+
+    assert context is None
+    assert authority == "third_party"
+
+
+async def test_unbound_flag_does_not_outlive_the_request(owner_session: str) -> None:
+    from butlers.core.tool_call_capture import (
+        current_runtime_session_locator_is_unbound,
+        get_current_runtime_session_routing_context,
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    inside: list[bool] = []
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        inside.append(current_runtime_session_locator_is_unbound())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    await _McpRuntimeSessionGuard(app, butler_name="relationship")(
+        _http_scope(query_string=f"runtime_session_id={owner_session}".encode()),
+        _empty_receive,
+        _discard_send,
+    )
+
+    assert inside == [True]
+    assert current_runtime_session_locator_is_unbound() is False
+    # A later in-process session in the same context is not suppressed by a leaked flag.
+    token = set_current_runtime_session_id(owner_session)
+    try:
+        assert get_current_runtime_session_routing_context() == _OWNER_CONTEXT
+        assert (await resolve_content_authority(object())).authority == "owner"
+    finally:
+        reset_current_runtime_session_id(token)
