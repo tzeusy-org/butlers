@@ -312,6 +312,8 @@ const ATTENTION_COPY: Record<string, { label: string; warn: boolean }> = {
   failed: { label: "Owner alert not delivered", warn: true },
   uncertain: { label: "Owner alert may not have arrived; it is not resent automatically", warn: true },
   unavailable: { label: "Owner alert status unknown", warn: true },
+  not_raised: { label: "No owner alert has been raised for this condition", warn: true },
+  within_grace: { label: "Owner alert waits for the attention grace", warn: false },
 }
 
 function attentionCopy(status: string): { label: string; warn: boolean } {
@@ -590,9 +592,12 @@ export function StandingConditionsTile() {
     condition,
     commitment: commitmentFields(condition),
   }))
-  // A source that could not report alert delivery is a degraded read, never calm.
+  // A source that could not report alert delivery, or an active paging condition that no
+  // alert covers, is a degraded read, never calm.
   const attentionUnavailable = merged.some(
-    (condition) => condition.attention?.status === "unavailable",
+    (condition) =>
+      condition.attention?.status === "unavailable" ||
+      (condition.attention?.status === "not_raised" && condition.state !== "resolved"),
   )
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
