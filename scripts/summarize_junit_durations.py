@@ -8,9 +8,11 @@ without making test payloads durable artifacts.
 
 With ``--failed-nodes-output`` the script also writes the sorted pytest node ids
 of failing and erroring tests, one per line, so a red run can be reproduced
-without opening job logs. The file holds node ids only (parametrize ids kept
-verbatim so the node can be rerun) and never assertion text or captured output.
-It is empty when nothing failed.
+without opening job logs. The file holds node ids only, with the parametrize
+suffix stripped and the result deduplicated (``path::Class::test_func``, the
+same privacy rule as the sanitized JUnit: raw parameter strings are never
+published), and never assertion text or captured output. It is empty when
+nothing failed.
 """
 
 from __future__ import annotations
@@ -156,9 +158,19 @@ def _write_duration_report(cases: list[_Testcase], *, output_path: Path, limit: 
 
 
 def _write_failed_nodes(cases: list[_Testcase], *, output_path: Path) -> None:
-    """Sorted, unique node ids of failing or erroring tests; empty when all passed."""
+    """Sorted, unique, parameter-free node ids of failing or erroring tests.
+
+    The parametrize suffix is stripped (several failing parameters of one test collapse to
+    one line) so no raw parameter string becomes durable evidence; empty when all passed.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    failed = sorted({case.node_id for case in cases if case.outcome in {"failure", "error"}})
+    failed = sorted(
+        {
+            case.node_id.split("[", maxsplit=1)[0]
+            for case in cases
+            if case.outcome in {"failure", "error"}
+        }
+    )
     output_path.write_text("".join(f"{node}\n" for node in failed), encoding="utf-8")
 
 

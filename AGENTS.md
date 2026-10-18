@@ -221,7 +221,7 @@ retain normal defaults until complete comparable evidence selects a change.
 receipt scopes and original pending hard targets. Preserve the test ladder,
 watchdogs, healthy-workload floors, full merge-group and coverage publisher.
 
-On a red shard, `gh run download <run-id> -n ci-<lane>-test-evidence` and read `failed-nodes.txt` for the exact failing pytest node ids (empty when green or when no report was written).
+On a red shard, `gh run download <run-id> -n ci-<lane>-test-evidence` and read `failed-nodes.txt` for the failing pytest node ids as `path::Class::test_func` (parametrize suffix stripped and deduplicated so no raw parameter string is published; rerun the whole test function; empty when green or when no report was written).
 
 <!-- bv-agent-instructions-v1 -->
 

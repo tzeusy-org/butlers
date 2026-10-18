@@ -79,7 +79,9 @@ def test_sanitize_junit_report_writes_safe_empty_evidence_when_report_is_missing
     assert root.find(".//error") is not None
 
 
-def test_failed_nodes_lists_sorted_failures_and_errors_without_payloads(tmp_path: Path) -> None:
+def test_failed_nodes_lists_sorted_failures_without_payloads_or_parameters(
+    tmp_path: Path,
+) -> None:
     raw_report = tmp_path / "raw-junit.xml"
     failed_nodes = tmp_path / "failed-nodes.txt"
     raw_report.write_text(
@@ -88,6 +90,7 @@ def test_failed_nodes_lists_sorted_failures_and_errors_without_payloads(tmp_path
   <testcase classname="tests.zeta.TestZ" name="test_b[x-1]" time="1">
     <failure message="secret assertion text">secret body</failure>
   </testcase>
+  <testcase classname="tests.zeta.TestZ" name="test_b[secret-param-2]" time="1"><failure /></testcase>
   <testcase classname="tests.alpha" name="test_a" time="1"><error message="boom" /></testcase>
   <testcase classname="tests.alpha" name="test_skipped" time="1"><skipped /></testcase>
   <testcase classname="tests.alpha" name="test_ok" time="1" />
@@ -105,7 +108,7 @@ def test_failed_nodes_lists_sorted_failures_and_errors_without_payloads(tmp_path
     )
 
     assert failed_nodes.read_text(encoding="utf-8") == (
-        "tests/alpha.py::test_a\ntests/zeta.py::TestZ::test_b[x-1]\n"
+        "tests/alpha.py::test_a\ntests/zeta.py::TestZ::test_b\n"
     )
 
 
