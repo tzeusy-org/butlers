@@ -589,5 +589,9 @@ def test_map_row_pointing_at_a_missing_spec_fails_closed(tmp_path: Path) -> None
     assert "module-gone" in result.stdout
     assert "failing closed" in result.stdout
     # A row for a capability that still has its own spec would shadow it: refused too.
-    shadow = _run_with_homes(tmp_path, {"module-widgets": "module-widgets"})
+    # old-widgets is mapped, so only the shadow row can make the run fail.
+    shadow = _run_with_homes(
+        tmp_path, {"old-widgets": "module-widgets", "module-widgets": "module-widgets"}
+    )
     assert shadow.returncode == 1, shadow.stdout
+    assert "still has its own spec" in shadow.stdout
