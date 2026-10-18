@@ -231,7 +231,13 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
             <ConfigRow
               label="Memory read ceiling"
               value={
-                runtimeLoading ? "…" : memoryCeilingLabel(runtimeConfig?.catalog_read_sensitivity)
+                runtimeLoading
+                  ? "…"
+                  : runtimeConfig
+                    ? memoryCeilingLabel(runtimeConfig.catalog_read_sensitivity)
+                    : // No runtime_config row (fetch error, paused or disabled query): the
+                      // server's real ceiling is unknown, so claim nothing about it.
+                      "—"
               }
             />
           </div>
