@@ -4,8 +4,8 @@
 - [ ] 0.2 PR #4187 / bu-h40h2b.5.2.2 merged on 2026-09-23; start implementation from a tree that contains it (same calendar.py, workspace API/UI tests and the same two OpenSpec domains) and do not combine its find-time error work with this feature.
 - [ ] 0.3 After #4488 merges, merge origin/main into this change's branch and re-run `make check-spec-overwrites`; this change MODIFIES no canonical block, so only archive ordering of module-calendar/spec.md is at stake.
 - [ ] 0.4 Overlap with #4394 (`calendar-context-truth`) follows a second-to-land-rebuilds rule: if #4394 lands first, REQ-module-calendar-034 reads its `event_type` column and cites REQ-module-calendar-001/002; otherwise #4394 rebuilds on REQ-034's retained metadata. Resolve the `focusTime` conflict (hold here, meeting hours there) with the owner before either archives.
-- [ ] 0.6 Gate before S2: the owner's answer to open question 3 (how the owner sets a category) becomes a spec requirement before S2 starts.
 - [ ] 0.5 Before archive, re-check the IDs REQ-module-calendar-031..034, REQ-calendar-conflict-overcommitment-radar-010..012, REQ-dashboard-domain-pages-050..052 and REQ-butler-chronicler-008..009 against canonical specs and pending changes (generalist-lead-focused-delegation holds REQ-module-calendar-030).
+- [ ] 0.6 Gate before S2: the owner's answer to open question 3 (how the owner sets a category) becomes a spec requirement before S2 starts.
 
 ## 1. S1 provider occurrence projection (module-calendar)
 
