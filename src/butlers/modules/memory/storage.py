@@ -664,6 +664,51 @@ async def _backfill_facts_to_catalog(
     return int(count or 0)
 
 
+async def _refresh_restored_facts_in_catalog(
+    pool: Pool,
+    *,
+    source_schema: str,
+    limit: int,
+) -> int:
+    """Revive up to *limit* stale catalog rows whose source fact is live again.
+
+    ``_backfill_facts_to_catalog`` skips any fact that already has a catalog row
+    (``NOT EXISTS`` / ``ON CONFLICT DO NOTHING``), so a row staled while its fact
+    was expired stayed stale after a later restore of the fact (e.g. the health_003
+    measurement-fact restore). This is the forward counterpart of
+    ``_reconcile_facts_catalog_disownment``: it clears ``invalid_at`` and restores
+    the fact's own ``confidence``.
+
+    Idempotent: a revived row has ``invalid_at IS NULL`` and leaves the candidate
+    set. Rows whose fact is still non-live, hard-deleted, or sensitivity-excluded
+    are untouched. Never deletes; bounded by ``limit``.
+    """
+    sql = """
+        WITH candidates AS (
+            SELECT mc.source_id, f.confidence
+            FROM public.memory_catalog mc
+            JOIN facts f ON f.id = mc.source_id
+            WHERE mc.source_schema = $1
+              AND mc.source_table = 'facts'
+              AND mc.invalid_at IS NOT NULL
+              AND f.validity IN ('active', 'fading')
+              AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($3))
+            LIMIT $2
+        )
+        UPDATE public.memory_catalog mc
+        SET confidence = c.confidence,
+            invalid_at = NULL,
+            updated_at = now()
+        FROM candidates c
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'facts'
+          AND mc.source_id = c.source_id
+        RETURNING 1
+    """
+    rows = await pool.fetch(sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES))
+    return len(rows)
+
+
 async def _backfill_rules_to_catalog(
     pool: Pool,
     *,
@@ -859,13 +904,17 @@ async def run_memory_catalog_backfill(
             (default 200).
 
     Returns:
-        Dict with ``facts_backfilled``, ``rules_backfilled``,
+        Dict with ``facts_backfilled``, ``rules_backfilled``, ``facts_refreshed``
+        (stale rows revived because their fact is live again),
         ``facts_reconciled``, ``rules_reconciled``, and ``source_schema``.
     """
     facts_backfilled = await _backfill_facts_to_catalog(
         pool, source_schema=source_schema, limit=batch_size
     )
     rules_backfilled = await _backfill_rules_to_catalog(
+        pool, source_schema=source_schema, limit=batch_size
+    )
+    facts_refreshed = await _refresh_restored_facts_in_catalog(
         pool, source_schema=source_schema, limit=batch_size
     )
     facts_reconciled = await _reconcile_facts_catalog_disownment(
@@ -878,6 +927,7 @@ async def run_memory_catalog_backfill(
         "source_schema": source_schema,
         "facts_backfilled": facts_backfilled,
         "rules_backfilled": rules_backfilled,
+        "facts_refreshed": facts_refreshed,
         "facts_reconciled": facts_reconciled,
         "rules_reconciled": rules_reconciled,
     }
