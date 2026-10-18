@@ -20,6 +20,14 @@ On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the
 
 Each synced task gets a computed `next_run_at` based on its cron expression and optional stagger offset.
 
+### Schedule timezone
+
+Hour-pinned cron fields are evaluated in the owner's configured general timezone, so `0 23 * * *` fires at 23:00 owner-local. A `[[butler.schedule]]` entry may set `timezone` (an IANA name) to pin its own zone instead, and sync stores it on the row. Use this for infrastructure schedules whose comment states a UTC time. Pin real UTC with `timezone = "Etc/UTC"`: the literal `"UTC"` (like an empty or missing value) is the sentinel that follows the owner timezone, so it cannot pin. An unknown zone is a config error.
+
+### Always-quiet warning
+
+When sync can read the owner quiet window (`public.approvals_policy`), it logs one warning per prompt-mode schedule that references `notify` but whose every firing in the next week, including the stagger allowance, falls inside that window, because its notifications would always be held or dropped. The lint never rejects a schedule or blocks sync, and it stays silent when there is no usable policy, the cron is irregular, or the schedule is job-mode or does not notify.
+
 ## Dispatch Modes
 
 Scheduled tasks support two dispatch modes, configured via `dispatch_mode`:

@@ -36,8 +36,8 @@ groups = ["core", "entity"]
 
 [[butler.schedule]]
 name = "upcoming-travel-check"
-# Daily 08:00 SGT (scheduler interprets cron in UTC)
-cron = "0 0 * * *"
+# Daily 08:00 owner-local (SGT): hour-pinned crons are evaluated in the owner timezone.
+cron = "0 8 * * *"
 dispatch_mode = "prompt"
 prompt = """
 Daily pre-trip scan. Check for upcoming departures and check-ins within the next 48 hours.
