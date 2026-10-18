@@ -104,3 +104,22 @@ invalid or fires irregularly often, or the schedule is job-mode or does not refe
 #### Scenario: Uncertain cases stay silent
 - **WHEN** no owner policy is configured, or the schedule is job-mode
 - **THEN** sync logs no quiet-window warning
+
+### Requirement: TOML Schedule Timezone Key
+A `[[butler.schedule]]` entry MAY set `timezone` to an IANA zone name. The config parser
+and `sync_schedules()` SHALL refuse the follow-the-owner sentinel values, the literal `UTC`
+in any case and an empty or blank string, with an error that names `Etc/UTC`, because the
+scheduler would otherwise silently re-resolve them to the owner timezone; real UTC is
+pinned with `Etc/UTC`. An unknown zone or a non-string value SHALL be a configuration
+error. When only the declared `timezone` of an existing TOML row differs, `sync_schedules()`
+SHALL update that row, recompute `next_run_at`, and store the new zone.
+
+#### Scenario: The UTC sentinel is refused with a pointer to Etc/UTC
+- **WHEN** a TOML schedule sets `timezone = "UTC"`, `"utc"` or `""`
+- **THEN** loading the configuration fails with an error naming `Etc/UTC`
+- **AND** `sync_schedules()` given the same value raises a `ValueError` naming `Etc/UTC`
+
+#### Scenario: A timezone-only change updates the existing row
+- **WHEN** an existing TOML row matches the schedule in every field except that the TOML now declares `timezone = "Etc/UTC"`
+- **THEN** `sync_schedules()` updates the row, recomputes `next_run_at` in `Etc/UTC`, and stores `Etc/UTC`
+- **AND** a row whose stored zone already equals the declared zone is not updated

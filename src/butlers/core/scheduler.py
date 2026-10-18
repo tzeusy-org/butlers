@@ -773,9 +773,14 @@ async def sync_schedules(
 
         schedule_timezone = schedule.get("timezone")
         if schedule_timezone is not None:
-            if not isinstance(schedule_timezone, str) or not schedule_timezone.strip():
-                raise ValueError(f"{schedule_path}.timezone must be a non-empty string when set")
+            if not isinstance(schedule_timezone, str):
+                raise ValueError(f"{schedule_path}.timezone must be a string when set")
             schedule_timezone = schedule_timezone.strip()
+            if not schedule_timezone or schedule_timezone.upper() == "UTC":
+                raise ValueError(
+                    f"{schedule_path}.timezone is the follow-the-owner sentinel; "
+                    'use "Etc/UTC" to pin UTC or omit the key'
+                )
             try:
                 ZoneInfo(schedule_timezone)
             except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:

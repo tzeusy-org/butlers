@@ -30,7 +30,15 @@ def test_timezone_defaults_to_none(tmp_path: Path) -> None:
     assert _load(tmp_path, "").schedules[0].timezone is None
 
 
-@pytest.mark.parametrize("bad", ['"Not/AZone"', '""', "5"])
+@pytest.mark.parametrize("bad", ['"Not/AZone"', "5"])
 def test_invalid_timezone_is_a_config_error(tmp_path: Path, bad: str) -> None:
     with pytest.raises(ConfigError, match="timezone"):
         _load(tmp_path, f"timezone = {bad}\n")
+
+
+@pytest.mark.parametrize("sentinel", ['"UTC"', '"utc"', '"Utc"', '""', '"  "'])
+def test_sentinel_timezone_is_refused_with_an_error_naming_etc_utc(
+    tmp_path: Path, sentinel: str
+) -> None:
+    with pytest.raises(ConfigError, match=r"Etc/UTC"):
+        _load(tmp_path, f"timezone = {sentinel}\n")
