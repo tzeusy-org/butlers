@@ -756,6 +756,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - health · medications
 - Medications
 
+## `frontend/src/pages/NotFoundPage.tsx`
+
+- Nothing is registered at
+- Press
+- to search, or go back to the dashboard.
+- Back to the dashboard
+- Page not found
+
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
@@ -4899,4 +4907,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3904*
+*Total strings: 3909*
