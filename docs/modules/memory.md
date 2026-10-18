@@ -155,6 +155,11 @@ The module supports three retrieval modes fused via composite scoring:
 - **Keyword**: PostgreSQL full-text search (tsvector).
 - **Hybrid**: Reciprocal-rank fusion over semantic and keyword results.
 
+`memory_recall`'s `entity_id` and `predicate` filters narrow the candidate set in the search
+query, before the per-source limit, so a fact is found however many more relevant facts exist
+about other entities. The entity filter matches a fact's subject or object entity; rules carry
+neither, so either filter excludes them. The other filter keys apply after scoring.
+
 Composite score formula:
 
 ```
