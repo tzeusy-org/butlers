@@ -15,7 +15,7 @@ Scope: v1-mandatory
 
 ### Requirement: Purpose-bound operation admission
 
-An owner-only operation SHALL require a distinct purpose/version capability and separately provisioned exact-target operational envelope. Text tokens, missing caps or unsupported enforcement MUST launch nothing.
+An owner-only operation SHALL require a distinct purpose/version capability and separately provisioned exact-target operational envelope that binds the exact runtime/model/account tuple, the procedure version's fixed maximum output and the per-call spend reservation. Text tokens, missing caps or a call whose fixed maximum output or spend cannot be enforced MUST launch nothing.
 
 ID: REQ-models-vision-proof-002
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27
@@ -28,7 +28,7 @@ Scope: v1-mandatory
 
 ### Requirement: Diagnostic selection preserves ordinary authority
 
-Only the private verified operation SHALL bypass the exact candidate vision-fit prerequisite; all other routing/tool/attachment/quota/auth gates remain. No normal parameter, fallback, retry, resume or temporary catalog bit may confer it.
+The vision proof SHALL address only the exact authorized catalog row and SHALL NOT pass through model resolution, Spawner dispatch or any vision-fit exception. Ordinary routing, fit, quota and auth gates are unchanged and no ordinary caller, text-probe token, fallback, retry, resume or temporary catalog bit may reach or imitate the proof call.
 
 ID: REQ-models-vision-proof-003
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27
@@ -36,12 +36,13 @@ Scope: v1-mandatory
 
 #### Scenario: Diagnostic selection preserves ordinary authority boundary
 
-- **WHEN** ordinary dispatch or a text-probe token attempts the exception
+- **WHEN** ordinary dispatch or a text-probe token attempts to reach the proof call
 - **THEN** it is denied and normal image fitting remains unchanged
+- **AND** no fit exception exists in model resolution for the proof to use
 
 ### Requirement: Same-tuple production-path controls
 
-A proof SHALL exercise actual synthetic attachment ingestion/store/view, intent, Spawner, adapter and CLI/account inference with exactly positive/text-only/removed-image controls. Every control MUST issue exactly its allowlisted attachment_view request once and receive its expected typed result before comparison.
+A proof SHALL make exactly three model-function calls (RFC 0038 D18) against the same exact runtime/model/account tuple: a positive control carrying the synthetic image inline, a text-only control carrying no image part, and a removed-image control whose image is removed after creation and before the request is assembled. Controls differ only in the image part. Each call SHALL be one tool-less, single-turn, structured-output request with the procedure version's fixed maximum output and no retry, failover or resume, and its typed output SHALL be compared by deterministic code before any verdict.
 
 ID: REQ-models-vision-proof-004
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27
@@ -49,12 +50,12 @@ Scope: v1-mandatory
 
 #### Scenario: Same-tuple production-path controls boundary
 
-- **WHEN** one negative returns NO_IMAGE without the required exact call or a different tuple is substituted
+- **WHEN** a control's typed output is missing, unparseable, refused or truncated, a negative control recovers its hidden comparator, or a different tuple is substituted
 - **THEN** the operation cannot produce promotable evidence
 
 ### Requirement: Private sentinel and content-blind records
 
-Sentinels SHALL exist only in volatile runner comparison state and image pixels. No raw prompts/results, expected values, metadata, screenshots, low-entropy sentinel hashes or arbitrary exception text may enter durable evidence or normal diagnostic capture. Exact server-owned source/session/attachment allowlists bind every control.
+Sentinels SHALL exist only in volatile runner comparison state and image pixels. No raw prompts/results, expected values, metadata, screenshots, low-entropy sentinel hashes or arbitrary exception text may enter durable evidence or normal diagnostic capture. Exact server-owned control manifests bind every control to its tuple, image-part state and expected typed result class.
 
 ID: REQ-models-vision-proof-005
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27
@@ -62,7 +63,7 @@ Scope: v1-mandatory
 
 #### Scenario: Private sentinel and content-blind records boundary
 
-- **WHEN** a foreign attachment/context/path/argument or forbidden sentinel channel is observed
+- **WHEN** a foreign context, extra request part, tool definition or forbidden sentinel channel is observed
 - **THEN** the operation refuses/fails and no passing receipt or widened read results
 
 ### Requirement: Durable replay budgets and cancellation
@@ -129,3 +130,34 @@ Scope: v1-mandatory
 #### Scenario: Historical clone cannot inherit vision authority
 - **WHEN** an alias is cloned or a historical true row changes relevant identity
 - **THEN** true cannot be retained or created without a passing applicable proof and explicit Apply CAS
+
+### Requirement: Vision proof executor is an RFC 0038 D18 model function
+
+The proof executor SHALL be deterministic code making tool-less, single-turn, structured-output model calls as defined by RFC 0038 D18 (model functions). It SHALL NOT start a goal invocation, a CLI session or an MCP session, SHALL expose no tool to the model, and SHALL treat the model's typed output as third-party content that only the deterministic comparator reads. The call SHALL hold only the narrow provider credential that deterministic callers use for that exact tuple. Spend reservation SHALL be made durably before each call and SHALL cover the fixed maximum output. The model-function seam, not a CLI diagnostic profile, is the only executor path; no CLI diagnostic profile, proxy or credential broker is required or introduced.
+
+ID: REQ-models-vision-proof-011
+Source: RFC0036 Amendment 1; RFC0038 D18 (about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, Model functions bullet, and the RFC 0036 row of its RFC disposition table); bu-o7lumy
+Scope: v1-mandatory
+
+#### Scenario: Proof call has no tools and a bounded output
+- **WHEN** a control call is assembled
+- **THEN** it SHALL carry no tool definition, one user turn, the inline image part only for the positive control, and the fixed maximum output
+- **AND** a call that cannot be bounded this way SHALL end Not run before any provider request
+
+#### Scenario: Model output never becomes authority
+- **WHEN** a control returns text that asks for an action or names a tool
+- **THEN** the comparator SHALL read only the typed answer field and SHALL take no other action
+- **AND** the operation SHALL record at most a bounded typed verdict
+
+### Requirement: MCP attachment delivery is pinned by existing wire-shape tests
+
+MCP delivery of an image to a model session SHALL NOT be re-proved per catalog row by this program. Its wire shape (the image content block returned by `attachment_view` without a `structuredContent` override, and its refusal cases) SHALL stay pinned by the existing tests `test_attachment_view_returns_image_content_block_for_image` and `test_registered_attachment_view_emits_image_block_without_structured_content` in `tests/core/test_attachment_view.py` and the attachment tool tests in `tests/tools/test_attachments.py`. The vision proof SHALL establish only that the exact model reads an inline image on the exact tuple. No new live-proof requirement SHALL be added for MCP delivery, and an ordinary session's image routing SHALL still require an applicable proof under REQ-models-vision-proof-008.
+
+ID: REQ-models-vision-proof-012
+Source: RFC0036 Amendment 1; tests/core/test_attachment_view.py; tests/tools/test_attachments.py; bu-o7lumy
+Scope: v1-mandatory
+
+#### Scenario: Wire-shape regression is caught by the existing tests
+- **WHEN** `attachment_view` stops returning an image content block or lets `structuredContent` override it
+- **THEN** the named existing tests SHALL fail
+- **AND** no per-row live proof SHALL be required to detect it

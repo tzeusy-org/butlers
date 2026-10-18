@@ -3833,6 +3833,14 @@
       "scenario": "Episode grouping by tenant and butler"
     }
   ],
+  "models-exact-path-vision-proof/model-catalog/Model Catalog Capability Envelope": [
+    {
+      "digest": "1cda6cb02bdc",
+      "excerpt": "- **AND** the probe proves an MCP image content block reaches inference by requiring an answer available only from th...",
+      "kind": "clause",
+      "scenario": "Vision capability requires exact-path evidence"
+    }
+  ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
     {
       "digest": "648f7052fd7c",
