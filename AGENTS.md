@@ -440,6 +440,8 @@ it before changing the subsystem.
     `roster/*/{MANIFESTO,AGENTS}.md`.
   - `spec-overwrite-guard` reads only `## MODIFIED` blocks in `openspec/changes/`: it is blind to
     direct baseline edits and to `## REMOVED` blocks.
+  - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
+    `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
   - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
