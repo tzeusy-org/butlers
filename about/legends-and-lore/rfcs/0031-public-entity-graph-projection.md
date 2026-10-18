@@ -39,6 +39,21 @@ This is a source audit, not an all-clause behavioral PASS:
 
 The existing feature terminal is `bu-8cdl1.8`, still open under its existing coordinator. The [source-transfer design](../../../openspec/changes/archive/2026-10-05-document-rfc0031-entity-graph/design.md) retains the clause/test limits and bounded residual foundation, dossier-flow and debt-rider allocations. These are followup proposals, not new feature terminals or ownership transfers.
 
+## Amendment 1: Bounded Relationship Reconciler (proposed, awaiting owner adoption)
+
+Status: proposed by the OpenSpec change [bounded-relationship-graph-reconciler](../../../openspec/changes/bounded-relationship-graph-reconciler/proposal.md); nothing here is adopted until the owner adopts that change.
+
+The projection is source-owned and written in the owning transaction, but a Relationship `unchanged` reassert skips projection, and the existing Relationship backfill helper has no caller, adds rows only and leaves no record. The amendment chooses:
+
+- **Scope.** A reconciler over `relationship.entity_facts` to `public.entity_graph_edges` only. It adds, corrects and removes rows keyed `relationship`/`entity_facts`, never touches Memory or commitment rows, infers no facts and adds no cross-schema access. The wider all-source sweeper is rejected: it needs the cross-schema reads this RFC avoids.
+- **Writer repair.** An identical reassert ensures its own projection in the same transaction; the reconciler repairs drift, it does not replace the write-behind rule.
+- **Receipts.** One content-blind receipt per attempt with status `success`, `partial`, `failed` or `skipped_lock` and integer counts. Only `success` with nothing remaining may be presented as in sync.
+- **Schedule.** A Git-defined, daily, job-mode (deterministic, no reasoning session) schedule with a non-blocking advisory lock and a bound of 500 rows by 20 batches per run. It does not depend on prompt-mode scheduling, so the RFC 0038 cutover leaves it unchanged.
+- **Ratio rule.** Any dashboard effectiveness ratio renders only with a positive denominator; the Rule detail page shows `No applications yet` at exactly zero applications.
+- **Names.** Fleet-case evidence names and links belong to the situations detail (bu-h40h2b.8), not to Relationship graph surfaces.
+
+Requirements: `REQ-entity-graph-013` through `018` and `REQ-dashboard-domain-pages-050`, in the change above. Figures (retention, cadence, bounds, copy) are owner questions Q1 to Q3 in its proposal. The S2 row of the table above remains accurate for Memory and commitment writers; for Relationship, adoption supersedes its remaining-outcome cell. The table rows are not edited here to avoid colliding with the dossier slices in flight.
+
 ## Governing Neighbors
 
 - [Identity model](../../../docs/concepts/identity-model.md), RFC0004 and [entity-identity](../../../openspec/specs/entity-identity/spec.md) retain shared entity identity, channel resolution and the owner carve-out.
