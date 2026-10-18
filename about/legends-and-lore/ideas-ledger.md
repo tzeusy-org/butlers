@@ -14,7 +14,7 @@ The first sections cover dossiers through 2026-07-10 as per-idea entries. The
 later run through 2026-10-16 as themed clusters; per-run lists live in git
 history, and run metadata in `docs/redesigns/pursuit-ledger.md`. The 07-22 run's
 15 cut moves are read with
-`git show b23d5b76afab:docs/redesigns/2026-07-22-jarvis-pursuit-data.json | jq .synthesis.dropped`.
+`git show 1f3e7f551533:docs/redesigns/2026-07-22-jarvis-pursuit-data.json | jq .synthesis.dropped`.
 The 09-22 run has no Dropped section; its cuts are dedup records in its data
 file.
 
