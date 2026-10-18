@@ -1,0 +1,133 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-1wwjrb-discretion-logs-identifiers-20261018",
+  "bead": "bu-1wwjrb",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-c24zoh for implementation bead bu-1wwjrb (PR #4726, DiscretionEvaluator logs carry identifiers, not content: channel type, lengths, short keyed sha256 prefixes, latency, exception class, error-code token and raise site). Reviewed before: main c6b96f45f8d15fe5f94243c34ca688b0758fff0a; approved subject: PR #4726 head 5e1e85684c91da8ec43537550e8824c7b7cad82b (review bu-mcjwqb). Governing requirement REQ-connector-base-spec-007 (Shared Discretion Layer) of openspec/specs/connector-base-spec/spec.md, which gains its ID in this change because the pre-change block carries none. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/connectors/test_discretion_dispatcher.py::test_evaluator_withholds_bearer_text_from_prompt_log_and_window",
+      "after": "tests/connectors/test_discretion_dispatcher.py::test_evaluator_withholds_bearer_text_from_prompt_log_and_window",
+      "contracts": [
+        "REQ-connector-base-spec-007"
+      ],
+      "reason": "REQ-connector-base-spec-007 now requires DiscretionEvaluator logs to carry identifiers, never prompt or message text. The withheld-placeholder text therefore no longer reaches the log, so the single assertion that it appeared in caplog becomes an assertion that the input log line is still emitted in identifier form (prompt_sha=). The secrets-absent assertions on the prompts and the log, and the window placeholder assertion on prompts[2], are byte-identical; nothing else in the test changes."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/connector-base-spec/spec.md",
+      "id": "REQ-connector-base-spec-007",
+      "before_sha256": "0ceba4292aa3904499de6af248b47eef5199cecdbfe66f60982572a08d62d179",
+      "after_sha256": "1c36d1c2960488ece51c92963dc562a802c06e3d59121ad9dd70160032915ad1"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "openspec/changes/discretion-logs-identifiers-only/.openspec.yaml",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "51d5b0ce9540b8309d721689630e1a05b70d75dc3977b42e6c3c2de4b3080100"
+      }
+    },
+    {
+      "path": "openspec/changes/discretion-logs-identifiers-only/proposal.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "006f46016a6cf0aca5e034f2e848371fa53629d7804f6e5d6067ebb7bbd0c6cb"
+      }
+    },
+    {
+      "path": "openspec/changes/discretion-logs-identifiers-only/specs/connector-base-spec/spec.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "fbb2ce3abb4b70d04eeaabd01242564ce4732921db9f4ae25c70a47e666ff2a1"
+      }
+    },
+    {
+      "path": "openspec/changes/discretion-logs-identifiers-only/tasks.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "538d3a80f311fea0fafe88d9ab85bb68c4846c915a2696b9fa17a8fd52a4bafb"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/discretion.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "31338ea61d140afc376782a085e66b35199028b4d24850a2cd4dd5e4c0957640"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2f994e20804273936667cad28c9262a1581bff56830deb6789a8cf252259393c"
+      }
+    },
+    {
+      "path": "tests/connectors/test_discretion_dispatcher.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "84e9b76df6c856ffaf41c5f4fb237f997e1d91cf89d21fb979934642284f2fed"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a2445523cfb073c8dc640674e6f9199290028b4e1162e04780ecef474c7f5332"
+      }
+    },
+    {
+      "path": "tests/connectors/test_discretion_logs_identifiers_only.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "6e4ae13de9d4a7fde15cd4eab3ce46db85f133ca1527e338be5d21e821df25cf"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-1wwjrb-discretion-logs-identifiers-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "88bd3e343bf4204ed6d4f2333e0f1019ea7b2d5bcea944ec0427322324000bbe"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
