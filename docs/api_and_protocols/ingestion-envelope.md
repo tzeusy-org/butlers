@@ -73,7 +73,10 @@ retained as the notify-facing name for the reply target and never carries the co
 Deduplication is the Switchboard's responsibility at the ingest boundary (`_compute_dedupe_key`
 in `roster/switchboard/tools/ingestion/ingest.py`). The key prefers `control.idempotency_key`,
 then `external_event_id` plus source identity, then a content hash; a secondary content-hash
-check catches the same message arriving through two connectors. Connectors must:
+check catches the same message arriving through two connectors. Content hashes derive from the
+bearer-scrubbed text, so a stored key cannot be brute-forced back to a withheld one-time code;
+when bearer material was withheld the secondary check is skipped and `content_hash_key` is
+omitted. Connectors must:
 
 - Send stable source identity fields on every submission, including retries.
 - Provide `control.idempotency_key` when the source has no stable event id.
