@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.loans import backfill_loan_cost_claims
 
@@ -115,7 +116,9 @@ async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_contain
         async def setup(conn: asyncpg.Connection) -> None:
             await conn.execute("SET ROLE butler_relationship_rw")
 
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, setup=setup)
+        pool = await asyncpg.create_pool(
+            db_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=setup
+        )
         assert (await backfill_loan_cost_claims(pool))["asserted"] == 1
         claim_id = await admin.fetchval("SELECT id FROM public.cost_claims")
 
