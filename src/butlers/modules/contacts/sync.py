@@ -407,7 +407,7 @@ class _GoogleOAuthClient:
                 )
             except httpx.HTTPError as exc:
                 raise ContactsTokenRefreshError(
-                    f"Google OAuth token refresh request failed: {exc}"
+                    f"Google OAuth token refresh request failed: {type(exc).__name__}"
                 ) from exc
 
             if response.status_code < 200 or response.status_code >= 300:

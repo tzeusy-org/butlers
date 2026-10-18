@@ -692,13 +692,11 @@ class ContactBackfillWriter:
                     addr.postal_code,
                     country,
                 )
-            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+            except Exception as exc:  # noqa: BLE001 — never block a bulk backfill on one row
                 logger.warning(
-                    "upsert_addresses: failed for entity %s label=%r street=%r",
+                    "upsert_addresses: failed for entity %s error_class=%s",
                     local_id,
-                    label,
-                    addr.street,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
     async def upsert_important_dates(
@@ -752,14 +750,11 @@ class ContactBackfillWriter:
                     date_obj.day,
                     date_obj.year,
                 )
-            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+            except Exception as exc:  # noqa: BLE001 — never block a bulk backfill on one row
                 logger.warning(
-                    "upsert_important_dates: failed for entity %s label=%r month=%s day=%s",
+                    "upsert_important_dates: failed for entity %s error_class=%s",
                     local_id,
-                    label,
-                    date_obj.month,
-                    date_obj.day,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
     async def upsert_labels(
@@ -824,12 +819,11 @@ class ContactBackfillWriter:
                     label_id,
                     local_id,
                 )
-            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+            except Exception as exc:  # noqa: BLE001 — never block a bulk backfill on one row
                 logger.warning(
-                    "upsert_labels: failed for entity %s label=%r",
+                    "upsert_labels: failed for entity %s error_class=%s",
                     local_id,
-                    label_name,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
     async def upsert_source_link(

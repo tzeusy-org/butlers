@@ -568,10 +568,9 @@ class ContactsModule(Module):
                     status = "never_synced"
             except Exception as exc:
                 logger.warning(
-                    "contacts_source_list: state load failed for %s: %s",
+                    "contacts_source_list: state load failed for %s error_class=%s",
                     rt_key,
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 state = ContactsSyncState()
                 status = "unknown"
@@ -951,9 +950,8 @@ class ContactsModule(Module):
         try:
             api_id = int(creds["telegram_api_id"])
         except ValueError as exc:
-            raise RuntimeError(
-                f"ContactsModule: invalid telegram_api_id in contact_info: {exc}"
-            ) from exc
+            # The ValueError text quotes the stored value; keep it out of the message.
+            raise RuntimeError("ContactsModule: invalid telegram_api_id in contact_info") from exc
 
         provider = TelegramContactsProvider(
             api_id=api_id,
