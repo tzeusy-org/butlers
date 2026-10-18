@@ -509,9 +509,12 @@ async def test_refresh_never_consults_the_expected_signal_evaluation() -> None:
         return True
 
     boom = AsyncMock(side_effect=AssertionError("expected-signal must not be used"))
+    # Patch the core attribute and, so a direct ``from ... import upsert_expected_signal`` in the
+    # module is caught too, the module's own name (absent today, hence create=True).
     with (
         patch.object(fsb, "upsert_baseline", _upsert),
         patch("butlers.core.expected_signals.upsert_expected_signal", boom),
+        patch.object(fsb, "upsert_expected_signal", boom, create=True),
     ):
         await fsb.refresh_category_baselines(_FakePool(history=rows), now=_NOW, zone=UTC)
     boom.assert_not_awaited()

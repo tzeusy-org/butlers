@@ -122,7 +122,7 @@ When to use intelligence tools in scheduled tasks and interactive workflows:
 - **`subscription_audit`** → used by `monthly-finance-digest`
 - **`detect_duplicates`** → surface in `anomaly-triage` skill
 - **`net_worth_history` / `net_worth_snapshot`** → no longer prompted from a scheduled task (dropped from `monthly-finance-digest` as low-value/redundant per bu-rvz2o); use interactively
-- **`compute_baselines`** → returns the merchant and category figures the scan uses; persists nothing. Category bands are refreshed by the `anomaly-insight-scan` job, not by this tool
+- **`compute_baselines`** → returns the merchant and category figures the scan uses; persists nothing. Category bands are refreshed by the `anomaly-insight-scan` job and by a 50+ row bulk import, not by this tool
 
 ## Notes to self
 

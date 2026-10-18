@@ -1324,18 +1324,25 @@ async def _refresh_spending_summaries(pool: asyncpg.Pool) -> bool:
 
 
 async def _trigger_compute_baselines(pool: asyncpg.Pool) -> bool:
-    """Fire-and-forget call to compute_baselines after a large import.
+    """Refresh the stored category spend bands after a large import.
 
-    Returns True when triggered, False when the function is unavailable.
+    Runs the same producer as the ``anomaly-insight-scan`` job, with the owner's budget zone,
+    so imported history reaches the bands without waiting for the next daily scan. The name is
+    kept for the callers and tests that reference it.
+
+    Returns True when the bands were refreshed, False when the refresh failed.
     """
     try:
-        from butlers.tools.finance.anomaly_detection import compute_baselines
+        from butlers.jobs.finance_spend_baselines import refresh_category_baselines
+        from butlers.tools.finance.budgets import resolve_budget_zone
 
-        await compute_baselines(pool)
-        logger.info("import: compute_baselines triggered post-import")
+        await refresh_category_baselines(
+            pool, now=datetime.now(UTC), zone=await resolve_budget_zone(pool)
+        )
+        logger.info("import: category spend bands refreshed post-import")
         return True
-    except Exception as exc:
-        logger.warning("import: compute_baselines trigger failed: %s", exc)
+    except asyncpg.PostgresError as exc:
+        logger.warning("import: category spend band refresh failed: %s", exc)
         return False
 
 
@@ -1436,7 +1443,7 @@ async def import_transactions_from_file(
 
     Post-import triggers (non-dry-run only, when 1+ rows imported):
     - Refreshes the ``spending_summaries`` materialized view (if present).
-    - Calls ``compute_baselines()`` when 50 or more rows were imported.
+    - Refreshes the stored category spend bands when 50 or more rows were imported.
     - Calls ``learn_merchant_categories()`` when imported rows carry category
       data, upserting merchant->category mappings and reporting the count via
       ``categories_learned``.
