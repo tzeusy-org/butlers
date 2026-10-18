@@ -253,9 +253,9 @@ dashboard source so Grafana never mistakes the alert rule for a dashboard.
 `butlers.memory.knowledge_gap_closure_failures_total` is an OTel counter for a
 knowledge-gap closure that failed while a fact write was committing. The fact write
 still succeeds and the gap stays open, so this counter is the operator signal that gap
-bookkeeping is broken (for example a lock or SQL error). It has only a `stage` label
-(`closure`); entity, predicate and fact identifiers are deliberately excluded. The
-butler comes from the OTel resource. No alert rule or dashboard panel ships with it yet;
+bookkeeping is broken (for example a lock or SQL error). It has a `butler` label (the registered butler name, or `unknown` outside a butler
+context) and a `stage` label (`closure`); entity, predicate and fact identifiers are
+deliberately excluded. No alert rule or dashboard panel ships with it yet;
 query it with `increase(...)`.
 
 ## Related Pages

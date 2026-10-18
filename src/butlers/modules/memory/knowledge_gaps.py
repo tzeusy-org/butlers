@@ -153,7 +153,6 @@ async def close_matching_gaps(
                 authority.entity_id if authority else None,
             )
     except Exception:
-        record_knowledge_gap_closure_failure(stage="closure")
         logger.warning(
             "knowledge gap closure failed for entity %s predicate %s; "
             "the fact write is unaffected and the gap stays open",
@@ -161,6 +160,10 @@ async def close_matching_gaps(
             predicate,
             exc_info=True,
         )
+        try:
+            record_knowledge_gap_closure_failure(stage="closure")
+        except Exception:
+            logger.warning("knowledge gap closure metric emission failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
