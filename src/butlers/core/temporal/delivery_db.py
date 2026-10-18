@@ -290,6 +290,75 @@ async def cancel_pending_notifications_matching_line(
     return int(result.split()[-1])
 
 
+async def replace_pending_deferred_notification(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str,
+    line_token: str,
+    channel: str,
+    message: str,
+    priority: str,
+    envelope: dict[str, Any],
+    deliver_at: datetime,
+) -> str:
+    """Atomically replace the PENDING notifications sharing ``line_token`` with a new one.
+
+    Cancel-then-insert as two independent statements lets two concurrent callers both
+    cancel nothing and both insert, leaving two pending rows. Here both statements run in
+    one transaction behind a transaction-scoped advisory lock keyed on the butler and the
+    token, so concurrent callers serialize: the later one cancels the earlier one's
+    committed row. Exactly one pending row per token survives, with no migration or unique
+    index. Returns the inserted row's UUID as a string.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"deferred_notifications:{butler_name}:{line_token}",
+            )
+            await cancel_pending_notifications_matching_line(
+                conn, butler_name=butler_name, line_token=line_token
+            )
+            return await insert_deferred_notification(
+                conn,
+                butler_name=butler_name,
+                channel=channel,
+                message=message,
+                priority=priority,
+                envelope=envelope,
+                deliver_at=deliver_at,
+            )
+
+
+async def latest_status_matching_line(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str,
+    line_token: str,
+) -> str | None:
+    """Status of the newest deferred notification whose ``message`` carries ``line_token``.
+
+    Uses the same literal whole-line match as :func:`cancel_pending_notifications_matching_line`.
+    Returns ``None`` when no row matches (or ``line_token`` is empty).
+    """
+    if not line_token:
+        return None
+    return await pool.fetchval(
+        r"""
+        SELECT status FROM deferred_notifications
+        WHERE butler_name = $1
+          AND (
+                strpos(message, $2 || E'\n') > 0
+                OR right(message, char_length($2)) = $2
+              )
+        ORDER BY deferred_at DESC
+        LIMIT 1
+        """,
+        butler_name,
+        line_token,
+    )
+
+
 async def list_deferred_notifications(
     pool: asyncpg.Pool,
     *,
