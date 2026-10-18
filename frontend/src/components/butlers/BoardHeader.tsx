@@ -111,13 +111,10 @@ export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps)
       {/* RIGHT block: healthy/total pill + clock+date stack */}
       <div className="flex items-center gap-4">
         {/* Healthy/total pill */}
-        <div
-          className="flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1"
-          role="img" aria-label={`${healthy} of ${total} reporting healthy`}
-        >
+        <div className="flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1">
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} aria-hidden="true" />
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-            {healthy}/{total} reporting
+            {healthy}/{total} reporting<span className="sr-only"> healthy</span>
           </span>
         </div>
 
