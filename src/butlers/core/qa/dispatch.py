@@ -3260,7 +3260,10 @@ async def _is_circuit_breaker_tripped(
     excludes every prior failure from the window and re-admits dispatches
     WITHOUT fabricating a clean patrol. Gate rejections that were cleaned up as
     dispatch events do not have a ``healing_session_id`` and remain excluded
-    from the circuit-breaker signal.
+    from the circuit-breaker signal. So do ``publication_unavailable`` outcomes
+    (status ``failed`` with that ``error_detail`` prefix): publication is disabled
+    by design, so they carry no signal about the investigation or the system and
+    are neither a failure nor a success for the breaker.
 
     Kept byte-identical to the dashboard filter in
     ``butlers.api.routers.qa._QA_CIRCUIT_BREAKER_WHERE_CLAUSE``.
@@ -3276,6 +3279,8 @@ async def _is_circuit_breaker_tripped(
         WHERE qa_patrol_id IS NOT NULL
           AND closed_at IS NOT NULL
           AND healing_session_id IS NOT NULL
+          AND NOT (status = 'failed'
+                   AND starts_with(COALESCE(error_detail, ''), 'publication_unavailable:'))
           AND closed_at > COALESCE(
                 (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
                 '-infinity'::timestamptz
