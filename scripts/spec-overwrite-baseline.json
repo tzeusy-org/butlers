@@ -1,4 +1,66 @@
 {
+  "add-personal-baselines/butler-finance/Finance Memory Taxonomy": [
+    {
+      "digest": "bf7957d1d45a",
+      "excerpt": "- **THEN** it SHALL use subjects like merchant names, service names, or \"user\"; predicates like `preferred_payment_me...",
+      "kind": "clause",
+      "scenario": "Memory classification"
+    }
+  ],
+  "add-personal-baselines/cross-butler-briefing-contribution/Finance Butler Contribution": [
+    {
+      "digest": "cae4917d85ec",
+      "excerpt": "The Finance butler's `daily_briefing_contribution` job SHALL query its domain tables to extract: bills due within 48 ...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a18ee88c0752",
+      "excerpt": "- **WHEN** a transaction in the last 24 hours exceeds 2x the 30-day rolling average for its category",
+      "kind": "clause",
+      "scenario": "Spending anomaly detected"
+    }
+  ],
+  "add-personal-baselines/finance-anomaly-detection/Statistical Baseline Computation": [
+    {
+      "digest": "5a19ad757ff9",
+      "excerpt": "The system SHALL compute rolling statistical baselines from `finance.transactions` to enable anomaly detection. Basel...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "aaf7e521ce50",
+      "excerpt": "- **AND** for each merchant with 3+ transactions, it SHALL store `median_amount`, `stddev_amount`, `transaction_count...",
+      "kind": "clause",
+      "scenario": "Merchant amount baseline"
+    },
+    {
+      "digest": "f5b684c0d93e",
+      "excerpt": "- **WHEN** baselines are computed",
+      "kind": "clause",
+      "scenario": "Category velocity baseline"
+    },
+    {
+      "digest": "6cd7eb3bf35a",
+      "excerpt": "- **THEN** the system SHALL compute per-category weekly spending velocity (average weekly spend) from the last 6 months",
+      "kind": "clause",
+      "scenario": "Category velocity baseline"
+    },
+    {
+      "digest": "f4978a574eba",
+      "excerpt": "- **AND** it SHALL store `avg_weekly_spend`, `stddev_weekly_spend`, and `avg_transaction_count` as a memory fact with...",
+      "kind": "clause",
+      "scenario": "Category velocity baseline"
+    }
+  ],
+  "add-personal-baselines/finance-anomaly-detection/Transaction Anomaly Scanning": [
+    {
+      "digest": "b1d1d5e58544",
+      "excerpt": "- **WHEN** the total spending in a category for the scan window exceeds the category's baseline weekly velocity by mo...",
+      "kind": "clause",
+      "scenario": "Category velocity anomaly"
+    }
+  ],
   "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
     {
       "digest": "5bbbc3c1bd8f",
@@ -2559,10 +2621,10 @@
   ],
   "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
     {
-      "kind": "prose",
-      "scenario": null,
       "digest": "982c41ec33eb",
-      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
