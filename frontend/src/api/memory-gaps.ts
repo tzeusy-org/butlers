@@ -60,6 +60,8 @@ export interface MemoryGapDemandResponse {
 
 export interface MemoryGapParams {
   status?: MemoryGapStatus;
+  /** Only this entity's gaps; the server filters, so paging stays correct. */
+  entityId?: string;
   limit?: number;
   cursor?: string | null;
   signal?: AbortSignal;
@@ -70,6 +72,7 @@ function gapSearch(params: MemoryGapParams | undefined): string {
   if (params?.status) search.set("status", params.status);
   if (params?.limit != null) search.set("limit", String(params.limit));
   if (params?.cursor) search.set("cursor", params.cursor);
+  if (params?.entityId) search.set("entity_id", params.entityId);
   return search.toString();
 }
 

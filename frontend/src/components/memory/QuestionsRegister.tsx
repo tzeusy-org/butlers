@@ -80,7 +80,7 @@ function DemandSummary({ rows }: { rows: MemoryGapDemandRow[] }) {
 // Row
 // ---------------------------------------------------------------------------
 
-function DismissAction({ gap }: { gap: MemoryGap }) {
+export function DismissAction({ gap }: { gap: MemoryGap }) {
   const [confirming, setConfirming] = useState(false);
   const dismiss = useDismissMemoryGap();
 

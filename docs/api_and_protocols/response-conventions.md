@@ -45,7 +45,9 @@ Response envelope:
 - The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
   a page offset; do not mix cursors between sort modes.
 - `GET /api/memory/gaps` follows the same keyset shape (`asked_at DESC, id DESC`, merged across
-  memory pools) and adds `meta.limit` and `meta.sources_degraded` for pools that failed.
+  memory pools) and adds `meta.limit` and `meta.sources_degraded` for pools that failed. The
+  optional `entity_id` filter is applied in every pool query (400 when not a UUID) and leaves
+  ordering and cursors unchanged.
   `GET /api/memory/gaps/demand` is a plain `{data, meta}` list (open gaps and asks per predicate)
   that names failed pools in `meta.sources_degraded`.
 

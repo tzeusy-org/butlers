@@ -3530,6 +3530,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - PROVENANCE
 - METADATA
 
+## `frontend/src/components/memory/EntityStillUnknown.tsx`
+
+- delivery failed
+- Still unknown
+
 ## `frontend/src/components/memory/EpisodesRegister.tsx`
 
 - open ↗
@@ -4933,4 +4938,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3929*
+*Total strings: 3931*

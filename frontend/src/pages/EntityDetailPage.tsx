@@ -55,6 +55,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageSubject } from "@/lib/page-context.tsx";
 import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
+import EntityStillUnknown from "@/components/memory/EntityStillUnknown";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Voice } from "@/components/ui/Voice";
 import { FactReporterLine } from "@/components/relationship/FactReporterLine";
@@ -3145,6 +3146,9 @@ export default function EntityDetailPage() {
                   setFactsLimit((current) => current + FACTS_PAGE_SIZE)
                 }
               />
+
+              {/* Open questions about this entity (bu-q7vx1q.71); absent when none. */}
+              <EntityStillUnknown entityId={entity.id} />
 
               {/* Editorial curation rail — 3×2 serif-gloss grid.
                   Brief §1 (L80): merge/promote/demote/archive/forget(red)/edit-aliases.

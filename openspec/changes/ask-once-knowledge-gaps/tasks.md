@@ -3,7 +3,7 @@
 - [x] 1.1 S1 spec, migration `mem_014`, capture on the dashboard answer-lane decline, list tool and API
 - [x] 1.2 S2 closure in memory `store_fact` and the deterministic delivery job
 - [x] 1.3 S3 closure in `relationship_assert_fact` and coverage-state composition
-- [ ] 1.4 S4 Telegram answer path, entity-detail "Still unknown" section (deferred); `/memory` Questions register, demand counts and palette verb done (bu-q7vx1q.73)
+- [ ] 1.4 S4 Telegram answer path (deferred); entity-detail "Still unknown" section done (bu-q7vx1q.71); `/memory` Questions register, demand counts and palette verb done (bu-q7vx1q.73)
 
 ## 2. Verification
 

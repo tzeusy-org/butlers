@@ -10,14 +10,22 @@ export const MEMORY_GAPS_PAGE_SIZE = 50;
 /** Shared prefix so one invalidation refreshes the list and the demand summary together. */
 export const memoryGapsKey = ["memory", "gaps"] as const;
 
-/** Keyset-paged gaps, newest first. No status means open plus answerable. */
-export function useMemoryGaps(params?: { status?: MemoryGapStatus; limit?: number }) {
+/**
+ * Keyset-paged gaps, newest first. No status means open plus answerable. An `entityId`
+ * narrows the list server-side to that entity and is part of the cache key.
+ */
+export function useMemoryGaps(params?: {
+  status?: MemoryGapStatus;
+  limit?: number;
+  entityId?: string;
+}) {
   const limit = params?.limit ?? MEMORY_GAPS_PAGE_SIZE;
   const status = params?.status;
+  const entityId = params?.entityId;
   return useInfiniteQuery({
-    queryKey: [...memoryGapsKey, "list", status ?? "default", limit],
+    queryKey: [...memoryGapsKey, "list", status ?? "default", limit, entityId ?? "all"],
     queryFn: ({ pageParam, signal }) =>
-      getMemoryGaps({ status, limit, cursor: pageParam, signal }),
+      getMemoryGaps({ status, limit, entityId, cursor: pageParam, signal }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       lastPage.meta.has_more ? (lastPage.meta.next_cursor ?? undefined) : undefined,

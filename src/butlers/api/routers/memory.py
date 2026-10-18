@@ -1579,6 +1579,7 @@ async def list_memory_gaps(
     ),
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None, description="Opaque `next_cursor` from the previous page"),
+    entity_id: str | None = Query(None, description="Only this entity's gaps (UUID)"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> KeysetResponse[MemoryGap]:
     """Owner questions no butler could answer yet, newest first, across memory pools.
@@ -1589,6 +1590,17 @@ async def list_memory_gaps(
     """
     statuses = ("open", "answerable") if status is None else (status,)
     after = _decode_gap_cursor(cursor) if cursor else None
+    entity_uuid: _uuid.UUID | None = None
+    if entity_id is not None:
+        try:
+            entity_uuid = _uuid.UUID(entity_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid entity_id (must be a UUID)"
+            ) from exc
+
+    # Forwarded only when asked for, so an unfiltered listing is call-for-call unchanged.
+    extra = {"entity_id": entity_uuid} if entity_uuid is not None else {}
 
     async def _query_pool(butler_name: str, pool: object) -> list[tuple[str, dict]]:
         gaps = await knowledge_gaps.list_gaps(
@@ -1597,6 +1609,7 @@ async def list_memory_gaps(
             limit=limit + 1,
             after=after,
             memory_schema=_memory_source_schema(db, butler_name),
+            **extra,
         )
         return [(butler_name, gap) for gap in gaps]
 

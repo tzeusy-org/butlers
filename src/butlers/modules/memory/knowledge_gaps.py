@@ -402,8 +402,11 @@ async def list_gaps(
     limit: int = 50,
     after: tuple[datetime, uuid.UUID] | None = None,
     memory_schema: str | None = None,
+    entity_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Gaps newest-first (``asked_at DESC, id DESC``), keyset-paginated via ``after``.
+
+    *entity_id* narrows the list to one entity's gaps; ordering and the cursor are unchanged.
 
     Each row carries its origins and a ``coverage_state``: ``present`` once answered,
     otherwise the composed receipt state (``unknown`` when nothing looked).  An
@@ -412,10 +415,14 @@ async def list_gaps(
     bad = [s for s in statuses if s not in STATUSES]
     if bad:
         raise ValueError(f"unknown gap status {bad!r}")
-    cursor_sql = "AND (g.asked_at, g.id) < ($3, $4)" if after is not None else ""
     args: list[Any] = [list(statuses), limit]
+    filters = ""
     if after is not None:
+        filters += f" AND (g.asked_at, g.id) < (${len(args) + 1}, ${len(args) + 2})"
         args.extend(after)
+    if entity_id is not None:
+        filters += f" AND g.entity_id = ${len(args) + 1}"
+        args.append(entity_id)
     async with _scoped(pool, memory_schema) as conn:
         schema = await conn.fetchval("SELECT current_schema()")
         rows = await conn.fetch(
@@ -433,7 +440,7 @@ async def list_gaps(
                    ), '[]'::jsonb) AS origins
             FROM knowledge_gaps g
             LEFT JOIN public.entities e ON e.id = g.entity_id
-            WHERE g.status = ANY($1::text[]) {cursor_sql}
+            WHERE g.status = ANY($1::text[]){filters}
             ORDER BY g.asked_at DESC, g.id DESC
             LIMIT $2
             """,

@@ -113,8 +113,11 @@ ledger and listed with `delivery_failed`. Open gaps past `expires_at` (ninety da
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
-captures gaps today; the Telegram answer path and an entity-detail "Still unknown" section are a
-later slice.
+captures gaps today; the Telegram answer path is a later slice. `GET /api/memory/gaps` takes an
+optional `entity_id` (a malformed one is a 400) that the server applies to every pool query, so a
+single entity's gaps page correctly; an entity's detail page uses it for a "Still unknown" section
+(editorial mode) that lists that entity's open and answerable questions with dismiss, shows nothing
+when there are none, and names a failed fetch or an unreadable pool.
 
 The dashboard's `/memory` page has a Questions register (`register=questions`, also reachable from
 the "Open questions" command-palette verb). It lists open and answerable gaps with their coverage
