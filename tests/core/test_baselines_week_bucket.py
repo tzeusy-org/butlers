@@ -12,6 +12,8 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from butlers.core.baselines import (
+    METHOD_VERSION,
+    Baseline,
     BaselineMetric,
     BaselineState,
     Deviation,
@@ -19,6 +21,7 @@ from butlers.core.baselines import (
     bucket_value,
     compute_baselines,
     episode_decision,
+    score,
     window_bounds,
 )
 
@@ -142,3 +145,48 @@ def test_day_baselines_still_step_one_day_and_dow_buckets_by_weekday() -> None:
     assert {b.n_expected for b in baselines} == {2}
     assert bucket_value(metric, date(2026, 10, 5)) == "0"
     assert bucket_value(_WEEK, date(2026, 10, 5)) == "all"
+
+
+def _ready_baseline() -> Baseline:
+    """A band with centre 20 and dispersion 2, so k_mad = 2 puts the edges at exactly 16 and 24."""
+    return Baseline(
+        metric_key="edge",
+        bucket_value="all",
+        method_version=METHOD_VERSION,
+        status="ready",
+        measurability="measurable",
+        unit="kWh",
+        center=20.0,
+        dispersion=2.0,
+        n_observed=6,
+        n_expected=8,
+        coverage=0.75,
+        k_mad=2.0,
+        input_digest="d",
+        computed_at=_NOW,
+    )
+
+
+def test_a_value_exactly_k_mad_above_the_centre_reads_above() -> None:
+    metric = replace(_WEEK, k_mad=2.0, concern="both")
+
+    deviation = score(metric, 24.0, _ready_baseline(), now=_NOW)
+
+    assert deviation.mad_units == 2.0
+    assert deviation.state is BaselineState.ABOVE
+
+
+def test_a_value_exactly_k_mad_below_the_centre_reads_below() -> None:
+    metric = replace(_WEEK, k_mad=2.0, concern="both")
+
+    deviation = score(metric, 16.0, _ready_baseline(), now=_NOW)
+
+    assert deviation.mad_units == -2.0
+    assert deviation.state is BaselineState.BELOW
+
+
+def test_a_value_just_inside_k_mad_is_within() -> None:
+    metric = replace(_WEEK, k_mad=2.0, concern="both")
+
+    assert score(metric, 23.5, _ready_baseline(), now=_NOW).state is BaselineState.WITHIN
+    assert score(metric, 16.5, _ready_baseline(), now=_NOW).state is BaselineState.WITHIN
