@@ -901,8 +901,11 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
         try:
             last_state = await _last_notified_state(shared_pool, snapshot.key)
             if last_state == snapshot.state:
-                # Already notified for this exact state — debounce.
-                continue
+                # Already notified for this exact state: debounce, unless a newer parked
+                # marker superseded that delivery (one newest-marker rule for both skips).
+                newest = await _latest_lifecycle_marker(shared_pool, snapshot.key)
+                if newest is None or newest[0] == "notified":
+                    continue
 
             message = _compose_message(snapshot, dashboard_url)
             # State-independent dedup token for this credential's deferred/retry

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
+from butlers.api.routers import audit as audit_router
 from butlers.core.temporal.delivery_db import notification_status
 from butlers.db import register_jsonb_codec
 from butlers.jobs import secrets_lifecycle as lifecycle
@@ -158,3 +159,38 @@ async def test_the_parked_envelope_status_follows_the_flush(pool):
     )
 
     assert await lifecycle._parked_envelope_status(db, envelope_id) == "delivered"
+
+
+async def _audit(pool, action, key, note, *, minutes):
+    """Append one audit row, then pin its ``ts`` so ordering never depends on insert order."""
+    row_id = await audit_router.append(pool, "secrets_lifecycle", action, target=key, note=note)
+    await pool.execute(
+        "UPDATE public.audit_log SET ts = $2 WHERE id = $1",
+        row_id,
+        datetime(2026, 10, 18, 12, 0, tzinfo=UTC) + timedelta(minutes=minutes),
+    )
+
+
+async def test_latest_lifecycle_marker_is_the_newest_of_notified_and_parked(pool):
+    await pool.execute("DELETE FROM public.audit_log WHERE target LIKE 's:marker%'")
+    notified, parked = lifecycle._LIFECYCLE_NOTIFIED_ACTION, lifecycle._LIFECYCLE_PARKED_ACTION
+    # Inserted newest-first so an ASC ordering (or insert order) would pick the wrong row.
+    await _audit(pool, parked, "s:marker-a", "expired|e1", minutes=20)
+    await _audit(pool, notified, "s:marker-a", "expiring", minutes=10)
+    await _audit(pool, notified, "s:marker-b", "expired", minutes=30)
+    await _audit(pool, parked, "s:marker-b", "expiring|e2", minutes=5)
+    await _audit(pool, "verified", "s:marker-c", "ignored", minutes=40)
+
+    assert await lifecycle._latest_lifecycle_marker(pool, "s:marker-a") == (
+        "parked",
+        "expired",
+        "e1",
+    )
+    assert await lifecycle._latest_lifecycle_marker(pool, "s:marker-b") == (
+        "notified",
+        "expired",
+        None,
+    )
+    # An unrelated action and an unknown key are not markers.
+    assert await lifecycle._latest_lifecycle_marker(pool, "s:marker-c") is None
+    assert await lifecycle._latest_lifecycle_marker(pool, "s:marker-none") is None
