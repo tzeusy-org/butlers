@@ -8,6 +8,7 @@ message, a traceback or a raised error message.
 from __future__ import annotations
 
 import logging
+import traceback
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -130,6 +131,36 @@ async def test_invalid_telegram_api_id_error_omits_the_stored_value(monkeypatch)
 
     assert not any(n in str(raised.value) for n in _NEEDLES)
     assert "telegram_api_id" in str(raised.value)
+    # The ValueError text quotes the stored value; it must not survive as the cause either.
+    rendered = "".join(traceback.format_exception(raised.value))
+    assert not any(n in rendered for n in _NEEDLES)
+
+
+async def test_invalid_telegram_api_id_stays_out_of_the_startup_log(monkeypatch, caplog) -> None:
+    values = {
+        "telegram_api_id": _SECRET,
+        "telegram_api_hash": "hash",
+        "telegram_user_session": "session",
+    }
+
+    async def resolve(_pool, ci_type):
+        return values[ci_type]
+
+    monkeypatch.setattr("butlers.credential_store.resolve_owner_entity_info", resolve)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(RuntimeError):
+            await ContactsModule().on_startup(
+                {"provider": "telegram"}, SimpleNamespace(pool=object())
+            )
+
+    assert "failed to start provider" in caplog.text
+    assert not any(n in caplog.text for n in _NEEDLES)
+    for record in caplog.records:
+        if record.exc_info:
+            assert not any(
+                n in "".join(traceback.format_exception(*record.exc_info)) for n in _NEEDLES
+            )
 
 
 async def test_google_token_refresh_error_names_only_the_transport_class() -> None:
@@ -144,3 +175,6 @@ async def test_google_token_refresh_error_names_only_the_transport_class() -> No
 
     assert not any(n in str(raised.value) for n in _NEEDLES)
     assert "ConnectError" in str(raised.value)
+    # The transport error text carries the value; it must not survive as the cause either.
+    rendered = "".join(traceback.format_exception(raised.value))
+    assert not any(n in rendered for n in _NEEDLES)

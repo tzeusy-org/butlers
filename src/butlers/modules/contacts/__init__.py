@@ -949,9 +949,10 @@ class ContactsModule(Module):
 
         try:
             api_id = int(creds["telegram_api_id"])
-        except ValueError as exc:
-            # The ValueError text quotes the stored value; keep it out of the message.
-            raise RuntimeError("ContactsModule: invalid telegram_api_id in contact_info") from exc
+        except ValueError:
+            # The ValueError text quotes the stored value; keep it out of the message and the
+            # cause chain, which logger.exception would otherwise print.
+            raise RuntimeError("ContactsModule: invalid telegram_api_id in contact_info") from None
 
         provider = TelegramContactsProvider(
             api_id=api_id,
