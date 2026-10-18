@@ -38,8 +38,9 @@ def _series(values: list[int]) -> dict[date, int]:
 
 
 def test_baseline_mean_over_samples():
+    # Median (5400) deliberately differs from the mean (~6429): the center is the median.
     result = compute_lane_baseline(
-        {"work": _series([3600, 7200, 5400, 5400, 3600, 7200, 5400])}, local_date=_DAY
+        {"work": _series([3600, 3600, 5400, 5400, 5400, 7200, 14400])}, local_date=_DAY
     )
     work = result["work"]
     assert work.center == pytest.approx(5400.0)
@@ -160,7 +161,7 @@ def test_anomaly_ignores_small_delta_below_absolute_floor():
 
 
 def test_anomaly_ignores_small_relative_delta_on_large_baseline():
-    # Large baseline (8h) with a one-hour swing: inside the band.
-    lb = _lane(32400, [28800] * LANE_BASELINE_MIN_N)
+    # Large baseline (8h) with a half-hour swing: inside the one-hour minimum band.
+    lb = _lane(30600, [28800] * LANE_BASELINE_MIN_N)
     assert lb.state == "within"
     assert is_lane_anomalous(lb) is False

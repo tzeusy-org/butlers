@@ -16,7 +16,7 @@ from butlers.chronicler import balance
 from butlers.chronicler.balance import (
     LANE_BASELINE_K_MAD,
     LANE_BASELINE_MIN_N,
-    LANE_MIN_DISPERSION_SECONDS,
+    LANE_MIN_BAND_HALF_WIDTH_SECONDS,
     LaneBalance,
     compute_daily_balance,
     is_lane_anomalous,
@@ -67,11 +67,11 @@ def test_the_spike_day_itself_scores_above_its_band():
 
     assert work.state == "above"
     assert is_lane_anomalous(work) is True
-    assert work.mad_units == pytest.approx((10 * _HOUR) / LANE_MIN_DISPERSION_SECONDS)
-    assert work.band_low is not None and work.band_high is not None
-    assert work.band_high == pytest.approx(
-        8 * _HOUR + LANE_BASELINE_K_MAD * LANE_MIN_DISPERSION_SECONDS
+    assert work.mad_units == pytest.approx(
+        (10 * _HOUR) / (LANE_MIN_BAND_HALF_WIDTH_SECONDS / LANE_BASELINE_K_MAD)
     )
+    assert work.band_low is not None and work.band_high is not None
+    assert work.band_high == pytest.approx(8 * _HOUR + LANE_MIN_BAND_HALF_WIDTH_SECONDS)
 
 
 def test_a_drop_below_the_band_scores_below():

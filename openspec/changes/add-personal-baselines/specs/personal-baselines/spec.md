@@ -117,4 +117,16 @@ The Chronicler balance and trends surfaces SHALL derive each lane's "usual" and 
 #### Scenario: Minute-level noise on a near-zero lane is not an anomaly
 
 - **WHEN** a lane that is usually about a minute a day records twenty minutes
-- **THEN** its state SHALL be `within` because the band is floored at the lane's minimum dispersion
+- **THEN** its state SHALL be `within` because the band is at least one hour either side of the median
+
+#### Scenario: The band is at least one hour wide on each side, whatever the lane
+
+- **WHEN** a lane's MAD-derived band half-width is under one hour, such as a flat lane or one that usually runs about 45 minutes
+- **THEN** the band SHALL be the median plus or minus one hour, uniform across lanes, and a day exactly one hour from the median SHALL read `above` or `below`
+- **AND** a day inside that hour SHALL read `within`
+- **AND** when three scaled MADs exceed one hour the band SHALL be the median plus or minus three scaled MADs
+
+#### Scenario: A long lookback needs a quarter of its days materialized
+
+- **WHEN** a lane has a 60-day lookback and 14 observed days
+- **THEN** its state SHALL be `insufficient_history`, and with 15 observed days it SHALL be scored

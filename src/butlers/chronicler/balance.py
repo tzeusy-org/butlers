@@ -55,10 +55,13 @@ LANE_BASELINE_K_MAD = 3.0
 """Band half-width in MAD-derived dispersions: a day further than this from the
 median is above/below."""
 
-LANE_MIN_DISPERSION_SECONDS = 3600.0
-"""Dispersion floor. A flat or near-zero lane would otherwise have a zero-width
-band and flag minute-level noise; the floor keeps the band at least
-``LANE_BASELINE_K_MAD`` hours wide on each side."""
+LANE_MIN_BAND_HALF_WIDTH_SECONDS = 3600.0
+"""Minimum band half-width, uniform across lanes: the usual range is at least
+one hour either side of the median. A flat or near-zero lane would otherwise have
+a zero-width band and flag minute-level noise, and a per-lane floor would be a
+second opinion about what "unusual" means. It is the scorer's dispersion floor
+scaled by ``LANE_BASELINE_K_MAD``, so the band is
+``max(LANE_BASELINE_K_MAD * MAD-dispersion, LANE_MIN_BAND_HALF_WIDTH_SECONDS)``."""
 
 
 def lane_metric(lane: str, lookback_days: int) -> BaselineMetric:
@@ -75,7 +78,7 @@ def lane_metric(lane: str, lookback_days: int) -> BaselineMetric:
         # immediately before it.
         k_consecutive=1,
         concern="both",
-        min_dispersion=LANE_MIN_DISPERSION_SECONDS,
+        min_dispersion=LANE_MIN_BAND_HALF_WIDTH_SECONDS / LANE_BASELINE_K_MAD,
         # Chronicles has no expected-signal instrument here; coverage carries
         # the honesty, so every lane is passed as measurable.
         expected_signal_key=f"chronicler.daily_rollups.{lane}",
@@ -213,7 +216,7 @@ __all__ = [
     "LANE_BASELINE_K_MAD",
     "LANE_BASELINE_MIN_COVERAGE",
     "LANE_BASELINE_MIN_N",
-    "LANE_MIN_DISPERSION_SECONDS",
+    "LANE_MIN_BAND_HALF_WIDTH_SECONDS",
     "LaneBalance",
     "compute_daily_balance",
     "compute_lane_baseline",
