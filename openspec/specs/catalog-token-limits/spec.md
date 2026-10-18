@@ -98,7 +98,7 @@ Each rolling window (24h and 30d) SHALL have its own independent reset marker. R
 The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function that evaluates whether a catalog entry's usage is within its configured limits for both rolling windows.
 
 ID: REQ-catalog-token-limits-001
-Source: RFC 0038 D10, D18
+Source: 2026-03-18-catalog-tier-token-limits; RFC 0038 D10, D18
 Scope: v1-mandatory
 
 #### Scenario: QuotaStatus return type
@@ -318,7 +318,7 @@ token usage ledger and SHALL preserve the distinction between a known
 zero-marginal model and a model with no configured price.
 
 ID: REQ-catalog-token-limits-002
-Source: archived change spend-ledger-truth (2026-08-22)
+Source: 2026-08-22-spend-ledger-truth
 Scope: v1-mandatory
 
 #### Scenario: Unreadable ceiling or spend state refuses the spawn
