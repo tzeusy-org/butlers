@@ -44,11 +44,16 @@ def _redact_parameter_values(value: str) -> str:
 
 
 def _node_id(classname: str, name: str) -> str:
-    """Rebuild ``path::Class::name`` from a JUnit dotted classname.
+    """Rebuild a rerunnable ``path::Class::name`` from a JUnit dotted classname.
 
     Leading lowercase segments are the module path; segments from the first
-    capitalised one on are classes. Anything unnamed yields the bare name.
+    capitalised one on are classes. A collection failure has an empty classname
+    and the dotted module path as its name (its node id is the bare file), so it
+    is turned back into ``path/to/module.py``. Any other unnamed case yields the
+    bare name.
     """
+    if not classname and "." in name and "::" not in name and "[" not in name:
+        return f"{name.replace('.', '/')}.py"
     parts = [part for part in classname.split(".") if part]
     split = next((i for i, part in enumerate(parts) if part[0].isupper()), len(parts))
     module = "/".join(parts[:split])

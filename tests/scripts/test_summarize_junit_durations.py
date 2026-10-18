@@ -131,3 +131,32 @@ def test_failed_nodes_is_empty_when_green_and_flag_is_opt_in(tmp_path: Path) -> 
     )
     assert with_flag["duration_report"].read_bytes() == without_flag["duration_report"].read_bytes()
     assert not (tmp_path / "failed-nodes.txt").exists()
+
+
+def test_failed_nodes_rebuilds_a_rerunnable_path_for_a_collection_failure(tmp_path: Path) -> None:
+    raw_report = tmp_path / "raw-junit.xml"
+    failed_nodes = tmp_path / "failed-nodes.txt"
+    # pytest's shape for an import-broken module: empty classname, dotted module as name.
+    raw_report.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest">
+  <testcase classname="" name="tests.unit.test_broken" time="0">
+    <error message="collection failure">ImportError body</error>
+  </testcase>
+  <testcase classname="tests.unit.test_ok" name="test_fails" time="1"><failure /></testcase>
+</testsuite></testsuites>
+""",
+        encoding="utf-8",
+    )
+
+    summary.sanitize_junit_report(
+        raw_report=raw_report,
+        sanitized_report=tmp_path / "junit.xml",
+        duration_report=tmp_path / "top.txt",
+        limit=5,
+        failed_nodes_report=failed_nodes,
+    )
+
+    assert failed_nodes.read_text(encoding="utf-8") == (
+        "tests/unit/test_broken.py\ntests/unit/test_ok.py::test_fails\n"
+    )
