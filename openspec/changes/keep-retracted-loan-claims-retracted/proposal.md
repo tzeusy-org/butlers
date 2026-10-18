@@ -4,5 +4,5 @@
 
 ## What changes
 
-- `backfill_loan_cost_claims` skips a `loan:{fact_id}` whose claim was retracted and has no live row, and counts it as `skipped_retracted`. A loan changed on purpose (amended, settled) is a new fact id and so a new claim key.
+- `backfill_loan_cost_claims` skips a `loan:{fact_id}` whose claim was retracted and has no live row, and counts it as `skipped_retracted`. It also skips settled loan facts (counted as `skipped_settled`): `loan_settle` supersedes the fact with a settled successor under a new id and retracts the old claim, so projecting the successor would resurrect a claim for a settled loan. There is no loan amend path.
 - Supersession semantics and the claim tables are unchanged.

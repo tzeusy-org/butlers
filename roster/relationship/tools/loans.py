@@ -365,21 +365,28 @@ async def backfill_loan_cost_claims(pool: asyncpg.Pool) -> dict[str, int]:
         """
     )
     # An owner-retracted claim stays retracted: the partial live-unique index would otherwise
-    # let this run insert a fresh live claim for the same loan. A loan changed on purpose
-    # (amended, settled) is a new fact id and so a new claim_key. Read lazily, once, so a
-    # run with nothing to assert never touches the claim table.
+    # let this run insert a fresh live claim for the same loan. Settlement supersedes the loan
+    # fact with a settled successor (a new fact id, hence a new claim_key with no claim), so
+    # settled facts are skipped outright. Read lazily, once, so a run with nothing to assert
+    # never touches the claim table.
     retracted_keys: set[str] | None = None
     counts = {
         "asserted": 0,
         "skipped_missing_currency": 0,
         "skipped_invalid": 0,
         "skipped_retracted": 0,
+        "skipped_settled": 0,
     }
     for row in rows:
         meta = row["metadata"] or {}
         currency = meta.get("currency")
         amount_cents = meta.get("amount_cents")
         direction = meta.get("direction")
+        if meta.get("settled") is True:
+            # loan_settle already retracted the old key's claim; the settled successor must
+            # not be projected as a live claim.
+            counts["skipped_settled"] += 1
+            continue
         if not currency:
             counts["skipped_missing_currency"] += 1
             continue

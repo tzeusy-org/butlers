@@ -69,6 +69,14 @@ async def test_only_the_retracted_loan_is_skipped():
     assert assert_claim.await_args.kwargs["claim_key"] == f"loan:{other}"
 
 
+async def test_a_settled_loan_fact_is_never_projected():
+    settled = {**_fact_row(), "metadata": {**_fact_row()["metadata"], "settled": True}}
+    counts, assert_claim = await _backfill([], rows=[settled])
+
+    assert counts["skipped_settled"] == 1 and counts["asserted"] == 0
+    assert_claim.assert_not_awaited()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
@@ -116,6 +124,39 @@ async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_contain
         )
         assert live == 0
         assert Decimal(await admin.fetchval("SELECT count(*) FROM public.cost_claims")) == 1
+
+        # loan_settle: supersede the loan fact, store a settled successor, retract the old claim.
+        second = await admin.fetchval(
+            "INSERT INTO facts (predicate, scope, validity, valid_at, content, metadata, entity_id)"
+            " VALUES ('loan', 'relationship', 'active', now(), 'Second loan',"
+            ' \'{"currency": "SGD", "amount_cents": 500, "direction": "lent"}\', $1)'
+            " RETURNING id",
+            entity,
+        )
+        assert (await backfill_loan_cost_claims(pool))["asserted"] == 1
+        second_claim = await admin.fetchval(
+            "SELECT id FROM public.cost_claims WHERE claim_key = $1", f"loan:{second}"
+        )
+        await admin.execute("UPDATE facts SET validity = 'superseded' WHERE id = $1", second)
+        await admin.execute(
+            "INSERT INTO facts (predicate, scope, validity, valid_at, content, metadata, entity_id)"
+            " VALUES ('loan', 'relationship', 'active', now(), 'Second loan',"
+            ' \'{"currency": "SGD", "amount_cents": 500, "direction": "lent",'
+            ' "settled": true}\', $1)',
+            entity,
+        )
+        await retract_claim(pool, second_claim, "asserter_marked_settled")
+
+        settled = await backfill_loan_cost_claims(pool)
+
+        assert settled["asserted"] == 0 and settled["skipped_settled"] == 1
+        assert (
+            await admin.fetchval(
+                "SELECT count(*) FROM public.cost_claims "
+                "WHERE superseded_at IS NULL AND retracted_at IS NULL"
+            )
+            == 0
+        )
     finally:
         if pool is not None:
             await pool.close()
