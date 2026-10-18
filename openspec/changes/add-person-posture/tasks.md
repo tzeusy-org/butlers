@@ -16,6 +16,6 @@
 
 ## 4. Slice 4: deferred
 
-- [ ] 4.1 Finance loan-claim owner question for a memorial counterparty.
+- [x] 4.1 Finance loan-claim owner question for a memorial counterparty (REQ-butler-finance-002).
 - [ ] 4.2 Anniversary-of-passing occasion.
 - [ ] 4.3 Dashboard surface and remembrance opt-in.
