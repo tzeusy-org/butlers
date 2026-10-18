@@ -1,18 +1,4 @@
 {
-  "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
-    {
-      "digest": "5bbbc3c1bd8f",
-      "excerpt": "- **WHEN** migration core_022 runs on a butler schema",
-      "kind": "clause",
-      "scenario": "Table created by migration"
-    },
-    {
-      "digest": "990958a4cb4d",
-      "excerpt": "- **THEN** the `session_process_logs` table is created with the specified schema and index",
-      "kind": "clause",
-      "scenario": "Table created by migration"
-    }
-  ],
   "amend-secrets-inventory-label-minimization/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
     {
       "digest": "176715cfc640",

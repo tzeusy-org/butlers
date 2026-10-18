@@ -4,12 +4,14 @@
 
 The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accepting a partial update of runtime config fields. The `delegation` core group SHALL remain a known group so stored rows keep validating, but it SHALL register no tools, because the `delegate_*` tools it carried are deleted at cutover.
 
-Source: RFC 0007 §Dashboard API Surface; RFC 0038 D7
+ID: REQ-runtime-config-api-002
+Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine; RFC 0038 D7
 Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
 - **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+- **AND** `tool_exposure_policy` SHALL also be accepted as `eager_filtered` or `auto`
 
 #### Scenario: Catalog read sensitivity updates hot
 
@@ -34,7 +36,7 @@ Scope: v1-mandatory
 #### Scenario: All managed fields are cold
 - **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
 - **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
-- **AND** the historical no-hot-fields clause is superseded for new fields only: `catalog_read_sensitivity` is hot and MUST NOT appear in `restart_required`
+- **AND** the historical no-hot-fields clause is superseded for new fields only: hot `catalog_read_sensitivity` and `tool_exposure_policy` take effect on the next accessor read and SHALL NOT appear in `restart_required`
 
 #### Scenario: Invalid field value — negative concurrency
 - **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero
@@ -48,6 +50,7 @@ Scope: v1-mandatory
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
 - **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
+- **AND** the same validation SHALL accept `graph` and `fleet_cases`
 - **AND** enabling `delegation` SHALL register no tool on the butler, because the `delegate_*` tools no longer exist
 
 #### Scenario: Empty PATCH body
@@ -57,3 +60,14 @@ Scope: v1-mandatory
 #### Scenario: Butler not found
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
+
+#### Scenario: Hot exposure policy applies without restart
+
+- **WHEN** a PATCH request changes `tool_exposure_policy` to `auto` or `eager_filtered`
+- **THEN** the DB row is updated and the response excludes that field from `restart_required`
+- **AND** the next accessor read returns the new value without a daemon restart
+
+#### Scenario: Invalid exposure policy is rejected
+
+- **WHEN** a PATCH request supplies any `tool_exposure_policy` other than `eager_filtered` or `auto`
+- **THEN** the response SHALL return HTTP 422 without changing the stored policy

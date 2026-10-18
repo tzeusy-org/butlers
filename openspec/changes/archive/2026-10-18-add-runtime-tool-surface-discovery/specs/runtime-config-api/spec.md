@@ -27,7 +27,7 @@ Scope: v1-mandatory
 - **WHEN** a GET response is returned
 - **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold
 - **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
-- **AND** the response SHALL add `"tool_exposure_policy": "hot"` because subsequent invocations resolve it through the runtime-config accessor without restarting the daemon
+- **AND** the response SHALL add `"tool_exposure_policy": "hot"` because the runtime-config accessor reads it from the DB without restarting the daemon
 
 ### Requirement: PATCH runtime config endpoint
 
@@ -65,7 +65,7 @@ Scope: v1-mandatory
 #### Scenario: All managed fields are cold
 - **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
 - **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
-- **AND** the historical no-hot-fields clause is superseded for new fields only: hot `catalog_read_sensitivity` and `tool_exposure_policy` take effect for subsequent invocations and SHALL NOT appear in `restart_required`
+- **AND** the historical no-hot-fields clause is superseded for new fields only: hot `catalog_read_sensitivity` and `tool_exposure_policy` take effect on the next accessor read and SHALL NOT appear in `restart_required`
 
 #### Scenario: Invalid field value — negative concurrency
 - **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero
@@ -79,7 +79,7 @@ Scope: v1-mandatory
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
 - **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
-- **AND** the same validation SHALL accept `graph` and `fleet_cases`, completing parity with all fourteen registered group names
+- **AND** the same validation SHALL accept `graph` and `fleet_cases`
 
 #### Scenario: Empty PATCH body
 - **WHEN** a PATCH request has an empty body or no changed fields
@@ -89,11 +89,11 @@ Scope: v1-mandatory
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
 
-#### Scenario: Hot exposure policy applies to subsequent sessions
+#### Scenario: Hot exposure policy applies without restart
 
 - **WHEN** a PATCH request changes `tool_exposure_policy` to `auto` or `eager_filtered`
-- **THEN** the DB row and accessor cache are updated and the response excludes that field from `restart_required`
-- **AND** sessions planned after the update use the new policy while in-flight plans remain immutable
+- **THEN** the DB row is updated and the response excludes that field from `restart_required`
+- **AND** the next accessor read returns the new value without a daemon restart
 
 #### Scenario: Invalid exposure policy is rejected
 

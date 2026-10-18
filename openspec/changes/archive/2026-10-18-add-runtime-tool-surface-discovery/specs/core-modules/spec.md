@@ -11,7 +11,7 @@ filtering, module state, approval rules, channel-egress ownership, or handler
 schema validation.
 
 ID: REQ-core-modules-001
-Source: RFC 0027 §Tool Metadata Contract; RFC 0002 §Tool Sensitivity Metadata
+Source: RFC 0027 §Tool Metadata Contract; RFC 0002 §Tool Sensitivity Metadata (bu-ondtw.3, PR #4244)
 Scope: v1-mandatory
 
 #### Scenario: Module declares deferred LLM tool metadata
@@ -35,5 +35,5 @@ Scope: v1-mandatory
 #### Scenario: Existing module without classification uses compatibility posture
 
 - **WHEN** an existing module tool has no exposure metadata during the migration window
-- **THEN** it retains its current LLM-facing eager-filtered behavior
-- **AND** native deferred presentation remains unavailable for that tool until classification is complete
+- **THEN** the tool catalog presents it as LLM-presentable with an eager load posture
+- **AND** the catalog reports the tool's classification as incomplete

@@ -9,13 +9,15 @@ Defines the dashboard butler-detail UX for viewing and editing per-butler runtim
 
 The butler detail Management tab SHALL display the effective runtime config read from the `runtime-config` API endpoint (via the `RuntimeConfigCard` component), not from the raw toml.
 
-Source: RFC 0007 §Dashboard API Surface
+ID: REQ-runtime-config-dashboard-ui-001
+Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
 Scope: v1-mandatory
 
 #### Scenario: Card shows DB values
 - **WHEN** the user opens the Management tab for a butler
 - **THEN** the `RuntimeConfigCard` SHALL show current runtime config values (`core_groups`, `max_concurrent`, `max_queued`) from the DB with editable fields
 - **AND** the resolved model and `session_timeout_s` are shown read-only with an "edit in models" link to the Models tab
+- **AND** `tool_exposure_policy` SHALL be shown as an editable `Eager filtered` or `Automatic verified discovery` choice with concise guidance
 
 #### Scenario: Card distinguishes declaration, decision, and registration
 - **WHEN** the user opens the Management tab for a butler
@@ -28,11 +30,21 @@ Scope: v1-mandatory
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
 - **THEN** the field SHALL show a visual indicator that changes require a daemon restart
 
+#### Scenario: Hot exposure policy shows restart behavior
+
+- **WHEN** `tool_exposure_policy` is displayed or changed
+- **THEN** the card SHALL state that the setting needs no daemon restart
+- **AND** `auto` SHALL be described as conditional, not as a guarantee that native discovery will run
+
 ### Requirement: Config tab supports inline editing
 
-The config tab SHALL allow the user to edit runtime config fields and save via the PATCH endpoint.
+The config tab SHALL allow the user to edit runtime config fields and save via
+the PATCH endpoint. For this requirement, the historical "config tab" name
+refers to the editable `RuntimeConfigCard` that the preceding requirement places in the
+butler-detail Management tab; the card stays in the Management tab.
 
-Source: RFC 0007 §Dashboard API Surface
+ID: REQ-runtime-config-dashboard-ui-002
+Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
 Scope: v1-mandatory
 
 #### Scenario: Edit and save a field
@@ -42,6 +54,18 @@ Scope: v1-mandatory
 #### Scenario: Restart-required feedback after saving cold field
 - **WHEN** the user saves a change that includes cold fields
 - **THEN** the UI SHALL display a notification listing which fields require a daemon restart to take effect
+
+#### Scenario: Hot policy save does not claim restart
+
+- **WHEN** the user saves only `tool_exposure_policy`
+- **THEN** the UI SHALL state that no daemon restart is needed
+- **AND** it SHALL not show a restart-required notification
+
+#### Scenario: Failed policy save preserves confirmed state
+
+- **WHEN** the policy PATCH fails validation, transport, or persistence
+- **THEN** the UI SHALL show an actionable error and retain or restore the last server-confirmed policy
+- **AND** it SHALL not claim that the edited value is active
 
 ### Requirement: Core groups editor supports array input
 
