@@ -66,6 +66,7 @@ def _person(email: str, posture: str, *, owner: bool = False) -> dict[str, Any]:
         "name": "Resolved Later",
         "posture": posture,
         "roles": ["owner"] if owner else [],
+        "tombstoned": False,
     }
 
 
@@ -172,8 +173,16 @@ async def test_shared_email_with_only_active_claimants_is_shown(reverse) -> None
 async def test_resolver_merges_shared_email_claimants_fail_closed() -> None:
     from butlers.jobs.meeting_debrief import _merge_claimants
 
-    def claimant(entity_id: str, posture: str, *, owner: bool = False) -> dict[str, Any]:
-        return {"entity_id": entity_id, "name": "N", "posture": posture, "is_owner": owner}
+    def claimant(
+        entity_id: str, posture: str, *, owner: bool = False, tombstoned: bool = False
+    ) -> dict[str, Any]:
+        return {
+            "entity_id": entity_id,
+            "name": "N",
+            "posture": posture,
+            "is_owner": owner,
+            "tombstoned": tombstoned,
+        }
 
     quiet = claimant("b", "quiet")
     owner = claimant("a", "active", owner=True)
@@ -183,6 +192,17 @@ async def test_resolver_merges_shared_email_claimants_fail_closed() -> None:
     assert _merge_claimants([quiet, active]) == quiet
     assert _merge_claimants([active, {**active, "entity_id": "d"}]) is None
     assert _merge_claimants([active]) == active
+
+    # Tombstoned (merged-away or soft-deleted) claimants: never resolve, never make it ambiguous,
+    # but a non-active posture still withholds.
+    gone_active = claimant("e", "active", tombstoned=True)
+    gone_no_contact = claimant("f", "no_contact", tombstoned=True)
+    gone_owner = claimant("g", "active", owner=True, tombstoned=True)
+    assert _merge_claimants([gone_active, active]) == active
+    assert _merge_claimants([gone_no_contact, active]) == gone_no_contact
+    assert _merge_claimants([claimant("h", "memorial", tombstoned=True)])["posture"] == "memorial"
+    assert _merge_claimants([gone_active]) is None
+    assert _merge_claimants([gone_owner, active]) == active
 
 
 class _ResolverPool:
@@ -202,6 +222,7 @@ def _fact(entity_id: uuid.UUID, email: str, posture: str = "active") -> dict[str
         "name": "Dana",
         "posture": posture,
         "roles": [],
+        "tombstoned": False,
     }
 
 
@@ -273,3 +294,37 @@ async def test_resolver_sql_ignores_merged_and_soft_deleted_entities() -> None:
     await _resolve_people(pool, {"x@example.test"})
 
     assert "merged_into" in pool.sql and "deleted_at" in pool.sql
+
+
+def _tombstoned(row: dict[str, Any]) -> dict[str, Any]:
+    return {**row, "tombstoned": True}
+
+
+async def test_deleted_no_contact_holder_still_withholds_beside_a_live_active_entity() -> None:
+    people = [
+        _tombstoned(_person("dana@example.test", "no_contact")),
+        _person("dana@example.test", "active"),
+    ]
+
+    assert await _shown([_stranger("dana@example.test")], people) == []
+
+
+async def test_deleted_memorial_holder_alone_still_withholds() -> None:
+    people = [_tombstoned(_person("dana@example.test", "memorial"))]
+
+    assert await _shown([_stranger("dana@example.test")], people) == []
+
+
+async def test_deleted_active_holder_beside_a_live_active_entity_is_shown() -> None:
+    people = [
+        _tombstoned(_person("dana@example.test", "active")),
+        _person("dana@example.test", "active"),
+    ]
+
+    assert await _shown([_stranger("dana@example.test")], people) == ["dana@example.test"]
+
+
+async def test_deleted_active_holder_alone_leaves_the_attendee_shown_as_unresolved() -> None:
+    people = [_tombstoned(_person("dana@example.test", "active"))]
+
+    assert await _shown([_stranger("dana@example.test")], people) == ["dana@example.test"]
