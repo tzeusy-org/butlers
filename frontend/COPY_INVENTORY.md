@@ -2118,6 +2118,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
 - Reload safety sensors
 - No safety sensors declared yet.
+- Could not remove the sensor. It is still being watched.
 - Remove
 - Sensor entity ID
 - Hazard
@@ -4909,4 +4910,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3911*
+*Total strings: 3912*

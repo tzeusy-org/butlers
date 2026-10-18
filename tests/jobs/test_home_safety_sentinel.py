@@ -658,3 +658,106 @@ async def test_safety_watch_migration_constrains_roles_and_labels_and_downgrades
         for statement in _migration_sql("downgrade"):
             await pool.execute(statement)
         assert await pool.fetchval("SELECT to_regclass('safety_watch')") is None
+
+
+# ---------------------------------------------------------------------------
+# An open alarm never goes silent while its sensor is unreadable or re-debouncing (C1)
+# ---------------------------------------------------------------------------
+
+
+def _open_condition(*, notified: bool, age: timedelta) -> dict[str, Any]:
+    return {
+        "metadata": {"notified_at": _NOW.isoformat()} if notified else {"entity_id": "x"},
+        "first_detected_at": _NOW - age,
+    }
+
+
+async def _run_open_alarm(ledger, reading, kind, *, notified, age):
+    fingerprint = safety_fingerprint(_LEAK.entity_id, "leak")
+    ledger["active"].return_value = _open_condition(notified=notified, age=age)
+    ledger["reconcile"].side_effect = [[_transition(fingerprint, kind)], []]
+    notify = AsyncMock(return_value=True)
+    await reconcile_safety(
+        object(),
+        [_LEAK],
+        {_LEAK.entity_id: reading},
+        now=_NOW,
+        snapshot_complete=True,
+        notify=notify,
+    )
+    return notify, ledger["reconcile"].await_args_list[0].kwargs["observations"]
+
+
+@pytest.mark.unit
+async def test_an_undelivered_alarm_is_retried_when_its_sensor_goes_unavailable(ledger) -> None:
+    notify, observations = await _run_open_alarm(
+        ledger,
+        SensorReading("unavailable", _since(30)),
+        "confirmed",
+        notified=False,
+        age=timedelta(minutes=5),
+    )
+
+    notify.assert_awaited_once_with(
+        "ALERT: Kitchen leak sensor: water leak detected (sensor not reporting)"
+    )
+    assert [o.confirm_only for o in observations] == [True]  # still never resolves
+
+
+@pytest.mark.unit
+async def test_an_undelivered_alarm_is_retried_while_the_sensor_is_job_pending(ledger) -> None:
+    notify, observations = await _run_open_alarm(
+        ledger,
+        SensorReading("on", _since(20)),
+        "confirmed",
+        notified=False,
+        age=timedelta(minutes=5),
+    )
+
+    notify.assert_awaited_once_with("ALERT: Kitchen leak sensor: water leak detected (5 min ago)")
+    assert [o.confirm_only for o in observations] == [True]
+
+
+@pytest.mark.unit
+async def test_an_escalation_due_while_the_sensor_is_unknown_still_alerts(ledger) -> None:
+    notify, _ = await _run_open_alarm(
+        ledger,
+        SensorReading("unknown", _since(900)),
+        "escalation_due",
+        notified=True,
+        age=timedelta(minutes=16),
+    )
+
+    notify.assert_awaited_once_with(
+        "ALERT: Kitchen leak sensor: water leak detected (sensor not reporting)"
+    )
+
+
+@pytest.mark.unit
+async def test_an_escalation_due_while_the_sensor_changed_20s_ago_still_alerts(ledger) -> None:
+    notify, _ = await _run_open_alarm(
+        ledger,
+        SensorReading("on", _since(20)),
+        "escalation_due",
+        notified=True,
+        age=timedelta(minutes=16),
+    )
+
+    notify.assert_awaited_once_with("ALERT: Kitchen leak sensor: water leak detected (16 min ago)")
+
+
+@pytest.mark.unit
+async def test_a_debouncing_sensor_with_no_open_condition_still_sends_nothing(ledger) -> None:
+    ledger["reconcile"].side_effect = [[]]
+    notify = AsyncMock(return_value=True)
+
+    await reconcile_safety(
+        object(),
+        [_LEAK],
+        {_LEAK.entity_id: SensorReading("unavailable", _since(30))},
+        now=_NOW,
+        snapshot_complete=True,
+        notify=notify,
+    )
+
+    notify.assert_not_awaited()

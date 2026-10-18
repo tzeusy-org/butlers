@@ -84,6 +84,11 @@ export function HomeSafetyWatchPanel() {
         {watch.data && watch.data.length === 0 ? (
           <p className="text-sm text-muted-foreground">No safety sensors declared yet.</p>
         ) : null}
+        {remove.isError ? (
+          <p className="text-sm text-destructive" data-testid="home-safety-watch-remove-error">
+            Could not remove the sensor. It is still being watched.
+          </p>
+        ) : null}
         {watch.data ? (
           <ul className="space-y-2" data-testid="home-safety-watch-list">
             {watch.data.map((entry) => (

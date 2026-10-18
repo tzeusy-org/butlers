@@ -13,11 +13,16 @@ const save = vi.fn();
 const remove = vi.fn();
 const refetch = vi.fn();
 const watchState = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+const removeState = vi.hoisted(() => ({ isError: false }));
 
 vi.mock("@/hooks/use-home-safety-watch.ts", () => ({
   useHomeSafetyWatch: () => ({ refetch, ...watchState.current }),
   useSaveHomeSafetyWatch: () => ({ mutate: save, isPending: false, isError: false }),
-  useDeleteHomeSafetyWatch: () => ({ mutate: remove, isPending: false }),
+  useDeleteHomeSafetyWatch: () => ({
+    mutate: remove,
+    isPending: false,
+    isError: removeState.isError,
+  }),
 }));
 
 const KITCHEN = {
@@ -29,6 +34,7 @@ const KITCHEN = {
 
 beforeEach(() => {
   watchState.current = { data: [KITCHEN] };
+  removeState.isError = false;
 });
 
 afterEach(() => {
@@ -102,5 +108,14 @@ describe("HomeSafetyWatchPanel", () => {
 
     expect(screen.getByText("Loading safety sensors")).toBeTruthy();
     expect(screen.queryByText("No safety sensors declared yet.")).toBeNull();
+  });
+
+  it("says when removing a sensor failed instead of leaving it looking removed", () => {
+    removeState.isError = true;
+    render(<HomeSafetyWatchPanel />);
+
+    expect(screen.getByTestId("home-safety-watch-remove-error").textContent).toContain(
+      "still being watched",
+    );
   });
 });

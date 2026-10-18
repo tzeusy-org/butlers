@@ -142,6 +142,14 @@ def alert_message(entry: WatchEntry, reading: SensorReading, now: datetime) -> s
     return text
 
 
+def unreadable_message(entry: WatchEntry) -> str:
+    """Fixed text for an open alarm whose sensor has stopped reporting."""
+    return (
+        f"ALERT: {_clean_label(entry.owner_label)}: {_HAZARD_PHRASE[entry.role]}"
+        " (sensor not reporting)"
+    )
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -197,6 +205,17 @@ async def reconcile_safety(
             counts[verdict] += 1
             # Carried forward, never resolved: a debouncing or unreadable sensor is not "clear".
             observations.append(Observation(fingerprint=fingerprint, confirm_only=True))
+            # An already-open alarm must stay audible while its sensor is unreadable or
+            # re-debouncing: queue the message so the retry/escalation logic below can fire.
+            prior[fingerprint] = await get_active_condition(
+                pool, source=SAFETY_SOURCE, fingerprint=fingerprint
+            )
+            if prior[fingerprint] is not None:
+                if verdict == "pending" and reading is not None:
+                    since = prior[fingerprint].get("first_detected_at") or reading.since
+                    messages[fingerprint] = alert_message(entry, SensorReading("on", since), now)
+                else:
+                    messages[fingerprint] = unreadable_message(entry)
 
     transitions = await reconcile_snapshot(
         pool,
