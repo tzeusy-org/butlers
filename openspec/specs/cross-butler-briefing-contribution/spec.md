@@ -15,7 +15,7 @@ Each specialist butler's briefing contribution SHALL be a JSON object conforming
 
 #### Scenario: Contribution without updates
 - **WHEN** a specialist butler has no noteworthy data for the briefing date
-- **THEN** it produces a contribution with `has_updates=false`, an empty `highlights` array, and an empty `summary`
+- **THEN** it produces a contribution with `has_updates=false`, an empty `highlights` array, and a non-empty no-update summary (for example `No <domain> updates today.`)
 
 #### Scenario: Invalid contribution rejected
 - **WHEN** a contribution is missing required fields (`butler`, `date`, `has_updates`)
@@ -44,18 +44,18 @@ Each specialist butler's `daily_briefing_contribution` job SHALL delete contribu
 - **THEN** the cleanup step completes without error (no-op)
 
 ### Requirement: Health Butler Contribution
-The Health butler's `daily_briefing_contribution` job SHALL query its own `facts` rows (scope `health`) to extract: today's missed doses, today's doses due later, the number of non-skipped doses taken today, and the latest weight measurement from the past 7 days. It SHALL NOT query a calendar, so the contribution carries no appointment highlight, and it SHALL NOT compute an adherence percentage.
+The Health butler's `daily_briefing_contribution` job SHALL query its own `facts` rows (scope `health`) to extract: today's missed doses, today's doses due later, the number of non-skipped doses taken today, and the latest weight measurement from the window running from 7 days before owner-local midnight up to now.
 
 "Today" and the current time SHALL be taken in the owner's configured timezone (the shared `settings.general` timezone), falling back to SGT (UTC+8) only when the owner has no usable timezone configured. The day window runs from owner-local midnight to the next owner-local midnight, and the missed / due-later split uses the owner-local current time. The contribution key and envelope `date` remain the fleet-wide SGT briefing date.
 
-A dose is **missed** when its scheduled time today has already passed in owner-local time and no non-skipped dose has been logged to cover it; a dose is **due later today** when its scheduled time is still ahead in owner-local time. A medication's scheduled doses come from its `frequency` and `schedule`: as-needed medications and frequencies whose phase cannot be derived never produce a missed or due-later dose, a weekly medication counts only on a weekday named in its schedule, and a daily-type dose with no derivable time counts as missed while untaken. Logged non-skipped doses cover the earliest due doses first. A medication with no dose logged since midnight is therefore NOT automatically missed.
+A dose is **missed** when its scheduled time today has already passed (at or before now, to the minute) in owner-local time and no non-skipped dose has been logged to cover it; a dose is **due later today** when its scheduled time is still ahead in owner-local time. A medication's scheduled doses come from its `frequency` and `schedule`: as-needed medications and frequencies whose phase cannot be derived never produce a missed or due-later dose, a weekly medication counts only on a weekday named in its schedule (with no time, it counts as missed all day on that weekday), and a daily-type dose with no derivable time counts as missed while untaken. Logged non-skipped doses cover the earliest due doses first. A medication with no dose logged since midnight is therefore NOT automatically missed.
 
-The contribution SHALL carry these highlights, each only when it applies: missed doses (category `medication`, priority `high`, text `Missed dose(s) today: <names>`), doses due later today (category `medication`, priority `low`, text `Doses due later today: <names>`), and latest weight (category `weight`, priority `low`, text `Latest weight: <value>`). The summary SHALL combine `Missed N dose(s) today.`, `Took N dose(s).` and `Weight: <value>.` when they apply, and read `No health updates today.` otherwise. `has_updates` SHALL be true exactly when at least one highlight is present, so a day with only taken doses has `has_updates=false`.
+The contribution SHALL carry these highlights, each only when it applies: missed doses (category `medication`, priority `high`, text `Missed dose(s) today: <names>`), doses due later today (category `medication`, priority `low`, text `Doses due later today: <names>`), and latest weight (category `weight`, priority `low`, text `Latest weight: <value>`). The summary SHALL combine `Missed N dose(s) today.` (N is the number of medications with at least one missed dose), `Took N dose(s).` (N is the number of non-skipped doses logged today) and `Weight: <value>.` when they apply, and read `No health updates today.` otherwise. `has_updates` SHALL be true exactly when at least one highlight is present, so a day with only taken doses has `has_updates=false`.
 
 #### Scenario: Health data available
 - **WHEN** the Health butler has active medications and a weight measurement from the past 7 days
 - **THEN** the contribution includes a missed-doses highlight (priority "high") for medications with an overdue untaken dose, a due-later highlight (priority "low") for medications with a dose still ahead today, and a latest-weight highlight (priority "low")
-- **AND** it includes no adherence-percentage or appointment highlight
+- **AND** its highlights are exactly the missed-doses, due-later and latest-weight highlights that apply
 
 #### Scenario: A dose is missed only after its time has passed
 - **WHEN** a daily medication is scheduled for 06:00 and 20:00, no dose is logged today, and the owner-local time is 06:55
@@ -165,7 +165,7 @@ The Lifestyle butler's `daily_briefing_contribution` job SHALL query its memory 
 - **THEN** the contribution has `has_updates=false`
 
 ### Requirement: Contribution Job Scheduling
-Each specialist butler SHALL have a `daily_briefing_contribution` entry in its `butler.toml` with `dispatch_mode="job"`, `job_name="daily_briefing_contribution"`, and cron `55 6 * * *` (06:55 UTC = 14:55 SGT). The canonical specialist set is defined by `SPECIALIST_BUTLERS` in `src/butlers/jobs/briefing.py`: `education`, `finance`, `health`, `home`, `lifestyle`, `relationship`, `travel`. Staffer-typed agents SHALL NOT register or execute briefing contribution jobs.
+Each specialist butler SHALL have a `daily_briefing_contribution` entry in its `butler.toml` with `dispatch_mode="job"`, `job_name="daily_briefing_contribution"`, and cron `55 6 * * *` (06:55 in the owner's timezone, which the scheduler reads cron in). The canonical specialist set is defined by `SPECIALIST_BUTLERS` in `src/butlers/jobs/briefing.py`: `education`, `finance`, `health`, `home`, `lifestyle`, `relationship`, `travel`. Staffer-typed agents SHALL NOT register or execute briefing contribution jobs.
 
 #### Scenario: Schedule entry present (butler-typed agents only)
 - **WHEN** a butler-typed agent daemon starts and syncs TOML schedules
