@@ -84,6 +84,8 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   bound mirrors the producer's five-minute grace (`CONDITION_ATTENTION_GRACE`, pinned to
   `scripts/init-db.sql` by a test) plus half the registry TTL for one controller pass. A row
   resolved inside that bound gets no attention line; one resolved after it keeps `not_raised`.
+  The allowance assumes the default 300 s registry TTL (150 s); if an operator raises the TTL it
+  must track min(live TTL) / 2, and no extra margin is added.
 
   `safe_reason` maps the stored `(delivery_error_class, delivery_error_detail)` pair to fixed copy
   (`src/butlers/api/runtime_attention_status.py`). The Spend page uses the same mapping. The
