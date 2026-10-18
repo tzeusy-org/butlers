@@ -674,3 +674,16 @@ def test_ingest_control_interaction_eligible():
     parsed3 = parse_ingest_envelope(base3)
     assert parsed3.control.interaction_eligible is False
     assert parsed3.control.idempotency_key == "idem-abc"
+
+
+def test_ingest_control_accepts_only_known_automated_kinds():
+    """bu-s11n0s.18: connectors mark auto-replies and bounces; nothing else is accepted."""
+    assert parse_ingest_envelope(_build_valid_ingest_envelope()).control.automated_kind is None
+    for kind in ("auto_reply", "bounce"):
+        base = _build_valid_ingest_envelope()
+        base["control"] = {"automated_kind": kind}
+        assert parse_ingest_envelope(base).control.automated_kind == kind
+    base = _build_valid_ingest_envelope()
+    base["control"] = {"automated_kind": "newsletter"}
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(base)

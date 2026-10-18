@@ -2296,3 +2296,128 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     assert await env.admin.fetchval(
         "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE content_authority IS NOT NULL)"
     )
+
+
+async def test_lost_rule_claim_parks_an_assertion_the_owner_can_still_execute(env, monkeypatch):
+    """A standing-rule claim lost after preparation parks a normally approvable action.
+
+    ``prepare_rule_assertion`` commits a ``standing_rule`` decision before the gate
+    claims the rule's use.  When the claim loses, that decision must not survive
+    on the parked action, or the owner's approval could never execute it.
+    """
+    from butlers.config import DEFAULT_APPROVAL_RULE_PRECEDENCE, ApprovalRiskTier
+    from butlers.modules.approvals import gate as gate_module
+    from butlers.modules.approvals.executor import execute_approved_action
+    from butlers.modules.approvals.gate import _make_gate_wrapper
+    from butlers.modules.approvals.operations import create_approval_rule
+
+    subject = await _person(env)
+    report = await _report(env, await _person(env))
+    rule_args = {
+        "subject": str(subject),
+        "predicate": "has-email",
+        "object": f"lost-race-{subject}@example.test",
+        "object_kind": "literal",
+    }
+    constraints = {key: {"type": "exact", "value": value} for key, value in rule_args.items()}
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-lost-race-rule")
+        async def create_rule():
+            return await create_approval_rule(
+                env.rel, "relationship_assert_fact", constraints, "Synthetic bounded permission"
+            )
+
+        created = await client.post("/api/test-lost-race-rule", headers=headers)
+        assert created.status_code == 200 and "error" not in created.json()
+        rule_id = uuid.UUID(created.json()["id"])
+    snapshot = dict(
+        await env.rel.fetchrow("SELECT * FROM relationship.approval_rules WHERE id=$1", rule_id)
+    )
+    monkeypatch.setattr(gate_module, "match_standing_rule", lambda *_args, **_kwargs: snapshot)
+
+    # The rule must still be usable when the gate admits it and prepares the assertion; it is
+    # spent between preparation and the claim, which is the window the release repairs.
+    from butlers.tools.relationship import fact_authority as rule_authority
+
+    real_prepare = rule_authority.prepare_rule_assertion
+    prepared_decisions: list[str | None] = []
+
+    async def prepare_then_spend(pool, prepared_action_id, tool_args, prepared_rule_id):
+        prepared = await real_prepare(pool, prepared_action_id, tool_args, prepared_rule_id)
+        prepared_decisions.append(
+            await env.rel.fetchval(
+                "SELECT decision_report->>'confirmation_source' "
+                "FROM relationship.fact_approval_context WHERE action_id=$1",
+                prepared_action_id,
+            )
+        )
+        await env.rel.execute(
+            "UPDATE relationship.approval_rules SET max_uses=1, use_count=1 WHERE id=$1",
+            prepared_rule_id,
+        )
+        return prepared
+
+    monkeypatch.setattr(rule_authority, "prepare_rule_assertion", prepare_then_spend)
+
+    async def handler(**values):
+        values["subject"] = uuid.UUID(values["subject"])
+        values["approval_action_id"] = uuid.UUID(values["approval_action_id"])
+        result = await relationship_assert_fact(env.rel, src="relationship", **values)
+        return {"fact_id": str(result.fact_id), "outcome": result.outcome.value}
+
+    gate = _make_gate_wrapper(
+        "relationship_assert_fact",
+        handler,
+        env.rel,
+        48,
+        ApprovalRiskTier.MEDIUM,
+        DEFAULT_APPROVAL_RULE_PRECEDENCE,
+        butler_name="relationship",
+    )
+    async with _context(report):
+        parked = await asyncio.wait_for(
+            gate(**rule_args, why="Synthetic exhausted standing permission", evidence=[]), 5
+        )
+    assert parked["status"] == "pending_approval"
+    action_id = uuid.UUID(parked["action_id"])
+    # The standing-rule path really ran: preparation committed a standing_rule decision, the
+    # claim lost, and the gate parked the action as exhausted rather than as unmatched.
+    assert prepared_decisions == ["standing_rule"]
+    assert (
+        await env.rel.fetchval(
+            "SELECT event_metadata->>'reason' FROM relationship.approval_events "
+            "WHERE action_id=$1 AND event_type='action_queued'",
+            action_id,
+        )
+        == "standing rule exhausted"
+    )
+    context = await env.rel.fetchrow(
+        "SELECT decision_report FROM relationship.fact_approval_context WHERE action_id=$1",
+        action_id,
+    )
+    assert context is not None and context["decision_report"] is None
+    parked_args = await env.rel.fetchval(
+        "SELECT tool_args FROM pending_actions WHERE id=$1", action_id
+    )
+    assert parked_args["approval_action_id"] == str(action_id)
+
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-lost-race-approve")
+        async def approve():
+            return await approve_action(env.rel, str(action_id))
+
+        response = await client.post("/api/test-lost-race-approve", headers=headers)
+        assert response.status_code == 200 and "error" not in response.json()
+
+    args = await env.rel.fetchval("SELECT tool_args FROM pending_actions WHERE id=$1", action_id)
+    executed = await asyncio.wait_for(
+        execute_approved_action(env.rel, action_id, "relationship_assert_fact", args, handler), 5
+    )
+    assert executed.success, executed.error
+    row = await env.admin.fetchrow(
+        "SELECT * FROM relationship.entity_facts WHERE id=$1", uuid.UUID(executed.result["fact_id"])
+    )
+    assert row["confirmation_source"] == "approved_action"
+    assert await env.rel.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule_id) == 1

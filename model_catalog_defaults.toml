@@ -86,7 +86,8 @@ enabled = true
 # Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.1 Sol low for
 # sub-medium work (workhorse), and GPT-6.1 Sol high for medium/high work
 # (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.1
-# Sol supersedes GPT-6 Sol and takes low/medium/high/max effort (no xhigh).
+# Sol supersedes GPT-6 Sol and accepts low/medium/high/xhigh/max effort; routing
+# stays at high by policy, not because a higher effort is unavailable.
 # Luna max and the specialty row rank below the direct-API rows so
 # classification and discretion keep routing onto them by default.
 # ---------------------------------------------------------------------------
