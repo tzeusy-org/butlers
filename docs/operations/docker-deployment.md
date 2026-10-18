@@ -121,12 +121,10 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   from provider inputs. The application rejects an old, malformed, or mismatched asset before
   allocating a sandbox identity, so upgrades and rollbacks use a matched application/base-image
   pair, never runtime dependency discovery or a provider-derived fallback.
-- **Host prerequisite for the dashboard CLI sandbox.** The sysctl is host-wide. On Ubuntu 24.04 and
-  newer, `kernel.apparmor_restrict_unprivileged_userns=1` makes `bwrap` fail with
-  `setting up uid map: Permission denied` even under `apparmor:unconfined`. `dashboard-api`'s
-  CLI-auth sandbox then fails closed: provider tests and auth-health probes report the sandbox
-  unavailable and run nothing. Set it to `0` on such hosts; this relaxes a host-wide kernel
-  hardening default. The nightly `exact-image-sandbox` job does this on its runner (bu-3kyyyy).
+- **Host prerequisite for the dashboard CLI sandbox.** Hosts that run `dashboard-api` on Ubuntu
+  24.04 or newer must allow its Bubblewrap sandbox to create a user namespace, or the sandbox fails
+  closed and provider tests and auth-health probes run nothing. See
+  [Host prerequisite: unprivileged user namespaces](#host-prerequisite-unprivileged-user-namespaces).
 - **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
   tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
   holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
@@ -140,6 +138,93 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
 - **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
   volume-mount `src/` for live edits.
+
+## Host prerequisite: unprivileged user namespaces
+
+Applies to a host that runs the `dashboard-api` container. The dashboard's runtime-CLI
+authentication sandbox (`src/butlers/cli_auth/sandbox_platform.py`, Bubblewrap at `/usr/bin/bwrap`
+inside the image) creates a user namespace. When it cannot, it raises `SandboxUnavailableError`
+and runs nothing; there is no unsandboxed fallback, and this page does not change that. `butlers-up`
+is not affected: Codex runs there with `--dangerously-bypass-approvals-and-sandbox`.
+
+### Is this host affected?
+
+```bash
+. /etc/os-release && echo "$VERSION_ID"
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+- Affected: Ubuntu 24.04 or newer and the sysctl prints `= 1`. `apparmor:unconfined` on the
+  container does not help, because the kernel restricts unconfined processes too.
+- Not affected: the sysctl is missing (`cannot stat ...`) or prints `= 0`. The documented k3s nodes
+  run kernel 5.15 (22.04-era) and are in this group.
+- Symptom when affected: `bwrap: setting up uid map: Permission denied`.
+
+### Recommended: a scoped AppArmor profile
+
+Grant `userns` to one named profile and run only `dashboard-api` under it, instead of loosening the
+whole host. Create `/etc/apparmor.d/butlers-dashboard-api`:
+
+```text
+abi <abi/4.0>,
+include <tunables/global>
+
+profile butlers-dashboard-api flags=(unconfined) {
+  userns,
+}
+```
+
+Load it, then confirm it is loaded:
+
+```bash
+sudo apparmor_parser -r /etc/apparmor.d/butlers-dashboard-api
+sudo aa-status | grep butlers-dashboard-api
+```
+
+Then, in the `dashboard-api` service's `security_opt` in `docker-compose.yml`, replace
+`apparmor:unconfined` with `apparmor=butlers-dashboard-api` (the other two entries stay). The profile
+is otherwise unconfined, so the container's confinement is the same as today; only user-namespace
+creation is newly allowed, and only for this container. Reload the stack with the launcher or
+`butlers deploy`.
+
+Verify from the container (this proves user-namespace creation only, not the full sandbox):
+
+```bash
+docker compose exec dashboard-api /usr/bin/bwrap --unshare-user --ro-bind / / /usr/bin/true
+```
+
+No output and exit status 0 means the host is ready. `setting up uid map: Permission denied` means it
+is not. Then run a provider test from the dashboard to prove the real sandbox.
+
+The profile and the compose change were written from the Ubuntu AppArmor `userns` documentation and
+have not been run on a 24.04 host from this repository. Run the verify command before relying on
+them, and report the result.
+
+### Fallback: relax the sysctl
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-butlers-userns.conf
+```
+
+This needs no compose change and is what the nightly `exact-image-sandbox` runner does
+(bu-3kyyyy), but it lowers a kernel hardening default for every process on the host.
+
+[decision] Prefer the scoped profile. It limits the grant to the one container that needs it, while
+`sysctl=0` is host-wide. The sysctl stays documented as the fallback and is correct for ephemeral CI
+runners.
+
+### Kubernetes
+
+The Helm chart runs `dashboardApi.privileged: true` instead (`deploy/helm/butlers/values.yaml`), and
+the documented k3s nodes predate the restriction, so this page's steps do not apply to them. If a node
+is upgraded to Ubuntu 24.04 or newer, run the detection command above on it and re-check the sandbox
+before assuming it still works; see [Kubernetes Deployment](kubernetes-deployment.md).
+
+### Provisioning
+
+Host provisioning (Ansible) is outside this repository. Put the profile file, the `apparmor_parser`
+step and, if used, the sysctl drop-in in that role for every host that runs `dashboard-api`.
 
 ## Production Deploys (`butlers deploy`)
 
