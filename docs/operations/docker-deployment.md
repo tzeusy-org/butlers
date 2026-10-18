@@ -108,9 +108,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
 - **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
-  `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
-  mounts only the runtime-probe verifier keyring, never the signing key.
+  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs under
+  Docker's default AppArmor profile: runtime sessions launch Codex with
+  `--dangerously-bypass-approvals-and-sandbox`, so no `butlers-up` path creates a user namespace
+  (only `dashboard-api`'s CLI-auth sandbox does). It mounts only the runtime-probe verifier keyring,
+  never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
   (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
   placeholders, so the stack boots on a machine that has provisioned neither --- with the control
