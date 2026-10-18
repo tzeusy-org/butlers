@@ -338,6 +338,9 @@ def run_shard(
         nonce=inventory["nonce"],
     )
     timing_input = os.environ.get("CI_SHARD_TIMINGS")
+    # Advisory timings only schedule execution; coverage identity binds the
+    # assignment, which check_ci_coverage recomputes with assigned_files().
+    assigned = files
     files, ordering = duration_order(
         files,
         context=context,
@@ -438,7 +441,7 @@ def run_shard(
             repo_root=repo_root,
             lane=lane,
             shard=shard,
-            test_files=files,
+            test_files=assigned,
             assignment_digest=assignment["digest"],
         )
     return result

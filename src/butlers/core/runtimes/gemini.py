@@ -291,7 +291,7 @@ class GeminiAdapter(RuntimeAdapter):
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
         # Filter environment variables
-        filtered_env = _filter_env(env) if env else None
+        filtered_env = None if env is None else _filter_env(env)
 
         # Build command
         cmd = [

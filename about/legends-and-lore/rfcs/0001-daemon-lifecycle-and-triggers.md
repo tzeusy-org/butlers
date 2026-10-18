@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session dispatch and spawner triggers; daemon lifecycle and scheduler phases remain).
 
 ## Summary
 

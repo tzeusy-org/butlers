@@ -19,6 +19,13 @@ invoke these same producers and consumers. `make check-condensation-ledger`
 and the required CI guard invoke the same complete source scan. No second
 scanner or selector is introduced.
 
+Within one admission, the consumer reuses current test shapes only after a
+fresh read returns exactly the same path and source text. The reuse is local
+to that invocation; it does not cache filesystem or Git identity. Changed and
+new files are still parsed, classification owns separate mode metadata, and
+the final body, mode, link, tracked-path, HEAD and tree checks still run. This
+removes repeated AST construction without changing which losses need evidence.
+
 A plan supplies `base`, production Python `scope`, complete static `removed`
 and `survivors` owners, `cluster`, `bead`, protected `contract:{class,cites}`, and
 `mapping:{removed-owner:{survivors,reason}}`. Static owners have no parameter
@@ -33,6 +40,11 @@ paired route below. Changed installed environments or links still refuse. The pr
 are current-bound execution machinery; their introduction grants no production
 dependency exemption. Ordinary tests retain their coverage core,
 markers and parallel defaults; only the isolated proof uses ctrace and `-n 0`.
+Coverage's isolated path resolver re-resolves each file's canonical parent on
+every call, including during subject execution. It retains no directory result
+across calls: a subject may temporarily retarget a directory symlink and restore
+it before source readback. Actual SQLite arcs must retain both executed targets;
+unchanged final source records alone cannot establish that population.
 Its finite total budget defaults to60s and may be explicitly set up to300s. These
 proof times are not routine-lane or historical condensation savings.
 Within each baseline, mutant or restored phase, the two source sides execute
@@ -45,6 +57,37 @@ is observed promptly; successful carriers retain removed-then-survivors order
 regardless of completion order.
 Sibling cancellation retains an observed terminal child status while still
 stopping running children within the existing finite wait quantum.
+
+Every ordinary phase overrides inherited `TMPDIR` and `PYTEST_DEBUG_TEMPROOT`
+with its side's fresh real `removed.runtime-tmp` or `survivors.runtime-tmp`
+directory directly beneath the canonical fresh proof output. Root creation and
+every launch remain inside the same absolute proof deadline. Direct `suite`
+callers keep their existing environment behavior; contract evolution retains its
+existing owned temporary placement. No phase falls back to inherited roots or
+cleans host pytest trees. The two runtime directories remain with the proof
+carriers for independent consumption; source copies are restored and removed.
+
+Each original `<id>.request.json` has exactly the two string environment fields
+`TMPDIR` and `PYTEST_DEBUG_TEMPROOT`. Every actual ordinary worker run adds the
+required closed `runtime_environment` record with those fields and the observed
+`tempfile_root`; all three equal the independently derived side directory.
+A separate closed `runtime_directory:{device,inode}` record in the original
+request and worker run binds the fresh directory's actual filesystem identity.
+The producer rechecks identity before every launch. The reader rejects missing,
+replaced, indirect, shared or escaping roots, compares current identity with the
+original request and saved run, and reconstructs the complete request from the
+binding, side, selection, scope, nonce, output and protected control inputs. Its
+source-copy root comes from the retained restored journal, including its exact
+mutation and batch account, rather than trusting a supplied measurement path.
+Original requests must be real direct sibling files. Rewriting a ledger and its
+matching run JSON/digest cannot replace this independent original request check.
+
+Old carriers without these required records need fresh execution. Directory
+identity detects replacement while original request evidence remains intact;
+these local unsigned files provide no cryptographic guarantee if all original
+evidence is rewritten. This ownership boundary does not sandbox arbitrary host
+access by subjects. Existing protected-request observation, complete SQLite
+contexts, source binding, settlement and UNKNOWN rules remain mandatory.
 
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
@@ -93,12 +136,273 @@ as undeclared proof inputs.
 
 The stdlib source consumer examines `tests/` and `roster/*/tests/`, including
 assertions within retained names and their execution structure, parameters, local fixture/helper/marker
-context, class inheritance and ancestral conftests. Renames, moves and deleted
+context, class inheritance and ancestral conftests. An edited, deleted or newly added
+`conftest.py` is context change for every owner below it
+(`ancestral-fixture-context-change`). A conftest whose module, before or after, holds
+anything beyond imports, docstrings, plain constant assignments and `@pytest.fixture`
+functions (any `pytest_*` hook, `pytest_plugins`, `collect_*`, module-level calls,
+conditionals, undecorated helpers, unparseable source) can change co-collected tests
+anywhere in the tree, so its change is attributed to every owner
+(`session-hook-context-change`), whatever directory it lives in. A fixture counts only
+when the decorator is `pytest.fixture` or `fixture` bound by the module's own
+`import pytest` / `from pytest import fixture`, its decorator arguments and parameter
+defaults are literals, and its annotations only name things, because Python evaluates all
+of these at import; a rebinding of those names is a hook too. Import-time code in other
+modules (a helper a conftest imports, a test module) is not covered by this classifier
+(`bu-qwcgvu`). An added, edited or deleted pytest configuration (`pytest.toml`,
+`.pytest.toml`, `pytest.ini`, `.pytest.ini`, `tox.ini` with `[pytest]`,
+`setup.cfg` with `[tool:pytest]`, or a `pyproject.toml` `[tool.pytest]` table) is likewise
+attributed to every owner (`pytest-configuration-change`); a symlinked one is refused
+(`indirect-pytest-configuration`). Renames, moves and deleted
 production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
 
+## Independently authorized contract evolution
+
+On 2026-10-15 the repository owner answered **Yes** to the narrow policy amendment
+allowing intentional governing-contract changes to replace obsolete test
+expectations. That decision authorizes this admission mechanism, not arbitrary
+test loss. Genuine condensation continues to require the branch/mutation survivor
+proof above. This first evolution mode retains the same static owners and every
+opaque collected case identity; it admits no deletion, rename, reduced case
+population, environment waiver or substitute for migration/runtime evidence.
+
+Authorization and execution are separate:
+
+1. An independent review identifies the precise normative amendment, obsolete
+   expectations, replacement enforcement and preserved obligations. Its strict
+   `contract-evolution-authorization/v1` manifest lands in a separate protected
+   main PR under `tests/contract-evolution-authorizations/` before the candidate
+   can consume it. The owner/date/reference fields record provenance; their text
+   does not itself grant authority.
+2. The required consumer reads that manifest from the trusted public source,
+   never from the candidate's copy. For a provider PR union this is its validated
+   public first parent; for merge-group it is the exact event base. The original
+   event comparison base still governs the complete loss scan and old execution,
+   even if the PR's public parent is newer. A candidate-only authorization refuses.
+3. A candidate request selects that authorization and causes new execution in
+   separate full before/current source snapshots. The existing owned runner,
+   complete collection and raw per-case phase/coverage carriers remain the
+   evidence boundary. Every named owner and exact opaque case key must appear
+   on both sides with successful setup, call and teardown. Skips, deselection,
+   failed or missing phases, timeout and uncertain cleanup refuse. A finite
+   proof deadline, at most 300 seconds, includes both sides and owned cleanup.
+4. The same complete source-loss consumer checks fresh source, installed tools,
+   config, selection, nonce, carriers and final source stability. Exact reviewed
+   input drift refuses; unrelated unchanged public history is not a waiver or
+   an artificial whole-head authorization lock. Historical requests do nothing
+   when their owners have no current loss. Every unlisted loss still needs its
+   ordinary survivor account.
+
+The manifest binds complete old/new test files, their helper/import context,
+ancestral conftests, and explicitly enumerated runtime/fixture inputs by Git
+mode and SHA-256 of exact bytes. Owner/context files must exist on both sides.
+`pyproject.toml` and `uv.lock` must remain identical across the two execution
+sides. A changed installed environment needs a separate real proof; this mode
+does not certify it. Relevant normative requirements are bound separately by
+path, qualified ID and exact before/after block hashes. Each block starts at its
+level-three `Requirement` heading and ends at the next heading of level three
+or higher, outside fenced code. Both hashes must differ. An existing citation or
+the policy requirement alone cannot authorize an unrelated expectation change.
+
+Every candidate change outside inherited public source must have an explicit
+account: exact approved input records, including proof machinery and request
+bytes, or reviewed requirement blocks with unchanged surrounding public text.
+There is no machinery, request, Markdown, JSON, test-file or directory exemption.
+A candidate authorization must equal the trusted public bytes; its own input
+list cannot authorize a replacement of itself. A request cannot select extra
+owners, rebind old evidence or extend the reviewed contract. Fresh passing suites establish
+actual execution; the independent amendment review establishes which semantic
+changes are intended. Neither replaces the other, or the ordinary final hosted
+and protected merge gates.
+
+This mode approves all candidate input changes instead of claiming that subjects
+cannot observe excluded tooling. Ordinary pytest discovery may inspect approved
+source metadata. That grants no unreviewed input or evidence reuse: the trusted
+manifest, exact source/tool records and fresh raw carriers remain mandatory.
+The execution supervisor must still establish bounded cleanup of every owned
+descendant, including nested sessions, on success, failure and interruption.
+The ordinary condensation protocol and its excluded-request observer are unchanged.
+
+The CLI prints the category of the first refusal, for example
+`{"status": "REFUSED", "category": "missing-protected-contract-authority"}`. Manifest
+and request structure categories include:
+
+- Authority lookup: `missing-protected-contract-authority` (no manifest at the
+  trusted ref) and `changed-protected-contract-authority` (the candidate's copy
+  differs from the trusted bytes).
+- Identity and review record: `contract-request-identity`,
+  `contract-request-population-or-bound`, `contract-authority-identity` and
+  `missing-contract-review-record`.
+- Owner population: `incomplete-authorized-owner-population`,
+  `contract-evolution-is-retained-owner-only` and `missing-retained-contract-owner`.
+- Contract blocks: `ambiguous-or-self-authorizing-contract`,
+  `stale-or-unchanged-authorized-contract` and `unmapped-changed-contract`.
+- Input records: `stale-authorized-source-or-context` and
+  `unapproved-contract-runtime-input`.
+
+Proof execution has its own categories (for example `nonpass-contract-case` and
+`contract-proof-timeout`) that are not listed here. Run as a script, the CLI keeps
+these categories only because the script's `if __name__ == "__main__":` block aliases
+`__main__` as `check_condensation_ledger` in `sys.modules` before `main()` runs and the
+consumer imports it; a subprocess regression test pins
+that.
+
+### CI speed authorization, 2026-10-15
+
+The first scoped authorization is
+[`bu-q1hzqn-ci-speed-20261015.json`](../../tests/contract-evolution-authorizations/bu-q1hzqn-ci-speed-20261015.json),
+owned by bead `bu-q1hzqn.10` for the implementation in PR #4530. It records the
+owner's approval above and a separately reviewed source mapping. It is inert
+until an executor satisfies this protocol; landing the manifest is neither a
+test PASS nor permission to merge the candidate without fresh evidence.
+
+The reviewed before source is
+`d276a32a1f6e5f44c11ef8e0b4eb1d2d8200f20c`; the approved subject is
+`2560ef2caf90ef95c2289498fafebfa9c63c7ddd`. These are review provenance, not a
+whole-head reuse exemption. The manifest contains five retained owners, nine
+changed requirement blocks and twenty-four exact input records. The original
+eighteen subject inputs remain unchanged; six additional machinery, owning-test
+and request records bind the reviewed execution source
+`1bec9aa09b200aafa776fe62172c88f6932040f4`. The authorization covers
+REQ-ci-shard-assurance-001/002/004/006/007/008 and REQ-testing-034/049; the
+REQ-testing-034 amendment is bound in both its baseline and active change file.
+Independent review corrected the final DAG account to twenty expanded full-mode
+rows and twenty-one declared rows including the mutually exclusive affected row;
+the existing peak-fourteen and twenty-one-row test assertions were preserved.
+
+The review distinguishes these five retained owners and their obligations:
+
+| Retained owner | Intentional replacement and surviving enforcement |
+| --- | --- |
+| `test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard` | Inventory becomes a separate prerequisite. Full/main-push modes require it; scoped/docs modes require its explicit skip. The actual shell and Python verdict reader retain malformed, missing, failed, skipped, cancelled and unknown prerequisite controls, and gain an inventory fault control. |
+| `test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift` | Full tests await fresh inventory while guards remain mandatory at fan-in; affected and Vitest may start after route. All five unit and six integration children retain their ordinary evidence. Raw covered execution and reporting move to the owned assurance workflow, with eleven distinct coverage inputs, required reconciliation/smoke, finite caps and restricted badge publication. Browser still waits for the guards-built artifact. |
+| `test_ci_coverage_report_rejects_any_bad_input_before_publication` | The actual report command is read from the assurance workflow. Existing corrupt, empty, missing, extra and wrong-identity raw CoverageData controls remain; new genuine traced inputs validate scheduled/manual/PR event identity and reject borrowed merge-group metadata and unsupported push reporting. |
+| `test_partition_preserves_fresh_membership_with_unknown_weights` | Advisory weight fixtures move from schema v1 to tracer-specific v2 profiles. Missing, malformed, stale and duplicate-key advisory inputs still degrade deterministically; real fresh inventory, unchanged budgets, exact whole-file assignment and strict identity admission remain authoritative. |
+| `test_reconciliation_requires_complete_node_identity` | The candidate is read from its actual tracer profile. Original complete identity, origin, artifact, ambiguity and missing-input controls remain; untraced costs gain their own genuine profile and absent tracer evidence refuses. |
+
+Both complete test files are bound, including `_corpus`, `_weights` and the new
+`test_owned_coverage_workflow_retains_complete_assurance` companion. That
+companion checks the scheduled/manual/pipeline-PR triggers, actual eleven matrix
+rows and commands, sanitized execution artifacts, fresh inventory, prerequisite
+failure controls, complete reconciliation, smoke evidence and main-only badge
+publication. Retaining obsolete queue-coverage literals would contradict the
+approved cadence change; their replacement obligations live in the actual
+covered workflow and these executing controls. No assertion count or manifest
+hash substitutes for the fresh old/new runs.
+
+## Governing retirement
+
+REQ-testing-053 admits the deletion or rename-away of a test owner only with body
+and case continuity "or genuine governing retirement authority with a protected
+survivor account". Contract evolution cannot do this (it retains every owner and
+case), and a retired expectation has no honest survivor, so the required consumer
+has a third account: `governing-retirement-authorization/v1`. It follows the same
+trust shape as contract evolution, by the owner's 2026-10-15 answer.
+
+A manifest lives under `tests/contract-evolution-authorizations/` and lands in a
+separate protected main PR before any candidate consumes it. Fields:
+
+- `schema`, `id` (the file stem), `bead`, `authority`: provenance text only; it
+  grants nothing by itself.
+- `retired`: `{owner, base_sha256, reason}` rows. `owner` is `path::qualname`.
+  `base_sha256` hashes the owner's own source (decorators included, nothing else
+  in the file) at the event base, so unrelated edits do not stale the manifest.
+- `requirements`: `{path, requirement, before_sha256, after_sha256?}` rows binding
+  the governing spec block, keyed by its `ID:` or, when it has none, by its exact
+  `### Requirement:` heading text. Each block must hash to `before_sha256` at the
+  event base and must differ or be absent at HEAD; when `after_sha256` is given it
+  must match exactly (optional so a manifest can land before its product PR).
+- `replacements` (optional): owners that must exist in the candidate. Ordinary CI
+  runs them; this mode never executes retired owners.
+
+`retirement_accounts` in `scripts/contract_evolution.py` runs after ledger clusters
+and contract evolution. It reads manifests only from the trusted ref and requires
+the candidate copy to equal the trusted bytes. Every owner a manifest names must be
+a whole-owner loss (`removed-or-moved`); anything else, and any unlisted loss, keeps
+its ordinary survivor or contract-evolution account. A manifest whose owners have no
+current loss is inert. A healthy admission reports `retirement_accounts` (manifest
+id, trusted sha256, admitted owner count, base and public authority).
+
+Refusal categories: `candidate-only-retirement-authority`,
+`changed-protected-retirement-authority`, `retired-owner-not-wholly-removed`,
+`stale-retired-owner-hash`, `stale-retirement-requirement`,
+`unchanged-retirement-requirement`, `mismatched-retirement-requirement`,
+`missing-retirement-replacement`, `duplicate-retirement-owner-account`, and the
+generic `unproven-test-or-assertion-loss` for everything unlisted.
+
+A trusted manifest (one on main) that claims the retirement schema but is malformed
+refuses when `retirement_accounts` consults it, which only happens while unadmitted
+losses remain. Structural categories include `retirement-schema-fields` (missing or
+extra top-level fields), `retirement-authority-identity` (the `id` is not the file
+stem, an identity field is empty or mistyped, or `retired` or `requirements` is empty
+or not a list), `retirement-owner-record` (a `retired` row or replacement is not a
+`path::qualname` with a hex `base_sha256`, or an owner repeats) and
+`retirement-requirement-record` (a `requirements` row has missing, extra or non-hex
+fields). A `retired` row with the wrong keys refuses with `schema-fields`. A malformed
+manifest that only the candidate adds is currently ignored rather than refused
+(follow-up bu-qzyxoy).
+
+The first authorization is
+[`bu-ys9hdx-general-steam-retirement-20261018.json`](../../tests/contract-evolution-authorizations/bu-ys9hdx-general-steam-retirement-20261018.json):
+General no longer loads Steam (owner decision 2026-10-14, epic bu-ys9hdx; bead
+bu-ys9hdx.7, PR #4514). It retires `test_general_butler_toml_has_steam_module` and
+`test_general_steam_config_is_empty_dict` of `TestButlerTomlSteamConfig` in
+`roster/lifestyle/tests/test_lifestyle_steam_integration.py`, bound to the
+"General Butler Identity and Runtime" block of `openspec/specs/butler-general/spec.md`,
+and requires the two replacement owners that PR adds.
+
+## Authority that has already landed
+
+A pull request's event base (`github.event.pull_request.base.sha`) can predate the
+trusted parent (`HEAD^1`) of the provider's merge checkout. The loss scan keeps that
+event base, so a contract-evolution request or retirement manifest that landed on
+main in between shows up again as a loss. Both consumers treat it as public history
+instead of re-proving it, only from bytes committed at the trusted parent:
+
+- Contract evolution (`_already_landed`): all of these must be identical between the
+  trusted parent and the candidate by Git mode and bytes: the request, its
+  authorization, every retained owner file, every `conftest.py` in each owner's
+  ancestor directories up to the repository root (an added, edited or deleted
+  conftest does not match), and every authorized contract block. These are exactly
+  the inputs `destructive_changes` uses to classify an owner: the owner's own file
+  (shapes, imports, markers, in-file helper context, mode) and ancestral conftest
+  changes, which it attributes to every owner below them. Helper modules, package
+  `__init__.py`, `pyproject.toml` and `uv.lock` are not loss inputs, so they are not
+  compared; ordinary CI runs the owners against them. The owners are then admitted
+  without a fresh proof and without holding the candidate's unrelated delta to the
+  request. If the candidate touched any compared input, or the request or
+  authorization is candidate-only or edited, the ordinary fresh proof applies and
+  refuses as before.
+- Retirement: when every manifest owner is already absent from the trusted parent
+  and the candidate (`_retired_in_public_history`), the base owner hash and the
+  governing-requirement bindings are not re-checked against the older event base.
+  Owners still present at the trusted parent keep the full checks.
+
+A loss the candidate introduces is never covered by this: it is not a manifest or
+request owner, or one of the compared inputs differs from the trusted parent, so it
+stays in the ordinary account. The shortcut does not look at the CI event: it applies
+whenever the trusted bytes already carry the authority and every compared input is
+identical, including a `merge_group` run, where it can only matter if the base
+predates the landing. The contract shortcut needs an explicit trusted ref, so a local
+run without `--ci-event` (which resolves `origin/main` itself) skips it and uses the
+fresh proof; the retirement shortcut does not need one and applies locally too.
+
+Trade-off: identity is trusted-versus-candidate, not candidate-versus-the-authorization's
+recorded `inputs[].after` bytes. A public edit to a named owner after landing therefore
+stays admitted for a stale-base pull request instead of re-refusing it every time main
+legitimately touches that owner. Every normal path to main runs this guard on a fresh
+base, so the edit was itself gated when it landed. Retirement needs no conftest comparison: a manifest owner that
+is absent from the candidate is classified `removed-or-moved`, which no conftest
+attribution can override.
+
 ## Retained owners with additive changes
+
+The additive route below preserves the original contract. Intentional replacement
+of obsolete expectations uses the separately authorized route described in
+[contract evolution](#independently-authorized-contract-evolution), never a
+relaxation of the additive preservation rules.
 
 Unchanged names or assertion totals alone do not admit an additive change.
 A retained owner may appear on both sides of an executing proof when every old
@@ -273,6 +577,47 @@ being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
 
+Admission routes for a PR that changes non-Python inputs (bu-ihitkl). Evidence
+basis: the no-loss split was confirmed by running `scripts/check_condensation_ledger.py`
+against scratch trees; the contract-evolution statements are read from
+`contract_evolution.authorize` and `contract_evolution.retirement_accounts` as of this
+change, with `authorize` also run against the merged bu-q1hzqn and bu-2hlwhh
+manifests (it accepted both; refusals were probed on the bu-q1hzqn tree). A full
+contract-evolution replay was not completed. The refusal
+`changed-non-python-dependency-needs-independent-runtime-proof` belongs to the
+survivor-evidence route only (`production_dependencies`, reached from
+`verify_ledger` and the producer); the contract-evolution route does not call it.
+
+- **Split a no-loss PR.** The guard demands evidence only for source loss, so a PR
+  that retains every test and changes only documentation, OpenSpec files, a
+  `pyproject.toml` marker line or an executed data or shell file passes with
+  `losses: 0`. Removing those paths from a PR that does lose or restructure tests
+  leaves the same `unproven-test-or-assertion-loss` refusal, so the split moves the
+  non-Python concern but never admits the loss itself.
+- **Contract-evolution manifest (retained-owner changes).** `authorize` admits every
+  changed path, whatever its type, when the protected manifest lists it as an exact
+  `inputs` record. The merged bu-q1hzqn manifest lists changed
+  `.github/ci-test-weights.json`, workflow YAML and docs; the merged bu-2hlwhh
+  manifest lists changed docs and an OpenSpec change spec. It refuses an unlisted
+  changed path (`unapproved-contract-runtime-input`), a listed path edited after the
+  manifest merged (`stale-authorized-source-or-context`), any change to
+  `pyproject.toml` or `uv.lock`
+  (`changed-environment-needs-independent-installed-tools`), and a cited requirement
+  block that does not exist on the comparison base (`missing-contract-block`, or
+  `git-source-unavailable` when the spec file itself is new) or does not change in
+  the PR (`stale-or-unchanged-authorized-contract`). The amended requirement
+  therefore stays in the PR that changes the tests; do not split it out.
+- **Governing retirement (whole-owner removals).** `retirement_accounts` admits owners
+  that are wholly removed, under trusted manifest bytes and a changed bound
+  requirement (see "Governing retirement" above). It is the route for whole-owner
+  removals.
+- **Neither route.** A retained-owner loss PR (a retained test changed or
+  restructured) that carries no changed existing requirement block, or that needs a
+  changed environment input in the same PR, is not admitted by the contract-evolution
+  route, and the survivor-evidence route refuses the same inputs. Land the environment
+  change in a separate no-loss PR first, or file a spec-first amendment of
+  REQ-testing-053; do not add an exemption.
+
 The finite Python worker still refuses any runtime read of an excluded request,
 including a caught audit refusal. Its descendant event is evidence of execution,
 not evidence that the child could not read the input. A metadata-bearing child
@@ -318,12 +663,43 @@ reader. Existing CTracer, pytest phases, mutation journal and SQLite authority
 remain necessary. Unsupported forms stay UNKNOWN rather than borrowing a
 library or executable allowlist.
 
-Prompt sibling cancellation preserves the original refusal and deadlines. It
-signals only currently live tracees whose original start identity and owning
-process group still match, allowing the observer to record their actual exits
-within the existing deadline. The existing whole-group finally still settles
-all owned processes. Missing or uncertain actor settlement remains incomplete;
-a completed diagnostic is not a successful proof.
+A worker failure, timeout or interrupt cancels the sibling side promptly,
+preserving the original failure and deadlines. Cancellation signals only
+currently live tracees whose original start identity and owning process group
+still match. The ordinary observer captures `signal=all`: strace's signal
+filter also controls killed terminal records, so a delivery filter would omit
+other actual deaths. Complete TERM and KILL histories retain each real
+`+++ killed by ... +++` record within the unchanged deadline.
+
+The strace 6.8 `CLD_STOPPED` notification with numeric zero status is also
+accepted as nonterminal; it cannot settle a pending call or replace an exit record.
+The parser recognizes only complete canonical nonterminal notifications: standard
+(non-realtime) signal names with matching `si_signo`, `SI_USER` or `SI_TKILL`
+source PID/UID fields; `SIGCHLD` with `CLD_EXITED` numeric status or
+`CLD_KILLED/DUMPED/TRAPPED/STOPPED/CONTINUED` signal status, PID/UID and numeric
+user/system ticks (including strace's numeric seconds comments); and
+`--- stopped by SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU ---` group stops. Other siginfo
+layouts, malformed/truncated records and notifications after exit remain UNKNOWN.
+These records never provide an exit, executable, parent, probe or input read and
+never clear a pending syscall. Only a paired resumed syscall settles its pending
+entry; even a genuine terminal cannot erase an unfinished call. A notification
+cannot substitute for an omitted terminal. Handler syscalls remain fully observed,
+including genuine excluded-input accesses. The real ordinary producer and strict
+reader exercise TERM/KILL descendants, group stop/continue, a nonfatal handler and
+its continuation, both probes, and an omitted actual killed-terminal refusal.
+
+The existing whole-group finally still settles all owned processes. Missing or
+uncertain actor settlement remains incomplete; a completed diagnostic is not a
+successful proof. The changed canonical trace options invalidate older observer
+bindings: regenerate actual source/tool/options/nonce-bound evidence instead of
+restamping a receipt. Unsupported session/namespace changes remain refused.
+
+A worker that completed and published, but whose observation refuses, is not
+such a failure and does not cancel its sibling. Both sides settle inside the
+same total deadline, then refusals raise in fixed side order, removed first, so
+the receipt and both carriers never depend on which side finished first. If the
+sibling fails or times out after an earlier completed refusal, that refusal
+remains the reported cause.
 
 A closed incomplete observation is published before launch and merged onto an
 already-published actual worker result even when observation or cancellation

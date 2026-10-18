@@ -598,8 +598,16 @@ function Dossier({
   deferPending,
   pendingVerb,
   onCancelPending,
+  phoneFirst,
+  focusHeadingOnLoad,
+  onHeadingFocused,
 }: {
   actionId: string;
+  /** Deep link: below the md band the dossier leads the stacked workspace, above the rail. */
+  phoneFirst: boolean;
+  /** Deep link entry: move focus to the dossier heading once the detail has rendered. */
+  focusHeadingOnLoad: boolean;
+  onHeadingFocused: () => void;
   /**
    * A freshly verified unlisted Stalled deep link. It must take precedence
    * over the ordinary dossier cache so stale prefetch data cannot expose an
@@ -648,9 +656,14 @@ function Dossier({
     onDefer(h);
   }
 
+  const paneOrder = phoneFirst ? " max-md:-order-1" : "";
+
   if (!verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching))) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+      <div
+        className={`flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono${paneOrder}`}
+        data-testid="approval-dossier-pane"
+      >
         loading…
       </div>
     );
@@ -659,7 +672,10 @@ function Dossier({
   const detail = verifiedDetail ?? data?.data;
   if ((!verifiedDetail && error) || !detail) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+      <div
+        className={`flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono${paneOrder}`}
+        data-testid="approval-dossier-pane"
+      >
         failed to load dossier
       </div>
     );
@@ -679,7 +695,10 @@ function Dossier({
   const expiryChip = expiryCountdown(detail.expires_at);
 
   return (
-    <div className="flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative">
+    <div
+      className={`flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative${paneOrder}`}
+      data-testid="approval-dossier-pane"
+    >
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
@@ -865,7 +884,16 @@ function Dossier({
               </span>
             )}
           </div>
-          <h2 className="text-[22px] font-medium leading-tight">
+          <h2
+            ref={(node) => {
+              if (node && focusHeadingOnLoad) {
+                node.focus();
+                onHeadingFocused();
+              }
+            }}
+            tabIndex={-1}
+            className="text-[22px] font-medium leading-tight outline-none focus-visible:ring-[3px] focus-visible:ring-focus"
+          >
             {detail.title}
           </h2>
           <span
@@ -1748,6 +1776,9 @@ export default function ApprovalsPage() {
   const reviewSource = searchParams.get("review_source") ?? undefined;
   const activeLane: ApprovalLane = searchParams.get("state") === "stalled" ? "stalled" : "waiting";
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
+  // A deep link (notification, bookmark) lands focus on the targeted dossier once; later j/k
+  // selection must not pull focus off the rail.
+  const [entryFocusPending, setEntryFocusPending] = useState(routeId !== undefined);
   const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
 
   // Live updates come from the shared fleet event bus (bu-86c4c.8, wired
@@ -2341,6 +2372,9 @@ export default function ApprovalsPage() {
             deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
             pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
             onCancelPending={() => cancelDecision(dossierSelected)}
+            phoneFirst={routeId !== undefined}
+            focusHeadingOnLoad={entryFocusPending && routeId === dossierSelected}
+            onHeadingFocused={() => setEntryFocusPending(false)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">

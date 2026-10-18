@@ -1563,3 +1563,69 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             assert await runtime._get_access_token() == "synthetic-new"
             assert runtime._get_health_state() == ("healthy", None)
             assert requests == [("POST", "https://oauth2.googleapis.com/token")] * 2
+
+
+async def test_filter_drop_logs_message_id_not_subject(
+    gmail_runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Filter-drop log lines identify the message by id; the preview is still recorded."""
+    import logging
+
+    from butlers.ingestion_policy import PolicyDecision
+
+    with (
+        patch.object(
+            gmail_runtime,
+            "_fetch_message",
+            new_callable=AsyncMock,
+            return_value=_make_message(subject="Your verification code is 482913"),
+        ),
+        patch.object(
+            gmail_runtime._ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="block", matched_rule_type="sender_domain"),
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        await gmail_runtime._ingest_single_message("msg123")
+
+    assert "msg123" in caplog.text and "filtered out" in caplog.text
+    assert "482913" not in caplog.text and "verification code" not in caplog.text
+    assert "482913" not in gmail_runtime._filtered_event_buffer._rows[0][6]
+
+
+async def test_auto_reply_is_ingested_as_tier2_with_its_marker_even_under_a_pass_through_rule(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """bu-s11n0s.18: end to end, an auto-reply never reaches the Tier 1 envelope."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    message = _make_message()
+    message["payload"]["headers"].append({"name": "Auto-Submitted", "value": "auto-replied"})
+    submitted: list[dict[str, Any]] = []
+
+    async def fake_submit(env: dict[str, Any]) -> None:
+        submitted.append(env)
+
+    with (
+        patch.object(gmail_runtime, "_fetch_message", new_callable=AsyncMock, return_value=message),
+        patch.object(
+            gmail_runtime, "_submit_to_ingest_api", new=AsyncMock(side_effect=fake_submit)
+        ),
+        patch.object(
+            gmail_runtime._ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="pass_through"),
+        ),
+        patch.object(
+            gmail_runtime._global_ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="pass_through"),
+        ),
+    ):
+        await gmail_runtime._ingest_single_message("msg123")
+
+    (envelope,) = submitted
+    assert envelope["payload"]["raw"] is None
+    assert envelope["control"]["ingestion_tier"] == "metadata"
+    assert envelope["control"]["automated_kind"] == "auto_reply"

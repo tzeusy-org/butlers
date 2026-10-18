@@ -117,9 +117,11 @@ For domain-specific workflows, load the relevant skill:
 - **Be encouraging**: celebrate progress and improvements in health metrics
 - **Notice patterns**: proactively point out trends, adherence issues, or concerning changes
 - **Extract context**: capture medication changes, doctor instructions, and health goals from conversational messages
-- **Use permanence wisely**: chronic conditions are stable, acute symptoms are volatile
+- **Use permanence wisely**: the tools write clinical records (medications, doses, conditions, symptoms, measurements) as `permanent`, so the decay sweep never fades them out of the adherence and briefing readers; use `stable` or `volatile` only for other facts you store yourself
 - **Privacy matters**: use tags like `sensitive` or `private` for personal health information
 - **Questions deserve data**: always use measurement history and trends to back up your answers
 - **Proactive insights**: when logging data, add context from trends or adherence patterns
 
 # Notes to self
+
+- Briefing day window and timezone (bu-dyb9ca): the 06:55 `daily_briefing_contribution` job computes "today's" dose window and the missed / due-later split in the owner's configured timezone, read from the shared `settings.general` timezone through `load_configured_general_timezone()`, which reads `public.state` explicitly. The job's pool has `search_path` `health,public` and `health.state` exists, so an unqualified `state_get` would read the wrong table and every owner would silently get SGT. The value is the same setting the scheduler and dashboard use, but they reach it by other read paths (`resolve_general_timezone` still uses the unqualified `state_get`; migrating it is a separate follow-up). The documented fallback is SGT (UTC+8), used only when the owner never saved a timezone, the settings cannot be read, or the stored name is not a valid IANA zone; it is not a silent UTC switch. The contribution key and envelope `date` stay on the fleet-wide SGT briefing date, because every reader of `briefing/daily/<date>` keys on it.

@@ -1,0 +1,178 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-mc01y5-13-qa-git-isolation-20261018",
+  "bead": "bu-mc01y5.13",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the bu-mc01y5 coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-s55lzi for implementation bead bu-mc01y5.13 (PR #4609, dispatcher git subprocesses are isolated in the shared QA clone). Reviewed before: main 3592d3e6346b8b9785eca691afc6d67ae2855f5c; approved subject: PR #4609 head 0d37f9413021ee86b1c35cb4c7e46e76e2e93efe (a merge of that main), per bu-4kyppr. Governing requirement REQ-qa-investigation-dispatch-001 (Investigation Agent Sandbox), bound in both the baseline spec and the open change confine-qa-publication-authority; both copies already carry the ID and change only inside the block. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/core/qa/test_dispatch.py::test_capture_commit_diff_snapshot_runs_git_diff_against_worktree",
+      "after": "tests/core/qa/test_dispatch.py::test_capture_commit_diff_snapshot_runs_git_diff_against_worktree",
+      "contracts": [
+        "REQ-qa-investigation-dispatch-001"
+      ],
+      "reason": "The snapshot git diff now runs with the isolated git environment and --no-ext-diff/--no-textconv; the diff target and result assertions are preserved."
+    },
+    {
+      "before": "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_fails",
+      "after": "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_fails",
+      "contracts": [
+        "REQ-qa-investigation-dispatch-001"
+      ],
+      "reason": "The remote-ref fetch now pins --upload-pack=git-upload-pack, so the argument prefix assertion grows by one element; the fail-before-worktree behavior is preserved."
+    },
+    {
+      "before": "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_materializes_remote_ref_before_worktree_add",
+      "after": "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_materializes_remote_ref_before_worktree_add",
+      "contracts": [
+        "REQ-qa-investigation-dispatch-001"
+      ],
+      "reason": "The remote-ref fetch now pins --upload-pack=git-upload-pack, so the argument prefix assertion grows by one element; the materialize-before-worktree-add ordering is preserved."
+    },
+    {
+      "before": "tests/integration/test_qa_pipeline.py::TestFullPatrolCycle::test_full_cycle_log_scanner_to_dispatch",
+      "after": "tests/integration/test_qa_pipeline.py::TestFullPatrolCycle::test_full_cycle_log_scanner_to_dispatch",
+      "contracts": [
+        "REQ-qa-investigation-dispatch-001"
+      ],
+      "reason": "The expected main fetch command now pins --upload-pack=git-upload-pack; the full patrol-cycle sequence is otherwise unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/qa-investigation-dispatch/spec.md",
+      "id": "REQ-qa-investigation-dispatch-001",
+      "before_sha256": "e9437a9003aaaf40f2ae6eb78512cb5a20a8e0bea6a54b842fdf02427c0e57a9",
+      "after_sha256": "76b14e050833438caf0e900bb8ec5c13e996d0ad0699cc068ebddf002386cdf6"
+    },
+    {
+      "path": "openspec/changes/confine-qa-publication-authority/specs/qa-investigation-dispatch/spec.md",
+      "id": "REQ-qa-investigation-dispatch-001",
+      "before_sha256": "9cd26f8f476493c653b8ffa0594bbccaf748c3f4c2f56315e2af937f4cf8d66f",
+      "after_sha256": "79423434d5ff0883e20c0a516fb6181c8fb1e12cb530a1913edbb3d49847ac3d"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/qa/AGENTS.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "35ced90820ae1169b4ff3b72c031930aec573fea89718ea54f22e816446799e8"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5ed38241fa3eb1880be2a0b105e8d3cf55344d1b7ea2ef1e5a026755eb6361d1"
+      }
+    },
+    {
+      "path": "src/butlers/core/git_env.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "1d4fbd0e2bf22514a5c1778a21643dd6f0ecf6fc4c2609014fb74ee74693a3af"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9517d3a0f29ad18ee07365b22fcc16794f5c8975c5e9b553bc8de8bae7479e6d"
+      }
+    },
+    {
+      "path": "src/butlers/core/qa/dispatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "33e3ab2821e85fe9d2728214ead2d4cc748324bc84fccb2b104f95b50e5f68da"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fee027e7cb55d3ccedeb087f98bb6a2bd9d94bbcca23e4d67448f230acc18c30"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-mc01y5-13-qa-git-isolation-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "4ab52fdfd8d8752de1b7e6765740af510a2c50558e9df710254f20970189f7b1"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_dispatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c66a2e1991e2507ba596f1a7db737f2fb6e559005aad6ff9a70d505cd1ec96c7"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c982325ceb0cd2d757a8fa43bde5c292f3c395f6fa92dd879fe03c367c0618af"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_dispatch_git_isolation.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "cc5d80f45d7d1a8abf883ec25d6e62622f147e8b93d088c7fc2531617b79cc9a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "546864884f2bb92b281edc1e596a84cc3a4fbd0dda71d1e045772f45ab6da73b"
+      }
+    },
+    {
+      "path": "tests/integration/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      }
+    },
+    {
+      "path": "tests/integration/test_qa_pipeline.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5bed4fb683148f38062a3d100aeb0a4e3d95a549474905a9f8484f14be251f79"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3f34f3d341bebe44f5be9515c42d2823126dcadc530dde5531f6d260dafe7dca"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

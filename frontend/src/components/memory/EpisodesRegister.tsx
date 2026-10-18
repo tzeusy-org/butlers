@@ -20,7 +20,7 @@
 //   daybook therefore shows zero red pixels.
 //
 // Interaction: clicking a row toggles in-place expansion to full content
-// (120ms height transition, linear, no fade/scale). The expanded row carries an
+// (instant content reveal, no fade/scale). The expanded row carries an
 // explicit `open ↗` mono link to /memory/episodes/:id as the unambiguous
 // navigation affordance (a click on that link navigates; the row body only
 // toggles).
@@ -176,13 +176,13 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
       </span>
 
       {/* Content — sans 13px. Collapsed: clamp 2 lines. Expanded: full content
-          revealed via a height transition (no fade, no scale) plus the explicit
+          revealed instantly (no fade, no scale) plus the explicit
           open link. */}
       <div className="min-w-0">
         <div
           className={cn(
-            "overflow-hidden transition-[max-height] duration-[120ms] ease-linear",
-            expanded ? "max-h-[60rem]" : "max-h-[2.6em]",
+            "overflow-hidden",
+            !expanded && "max-h-[2.6em]",
           )}
         >
           <span

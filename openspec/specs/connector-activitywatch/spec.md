@@ -135,6 +135,9 @@ projected.
   for forensic / future-reclassification use
 - **AND** a correlated raw web-watcher event (including URL and tab title)
   is retained only in `raw_payload`
+- **AND** bearer material in `window_title` (one-time codes, reset or magic links) is
+  replaced by the connector-base placeholder before the write, and a detector
+  failure skips the evidence write instead of storing raw text
 - **AND** the separate `browser_domain` column contains only the validated
   hostname, never a path, query, fragment, credentials, port, or title
 - **AND** this table is not read by anything except the connector (write)

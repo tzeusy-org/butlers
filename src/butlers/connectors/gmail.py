@@ -1517,8 +1517,8 @@ class GmailConnectorRuntime:
                             if not policy_result.should_ingest:
                                 rows_skipped += 1
                                 logger.info(
-                                    "[Gmail] '%s' filtered out: %s",
-                                    self._get_subject(message_data),
+                                    "[Gmail] message %s filtered out: %s",
+                                    message_data.get("id"),
                                     policy_result.filter_reason,
                                 )
                             else:
@@ -1530,8 +1530,8 @@ class GmailConnectorRuntime:
                                 if not _bf_decision.allowed:
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by connector rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by connector rule: %s",
+                                        message_data.get("id"),
                                         _bf_decision.reason,
                                     )
                                 # 2. Global-scope rules
@@ -1542,8 +1542,8 @@ class GmailConnectorRuntime:
                                 ).action == "skip":
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by global rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by global rule: %s",
+                                        message_data.get("id"),
                                         _bf_global.reason,
                                     )
                                 else:
@@ -2204,8 +2204,8 @@ class GmailConnectorRuntime:
                 # Tier 3: skip — do not submit to Switchboard
                 if not policy_result.should_ingest:
                     logger.info(
-                        "[Gmail] '%s' filtered out: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out: %s",
+                        message_id,
                         policy_result.filter_reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2240,8 +2240,8 @@ class GmailConnectorRuntime:
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.info(
-                        "[Gmail] '%s' filtered out by connector rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by connector rule: %s",
+                        message_id,
                         _ip_decision.reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2277,8 +2277,8 @@ class GmailConnectorRuntime:
                 _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
                 if _gp_decision.action == "skip":
                     logger.info(
-                        "[Gmail] '%s' filtered out by global rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by global rule: %s",
+                        message_id,
                         _gp_decision.reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2444,6 +2444,9 @@ class GmailConnectorRuntime:
         - ``metadata_only`` -> Tier 2 (slim, metadata-only envelope)
         - ``route_to`` / ``low_priority_queue`` / ``pass_through`` -> Tier 1
 
+        An automated reply or bounce (``automated_kind``) is never upgraded: it stays
+        Tier 2 under every non-skip action.
+
         ``skip`` is handled by the caller before this point and never reaches
         here.  Returns a new ``MessagePolicyResult`` (the input is not mutated).
         """
@@ -2452,9 +2455,12 @@ class GmailConnectorRuntime:
         # pipeline's default tier untouched.
         if action == "pass_through":
             return policy_result
+        ingestion_tier = classify_ingestion_tier(action)
+        if policy_result.automated_kind and ingestion_tier == INGESTION_TIER_FULL:
+            ingestion_tier = INGESTION_TIER_METADATA
         return dataclasses.replace(
             policy_result,
-            ingestion_tier=classify_ingestion_tier(action),
+            ingestion_tier=ingestion_tier,
             triage_action=action,
         )
 
@@ -2616,6 +2622,8 @@ class GmailConnectorRuntime:
                     "policy_tier": effective_policy_tier,
                 },
             }
+            if policy_result is not None and policy_result.automated_kind:
+                metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---

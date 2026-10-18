@@ -65,7 +65,9 @@ Decrypt with Python::
 
 ## Supported export scopes
 
-- ``memory`` — memory butler's facts, rules, and episodes tables
+- ``memory`` — facts, rules, and episodes tables of every butler running the
+               memory module, each read through that butler's own pool and
+               effective memory schema
 - ``audit``  — ``public.audit_log``
 - ``config`` — ``public.runtime_config``, ``public.model_catalog``,
                ``public.permissions``
@@ -80,6 +82,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import uuid
 import zipfile
@@ -106,15 +109,20 @@ _EXPORT_TTL_SECONDS = 3600  # 60 minutes
 # Export scope map
 # ---------------------------------------------------------------------------
 
+_MEMORY_RELATIONS = ("facts", "rules", "episodes")
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 # Each entry: scope_name -> [(display_table_name, SQL_query), ...]
 # Columns `embedding`, `search_vector`, and `description_embedding` are
 # excluded from serialisation — they are large binary/generated columns that
 # would bloat the archive and are not useful for human-readable exports.
 _SCOPE_MAP: dict[str, list[tuple[str, str]]] = {
+    # Relation templates only: memory tables live in each butler's own schema, never in a
+    # shared ``memory`` schema, and are never queried from here.  The export expands the
+    # scope per butler through ``_memory_export_entries`` (schema-qualified, run on that
+    # butler's own pool).
     "memory": [
-        ("memory.facts", "SELECT * FROM memory.facts ORDER BY created_at"),
-        ("memory.rules", "SELECT * FROM memory.rules ORDER BY created_at"),
-        ("memory.episodes", "SELECT * FROM memory.episodes ORDER BY created_at"),
+        (f"memory.{rel}", f"SELECT * FROM {rel} ORDER BY created_at") for rel in _MEMORY_RELATIONS
     ],
     "audit": [
         ("public.audit_log", "SELECT * FROM public.audit_log ORDER BY id"),
@@ -432,7 +440,55 @@ async def export_data(
 # ---------------------------------------------------------------------------
 
 
-async def _build_export_zip(pool: object, scope: str) -> bytes:  # type: ignore[type-arg]
+def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
+    """Return ``(display_name, query, butler_name)`` for every butler's memory tables.
+
+    Butlers come from the manager's module census (those running the memory module);
+    without module metadata every registered butler is tried.  The schema is the
+    butler's effective memory schema.  Each query must run on that butler's own pool,
+    because a butler role sees only its own schema plus ``public``.
+
+    Raises ``HTTPException`` 503 when a configured memory butler has no pool and 500
+    when no memory butler is registered at all.
+    """
+    # A configured memory butler whose dashboard pool failed at startup is absent from
+    # the pooled roster; exporting without it would be a silent partial archive, so this
+    # is an availability error (same census pattern as the calendar workspace).
+    configured = db.configured_butlers_with_module("memory")  # type: ignore[attr-defined]
+    if configured is not None:
+        pooled = set(db.butler_names)  # type: ignore[attr-defined]
+        unavailable = sorted(name for name in configured if name not in pooled)
+        if unavailable:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Export unavailable: memory butler database not available for "
+                    + ", ".join(unavailable)
+                ),
+            )
+    butlers = db.butlers_with_module("memory")  # type: ignore[attr-defined]
+    if butlers is None:
+        butlers = db.butler_names  # type: ignore[attr-defined]
+    if not butlers:
+        # A known scope must never silently map to no tables.
+        raise HTTPException(
+            status_code=500,
+            detail="Export failed: no butler with a memory schema is registered",
+        )
+    entries: list[tuple[str, str, str]] = []
+    for butler in butlers:
+        schema = db.memory_schema_for_butler(butler)  # type: ignore[attr-defined]
+        if schema is not None and not _SQL_IDENTIFIER_PATTERN.fullmatch(schema):
+            raise ValueError(f"Unsafe schema identifier: {schema!r}")
+        for rel in _MEMORY_RELATIONS:
+            source = f'"{schema}"."{rel}"' if schema is not None else rel
+            entries.append(
+                (f"{butler}.memory.{rel}", f"SELECT * FROM {source} ORDER BY created_at", butler)
+            )
+    return entries
+
+
+async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
     """Build a deflate-compressed ZIP of NDJSON exports for *scope*.
 
     Each table in the scope becomes one ``.ndjson`` file inside the ZIP.
@@ -447,13 +503,7 @@ async def _build_export_zip(pool: object, scope: str) -> bytes:  # type: ignore[
             (fail-fast — a partial export is worse than a clear error).
     """
     resolved = _SCOPE_ALIASES.get(scope, scope)
-    if resolved == "all":
-        table_entries: list[tuple[str, str]] = [
-            (name, q) for tables in _SCOPE_MAP.values() for name, q in tables
-        ]
-    elif resolved in _SCOPE_MAP:
-        table_entries = list(_SCOPE_MAP[resolved])
-    else:
+    if resolved != "all" and resolved not in _SCOPE_MAP:
         # Belt-and-suspenders: POST already rejected unknown scopes.
         raise HTTPException(
             status_code=400,
@@ -463,13 +513,23 @@ async def _build_export_zip(pool: object, scope: str) -> bytes:  # type: ignore[
                 "valid_scopes": sorted(_KNOWN_SCOPES),
             },
         )
+    scope_names = list(_SCOPE_MAP) if resolved == "all" else [resolved]
+
+    # (display_name, query, butler whose pool runs it; None = the caller's pool)
+    table_entries: list[tuple[str, str, str | None]] = []
+    for scope_name in scope_names:
+        if scope_name == "memory":
+            table_entries.extend(_memory_export_entries(db))
+        else:
+            table_entries.extend((n, q, None) for n, q in _SCOPE_MAP[scope_name])
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for table_name, query in table_entries:
+        for table_name, query, butler in table_entries:
             safe_name = table_name.replace(".", "_").replace("/", "_")
             try:
-                rows = await pool.fetch(query)  # type: ignore[attr-defined]
+                source = pool if butler is None else db.pool(butler)  # type: ignore[attr-defined]
+                rows = await source.fetch(query)  # type: ignore[attr-defined]
                 with zf.open(f"{safe_name}.ndjson", "w") as member_file:
                     for row in rows:
                         cleaned = {k: v for k, v in dict(row).items() if k not in _SKIP_COLUMNS}
@@ -514,7 +574,7 @@ async def download_export(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    zip_bytes = await _build_export_zip(pool, scope)
+    zip_bytes = await _build_export_zip(pool, scope, db=db)
     encrypted = _encrypt_export(zip_bytes)
 
     filename = f"butlers-export-{scope}-{export_id[:8]}.enc"

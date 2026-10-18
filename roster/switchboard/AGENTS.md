@@ -15,6 +15,8 @@ You are `type = "staffer"`. You serve the butler ecosystem, not the user directl
 
 ## Routing Rules
 
+- The generic `route` MCP tool is daemon-only; runtime sessions are refused and must not use it.
+
 - Only agents with `type = "butler"` are candidates for user-message classification and routing.
 - Agents with `type = "staffer"` (including yourself and Messenger) are excluded from user-message routing.
 - Butler-to-staffer routing (e.g., `notify()` → Messenger) is separate from user-message routing and is not affected by this exclusion.

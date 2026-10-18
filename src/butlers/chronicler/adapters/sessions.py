@@ -39,6 +39,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -496,26 +497,27 @@ class CoreSessionsAdapter(ProjectionAdapter):
                 )
 
                 episode_title = self._compute_episode_title(schema, trigger_source, contact_info)
-                episode = await upsert_episode(
-                    conn,
-                    Episode(
-                        source_name=self.source_name,
-                        source_ref=episode_ref,
-                        episode_type=EPISODE_TYPE_WORK,
-                        start_at=started_at,
-                        end_at=completed_at,
-                        precision=Precision.EXACT,
-                        title=episode_title,
-                        payload=payload_common,
-                        privacy=Privacy.NORMAL,
-                        layer=Layer.ACTIVITY,
-                        confidence=confidence,
-                        evidence_refs=evidence_refs,
-                    ),
-                )
+                async with owner_episode_transaction(conn):
+                    episode = await upsert_episode(
+                        conn,
+                        Episode(
+                            source_name=self.source_name,
+                            source_ref=episode_ref,
+                            episode_type=EPISODE_TYPE_WORK,
+                            start_at=started_at,
+                            end_at=completed_at,
+                            precision=Precision.EXACT,
+                            title=episode_title,
+                            payload=payload_common,
+                            privacy=Privacy.NORMAL,
+                            layer=Layer.ACTIVITY,
+                            confidence=confidence,
+                            evidence_refs=evidence_refs,
+                        ),
+                    )
 
-                # Write owner row into episode_entities join table (bu-4c1ks).
-                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+                    # Write owner row into episode_entities join table (bu-4c1ks).
+                    await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
 
                 # Link boundary events.
                 assert started_event.id is not None

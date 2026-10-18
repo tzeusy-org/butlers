@@ -53,16 +53,18 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
 5. Do **not** run the broad lanes locally by default. At final merge readiness,
    push the exact head after targeted tests, collection, and hygiene checks,
    then use one terminal hosted CI run as the broad evidence. These
-   receipt-producing targets mirror the pytest and coverage portions of CI's
+   receipt-producing targets mirror the pytest populations of CI's
    `check-unit (N)` and `check-integration (N)` matrix children when a local reproduction
-   is genuinely needed:
+   is genuinely needed. They retain local covered defaults; required CI runs those
+   populations untraced, and owned daily/manual plus pipeline-PR assurance supplies
+   full eleven-shard coverage:
 
    ```bash
    make test-ci-unit
    make test-ci-integration
    ```
 
-   CI also runs `guards` for static checks and fresh inventory/budgets, and
+   CI also runs `guards` for static checks, `inventory` for fresh inventory/budgets, and
    `check-preflight` for complete-identity reconciliation and smoke/release evidence,
    plus the fail-closed `check` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
@@ -85,7 +87,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
    a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
    Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `guards` enforces the freshly collected inventory against the per-lane
+   `inventory` enforces the freshly collected inventory against the per-lane
    collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
@@ -297,7 +299,21 @@ worktree.
 - `bd worktree create <path> --branch X` branches from the current HEAD: reset new worktrees to
   `origin/main`, and review worktrees to the PR head.
 - `bd close` rejects a bead with an open downstream `blocks`; for an already-finished
-  original/review pair pass `--force`.
+  original/review pair pass `--force`. It also refuses a bead assigned to another actor even with
+  `--actor`: unassign first with `--if-assignee <who> --assignee ''`.
+- Graph states that hide or strand work (backlog pursuit run 22 found hundreds):
+  - A parent holding a `blocks` edge on its own child is blocked by it, and `bd ready` then hides
+    every child. A leaf blocked by its own epic deadlocks. Parents finish when their children close.
+  - An open `task` or `feature` with live children shows in `bd ready` as claimable: make it an epic.
+  - `blocked` status needs a real `blocks` edge (or an owner action assigned to the owner); a
+    hand-set `blocked` with no edge strands the bead once everyone forgets why.
+  - Owner gates: see `docs/operations/decision-beads.md` § Gating work on a decision.
+- Release a dead coordinator's claim with a guard, never `--force` (bd rejects `--force` together
+  with `--if-assignee`): `bd update <id> --if-assignee '<actor>' --assignee ''`, adding
+  `--if-status in_progress --status open` for an abandoned in-progress bead.
+- Pass your own `--actor` (or set `BEADS_ACTOR`). bd otherwise falls back to `git user.name`, and an
+  agent running under the owner's git identity makes its claims look like the owner's, which every
+  other agent then treats as off-limits.
 - Coordinators arm their own CI watcher with a short grace period; workers go dormant during the
   ~25 minute CI run, so finish the merge and cleanup tail yourself if the PR is still open.
 - The PR-reviewer worker may move a branch into its own worktree: run `git worktree list` before
@@ -327,6 +343,10 @@ it before changing the subsystem.
   [identity model](docs/concepts/identity-model.md) (the owner lives in `public.entities`),
   [expected signals](docs/concepts/expected-signals.md),
   [receiver-derived routing cutover](docs/operations/receiver-derived-routing-cutover.md).
+  Session routing context is binding-only: a `runtime_session_id` query locator without a valid
+  `X-Butlers-Fact-Invocation` binding is diagnostic, so
+  `get_current_runtime_session_routing_context()` returns `None` and memory content authority is
+  `third_party`.
 - Data: [schema topology](docs/data_and_storage/schema-topology.md),
   [migration patterns](docs/data_and_storage/migration-patterns.md),
   [credential store](docs/data_and_storage/credential-store.md).
@@ -397,16 +417,18 @@ it before changing the subsystem.
     PR as settled.
   - The job set varies by design (`route` explicitly skips shards or frontend jobs as neutral).
     Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
-- CI fan-out: route→guards→five unit/six integration matrix children→complete-identity `check-preflight`, then
+- CI fan-out: route→inventory→five unit/six integration matrix children→complete-identity `check-preflight`, then
   the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
   `always()` alone does not enforce prerequisites: route and guards verdicts
-  must succeed, and preflight is checked independently of the heavy-shard consistency state.
+  must succeed, inventory succeeds for full/main-push and skips only for scoped/docs,
+  and preflight is checked independently of the heavy-shard consistency state.
   Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
   success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
   classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
   accept success and deny skips until an explicit policy is added. Malformed or missing results,
   classifier outputs or planner paths fail closed.
-  Lock, lint, format, SQL safety and fresh inventory/budgets run in guards with their original scopes;
+  Lock, lint, format and SQL safety run in guards with their original scopes;
+  fresh inventory/budgets run in the early inventory job;
   exact-once and smoke/release evidence remain in preflight. `make check-guards` includes the same
   nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).
   Never add `!cancelled()` to it (a skipped check can read green to branch protection). Never use
@@ -555,6 +577,19 @@ it before changing the subsystem.
 - Testcontainers setup ERRORs (0 FAILED / N ERROR, `Read timed out` at fixture setup) mean Docker
   contention from concurrent gates, not a broken branch. Record the red, then re-run alone before
   attributing it to the code.
+- A flaky test whose cause cannot be removed yet goes in `tests/quarantine.json` with a bead
+  ([quarantine](docs/testing/quarantine.md)), never behind a rerun, a raised timeout or a looser
+  assertion. Marking it `nightly` in the test file does not work for most tests: the condensation
+  ledger guard refuses marker changes to existing tests without a proof.
+- Logging state is process-global and survives across tests in an xdist worker: a test that calls
+  `set_butler_context`, `configure_logging` or `lifecycle.run_startup` must restore the context var
+  (`reset_butler_context(token)`), root handlers, filters and level. A leaked `ButlerDBLogHandler`
+  plus a leaked butler context made an unrelated caplog assertion see an extra WARNING ("no running
+  event loop; dropping ... log line") depending on which file ran first on the worker (bu-w4c1iw).
+- A signal handler that raises can land inside `ThreadPoolExecutor.submit()` after the worker
+  thread started but before the pool registered it; the `with` exit then never joins that worker.
+  While pool workers are live, have the handler only set a cancellation event and raise after the
+  join (`scripts/condense_evidence.py` `execute_sides`, bu-w4c1iw).
 
 ### Git and recovery
 

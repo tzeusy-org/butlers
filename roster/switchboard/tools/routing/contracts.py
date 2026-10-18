@@ -308,6 +308,11 @@ class IngestControlV1(BaseModel):
     ``request_context`` and consumed by downstream interaction-scoring jobs.
     See RFC 0013 D3.
     """
+    automated_kind: Literal["auto_reply", "bounce"] | None = None
+    """Set by a connector that recognised an automated reply or bounce from its headers.
+
+    Such an envelope is Tier 2 (metadata-only); the marker lets later admission logic read
+    why without re-parsing headers. Persisted into ``raw_payload.control``."""
     bearer_scrubbed: bool = False
     """True when the connector withheld bearer material (OTP, reset or magic link)
     from the payload before submit. Persisted into ``raw_payload.control``."""

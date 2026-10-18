@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path, PurePosixPath
 
 HEX = re.compile(r"[0-9a-f]{64}")
@@ -151,8 +152,10 @@ REQUEST_TRACE_OPTIONS = (
     "-xx",
     "-s",
     "0",
+    # This also selects "+++ killed by" terminals: filtering delivery signals
+    # would silently omit actual deaths outside that same filter.
     "-e",
-    "signal=none",
+    "signal=all",
     "-e",
     "trace=%file,%desc,%process,%memory",
 )
@@ -275,6 +278,23 @@ def require_request_observation(access, boundary, requests, records):
         raise EvidenceError("execution-request-runtime-boundary-unproved")
 
 
+def resolve_in(path: Path, directories: dict[Path, Path]) -> Path:
+    """Exactly ``path.resolve()``, reusing resolutions of its directory.
+
+    A non-link entry under a directory the kernel resolves is that directory's
+    resolution plus its name. Files sharing a directory then pay one lstat, not
+    a walk of every component; a traced proof worker observes each of those.
+    """
+    try:
+        if path.name not in {"", ".."} and not stat.S_ISLNK(path.lstat().st_mode):
+            if path.parent not in directories:
+                directories[path.parent] = path.parent.resolve()
+            return directories[path.parent] / path.name
+    except OSError:
+        pass
+    return path.resolve()
+
+
 def tool_record() -> dict:
     """Bind installed proof tools/plugins by actual files, without importing them."""
     names = {"coverage", "pytest"}
@@ -285,24 +305,35 @@ def tool_record() -> dict:
     )
     rows = []
     prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
+    directories = {}
     for name in sorted(names):
         dist = importlib.metadata.distribution(name)
-        if not dist.files:
+        # Each read of ``files`` re-reads RECORD and stats every listed file.
+        files = dist.files
+        if not files:
             raise EvidenceError("installed-tool-files-unknown")
-        for item in sorted(dist.files, key=str):
+        for item in sorted(files, key=str):
             if item.suffix not in {".py", ".so"} and item.name not in {
                 "METADATA",
                 "entry_points.txt",
             }:
                 continue
-            path = Path(dist.locate_file(item)).resolve()
+            path = resolve_in(Path(dist.locate_file(item)), directories)
             if not path.is_file() or not any(prefix in path.parents for prefix in prefixes):
                 raise EvidenceError("installed-tool-source-unknown")
+            # Raw reads: a buffered file object adds four observed syscalls per file.
+            digest = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                while chunk := os.read(descriptor, 1 << 20):
+                    digest.update(chunk)
+            finally:
+                os.close(descriptor)
             rows.append(
                 {
                     "distribution": name,
                     "path": str(item),
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "sha256": digest.hexdigest(),
                     "mode": path.stat().st_mode & 0o777,
                 }
             )
@@ -351,8 +382,8 @@ def git(root: Path, *args: str) -> str:
 
 
 def committed_records(root: Path, ref: str) -> list[dict]:
-    """Read complete original Git bodies/modes without dereferencing old links."""
-    records = []
+    """Read complete Git objects in one batch, preserving original link bodies."""
+    entries = []
     for row in git(root, "ls-tree", "-r", "-z", ref).split("\0"):
         if not row:
             continue
@@ -361,13 +392,29 @@ def committed_records(root: Path, ref: str) -> list[dict]:
         public_path(path)
         if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise EvidenceError("unsupported-before-source-object")
-        body = subprocess.check_output(
-            ["git", "-C", str(root), "cat-file", "blob", blob], env=git_environment()
-        )
+        entries.append((mode, blob, path))
+    carrier = subprocess.check_output(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(blob + "\n" for _, blob, _ in entries).encode(),
+        env=git_environment(),
+    )
+    records, offset = [], 0
+    for mode, blob, path in entries:
+        end = carrier.index(b"\n", offset)
+        actual, kind, length = carrier[offset:end].decode().split()
+        size = int(length)
+        if actual != blob or kind != "blob" or size < 0:
+            raise EvidenceError("invalid-before-source-carrier")
+        body = carrier[end + 1 : end + 1 + size]
+        offset = end + size + 2
+        if len(body) != size or carrier[offset - 1 : offset] != b"\n":
+            raise EvidenceError("incomplete-before-source-carrier")
         record = {"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": mode}
         if mode == "120000":
             record["link"] = body.decode()
         records.append(record)
+    if offset != len(carrier):
+        raise EvidenceError("extra-before-source-carrier")
     return sorted(records, key=lambda r: r["path"])
 
 
@@ -825,7 +872,184 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
-def destructive_changes(root: Path, base: str) -> dict[str, str]:
+#: Module-level conftest names pytest or pluggy read as session behaviour, not as data.
+_CONFTEST_SPECIAL_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
+
+def _special_conftest_name(name: str) -> bool:
+    return name.startswith(("pytest_", "collect_")) or name in _CONFTEST_SPECIAL_NAMES
+
+
+def _is_literal(node: ast.expr | None) -> bool:
+    try:
+        ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False
+    return True
+
+
+_ANNOTATION_NODES = (
+    ast.Name,
+    ast.Attribute,
+    ast.Constant,
+    ast.Subscript,
+    ast.Tuple,
+    ast.BinOp,
+    ast.BitOr,
+    ast.Load,
+)
+
+
+def _inert_annotation(node: ast.expr | None) -> bool:
+    """An annotation evaluated at import that can only name things, never call them."""
+    if node is None:
+        return True
+    for child in ast.walk(node):
+        if not isinstance(child, _ANNOTATION_NODES):
+            return False
+        if isinstance(child, ast.BinOp) and not isinstance(child.op, ast.BitOr):
+            return False
+    return True
+
+
+def _fixture_decorator(node: ast.expr, bound: dict[str, str]) -> bool:
+    """``pytest.fixture`` or ``fixture`` bound by this module's own pytest import, literal args."""
+    target = node
+    if isinstance(node, ast.Call):
+        target = node.func
+        if not all(_is_literal(arg) for arg in node.args) or not all(
+            keyword.arg is not None and _is_literal(keyword.value) for keyword in node.keywords
+        ):
+            return False
+    if isinstance(target, ast.Name):
+        return bound.get(target.id) == "fixture"
+    return (
+        isinstance(target, ast.Attribute)
+        and target.attr == "fixture"
+        and isinstance(target.value, ast.Name)
+        and bound.get(target.value.id) == "pytest"
+    )
+
+
+def _fixture_definition(node: ast.FunctionDef | ast.AsyncFunctionDef, bound: dict[str, str]):
+    arguments = node.args
+    every_argument = [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *([arguments.vararg] if arguments.vararg else []),
+        *([arguments.kwarg] if arguments.kwarg else []),
+    ]
+    return (
+        not _special_conftest_name(node.name)
+        and bool(node.decorator_list)
+        and all(_fixture_decorator(d, bound) for d in node.decorator_list)
+        and all(_is_literal(default) for default in arguments.defaults)
+        and all(default is None or _is_literal(default) for default in arguments.kw_defaults)
+        and all(_inert_annotation(argument.annotation) for argument in every_argument)
+        and _inert_annotation(node.returns)
+    )
+
+
+def conftest_has_session_hooks(source: str | None) -> bool:
+    """Whether a conftest module can change behaviour beyond its own directory subtree.
+
+    A fixture-only conftest reaches the tests below it.  A pytest hook, ``pytest_plugins``,
+    a collection variable, or any expression Python evaluates when the module is imported
+    reaches every co-collected test, wherever the conftest lives.  The classifier is
+    conservative: only imports of ordinary names, docstrings, plain constant assignments and
+    functions decorated by the module's own ``pytest.fixture`` are fixture-only, and only
+    when every decorator argument, default and annotation is inert.  Anything else, any
+    rebinding of the pytest names, and anything unparseable counts as a hook.  A missing
+    module has none.
+    """
+    if source is None:
+        return False
+    try:
+        module = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True
+    #: Names this module binds to pytest itself ("pytest" module or "fixture" function).
+    bound: dict[str, str] = {}
+
+    def binds(name: str, kind: str | None = None) -> bool:
+        """Record a binding; False when it would shadow or rebind a pytest name."""
+        if name in bound:
+            return False
+        if kind:
+            bound[name] = kind
+        return True
+
+    for node in module.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                if name == "*" or _special_conftest_name(name):
+                    return True
+                kind = None
+                if isinstance(node, ast.Import) and alias.name == "pytest":
+                    kind = "pytest"
+                elif (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "pytest"
+                    and node.level == 0
+                    and alias.name == "fixture"
+                ):
+                    kind = "fixture"
+                if not binds(name, kind):
+                    return True
+        elif isinstance(node, ast.Expr):
+            if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+                return True
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if node.value is None or not all(
+                isinstance(t, ast.Name) and not _special_conftest_name(t.id) for t in targets
+            ):
+                return True
+            if isinstance(node, ast.AnnAssign) and not _inert_annotation(node.annotation):
+                return True
+            if not _is_literal(node.value) or not all(binds(t.id) for t in targets):
+                return True
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _fixture_definition(node, bound) or not binds(node.name):
+                return True
+        else:
+            return True
+    return False
+
+
+_PYTEST_INI_SECTIONS = {"tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
+
+
+def _pytest_configuration(path: str, text: str | None):
+    """The pytest-relevant part of a config file, or None when it carries none."""
+    if text is None:
+        return None
+    name = PurePosixPath(path).name
+    if name in {"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini"}:
+        # pytest treats these as the configuration source even when empty.
+        return text
+    if name in _PYTEST_INI_SECTIONS:
+        return text if _PYTEST_INI_SECTIONS[name] in text else None
+    if name == "pyproject.toml":
+        try:
+            pytest_table = tomllib.loads(text).get("tool", {}).get("pytest")
+        except tomllib.TOMLDecodeError:
+            return text
+        return json.dumps(pytest_table, sort_keys=True) if pytest_table is not None else None
+    return None
+
+
+_PYTEST_CONFIG_NAMES = frozenset(
+    {"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"}
+    | {"pyproject.toml"}
+)
+
+
+def destructive_changes(
+    root: Path, base: str, *, _current_shapes: dict | None = None
+) -> dict[str, str]:
     base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
         raise EvidenceError("invalid-base-commit")
@@ -853,10 +1077,11 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             new_source = f.read_text()
             imports_preserved[path] = preserving_import_bindings(old_source, new_source)
             shapes = test_shapes(path, new_source)
+            if _current_shapes is not None:
+                _current_shapes[path, new_source] = shapes
             mode = input_record(root, path)["mode"]
-            for shape in shapes.values():
-                shape["mode"] = mode
-            current.update(shapes)
+            # Classification owns its mode metadata; shared pure shapes stay unchanged.
+            current.update({key: {**shape, "mode": mode} for key, shape in shapes.items()})
     if not before:
         raise EvidenceError("empty-baseline-test-inventory")
     losses = {}
@@ -888,28 +1113,61 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             losses[key] = "marker-context-change"
         elif not contains_ordered(old["context"], new["context"]):
             losses[key] = "fixture-helper-or-marker-context-loss"
+
+    def attribute_conftest(path: str, old_source: str | None, new_source: str | None) -> None:
+        # Session hooks reach every co-collected owner, wherever the conftest lives (a hook in
+        # tests/zzz/conftest.py can skip tests/test_owner.py); fixtures reach only their subtree.
+        if conftest_has_session_hooks(old_source) or conftest_has_session_hooks(new_source):
+            for node in before:
+                losses.setdefault(node, "session-hook-context-change")
+            return
+        ancestor = PurePosixPath(path).parent
+        for node in before:
+            if (
+                ancestor == PurePosixPath(".")
+                or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
+            ):
+                losses.setdefault(node, "ancestral-fixture-context-change")
+
     for path in paths:
         if PurePosixPath(path).name != "conftest.py":
             continue
-        old_context = ast.dump(
-            ast.parse(git(root, "show", f"{base}:{path}")), include_attributes=False
-        )
+        old_source = git(root, "show", f"{base}:{path}")
+        old_context = ast.dump(ast.parse(old_source), include_attributes=False)
         target = root / path
         if target.is_symlink():
             raise EvidenceError("indirect-fixture-source")
+        new_source = target.read_text() if target.is_file() else None
         new_context = (
-            ast.dump(ast.parse(target.read_text()), include_attributes=False)
-            if target.is_file()
+            ast.dump(ast.parse(new_source), include_attributes=False)
+            if new_source is not None
             else None
         )
         if old_context != new_context:
-            ancestor = PurePosixPath(path).parent
+            attribute_conftest(path, old_source, new_source)
+    # A conftest.py the candidate adds is new context exactly like an edit or deletion of
+    # one the base already had.
+    base_paths = set(paths)
+    current_paths = tracked_paths(root)
+    for path in current_paths:
+        if PurePosixPath(path).name != "conftest.py" or path in base_paths:
+            continue
+        if (root / path).is_symlink():
+            raise EvidenceError("indirect-fixture-source")
+        attribute_conftest(path, None, (root / path).read_text())
+    # A pytest configuration file the candidate adds, edits or deletes changes how every
+    # owner below it runs (addopts, markers, asyncio mode, rootdir), so it reaches all owners.
+    for path in sorted(base_paths | set(current_paths)):
+        if PurePosixPath(path).name not in _PYTEST_CONFIG_NAMES:
+            continue
+        target = root / path
+        if target.is_symlink():
+            raise EvidenceError("indirect-pytest-configuration")
+        old_text = git(root, "show", f"{base}:{path}") if path in base_paths else None
+        new_text = target.read_text() if target.is_file() else None
+        if _pytest_configuration(path, old_text) != _pytest_configuration(path, new_text):
             for node in before:
-                if (
-                    ancestor == PurePosixPath(".")
-                    or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
-                ):
-                    losses.setdefault(node, "ancestral-fixture-context-change")
+                losses.setdefault(node, "pytest-configuration-change")
     return losses
 
 
@@ -921,6 +1179,85 @@ def fields(value, expected: set[str]) -> None:
 def integer(value, minimum=0):
     if type(value) is not int or value < minimum:
         raise EvidenceError("nonexact-count")
+
+
+def runtime_directory_identity(path: Path) -> dict:
+    """Read a real canonical directory, rejecting every indirect path component."""
+    try:
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise EvidenceError("indirect-runtime-directory")
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise EvidenceError("non-directory-runtime-root")
+    except (OSError, RuntimeError) as exc:
+        raise EvidenceError("missing-runtime-directory") from exc
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def validate_runtime_directory(value) -> None:
+    fields(value, {"device", "inode"})
+    integer(value["device"])
+    integer(value["inode"], minimum=1)
+
+
+def runtime_request(directory: Path, run: dict, binding: dict, requests: set[str]) -> None:
+    """Reconstruct original launch authority independently of rewritten run carriers."""
+    directory = directory.resolve()
+    side = run["side"]
+    if side not in {"removed", "survivors"}:
+        raise EvidenceError("invalid-runtime-side")
+    temporary = directory / (side + ".runtime-tmp")
+    identity = runtime_directory_identity(temporary)
+    validate_runtime_directory(run["runtime_directory"])
+    environment = {"TMPDIR": str(temporary), "PYTEST_DEBUG_TEMPROOT": str(temporary)}
+    effective = run["runtime_environment"]
+    fields(effective, {"TMPDIR", "PYTEST_DEBUG_TEMPROOT", "tempfile_root"})
+    if effective != {**environment, "tempfile_root": str(temporary)}:
+        raise EvidenceError("runtime-environment-mismatch")
+    if run["runtime_directory"] != identity:
+        raise EvidenceError("runtime-directory-replaced")
+    identifier = run["id"]
+    if (
+        not isinstance(identifier, str)
+        or Path(identifier).name != identifier
+        or identifier in {"", ".", ".."}
+    ):
+        raise EvidenceError("invalid-runtime-id")
+    path = directory / (identifier + ".request.json")
+    journal_path = directory / "journal.json"
+    for original in (path, journal_path):
+        if original.is_symlink() or not original.is_file() or original.resolve() != original:
+            raise EvidenceError("indirect-or-missing-original-request")
+    journal = strict_json(journal_path)
+    fields(journal, {"owned_copy", "status", "mutations", "batches"})
+    owned = Path(journal["owned_copy"])
+    if (
+        journal["status"] != "RESTORED"
+        or owned.parent != directory
+        or not owned.name.startswith("condense-owned-")
+        or owned.resolve() != owned
+    ):
+        raise EvidenceError("invalid-owned-copy-journal")
+    scope = (
+        binding.get("lineage", {}).get("scope", binding["scope"])
+        if side == "removed"
+        else binding["scope"]
+    )
+    expected = {
+        "root": str(owned / side),
+        "selection": binding["selection"][side],
+        "scope": scope,
+        "nonce": binding["nonce"],
+        "output": str(directory / (identifier + ".json")),
+        "id": identifier,
+        "control_inputs": sorted(requests),
+        "runtime_environment": environment,
+        "runtime_directory": identity,
+    }
+    original = strict_json(path)
+    validate_runtime_directory(original.get("runtime_directory"))
+    if run["measurement_root"] != expected["root"] or original != expected:
+        raise EvidenceError("original-runtime-request-mismatch")
 
 
 def identities(rows: list, field: str) -> set:
@@ -1184,7 +1521,8 @@ def executable_proof(
                 raise EvidenceError("mutation-journal-before-mismatch")
             actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
             if (
-                any(
+                any(type(change.get(k)) is not int for k in ("line", "column"))
+                or any(
                     change.get(k) != actual[k] for k in ("id", "path", "line", "column", "operator")
                 )
                 or canonical(change.get("target")) != canonical(actual["target"])
@@ -1484,8 +1822,11 @@ def verify_ledger(
                 "side",
                 "artifact",
                 "coverage_artifact",
+                "runtime_environment",
+                "runtime_directory",
             },
         )
+        runtime_request(directory, run, binding, requests)
         boundary = run["request_boundary"]
         fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
         if (
@@ -1529,10 +1870,20 @@ def verify_ledger(
         ):
             raise EvidenceError("nonexact-timing")
     executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
+    # Preserve the existing causal mutation/SQLite refusals before checking the
+    # additional retained journal account. Both must qualify for admission.
+    # Canonical JSON identity preserves numeric types that Python equality merges.
+    journal = strict_json(directory / "journal.json")
+    if canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"]) or canonical(
+        journal["batches"]
+    ) != canonical(proof["mutation"]["batches"]):
+        raise EvidenceError("invalid-owned-copy-journal")
     return removed
 
 
-def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def _verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     head = git(root, "rev-parse", "HEAD")
     tree = git(root, "rev-parse", "HEAD^{tree}")
     paths = tracked_paths(root)
@@ -1542,11 +1893,16 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if (test_path(p) or Path(p).name == "conftest.py" or p in {"pyproject.toml", "uv.lock"})
         and (root / p).is_file()
     ]
-    losses = destructive_changes(root, base)
+    current_shapes = {}
+    losses = destructive_changes(root, base, _current_shapes=current_shapes)
     current = {}
     for path in tracked_paths(root):
         if test_path(path) and (root / path).is_file():
-            current.update(test_shapes(path, (root / path).read_text()))
+            # Always reread: reuse only this invocation's exact path/text analysis.
+            # Source/mode/link and Git identity are still freshly checked below.
+            text = (root / path).read_text()
+            shapes = current_shapes.get((path, text))
+            current.update(test_shapes(path, text) if shapes is None else shapes)
     admitted = set()
     clusters = set()
     for path in ledgers:
@@ -1558,6 +1914,25 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if members & admitted:
             raise EvidenceError("duplicate-removed-alias")
         admitted |= members
+    contract_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.fresh_accounts(
+            root, base, trusted, losses, contract_directory, reports=contract_reports
+        )
+    retirement_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.retirement_accounts(
+            root,
+            base,
+            trusted,
+            {key: value for key, value in losses.items() if key not in admitted},
+            current,
+            reports=retirement_reports,
+        )
     if set(losses) - admitted:
         raise EvidenceError("unproven-test-or-assertion-loss")
     if (
@@ -1567,18 +1942,25 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         or any(input_record(root, r["path"]) != r for r in relevant)
     ):
         raise EvidenceError("source-changed-during-admission")
-    return {
+    result = {
         "status": "PASS",
         "losses": len(losses),
         "ledger_clusters": len(clusters),
         "test_definitions": len(current),
         "source_read_only": True,
     }
+    if contract_reports:
+        result["contract_evolution_proofs"] = contract_reports
+    if retirement_reports:
+        result["retirement_accounts"] = retirement_reports
+    return result
 
 
-def verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     try:
-        return _verify(root, base, ledgers)
+        return _verify(root, base, ledgers, contract_directory=contract_directory, trusted=trusted)
     except EvidenceError:
         raise
     except (
@@ -1948,7 +2330,16 @@ def main(argv=None):
         # This directory is not searched on a subsequent admission.
         directory = Path(tempfile.mkdtemp(prefix="run-", dir=home))
         fresh = fresh_plan_ledgers(root, base, directory)
-        result = verify(root, base, [*args.ledger, *fresh])
+        trusted = (
+            git(root, "rev-parse", "HEAD^1")
+            if args.ci_event == "pull_request"
+            else base
+            if args.ci_event
+            else None
+        )
+        result = verify(
+            root, base, [*args.ledger, *fresh], contract_directory=directory, trusted=trusted
+        )
     except EvidenceError as exc:
         print(json.dumps({"status": "REFUSED", "category": str(exc)}))
         return 1
@@ -1960,4 +2351,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # contract_evolution imports this file by name; share one EvidenceError identity
+    # so its refusals keep their real category instead of the structural fallback.
+    sys.modules.setdefault("check_condensation_ledger", sys.modules[__name__])
     sys.exit(main())
