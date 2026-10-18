@@ -36,7 +36,7 @@ async def _balance_lane(monkeypatch, rollups, lane="work", **params):
 
 
 async def test_balance_carries_the_band_and_a_within_state(monkeypatch: pytest.MonkeyPatch):
-    rollups = [_rollup(_DAY, "work", 9 * _HOUR), *_history("work", [8 * _HOUR] * 10)]
+    rollups = [_rollup(_DAY, "work", 8 * _HOUR + 1800), *_history("work", [8 * _HOUR] * 10)]
 
     work = await _balance_lane(monkeypatch, rollups)
 
