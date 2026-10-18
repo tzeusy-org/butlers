@@ -1,0 +1,417 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-jv1moa-18-home-safety-last-changed-ladder-20261019",
+  "bead": "bu-jv1moa.18",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-t53498 for implementation bead bu-jv1moa.18 (the Home Safety Sentinel job debounces on last_changed, falling back to last_updated, and gives active safety alarms a faster re-escalation ladder, with guarded _confirm_episode metadata branches). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-jv1moa.18 (sec-review-lane local verdict CLEAN after the N2 recheck, pre-manifest v3; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-jv1moa.18 head 9a5a3c729da7bd2c1e53989903ba551205cfc44b plus the reviewer-computed request. Governing requirement REQ-home-deterministic-jobs-001 (Home Safety Sentinel Job) in openspec/specs/home-deterministic-jobs/spec.md, whose ID-only header lands in this same change ahead of the manifest. The 30 owners in tests/jobs/test_home_safety_sentinel.py are setup or context only: the module-level _make_schema helper adds the nullable last_changed column that home_005 adds in production; test bodies and assertions are unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_a_debouncing_sensor_opens_nothing_and_is_carried_not_resolved",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_a_debouncing_sensor_opens_nothing_and_is_carried_not_resolved",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_a_debouncing_sensor_with_no_open_condition_still_sends_nothing",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_a_debouncing_sensor_with_no_open_condition_still_sends_nothing",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_a_delivered_condition_is_not_resent_on_a_plain_confirmation",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_a_delivered_condition_is_not_resent_on_a_plain_confirmation",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_a_failed_notify_leaves_the_condition_undelivered_for_the_next_run",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_a_failed_notify_leaves_the_condition_undelivered_for_the_next_run",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_a_sensor_must_hold_on_for_the_debounce_window_before_it_alarms",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_a_sensor_must_hold_on_for_the_debounce_window_before_it_alarms",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_alert_text_never_carries_ha_naming_or_markdown_from_the_label",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_alert_text_never_carries_ha_naming_or_markdown_from_the_label",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_alert_text_uses_the_owner_label_and_a_fixed_hazard_phrase",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_alert_text_uses_the_owner_label_and_a_fixed_hazard_phrase",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_escalation_due_while_the_sensor_changed_20s_ago_still_alerts",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_escalation_due_while_the_sensor_changed_20s_ago_still_alerts",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_escalation_due_while_the_sensor_is_unknown_still_alerts",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_escalation_due_while_the_sensor_is_unknown_still_alerts",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_opened_alarm_notifies_once_and_records_the_delivery",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_opened_alarm_notifies_once_and_records_the_delivery",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_alarm_is_retried_when_its_sensor_goes_unavailable",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_alarm_is_retried_when_its_sensor_goes_unavailable",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_alarm_is_retried_while_the_sensor_is_job_pending",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_alarm_is_retried_while_the_sensor_is_job_pending",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_condition_is_retried_once_it_is_old_enough",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_undelivered_condition_is_retried_once_it_is_old_enough",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_an_unreadable_sensor_is_unknown_never_clear",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_an_unreadable_sensor_is_unknown_never_clear",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_does_not_wait_for_an_off_sensor",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_does_not_wait_for_an_off_sensor",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_ignores_a_sensor_the_owner_did_not_declare",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_ignores_a_sensor_the_owner_did_not_declare",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_waits_out_the_debounce_then_judges_the_settled_state",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_edge_check_waits_out_the_debounce_then_judges_the_settled_state",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_edge_event_then_reconcile_yield_one_condition",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_edge_event_then_reconcile_yield_one_condition",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Setup only: the module-level _make_schema helper's hand-rolled ha_entity_snapshot table gains the nullable last_changed TIMESTAMPTZ column that home_005 adds in production, because run_safety_sentinel now selects it. The test rows still set only last_updated, so the job falls back to it exactly as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_expired_source_health_never_resolves_an_open_condition",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_expired_source_health_never_resolves_an_open_condition",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Setup only: the module-level _make_schema helper's hand-rolled ha_entity_snapshot table gains the nullable last_changed TIMESTAMPTZ column that home_005 adds in production, because run_safety_sentinel now selects it. The test rows still set only last_updated, so the job falls back to it exactly as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_failed_notify_keeps_the_condition_open_and_the_next_run_resends",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_failed_notify_keeps_the_condition_open_and_the_next_run_resends",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Setup only: the module-level _make_schema helper's hand-rolled ha_entity_snapshot table gains the nullable last_changed TIMESTAMPTZ column that home_005 adds in production, because run_safety_sentinel now selects it. The test rows still set only last_updated, so the job falls back to it exactly as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_fingerprint_is_the_entity_and_role_and_nothing_mutable",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_fingerprint_is_the_entity_and_role_and_nothing_mutable",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_flapping_sensor_inside_the_debounce_window_opens_nothing",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_flapping_sensor_inside_the_debounce_window_opens_nothing",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Setup only: the module-level _make_schema helper's hand-rolled ha_entity_snapshot table gains the nullable last_changed TIMESTAMPTZ column that home_005 adds in production, because run_safety_sentinel now selects it. The test rows still set only last_updated, so the job falls back to it exactly as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_only_an_explicit_off_is_clear",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_only_an_explicit_off_is_clear",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_safety_watch_migration_constrains_roles_and_labels_and_downgrades",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_safety_watch_migration_constrains_roles_and_labels_and_downgrades",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_the_edge_path_resolves_an_off_sensor_explicitly",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_the_edge_path_resolves_an_off_sensor_explicitly",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_the_job_does_nothing_when_the_ha_source_is_not_healthy",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_the_job_does_nothing_when_the_ha_source_is_not_healthy",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_the_module_has_no_actuation_path",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_the_module_has_no_actuation_path",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_unreadable_sensor_is_carried_so_a_complete_snapshot_cannot_resolve_it",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_unreadable_sensor_is_carried_so_a_complete_snapshot_cannot_resolve_it",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_wet_sensor_opens_one_condition_alerts_high_and_clears",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_wet_sensor_opens_one_condition_alerts_high_and_clears",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Setup only: the module-level _make_schema helper's hand-rolled ha_entity_snapshot table gains the nullable last_changed TIMESTAMPTZ column that home_005 adds in production, because run_safety_sentinel now selects it. The test rows still set only last_updated, so the job falls back to it exactly as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_safety_sentinel.py::test_ws_event_for_a_watched_sensor_schedules_one_edge_check",
+      "after": "tests/jobs/test_home_safety_sentinel.py::test_ws_event_for_a_watched_sensor_schedules_one_edge_check",
+      "contracts": [
+        "REQ-home-deterministic-jobs-001"
+      ],
+      "reason": "Context only: this test never calls _make_schema, but the ledger counts every module-level helper as context for every test in the file, so the helper's one added line (the nullable last_changed TIMESTAMPTZ column on its hand-rolled ha_entity_snapshot table) flags it. The test body, its fixtures and every assertion are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/home-deterministic-jobs/spec.md",
+      "id": "REQ-home-deterministic-jobs-001",
+      "before_sha256": "f23e8bbe2d6780652b69b813e509ba0d51dfe4c0eafc03b86ef8b8becb54e48d",
+      "after_sha256": "7220eead1e4d66adecd20c59c57e38f01f71705fbf5471e37f31550a33b70daf"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/butlers/home.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a1c4eef35206ccc8301ef790fb89f5dd65ecac88de607a049589f9e11ef783e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "7d5d672f0fd5c0fff069b87ca83b0cee0d190385654f62d06426f255236a52cc"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/home/migrations/005_ha_entity_snapshot_last_changed.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "fe3660c5bdbc47cadf454528eaad25e1bf140db85a3a4f392ec5d289f372dd01"
+      }
+    },
+    {
+      "path": "roster/home/modules/__init__.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e3159da604ac758a55fa6040076cda8bd5452ac25047a3583de1ea3c417ae64d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "7b48f97c77d740777a75bd69bfa58ac8309d55897dc2bcbad7452d838b9ca22d"
+      }
+    },
+    {
+      "path": "src/butlers/core/condition_ledger.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "165f7b07bf4e42fbb752da262638ceb086e5d3d037a48d52c8261ea471b95489"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "82d9fc4e18f2eb9ba20ced036c2663699488f670a3727da03d5637a68cae2ba7"
+      }
+    },
+    {
+      "path": "src/butlers/core/owner_conditions.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fa7d9e898d9b3c4b6caffd91b2196d04c5f5d3eff83a294d993ad8af4134e2f4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "373ea980b1cbfe67779098b5a33ad3b0009391f37de3c9f2dec474ab507b5a7a"
+      }
+    },
+    {
+      "path": "src/butlers/jobs/home_safety.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "142af6100d8b8a05c5c6264361abfcf31758d86a74526fe8f6bfed97b70f1dba"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ea72eb77132a11082a591d77cd1232db09beddba1aaecd7e13e21d4d94ad7745"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-jv1moa-18-home-safety-last-changed-ladder-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "c90166d1d8191c25551475f3980bdc032599ea747b6bd3f429237ddfefcf28cf"
+      }
+    },
+    {
+      "path": "tests/core/test_condition_ledger_opt_in_validation.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "ddd82d31ddf1404401b0fd11478757d1f629c3f6aeda964272718435bfe981df"
+      }
+    },
+    {
+      "path": "tests/core/test_owner_conditions_default_opt_ins.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "944e6990507d6f313554e5e7131c5bcda7915f3bbaa0d619d53f6a38ed9aedc8"
+      }
+    },
+    {
+      "path": "tests/integration/test_condition_ledger_opt_ins_roundtrip.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "014773c4b70e7a7d7098e1319c097d04b9862091c119994970fb010387b0b613"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_safety_escalation_ladder.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "47c2d0d0a92994af1f717d0f0318126910bebdca0159c02bb8e45834a93cf91b"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_safety_last_changed.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "9e2350c339b250b18a3bfe39e16992702f114b78ce3060dccd9a83e84d65cb34"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_safety_sentinel.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b86c488552b778c5cf9e3ba33075aa3f865b0ed71ac4c99d221e327b912e8bd0"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fcf8f0fab954039dfd5c06c9021eadeb7467d446586289d78c21f11278817fc6"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
