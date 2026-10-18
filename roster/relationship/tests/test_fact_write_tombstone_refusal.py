@@ -79,14 +79,18 @@ async def test_edge_to_a_tombstoned_object_is_refused_and_a_live_one_is_written(
     gone, survivor = await _merged_pair(pool, "obj")
 
     with pytest.raises(EntityTombstonedError) as caught:
-        await relationship_assert_fact(pool, live, "knows", str(gone), "entity", src="test")
+        await relationship_assert_fact(
+            pool, live, "knows", str(gone), object_kind="entity", src="test"
+        )
     assert caught.value.side == "object" and caught.value.survivor_id == str(survivor)
     assert (
         await pool.fetchval("SELECT count(*) FROM relationship.entity_facts WHERE subject=$1", live)
         == 0
     )
 
-    ok = await relationship_assert_fact(pool, live, "knows", str(other), "entity", src="test")
+    ok = await relationship_assert_fact(
+        pool, live, "knows", str(other), object_kind="entity", src="test"
+    )
     assert ok.outcome == AssertOutcome.inserted
 
 
@@ -131,6 +135,12 @@ async def test_write_queued_behind_a_committing_merge_is_refused_after_the_lock(
 
 
 async def test_prefers_channel_on_a_tombstoned_subject_is_refused_as_tombstoned(pool):
+    await pool.execute(
+        "INSERT INTO relationship.entity_predicate_registry "
+        "(predicate, kind, object_kind, cardinality, description) "
+        "VALUES ('prefers-channel', 'override', 'literal', 'single', 'Preferred channel.') "
+        "ON CONFLICT (predicate) DO NOTHING"
+    )
     source = await _insert_entity(pool, name="pref source", roles=[])
     survivor = await _insert_entity(pool, name="pref survivor", roles=[])
     await relationship_assert_fact(pool, source, "has-email", "pref@x.test", src="test")
