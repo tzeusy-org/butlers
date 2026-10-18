@@ -39,7 +39,6 @@ def _fires_at(schedule: ScheduleConfig, *, zone: str = OWNER_ZONE) -> datetime:
     ("butler", "name", "hour"),
     [
         ("general", "eod-tomorrow-prep", 23),  # "23:00 SGT"
-        ("travel", "upcoming-travel-check", 8),  # "Daily 08:00 SGT"
         ("chronicler", "chronicler_gap_interview", 9),  # "09:00 owner-local"
         ("chronicler", "chronicler_day_close", 1),  # "01:05 day-close"
     ],
@@ -72,6 +71,16 @@ def test_infrastructure_schedules_commented_in_utc_are_pinned_to_utc(
     assert _effective_schedule_timezone(schedule.timezone, OWNER_ZONE) == "Etc/UTC"
     fired = _fires_at(schedule)
     assert (fired.hour, fired.minute) == (utc_hour, utc_minute)
+
+
+def test_travel_check_is_pinned_to_utc_and_fires_at_eight_in_the_morning_sgt() -> None:
+    """Cron `0 0` pinned to Etc/UTC is 08:00 SGT, matching the canonical travel schedule text."""
+    schedule = _schedules("travel")["upcoming-travel-check"]
+    assert schedule.cron == "0 0 * * *"
+    assert schedule.timezone == "Etc/UTC"
+    fired = _fires_at(schedule)
+    assert (fired.hour, fired.minute) == (0, 0)
+    assert fired.astimezone(zoneinfo.ZoneInfo(OWNER_ZONE)).hour == 8
 
 
 def test_insight_delivery_window_is_pinned_to_utc() -> None:
