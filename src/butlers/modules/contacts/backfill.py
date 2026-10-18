@@ -19,6 +19,7 @@ matching routes through public.entities and relationship.entity_facts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -225,7 +226,7 @@ class ContactBackfillWriter:
     Conflict policy (§7.3):
     - Source wins only for previously source-owned fields (tracked in metadata provenance)
     - Local manual edits win unless explicit refresh
-    - Ambiguous merges emit activity feed entries
+    - Ambiguous matches are created as duplicate candidates with a content-free warning
     """
 
     def __init__(
@@ -290,8 +291,14 @@ class ContactBackfillWriter:
         contact: CanonicalContact,
         *,
         executor: Any | None = None,
+        duplicate_candidate: bool = False,
     ) -> uuid.UUID:
         """Create or update an entity for a backfilled contact, returning entity UUID.
+
+        ``duplicate_candidate`` creates a NEW entity flagged
+        ``metadata.duplicate_candidate = true`` for the curation queue, entirely on
+        ``executor`` (the caller's open transaction) so a later failure leaves no
+        entity behind. It never recovers an existing entity by name.
 
         After bu-tzyuh this method writes to ``public.entities`` only — not
         ``public.contacts``. The entity is resolved/created on ``self._pool``
@@ -328,7 +335,14 @@ class ContactBackfillWriter:
             primary_photo = contact.photos[0]
         avatar_url = primary_photo.url if primary_photo else None
 
-        entity_id = await self._ensure_entity(first, last, nickname, company)
+        if duplicate_candidate:
+            if executor is None:
+                raise ValueError("duplicate candidate creation requires a transaction executor")
+            entity_id = await self._insert_candidate_entity(
+                executor, contact, first, last, nickname, company
+            )
+        else:
+            entity_id = await self._ensure_entity(first, last, nickname, company)
 
         if entity_id is None:
             raise ValueError(
@@ -343,10 +357,13 @@ class ContactBackfillWriter:
         # self._pool (autonomous) for the same reason _ensure_entity does: a raised error
         # inside a Postgres transaction aborts it even when Python catches it, so any
         # reads needed before the atomic commit must happen outside that transaction.
-        existing_row = await self._pool.fetchrow(
-            "SELECT metadata FROM public.entities WHERE id = $1", entity_id
-        )
-        metadata: dict[str, Any] = _parse_jsonb(existing_row["metadata"]) if existing_row else {}
+        if duplicate_candidate:
+            metadata: dict[str, Any] = {"duplicate_candidate": True}
+        else:
+            existing_row = await self._pool.fetchrow(
+                "SELECT metadata FROM public.entities WHERE id = $1", entity_id
+            )
+            metadata = _parse_jsonb(existing_row["metadata"]) if existing_row else {}
 
         if first is not None:
             _deep_set(metadata, "profile.first_name", first)
@@ -377,6 +394,56 @@ class ContactBackfillWriter:
             contact.external_id,
         )
         return entity_id
+
+    async def _insert_candidate_entity(
+        self,
+        conn: Any,
+        contact: CanonicalContact,
+        first_name: str | None,
+        last_name: str | None,
+        nickname: str | None,
+        company: str | None,
+    ) -> uuid.UUID | None:
+        """Insert a brand-new entity on the caller's transaction, never reusing one.
+
+        The first attempt uses the contact's own name. A live entity with the same
+        canonical name and type already exists in the ambiguous case, so a name
+        collision (caught inside a savepoint, which keeps the outer transaction
+        usable) retries once with a deterministic, content-free suffix; the
+        original name stays as an alias so name lookups still find the entity.
+        """
+        canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
+        if not canonical:
+            canonical = nickname or company or "Unknown"
+        entity_type = (
+            "organization"
+            if (not (first_name or "").strip() and not (last_name or "").strip() and company)
+            else "person"
+        )
+        aliases = [
+            c.strip()
+            for c in (nickname, first_name)
+            if c and c.strip() and c.strip().lower() != canonical.lower()
+        ]
+        token = hashlib.sha256(
+            f"{self._provider}:{self._account_id}:{contact.external_id}".encode()
+        ).hexdigest()[:8]
+        for name in (canonical, f"{canonical} [{token}]"):
+            entity_aliases = aliases if name == canonical else [*aliases, canonical]
+            try:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "INSERT INTO public.entities (canonical_name, entity_type, "
+                        "aliases, metadata, roles) VALUES ($1, $2, $3, "
+                        "'{}'::jsonb, '{}') RETURNING id",
+                        name,
+                        entity_type,
+                        entity_aliases,
+                    )
+                return row["id"] if row else None
+            except asyncpg.UniqueViolationError:
+                continue
+        return None
 
     async def _ensure_entity(
         self,
@@ -1171,10 +1238,12 @@ class ContactBackfillEngine:
             await self._handle_tombstone(contact, local_id)
             return
 
-        if strategy in {"ambiguous_name", "ambiguous_channel"}:
-            # Cannot auto-merge; emit a review activity entry
-            await self._emit_ambiguous_merge_activity(contact)
-            return
+        ambiguous = strategy in {"ambiguous_name", "ambiguous_channel"}
+        if ambiguous:
+            # Cannot auto-merge. Create the contact as a flagged new entity with its
+            # source link (below) so it reaches duplicate curation and the next sync
+            # resolves it by source link instead of re-hitting the ambiguity.
+            logger.debug("ContactBackfill: ambiguous match, creating duplicate candidate")
 
         if local_id is not None:
             # Verify resolved entity still exists (stale source links, race conditions)
@@ -1205,12 +1274,17 @@ class ContactBackfillEngine:
             # idempotency anchor or strand a half-written entity.
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
-                    local_id = await self._writer.create_contact(contact, executor=conn)
+                    create_kwargs = {"duplicate_candidate": True} if ambiguous else {}
+                    local_id = await self._writer.create_contact(
+                        contact, executor=conn, **create_kwargs
+                    )
                     await self._writer.upsert_source_link(local_id, contact, executor=conn)
             await self._writer.upsert_contact_info(local_id, contact)
             await self._writer.upsert_addresses(local_id, contact)
             await self._writer.upsert_important_dates(local_id, contact)
             await self._writer.upsert_labels(local_id, contact)
+            if ambiguous:
+                self._log_ambiguous(strategy)
             logger.info(
                 "ContactBackfill: created/updated entity %s from %s/%s external_id=%s",
                 local_id,
@@ -1260,17 +1334,20 @@ class ContactBackfillEngine:
                 contact.external_id,
             )
 
-    async def _emit_ambiguous_merge_activity(
-        self,
-        contact: CanonicalContact,
-    ) -> None:
-        """Emit a sync_conflict activity for ambiguous name match."""
-        # We cannot link to a specific contact, so we log at module level only.
+    def _log_ambiguous(self, strategy: str) -> None:
+        """Warn that an ambiguous match was created as a duplicate candidate.
+
+        Content-free: provider, account, strategy and reason only. No external id,
+        name or other contact data.
+        """
         logger.warning(
-            "ContactBackfill: ambiguous name match for external_id=%s display_name=%r — "
-            "skipped auto-merge; manual review required",
-            contact.external_id,
-            contact.display_name,
+            "contact_sync_ambiguous",
+            extra={
+                "provider": self._provider,
+                "account_id": self._account_id,
+                "strategy": strategy,
+                "reason": "created_as_duplicate_candidate",
+            },
         )
 
 
