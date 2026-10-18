@@ -25,6 +25,10 @@ What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requir
   pending-parent sibling modifying what another change adds), but two ADDED blocks may not;
 * an ADDED ID does not already exist in the canonical ``openspec/specs/<capability>/spec.md``,
   and a MODIFIED ID that the canonical spec gives to a different requirement name fails.
+  Two further MODIFIED rules reverse-map the requirement name to its ID, so a block cannot
+  re-mint an identity that already exists: a MODIFIED block whose requirement already has a
+  canonical ID must carry that ID, and a MODIFIED block whose requirement another active change
+  ADDs under a different ID must carry that ADDED ID.
 
 The line patterns are copied from the shared th-projects validator
 (``spec-trace-check.py``); they are duplicated here because CI cannot see ``~/.dotfiles``.  The
