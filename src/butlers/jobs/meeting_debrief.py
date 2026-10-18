@@ -169,15 +169,36 @@ async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dic
         """,
         sorted(emails),
     )
-    return {
-        row["email"]: {
-            "entity_id": str(row["entity_id"]),
-            "name": row["name"] or "",
-            "posture": row["posture"],
-            "is_owner": "owner" in list(row["roles"] or []),
-        }
-        for row in rows
-    }
+    claimants: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        claimants.setdefault(row["email"], []).append(
+            {
+                "entity_id": str(row["entity_id"]),
+                "name": row["name"] or "",
+                "posture": row["posture"],
+                "is_owner": "owner" in list(row["roles"] or []),
+            }
+        )
+    return {email: _merge_claimants(found) for email, found in claimants.items()}
+
+
+def _merge_claimants(found: list[dict[str, Any]]) -> dict[str, Any]:
+    """One answer for an email, however many entities hold it as an active ``has-email``.
+
+    Two entities can claim one address (a stale duplicate beside the real person, an owner
+    alias), and row order must never decide who the attendee is.  Fail closed: if any claimant is
+    the owner or not ``active`` the answer is that claimant, so the attendee is withheld; several
+    active claimants are ambiguous and resolve to no entity (``entity_id`` None, no name).
+    """
+    blocked = sorted(
+        (c for c in found if c["is_owner"] or c["posture"] != "active"),
+        key=lambda c: (not c["is_owner"], c["entity_id"]),
+    )
+    if blocked:
+        return blocked[0]
+    if len(found) > 1:
+        return {"entity_id": None, "name": "", "posture": "active", "is_owner": False}
+    return found[0]
 
 
 async def _record_new_debriefs(pool: asyncpg.Pool, now: datetime) -> tuple[int, int]:
