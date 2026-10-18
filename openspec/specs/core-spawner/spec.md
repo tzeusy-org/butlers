@@ -111,7 +111,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the butler's runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag and delivers the system prompt through a private per-invocation file named by `GEMINI_SYSTEM_MD`, never on argv
 - **AND** passes declared butler env vars to the subprocess
 
 #### Scenario: OpenCode adapter invocation

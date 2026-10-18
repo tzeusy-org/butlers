@@ -7,8 +7,11 @@ Encapsulates all Gemini CLI-specific logic:
 - Result parsing: extracts text output and tool call records
 
 The Gemini CLI is invoked with ``--prompt`` to pass the user prompt
-and ``--sandbox=false`` to disable sandboxing. The system prompt
-(from GEMINI.md or AGENTS.md) is passed inline via ``--system-prompt``.
+and ``--sandbox=false`` to disable sandboxing. The Gemini CLI has no
+``--system-prompt`` flag (its parser is strict and rejects unknown options), so the
+system prompt (from GEMINI.md or AGENTS.md) is written to a private per-invocation
+file that ``GEMINI_SYSTEM_MD`` names. That override fully replaces the CLI's
+built-in core instructions rather than adding to them.
 MCP server configs are written to a per-invocation temporary settings file
 that the CLI reads as its system settings.
 
@@ -275,8 +278,12 @@ class GeminiAdapter(RuntimeAdapter):
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Gemini CLI with the given prompt and configuration.
 
-        Builds the command line, passes the system prompt via
-        ``--system-prompt``, and parses the output. When ``mcp_servers`` is
+        Builds the command line, delivers the system prompt through a mode-0600
+        ``system.md`` in the per-invocation directory named by ``GEMINI_SYSTEM_MD``
+        (never on argv, where process listings would expose it), and parses the
+        output. ``GEMINI_SYSTEM_MD`` fully replaces the CLI's built-in core
+        instructions, so the butler prompt must carry what the session needs; no
+        file or variable is set when ``system_prompt`` is empty. When ``mcp_servers`` is
         non-empty it is written through :meth:`build_config_file` into a
         per-invocation temporary directory that the CLI is pointed at as its
         system settings file (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini
@@ -327,14 +334,19 @@ class GeminiAdapter(RuntimeAdapter):
             "--sandbox=false",
         ]
 
-        # Pass system prompt via --system-prompt flag
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
-
         # Pass prompt via --prompt flag
         cmd.extend(["--prompt", prompt])
 
         config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
+        if system_prompt:
+            system_md = Path(config_dir.name) / "system.md"
+            fd = os.open(system_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(system_prompt)
+            filtered_env = {
+                **(filtered_env if filtered_env is not None else os.environ),
+                "GEMINI_SYSTEM_MD": str(system_md),
+            }
         if mcp_servers:
             # Gemini's ``url`` key is SSE; the butler endpoint is streamable HTTP, which
             # Gemini names ``httpUrl``.

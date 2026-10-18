@@ -99,7 +99,7 @@ async def test_invoke():
         )
     assert result_text == "Task done."
     cmd = mock_sub.call_args[0]
-    assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
+    assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" not in cmd
 
     # functionCall output
     output_lines = "\n".join(
