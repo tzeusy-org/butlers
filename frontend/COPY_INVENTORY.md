@@ -3481,6 +3481,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - inner circle
 - Search entities, pages, butlers, actions…
 - Sessions & state
+- Owner shortcuts
 - Entities
 
 ## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
