@@ -14,7 +14,8 @@
 - [decision] Retention of 90 days plus the latest receipt of each status keeps "last known failure" visible without unbounded growth. Figures are owner question Q1.
 - [decision] Daily job-mode cadence with 500 rows by 20 batches, one short transaction per batch, and a non-blocking advisory lock on a dedicated connection. A skipped run retries on the next due run. Figures are owner question Q2.
 - [decision] The ratio threshold is exactly `applied_count = 0`, with copy `No applications yet`. Any positive denominator keeps today's value. Owner question Q3.
-- [decision] The ratio rule is an ADDED requirement in `dashboard-domain-pages` that refines the "Rule detail page" numeral, to avoid copying that whole block as a MODIFIED delta.
+- [decision] The ratio rule is a MODIFIED "Rule detail page" block copied whole from the baseline, changing only the Outcome-record bullet and the numeral scenario's precondition (`applied_count >= 1`), because the baseline requires a numeral and scoring returns 0.0 at zero applications; an ADDED refinement would contradict it after archive. All three baseline scenario names are kept and two scenarios are added. `make check-spec-overwrites` reports no loss, so no baseline is frozen.
+- [decision] Receipts live in Relationship's own schema (`relationship`), are written only by the job and need no grant elsewhere; this keeps the change inside the no-cross-schema-access non-goal and lets the later read-only presentation go through Relationship's own API router. This is decided, not an owner question.
 - [decision] Named fleet-case evidence is out of the Relationship surfaces and handed to bu-h40h2b.8 (REQ-entity-graph-018).
 
 ## Risks and trade-offs

@@ -15,9 +15,9 @@ bu-h40h2b.7 (run-13 move 7) is blocked until the owner adopts one bounded amendm
 - Receipt presentation that never claims completeness from a zero-count or partial run.
 - Named fleet-evidence rendering handed to bu-h40h2b.8.
 
-### New requirement in `dashboard-domain-pages` (REQ-dashboard-domain-pages-053)
+### Modified requirement in `dashboard-domain-pages` (REQ-dashboard-domain-pages-053)
 
-- Rule effectiveness ratio renders only when `applied_count >= 1`; the exact threshold is a zero denominator and the empty copy is `No applications yet`.
+- MODIFIED "Rule detail page": effectiveness numeral renders when `applied_count >= 1`; at exactly 0 the Outcome record shows `No applications yet`. All three baseline scenario names are kept.
 
 ### RFC 0031 Amendment 1
 

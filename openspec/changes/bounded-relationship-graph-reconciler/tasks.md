@@ -13,7 +13,7 @@
 ## 2. Reconciler, receipt and job (after adoption; lands with 1)
 
 - [ ] 2.1 Reconciler with add, correct and remove, Relationship-only filter, batch and lock limits (REQ-entity-graph-013, -016).
-- [ ] 2.2 Receipt table migration, receipt writes for all four statuses and bounded pruning (REQ-entity-graph-015).
+- [ ] 2.2 Receipt table migration in Relationship's own chain and schema (no new grant, `failure_code` CHECK), receipt writes for all four statuses and bounded pruning (REQ-entity-graph-015).
 - [ ] 2.3 `[[butler.schedule]]` entry, `dispatch_mode = "job"`, `job_name = "relationship_graph_reconcile"`, and the job function (REQ-entity-graph-016).
 - [ ] 2.4 Tests for idempotence (clean rerun reports zero), concurrency (`skipped_lock`), partial runs, failure receipts and no cross-source effects.
 
