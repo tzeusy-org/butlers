@@ -2340,3 +2340,42 @@ async def test_histogram_non_trace_bucket_guardrail_still_422s_without_escalatio
 
     assert resp.status_code == 422
     mock_histogram.assert_awaited_once()
+
+
+async def test_replay_post_refuses_public_missing_plan_with_audit(app):
+    # REQ-ingestion-target-delivery-recovery-006: execute the real core via HTTP.
+    import json
+
+    event_id = str(uuid4())
+    for status in ("failed", "ingested", "replay_failed", "replay_pending"):
+        pool = AsyncMock()
+        pool.fetch.return_value = [
+            {
+                "id": event_id,
+                "source_channel": "telegram_bot",
+                "endpoint_identity": "telegram:bot:test",
+                "connector_match_count": 1,
+                "replay_safe": True,
+            }
+        ]
+        pool.fetchrow.return_value = {"id": event_id, "status": status}
+        _app_with_mock_db(app, shared_pool=pool)
+        with patch(
+            "butlers.api.routers.ingestion_events._audit_append", new_callable=AsyncMock
+        ) as audit:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(f"/api/ingestion/events/{event_id}/replay")
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "error": "No retained delivery plan is available for recovery",
+            "reason": "no_retained_delivery_plan",
+            "current_status": status,
+        }
+        pool.execute.assert_not_awaited()
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["actor"] == "owner"
+        assert audit.await_args.kwargs["action"] == "ingestion.event.replay"
+        assert audit.await_args.kwargs["target"] == event_id
+        assert json.loads(audit.await_args.kwargs["note"])["reason"] == "no_retained_delivery_plan"
