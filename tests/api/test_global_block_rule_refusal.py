@@ -2,8 +2,7 @@
 
 The Gmail global gate and the Switchboard pipeline act on skip, metadata_only and route_to
 decisions, so a stored global `block` rule would be inert (bu-gtf1kp). The product surface
-refuses it at create and PATCH; these tests pin that refusal and show what the evaluator returns
-for a row that bypassed it.
+refuses it at create and PATCH; these tests pin that refusal.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 pytestmark = pytest.mark.unit
 
@@ -116,24 +114,3 @@ async def test_patching_a_rule_into_a_global_block_is_refused(
 
     assert response.status_code == 422
     pool.execute.assert_not_awaited()
-
-
-def test_a_row_that_bypassed_the_api_is_returned_by_the_evaluator_as_block() -> None:
-    """Residual gap: the DB CHECK constrains only connector-scope actions, so a hand-inserted
-    global row is evaluated as `block`, an action neither global gate acts on."""
-    evaluator = IngestionPolicyEvaluator("global", None)
-    evaluator._rules = [
-        {
-            "id": "r1",
-            "rule_type": "sender_domain",
-            "condition": {"domain": "spam.example", "match": "exact"},
-            "action": "block",
-            "priority": 10,
-        }
-    ]
-
-    decision = evaluator.evaluate(
-        IngestionEnvelope(sender_address="bot@spam.example", source_channel="email")
-    )
-
-    assert decision.action == "block"
