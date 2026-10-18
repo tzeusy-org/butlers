@@ -2457,8 +2457,6 @@ async def assert_prefers_channel(
 
     async def _do(c: asyncpg.Connection) -> AssertResult:
         await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
-        if not await _entity_has_reachability_fact(c, subject, channel):
-            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
         context = await locked_report(
             c,
             current_fact_write_context(),
@@ -2468,6 +2466,10 @@ async def assert_prefers_channel(
             src=src,
             refuse_tombstoned=True,
         )
+        # Reachability is read under the entity lock, after the tombstone refusal, so a
+        # merged-away subject is refused as such rather than as "no contact fact".
+        if not await _entity_has_reachability_fact(c, subject, channel):
+            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
         from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
 
         await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel, subject)
