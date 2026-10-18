@@ -202,7 +202,8 @@ starts. Replays return the durable prior result.
 ### D10 - Review resolutions (bu-8cdl1.23)
 
 Independent security and product review of commit
-`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` produced findings S1-S7 and P1-P7.
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (re-reviewed at the resolution PR head
+under bu-ijsbde) produced findings S1-S7 and P1-P7.
 Each is resolved in the RFC and the spec (REQ-001, -002, -003, -004, -005, -006,
 -007, -008) or in the added REQ-010, REQ-011, and REQ-012:
 

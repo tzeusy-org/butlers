@@ -26,13 +26,17 @@
   `git diff --check`.
 - [x] 2.4 Obtain independent exact-head security review covering actor
   derivation, content-blind storage, channel allowlisting, ambiguity
-  non-laundering, and absence of action decision/execution authority. Reviewed
-  `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (bu-8cdl1.23); findings S1-S7 resolved in the same PR.
+  non-laundering, and absence of action decision/execution authority. First pass
+  reviewed `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (bu-8cdl1.23), the
+  reviewed-for-findings SHA; S1-S7 resolved in the same PR. The exact-head check
+  is the bu-ijsbde re-review of that PR's head (SHA in the bead and PR).
 - [x] 2.5 Obtain independent exact-head product review covering cadence/count,
   channel order, evidence freshness, safe hold, homecoming bounds, and
   disengagement semantics; resolve every finding and record the reviewed
-  commit/digest `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (bu-8cdl1.23); findings P1-P7 resolved
-  in the same PR.
+  commit/digest: first pass `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2`
+  (bu-8cdl1.23), P1-P7 resolved in the same PR; channel order and cadence have
+  explicit no-finding lines in the RFC review record. The exact-head check is
+  the bu-ijsbde re-review of that PR's head (SHA in the bead and PR).
 
 ## 3. Exact owner adoption gate
 
@@ -58,7 +62,10 @@
 - [ ] 4.5 Add one bounded homecoming summary per owner-presence epoch, including
   ambiguity exclusion, 20-row/7-day limits, expired non-actionability, quiet
   hours, and replay-safe handoff.
-- [ ] 4.6 Preserve the proactive-insight writer set and add a contract guard
+- [ ] 4.6 Add contract guards for the REQ-010 stored-field allowlist (including
+  bounded counts) and the REQ-011 absence of any model-reachable or grantable
+  attention surface.
+- [ ] 4.7 Preserve the proactive-insight writer set and add a contract guard
   proving approval attention paths never write its denominator/numerator.
 
 ## 5. Future verification and activation gates
