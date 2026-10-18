@@ -8,12 +8,13 @@ test_balance_trends_api.py and test_who_you_were_with_api.py.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 
 from butlers.chronicler.aggregations import LANES
 from butlers.chronicler.balance import (
-    ANOMALY_MIN_DELTA_SECONDS,
-    ANOMALY_MIN_SAMPLE_DAYS,
+    LANE_BASELINE_MIN_N,
     LaneBalance,
     compute_daily_balance,
     compute_lane_baseline,
@@ -23,6 +24,13 @@ from butlers.chronicler.balance import (
 
 pytestmark = pytest.mark.unit
 
+_DAY = date(2026, 7, 20)
+
+
+def _series(values: list[int]) -> dict[date, int]:
+    """Per-day seconds for the days immediately before ``_DAY`` (oldest first)."""
+    return {_DAY - timedelta(days=len(values) - i): v for i, v in enumerate(values)}
+
 
 # ---------------------------------------------------------------------------
 # compute_lane_baseline
@@ -30,24 +38,26 @@ pytestmark = pytest.mark.unit
 
 
 def test_baseline_mean_over_samples():
-    result = compute_lane_baseline({"work": [3600, 7200, 5400]})
-    baseline_seconds, sample_days = result["work"]
-    assert baseline_seconds == pytest.approx(5400.0)
-    assert sample_days == 3
+    result = compute_lane_baseline(
+        {"work": _series([3600, 7200, 5400, 5400, 3600, 7200, 5400])}, local_date=_DAY
+    )
+    work = result["work"]
+    assert work.center == pytest.approx(5400.0)
+    assert work.n_observed == 7
 
 
 def test_baseline_no_samples_returns_none_not_zero():
-    result = compute_lane_baseline({})
+    result = compute_lane_baseline({}, local_date=_DAY)
     for lane in LANES:
-        baseline_seconds, sample_days = result[lane]
-        assert baseline_seconds is None
-        assert sample_days == 0
+        assert result[lane].center is None
+        assert result[lane].n_observed == 0
+        assert result[lane].status == "insufficient_history"
 
 
 def test_baseline_covers_every_lane():
-    result = compute_lane_baseline({"work": [3600]})
+    result = compute_lane_baseline({"work": _series([3600])}, local_date=_DAY)
     assert set(result) == set(LANES)
-    assert result["sleep"] == (None, 0)
+    assert result["sleep"].center is None
 
 
 # ---------------------------------------------------------------------------
@@ -56,23 +66,25 @@ def test_baseline_covers_every_lane():
 
 
 def test_daily_balance_zero_fills_lane_with_no_activity_but_keeps_baseline():
-    balances = compute_daily_balance({}, {"sleep": [28800, 25200]})
+    balances = compute_daily_balance({}, {"sleep": _series([28800, 25200] * 4)}, local_date=_DAY)
     by_lane = {b.lane: b for b in balances}
     sleep = by_lane["sleep"]
     assert sleep.seconds == 0
     assert sleep.baseline_seconds == pytest.approx(27000.0)
     assert sleep.delta_seconds == pytest.approx(-27000.0)
-    assert sleep.baseline_sample_days == 2
+    assert sleep.baseline_sample_days == 8
 
 
 def test_daily_balance_delta_positive_when_above_baseline():
-    balances = compute_daily_balance({"work": 36000}, {"work": [28800, 28800]})
+    balances = compute_daily_balance(
+        {"work": 36000}, {"work": _series([28800] * 7)}, local_date=_DAY
+    )
     by_lane = {b.lane: b for b in balances}
     assert by_lane["work"].delta_seconds == pytest.approx(36000 - 28800)
 
 
 def test_daily_balance_no_baseline_history_yields_null_delta():
-    balances = compute_daily_balance({"work": 36000}, {})
+    balances = compute_daily_balance({"work": 36000}, {}, local_date=_DAY)
     by_lane = {b.lane: b for b in balances}
     work = by_lane["work"]
     assert work.seconds == 36000
@@ -82,7 +94,7 @@ def test_daily_balance_no_baseline_history_yields_null_delta():
 
 
 def test_daily_balance_covers_every_lane_sorted():
-    balances = compute_daily_balance({}, {})
+    balances = compute_daily_balance({}, {}, local_date=_DAY)
     assert [b.lane for b in balances] == sorted(LANES)
 
 
@@ -111,14 +123,14 @@ def test_streak_counts_trailing_nonzero_run(daily_seconds, expected):
 # ---------------------------------------------------------------------------
 
 
+def _lane(seconds: int, history: list[int]) -> LaneBalance:
+    balances = compute_daily_balance({"work": seconds}, {"work": _series(history)}, local_date=_DAY)
+    return next(b for b in balances if b.lane == "work")
+
+
 def test_anomaly_requires_minimum_sample_days():
-    lb = LaneBalance(
-        lane="work",
-        seconds=36000,
-        baseline_seconds=3600.0,
-        delta_seconds=32400.0,
-        baseline_sample_days=ANOMALY_MIN_SAMPLE_DAYS - 1,
-    )
+    lb = _lane(36000, [3600] * (LANE_BASELINE_MIN_N - 1))
+    assert lb.state == "insufficient_history"
     assert is_lane_anomalous(lb) is False
 
 
@@ -134,38 +146,21 @@ def test_anomaly_requires_no_baseline_returns_false():
 
 
 def test_anomaly_flags_large_absolute_and_relative_delta():
-    lb = LaneBalance(
-        lane="work",
-        seconds=36000,
-        baseline_seconds=7200.0,
-        delta_seconds=28800.0,
-        baseline_sample_days=ANOMALY_MIN_SAMPLE_DAYS,
-    )
+    lb = _lane(36000, [7200] * LANE_BASELINE_MIN_N)
+    assert lb.state == "above"
     assert is_lane_anomalous(lb) is True
 
 
 def test_anomaly_ignores_small_delta_below_absolute_floor():
-    # Small baseline (10 min) with a tiny absolute swing — below
-    # ANOMALY_MIN_DELTA_SECONDS even though the ratio is huge.
-    lb = LaneBalance(
-        lane="rest",
-        seconds=660,
-        baseline_seconds=600.0,
-        delta_seconds=60.0,
-        baseline_sample_days=ANOMALY_MIN_SAMPLE_DAYS,
-    )
-    assert lb.delta_seconds < ANOMALY_MIN_DELTA_SECONDS
+    # Small baseline (10 min) with a tiny swing: inside the floored band even
+    # though the ratio is huge.
+    lb = _lane(660, [600] * LANE_BASELINE_MIN_N)
+    assert lb.state == "within"
     assert is_lane_anomalous(lb) is False
 
 
 def test_anomaly_ignores_small_relative_delta_on_large_baseline():
-    # Large baseline (8h) with a swing that clears the absolute floor but not
-    # the relative floor.
-    lb = LaneBalance(
-        lane="work",
-        seconds=32400,
-        baseline_seconds=28800.0,
-        delta_seconds=3600.0,
-        baseline_sample_days=ANOMALY_MIN_SAMPLE_DAYS,
-    )
+    # Large baseline (8h) with a one-hour swing: inside the band.
+    lb = _lane(32400, [28800] * LANE_BASELINE_MIN_N)
+    assert lb.state == "within"
     assert is_lane_anomalous(lb) is False
