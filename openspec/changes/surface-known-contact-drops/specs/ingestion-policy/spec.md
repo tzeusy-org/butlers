@@ -120,3 +120,27 @@ Scope: v1-mandatory
 
 - **WHEN** a condition or candidate is written for an episode
 - **THEN** neither contains the sender address, subject, body or filter reason
+
+### Requirement: Block and skip rules may except people the owner knows
+
+A `block` or `skip` ingestion rule SHALL accept an optional per-rule boolean `except_known_contacts`, stored in the rule's condition and absent unless true. The Switchboard rule API SHALL persist and return it and SHALL refuse it with 422 on any other action, including when an action change would strand it. The policy evaluator SHALL pass over a matching rule that carries it only when the envelope's `known_contact` is `true`, and SHALL continue evaluating later rules. `known_contact` SHALL be `true` or `false` only from a loaded known-contact snapshot and `None` otherwise: a stranger, an unclassified sender and an unflagged rule SHALL keep today's behavior, so unknown classification leaves the rule in force and the drop keeps its unknown classification. The option SHALL default off, SHALL change no existing rule, and SHALL add no known-contact source and no global floor. The Gmail connector SHALL set `known_contact` from the snapshot it already uses for the known-contact marker; other connectors apply the rule as written until they supply the signal.
+
+ID: REQ-ingestion-policy-004
+Source: bu-q7vx1q.88.3; bu-q7vx1q.4 move #4 slice S3; surface-known-contact-drops proposal deferred slices
+Scope: v1-mandatory
+
+#### Scenario: A known contact passes a flagged rule
+
+- **WHEN** a Gmail message from a sender in the loaded snapshot matches a block or skip rule with `except_known_contacts`
+- **THEN** that rule does not apply and the message is ingested unless a later rule drops it
+
+#### Scenario: Unflagged, stranger and unknown keep the rule in force
+
+- **WHEN** the rule is unflagged, the sender is not a known contact, or the snapshot is not loaded
+- **THEN** the rule applies as written
+- **AND** a drop with an unloaded snapshot keeps its unknown classification
+
+#### Scenario: The option is only valid on block and skip
+
+- **WHEN** a rule is created or changed so `except_known_contacts` sits on any other action
+- **THEN** the API refuses it with 422
