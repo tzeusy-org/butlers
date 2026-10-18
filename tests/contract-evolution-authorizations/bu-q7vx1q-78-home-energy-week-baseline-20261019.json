@@ -1,0 +1,349 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-q7vx1q-78-home-energy-week-baseline-20261019",
+  "bead": "bu-q7vx1q.78",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-6jcbrx for implementation bead bu-q7vx1q.78 (the Home weekly energy digest judges the house total and each device against week-bucket personal baselines instead of a fixed 20% threshold, calls the week within normal range only on a ready within-band house total, and no longer writes energy_baseline). Reviewed before: simulated base 9a6b5b26c (main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 plus bu-t53498, bu-jv1moa.18, bu-q7vx1q.80 and bu-q7vx1q.94.2) as recorded in bu-q7vx1q.78 (contract-review-lane pre-manifest v2; C1 and C2 resolved, C3 fixed with the exact simulated bytes; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-q7vx1q.78 head 2a5e2e33a plus the reviewer-computed request. Governing requirement REQ-home-deterministic-jobs-006 (Energy Digest Job) in openspec/specs/home-deterministic-jobs/spec.md, whose ID-only header lands in this same change ahead of the manifest. The 17 owners in tests/jobs/test_home_energy_digest.py are retained: 12 lose only import context; the other 5 pinned the retired prose energy_baseline loader and 20% threshold and now pin the band rule, with test_detect_anomalies keeping its base parametrization. The branch also carries one content-addressed temporary archived-landed freeze (scripts/archived-requirements-baseline.json), bound here as an input and removed by bu-xpdfom when add-personal-baselines archives. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_all_home_deterministic_jobs_registered",
+      "after": "tests/jobs/test_home_energy_digest.py::test_all_home_deterministic_jobs_registered",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_build_digest_message",
+      "after": "tests/jobs/test_home_energy_digest.py::test_build_digest_message",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_compute_device_totals",
+      "after": "tests/jobs/test_home_energy_digest.py::test_compute_device_totals",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_detect_anomalies",
+      "after": "tests/jobs/test_home_energy_digest.py::test_detect_anomalies",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Graded a device against a parsed prose energy_baseline fact with the 20% anomaly_pct and 100% high_severity_pct thresholds through detect_anomalies, which no longer exists. REQ-home-deterministic-jobs-006 (Anomaly detection) now flags a device above its own ready week band and grades it high at twice the band's centre. The test keeps its name and intent over anomalies_from: a week inside the usual range gives no anomaly, one above it gives anomaly, and one at more than double gives high."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_detect_anomalies_edge_cases",
+      "after": "tests/jobs/test_home_energy_digest.py::test_detect_anomalies_edge_cases",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Asserted that detect_anomalies returns nothing with no prose baseline and skips a zero prose baseline. REQ-home-deterministic-jobs-006 (Thin history is not an anomaly) now leaves a device with no ready week band unflagged. The test keeps its name and both edges over anomalies_from: no history or fewer than four weeks gives no anomaly, and a band with a zero centre is skipped."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_accepts_explicit_zero_change",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_accepts_explicit_zero_change",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_marks_incomplete_change_series_unsupported",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_marks_incomplete_change_series_unsupported",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_preserves_hourly_data_when_daily_fetch_fails",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_preserves_hourly_data_when_daily_fetch_fails",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_rejected",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_rejected",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_returns_empty_when_authentication_is_rejected",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_returns_empty_when_authentication_is_rejected",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_uses_ha_websocket_recorder_command",
+      "after": "tests/jobs/test_home_energy_digest.py::test_fetch_weekly_statistics_uses_ha_websocket_recorder_command",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_is_energy_entity",
+      "after": "tests/jobs/test_home_energy_digest.py::test_is_energy_entity",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_early_exits",
+      "after": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_early_exits",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_full_run_with_anomalies",
+      "after": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_full_run_with_anomalies",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Pinned the prose-baseline contract: it patched _load_energy_baselines and _load_energy_thresholds and expected five store_fact calls (the overall and per-device energy_baseline facts plus two spikes). REQ-home-deterministic-jobs-006 now judges each device against its week-bucket band and forbids energy_baseline writes. The test patches the history fetch and the scorer, still expects two anomalies and the 320 kWh total, and now asserts exactly the two energy_spike writes and baseline_updated from a changed band."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_mixed_statistics_is_visibly_partial",
+      "after": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_mixed_statistics_is_visibly_partial",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Asserted that _load_energy_baselines was not awaited and patched the threshold loader. REQ-home-deterministic-jobs-006 (Partial cumulative-energy statistics) now forbids scoring a partial run at all, so the test asserts the scorer is not awaited and keeps every other partial-run assertion, including no overall fact."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_rejects_all_unsupported_statistics",
+      "after": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_rejects_all_unsupported_statistics",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Asserted that _load_energy_baselines was not awaited; that loader no longer exists. REQ-home-deterministic-jobs-006 (No cumulative-energy statistics available) still forbids computing or storing a baseline, so the test asserts the scorer is not awaited and keeps its no-store_fact, notification and error-result assertions."
+    },
+    {
+      "before": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_unmeasurable_on_ha_outage",
+      "after": "tests/jobs/test_home_energy_digest.py::test_run_energy_digest_unmeasurable_on_ha_outage",
+      "contracts": [
+        "REQ-home-deterministic-jobs-006"
+      ],
+      "reason": "Context only. The module import of detect_anomalies is gone because REQ-home-deterministic-jobs-006 replaces the regex prose-baseline anomaly rule it implemented with the owner's week-bucket band. This test's body, fixtures and assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/home-deterministic-jobs/spec.md",
+      "id": "REQ-home-deterministic-jobs-006",
+      "before_sha256": "23e3dddbb8960f22b15361b8a5e98313ec8086fff4a8fb934b080584299e0f47",
+      "after_sha256": "9b61d9f2cf777e79d8042b6e8d2acd8aa4530db99902e8f919b2680dee7838e5"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/butlers/home.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "7d5d672f0fd5c0fff069b87ca83b0cee0d190385654f62d06426f255236a52cc"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9d0e2a0bb8e2f6186913066c85f797e3542ddefdd6404e1aa27f334d0ced9801"
+      }
+    },
+    {
+      "path": "docs/concepts/personal-baselines.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "a94ce0f56db7f97097ae885bb3991ff81c8bf67695b4adfd7c851b7bb09672e2"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "34c3762a893cfe2a333ffcdb9088c412494d906d50c212196ed450cce78a8e5b"
+      }
+    },
+    {
+      "path": "openspec/changes/add-personal-baselines/proposal.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "822af60df481ece43fe0a412b3b3fb96a2da2cf139e38ae113f92dd2421c8188"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a6e2c5a4b62ba8e66d2076bcb20011626ad28808b42b3a54bf17784bcdd02c4b"
+      }
+    },
+    {
+      "path": "openspec/changes/add-personal-baselines/specs/home-deterministic-jobs/spec.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "d4ddfe2deb72e73b90792d866da1b9b80c40f284388ed349b52244a6d0706b7a"
+      }
+    },
+    {
+      "path": "openspec/changes/add-personal-baselines/tasks.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "f70c4a7f1d4a1afdf5618bb407aedbaff5bbf48270dc43b99fcc870c21f1ffe3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e5f85c806b8bd624db40d2bbe89252bad366acab9201bd0da95b65139b3bb257"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/home/.agents/skills/energy/SKILL.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "b44acaaa2aec2b0988c97032838091cd7dfb1d67cf6c86a18a5c6f20edcccb12"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "73997611745532473582f8ecf0cf031bef15107d5ee41365f46969cba9bd026b"
+      }
+    },
+    {
+      "path": "roster/home/.agents/skills/memory-taxonomy/SKILL.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "3bcc91a6e2f6d9e96640506485187ad715a71d42db7fa22d6287121211ca910b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b5299abd3dca816a935304dfbab3c981e45b8b5c83a0835a053b8d2450aae373"
+      }
+    },
+    {
+      "path": "roster/home/.agents/skills/weekly-energy-digest/SKILL.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "6b94feca4219701a08a341769b652b8db86109d56433e162f21797fa542099a0"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fa7aa442bc7ed1b104d16e204752ce21623f2736ade6523e008dfe6106ddbf38"
+      }
+    },
+    {
+      "path": "scripts/archived-requirements-baseline.json",
+      "before": {
+        "mode": "100644",
+        "sha256": "9b3b5c441aaec2e39c52500a99059878376b60cc220281976958f2f1f310a6f4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a88602d4d8280ba40eceb596ed58adee82beed81dd6ac75afebe75c956740e5e"
+      }
+    },
+    {
+      "path": "src/butlers/jobs/home.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "27941ece8347a6dce3bac64ad0c711b0d7f07da7096ae1d45854598dbb408d97"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "01c68758d298a72468b115024b30149cf7529110cb6c562bc709a4a9c93fd1c0"
+      }
+    },
+    {
+      "path": "src/butlers/jobs/home_baselines.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "1bfd8db97f68666eab67306f239888c1707f5f110146505440eff837b654cc40"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-q7vx1q-78-home-energy-week-baseline-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "e4b085995a0c09f65db82298a3491a3e5b1198f0360092820ad5e5024a0dc0f0"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_energy_baselines.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "7e7540a36ffb5649520ede72d6fdec7e5b6667d5a3a9f844a5f7f199544015c6"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_energy_baselines_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "46d55352d4aa8019bb9c3de79ba5327bd5b9f182b327aa63c19f4d0739163d42"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_energy_digest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5fd532b4b5137014f73c3536fca540cb8d8b5d7639a758a4eb052fa0ab078b56"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b9f6895a5a8b9d55f2363239662acd715b1e93a41c75fb2f5a2ee77474edfc99"
+      }
+    },
+    {
+      "path": "tests/jobs/test_home_energy_digest_wording.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "d5f8ab7f607b31559354c722880b30b7bd5a50042cb5187dd548b71f39f7ef40"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
