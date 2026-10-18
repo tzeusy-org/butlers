@@ -155,9 +155,10 @@ async def test_a_preserved_key_the_confirmation_carries_wins(pool: asyncpg.Pool)
     assert active["metadata"]["notified_at"] == "second"
 
 
+@pytest.mark.parametrize("identity_version", [None, 1], ids=["plain", "identity-payload"])
 @pytest.mark.parametrize("opt_ins", [{}, {"preserve_metadata_keys": ("notified_at",)}])
 async def test_a_confirmation_replaces_non_object_stored_metadata(
-    pool: asyncpg.Pool, opt_ins: dict
+    pool: asyncpg.Pool, opt_ins: dict, identity_version: int | None
 ) -> None:
     """Double-encoded (string) metadata must not make a confirmation fail (main replaces it)."""
     source = f"test:string-meta-{uuid.uuid4().hex}"
@@ -167,7 +168,14 @@ async def test_a_confirmation_replaces_non_object_stored_metadata(
         await reconcile_snapshot(
             pool,
             source=source,
-            observations=[Observation(fingerprint=fp, summary="s", metadata={"entity_id": "x"})],
+            observations=[
+                Observation(
+                    fingerprint=fp,
+                    summary="s",
+                    metadata={"entity_id": "x"},
+                    identity_version=identity_version,
+                )
+            ],
             snapshot_complete=False,
             initial_grace_seconds=3600,
             **opt_ins,
@@ -182,4 +190,7 @@ async def test_a_confirmation_replaces_non_object_stored_metadata(
     await check_in()
 
     active = await get_active_condition(pool, source=source, fingerprint=fp)
-    assert active["metadata"] == {"entity_id": "x"}
+    expected = {"entity_id": "x"}
+    if identity_version is not None:
+        expected["identity_payload"] = {"version": identity_version}
+    assert active["metadata"] == expected
