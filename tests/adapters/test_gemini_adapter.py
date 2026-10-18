@@ -13,11 +13,14 @@ Unique behaviors not in test_adapter_contract.py:
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.config import ButlerConfig
 from butlers.core.runtimes import GeminiAdapter
 from butlers.core.runtimes.gemini import (
     _extract_tool_call,
@@ -25,6 +28,7 @@ from butlers.core.runtimes.gemini import (
     _find_gemini_binary,
     _parse_gemini_output,
 )
+from butlers.core.spawner import Spawner
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +86,7 @@ def test_build_config_file_and_tool_call_formats(tmp_path: Path):
     assert tc2["name"] == "tool_b" and tc2["input"] == {"b": 2}
 
 
-async def test_invoke():
+async def test_invoke(tmp_path: Path):
     """invoke() calls subprocess with required flags; parses text and functionCall output."""
     adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
     mock_proc = AsyncMock()
@@ -98,6 +102,7 @@ async def test_invoke():
             env={"GOOGLE_API_KEY": "gk-test"},
         )
     assert result_text == "Task done."
+    assert mock_sub.call_args.kwargs["env"] == {"GOOGLE_API_KEY": "gk-test"}
     cmd = mock_sub.call_args[0]
     assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
 
@@ -115,13 +120,75 @@ async def test_invoke():
         ]
     )
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
-    with patch(_EXEC, return_value=mock_proc):
+    with patch(_EXEC, return_value=mock_proc) as empty_launch:
         result_text2, tool_calls, _ = await adapter.invoke(
             prompt="use tools", system_prompt="", mcp_servers={}, env={}
         )
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )
+    assert empty_launch.call_args.kwargs["env"] == {}
+
+    # Exercise normal Spawner -> actual Gemini worker -> subprocess, using only
+    # synthetic ambient credentials. With no PATH, tracing or declared vars,
+    # the explicit empty mapping must never mean inherit the daemon environment.
+    # The PATH and healing companions keep their existing narrow environments.
+    for with_path, trigger_source in ((False, "tick"), (True, "tick"), (False, "healing")):
+        ambient = {
+            "BUTLER_TELEGRAM_TOKEN": "synthetic-channel-marker",
+            "BUTLER_EMAIL_PASSWORD": "synthetic-email-marker",
+            "DASHBOARD_API_KEY": "synthetic-owner-marker",
+            "DATABASE_URL": "synthetic-admin-marker",
+            "GH_TOKEN": "synthetic-healing-marker",
+        }
+        expected_env = {}
+        if with_path:
+            ambient["PATH"] = "/synthetic/bin"
+            expected_env["PATH"] = ambient["PATH"]
+        if trigger_source == "healing":
+            expected_env["GH_TOKEN"] = ambient["GH_TOKEN"]
+        captured = []
+        original_invoke = GeminiAdapter.invoke
+
+        async def recording_invoke(self, **kwargs):
+            captured.append(kwargs["env"])
+            return await original_invoke(self, **kwargs)
+
+        with (
+            patch.dict(os.environ, ambient, clear=True),
+            patch("butlers.core.spawner_env.get_traceparent_env", return_value={}),
+            patch("butlers.core.spawner.get_traceparent_env", return_value={}),
+        ):
+            spawner = Spawner(
+                config=ButlerConfig(name="synthetic-isolation", port=41990),
+                config_dir=tmp_path,
+                runtime=GeminiAdapter(gemini_binary="/synthetic/gemini"),
+            )
+            spawner._adapter_pool["gemini"] = spawner._runtime
+            spawner._adapter_pool_cfg["gemini"] = ""
+            with (
+                patch.object(GeminiAdapter, "invoke", recording_invoke),
+                patch(
+                    "butlers.core.spawner.resolve_model_with_effective_tier",
+                    new=AsyncMock(
+                        return_value=(
+                            "gemini",
+                            "synthetic-model",
+                            [],
+                            uuid.UUID(int=99),
+                            1800,
+                            "workhorse",
+                        )
+                    ),
+                ),
+                patch.object(spawner, "_ensure_mcp_endpoints_warmed", new=AsyncMock()),
+                patch(_EXEC, return_value=mock_proc) as child_launch,
+            ):
+                result = await spawner.trigger("synthetic session", trigger_source)
+            assert result.error is None
+            assert captured == [expected_env]
+            assert child_launch.call_count == 1
+            assert child_launch.call_args.kwargs["env"] == expected_env
 
 
 @pytest.mark.parametrize(

@@ -204,14 +204,6 @@ async def run_startup(daemon: Any) -> None:
         logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
     daemon._cascade_module_failures()
 
-    # Filter module_creds to exclude failed modules for spawner.
-    active_module_creds = {
-        k: v
-        for k, v in module_creds.items()
-        if k.split(".")[0] not in daemon._module_statuses
-        or daemon._module_statuses[k.split(".")[0]].status == "active"
-    }
-
     # 8c. Initialize S3-compatible blob storage.
     # All S3 parameters are resolved from CredentialStore (DB-only, no env
     # fallback) — managed via the dashboard secrets UI at /secrets.
@@ -449,7 +441,6 @@ async def run_startup(daemon: Any) -> None:
         config=daemon.config,
         config_dir=daemon.config_dir,
         pool=pool,
-        module_credentials_env=active_module_creds,
         runtime=runtime,
         audit_pool=audit_pool,
         credential_store=credential_store,

@@ -619,8 +619,6 @@ class Spawner:
         Path to the butler's config directory (containing CLAUDE.md, etc.).
     pool:
         asyncpg connection pool for session logging.
-    module_credentials_env:
-        Dict mapping module name to list of env var names needed by that module.
     runtime:
         A RuntimeAdapter instance to use for invocation. When not provided,
         a default ClaudeCodeAdapter is created.
@@ -640,7 +638,6 @@ class Spawner:
         config: ButlerConfig,
         config_dir: Path,
         pool: asyncpg.Pool | None = None,
-        module_credentials_env: dict[str, list[str]] | None = None,
         runtime: RuntimeAdapter | None = None,
         audit_pool: asyncpg.Pool | None = None,
         credential_store: CredentialStore | None = None,
@@ -649,7 +646,6 @@ class Spawner:
         self._config = config
         self._config_dir = config_dir
         self._pool = pool
-        self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
         self._credential_store = credential_store
         self._runtime_config_accessor = runtime_config_accessor
@@ -2525,9 +2521,7 @@ class Spawner:
                 # Include traceparent for distributed tracing continuity
                 env.update(get_traceparent_env())
             else:
-                env = await _build_env(
-                    self._config, self._module_credentials_env, self._credential_store
-                )
+                env = await _build_env(self._config, self._credential_store)
 
             # Owner authentication belongs to the dashboard, including when an
             # explicit caller override or a custom adapter is used.
