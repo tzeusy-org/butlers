@@ -198,7 +198,7 @@
   "generalist-lead-focused-delegation/connector-base-spec/ingest.v1 Envelope Contract": "e20b735a70b59b31c063b856cd33e9452214600b9fa422251a0aa100070c0584",
   "generalist-lead-focused-delegation/connector-gmail/Attachment Handling": "545745ac543bf756b99fa59ce7002a0905fec76f0f204686a9ac2338f6db67e7",
   "generalist-lead-focused-delegation/connector-gmail/Bearer material never persists": "0ed90d471373a7d540cf627c525740ff5009ff72abac0638ff547b47b3fd74e8",
-  "generalist-lead-focused-delegation/connector-gmail/Tiered Email Ingestion Policy": "18b1a267e40b225af7d15af76949286ba15248d8530b967052d54f224e3d8f22",
+  "generalist-lead-focused-delegation/connector-gmail/Tiered Email Ingestion Policy": "105f67a23dae9c006523315e314b7bc3a3af024968d9425dae4991456871374f",
   "generalist-lead-focused-delegation/connector-gmail/[TARGET-STATE] Selective Email Backfill Strategy": "2822646e538ec104bd4acd918c6026cf2b86908d0f27cbf0e7ba67a32b0f0b12",
   "generalist-lead-focused-delegation/connector-home-assistant/Connector Identity and Role": "e7c95279f510f14a45462c5a3193ff57f44f1ec44433cb889106c5d466f8594b",
   "generalist-lead-focused-delegation/connector-live-listener/Connector Identity and Role": "cae9980cf9991b0f2a7e80f1ada055dc26880a40d9dff86143984ea3e1a7b1b0",
