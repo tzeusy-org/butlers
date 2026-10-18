@@ -3512,10 +3512,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - the daybook
 - dead letter
 
+## `frontend/src/components/memory/FactVouchControl.tsx`
+
+- Vouch
+- Reported by someone else. Vouching says you stand behind it.
+- Could not vouch. Try again.
+
 ## `frontend/src/components/memory/FactsRegister.tsx`
 
 - , so it CANNOT be a real
 - Fact: {} {}
+- Reported by someone else; not vouched for
 - from episode {}
 - Source {}
 - the ledger
@@ -4894,4 +4901,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3899*
+*Total strings: 3903*

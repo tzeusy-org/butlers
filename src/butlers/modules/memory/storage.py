@@ -2914,6 +2914,7 @@ async def confirm_memory(
     *,
     memory_schema: str | None = None,
     allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
+    actor: str = "session",
 ) -> bool:
     """Confirm a fact or rule is still accurate, resetting confidence decay.
 
@@ -2931,6 +2932,8 @@ async def confirm_memory(
             daemon and MCP callers omit it and retain search-path behavior.
         allowed_sensitivities: Optional server-held sensitivity set. When
             supplied, the authorization predicate is part of the mutation.
+        actor: Who confirmed it, recorded in ``memory_events``: ``"owner"`` for the
+            dashboard, ``"session"`` (default) for MCP and internal callers.
 
     Returns:
         True if the memory was found and updated, False if not found.
@@ -2955,8 +2958,18 @@ async def confirm_memory(
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
         conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
+    # The audit row is written by the same statement as the update, so a confirmation is
+    # never recorded without happening (or the reverse).  ``actor`` separates an owner's
+    # dashboard Confirm from a session's memory_confirm call.
+    params.extend([actor, memory_type])
+    actor_ref, type_ref = f"${len(params) - 1}", f"${len(params)}"
     result = await pool.execute(
-        f"UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}",
+        f"WITH confirmed AS ("
+        f" UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}"
+        f" RETURNING id, tenant_id)"
+        f" INSERT INTO memory_events (event_type, actor, tenant_id, memory_type, memory_id)"
+        f" SELECT 'memory_confirmed', {actor_ref}::text, tenant_id, {type_ref}::text, id"
+        f" FROM confirmed",
         *params,
     )
     return result.endswith("1")
@@ -3192,6 +3205,121 @@ async def endorse_rule(
                     """,
                     source_schema,
                     rule_id,
+                )
+    return receipt
+
+
+class FactNotEndorsableError(ValueError):
+    """Raised when a retracted, superseded or expired fact is presented for a vouch."""
+
+
+async def endorse_fact(
+    pool: Pool,
+    fact_id: uuid.UUID,
+    *,
+    endorsed_by: uuid.UUID | None,
+    memory_schema: str | None = None,
+) -> dict[str, Any] | None:
+    """Owner-vouch a held fact (bu-jv1moa.14).
+
+    Mirrors :func:`endorse_rule`.  One transaction: lock the fact row, refuse a fact that
+    is no longer live (a later retraction or supersession wins), compare-and-swap
+    ``endorsed_at``/``endorsed_by`` into place, write the ``fact_vouched`` audit event, and
+    re-assert the fact's discovery-catalog entry.  Vouching is additive: the fact keeps its
+    original ``content_authority`` and ``authority_entity_id``, so clearing ``endorsed_at``
+    restores the prior state exactly.  Idempotent: an already-vouched fact returns its
+    original receipt with ``changed=False`` and writes nothing, as does a fact that already
+    carries owner-class authority.
+
+    Returns the receipt dict, or ``None`` when the fact does not exist.
+
+    Raises:
+        FactNotEndorsableError: the fact is retracted, superseded or expired.
+    """
+    table = _memory_relation("fact", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                f"SELECT id, content_authority, endorsed_at, endorsed_by, validity,"
+                f" tenant_id, sensitivity"
+                f" FROM {table} WHERE id = $1 FOR UPDATE",
+                fact_id,
+            )
+            if row is None:
+                return None
+            receipt: dict[str, Any] = {
+                "fact_id": fact_id,
+                "content_authority": row["content_authority"],
+                "endorsed_at": row["endorsed_at"],
+                "endorsed_by": row["endorsed_by"],
+                "changed": False,
+            }
+            if row["endorsed_at"] is not None:
+                return receipt
+            if row["validity"] not in ("active", "fading"):
+                raise FactNotEndorsableError(
+                    "retracted, superseded or expired facts cannot be vouched for"
+                )
+            if is_owner_class(row["content_authority"]):
+                return receipt
+
+            endorsed = await conn.fetchrow(
+                f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
+                f" WHERE id = $1 AND endorsed_at IS NULL AND validity IN ('active', 'fading')"
+                f" RETURNING endorsed_at",
+                fact_id,
+                endorsed_by,
+            )
+            if endorsed is None:
+                raise FactNotEndorsableError("the fact changed while it was being vouched for")
+            receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
+            receipt["changed"] = True
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, tenant_id, memory_type, memory_id, payload)
+                VALUES ('fact_vouched', 'owner', $1, 'fact', $2, $3)
+                """,
+                row["tenant_id"],
+                fact_id,
+                {
+                    "endorsed_by": str(endorsed_by) if endorsed_by else None,
+                    "content_authority": row["content_authority"],
+                },
+            )
+
+            if await conn.fetchval(
+                "SELECT to_regclass('public.memory_catalog')"
+            ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
+                source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
+                await conn.execute(
+                    f"""
+                    INSERT INTO public.memory_catalog (
+                        source_schema, source_table, source_id, source_butler, tenant_id,
+                        entity_id, summary, embedding, search_vector, memory_type,
+                        title, predicate, scope, valid_at, confidence, importance,
+                        retention_class, sensitivity, object_entity_id, updated_at
+                    )
+                    SELECT $1::text, 'facts', f.id, f.source_butler, f.tenant_id,
+                           f.entity_id,
+                           f.subject || ' ' || f.predicate || ': ' || f.content,
+                           f.embedding,
+                           {tsvector_sql("(f.subject || ' ' || f.predicate || ' ' || f.content)")},
+                           'fact', f.subject || ' ' || f.predicate,
+                           f.predicate, f.scope, f.valid_at, f.confidence, f.importance,
+                           f.retention_class, f.sensitivity, f.object_entity_id, now()
+                    FROM {table} f WHERE f.id = $2
+                    ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        embedding = EXCLUDED.embedding,
+                        search_vector = EXCLUDED.search_vector,
+                        confidence = EXCLUDED.confidence,
+                        invalid_at = NULL,
+                        updated_at = now()
+                    """,
+                    source_schema,
+                    fact_id,
                 )
     return receipt
 

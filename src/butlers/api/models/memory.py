@@ -109,6 +109,11 @@ class Fact(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    held: bool = False
 
 
 class Rule(BaseModel):
@@ -151,6 +156,16 @@ class RuleEndorsement(BaseModel):
     """Receipt for an owner endorsement of a held rule (idempotent)."""
 
     rule_id: str
+    content_authority: str | None = None
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    changed: bool = False
+
+
+class FactVouch(BaseModel):
+    """Receipt for an owner vouch of a held fact (idempotent)."""
+
+    fact_id: str
     content_authority: str | None = None
     endorsed_at: str | None = None
     endorsed_by: str | None = None

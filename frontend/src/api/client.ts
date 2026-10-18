@@ -176,6 +176,7 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  FactVouch,
   MemoryActivity,
   MemoryInspectParams,
   MemoryInspectResult,
@@ -2666,6 +2667,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
     sp.set("importance_min", String(params.importance_min));
   if (params?.source_episode_id)
     sp.set("source_episode_id", params.source_episode_id);
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
@@ -2752,6 +2754,18 @@ export function getFact(factId: string): Promise<ApiResponse<Fact>> {
 export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
   return apiFetch<ApiResponse<Fact>>(
     `/memory/facts/${encodeURIComponent(factId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Vouch for a held fact: the owner stands behind a claim a non-owner made.
+ * POST /api/memory/facts/{id}/vouch (bu-jv1moa.14). Owner only; additive, so the
+ * fact keeps its original authority. Idempotent.
+ */
+export function vouchFact(factId: string): Promise<ApiResponse<FactVouch>> {
+  return apiFetch<ApiResponse<FactVouch>>(
+    `/memory/facts/${encodeURIComponent(factId)}/vouch`,
     { method: "POST" },
   );
 }
