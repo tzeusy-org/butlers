@@ -20,9 +20,9 @@ ns="$1" tag="$2" release="$3"
 shift 3
 [ "${1:-}" = "--" ] && shift
 
-# The image's ENTRYPOINT wraps the CLI in `uv run`, which `kubectl exec` skips, and the venv is not
-# on PATH. Call the installed console script directly (no sync step); Dockerfile.base sets
-# WORKDIR /app and `uv sync` puts the project venv in /app/.venv.
+# `kubectl exec` skips the image's `uv run` ENTRYPOINT, and images built before bu-ejcixc lack
+# /app/.venv/bin on PATH. Call the installed console script by absolute path (no sync step);
+# Dockerfile.base sets WORKDIR /app and `uv sync` puts the project venv in /app/.venv.
 BUTLERS_BIN=/app/.venv/bin/butlers
 
 record() {
