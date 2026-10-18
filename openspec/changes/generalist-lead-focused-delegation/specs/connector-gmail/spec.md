@@ -8,7 +8,7 @@ Source: RFC 0038 D1, D5; RFC 0003 disposition
 Scope: v1-mandatory
 
 #### Scenario: Tier 1 — full pipeline
-- **WHEN** a message's triage action is `route_to`, `low_priority_queue`, `pass_through`, or unknown
+- **WHEN** a message's triage action is `route_to`, `low_priority_queue`, `pass_through`, or unknown, and it is not an automated reply or bounce (see "Automated replies and bounces are metadata-only")
 - **THEN** the full `ingest.v1` envelope with complete `payload.raw` is submitted to the Switchboard and handed to goal admission with no LLM classification or routing step
 - **AND** a `route_to` action selects no target butler
 - **AND** the admitted goal is never owner-origin by virtue of the email alone; origin follows owner-channel authorization of the channel and sender
@@ -19,13 +19,19 @@ Scope: v1-mandatory
 - **THEN** a slim envelope with `payload.raw=null`, `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"` is submitted
 - **AND** Switchboard bypasses LLM classification and persists a metadata reference only
 
+#### Scenario: Automated replies and bounces are metadata-only
+- **WHEN** a message's headers mark it as a bounce (`Content-Type: multipart/report` with `report-type=delivery-status`, or a `mailer-daemon`/`postmaster` sender with a `message/delivery-status` part) or as an automated reply (`Auto-Submitted: auto-replied`, `X-Autoreply`, `X-Autorespond`, or `Precedence: auto_reply`)
+- **THEN** the connector assigns Tier 2 with reason `bounce` or `auto_reply` on `butlers_connector_gmail_tier_assigned_total`, and the slim envelope carries `control.automated_kind` with the same value
+- **AND** a global rule resolving to `skip` still skips the message, while `route_to`, `low_priority_queue` and `pass_through` do not raise it to Tier 1
+- **AND** `Auto-Submitted: auto-generated` or `no`, `Precedence: bulk` or `list`, list mail, and missing or malformed headers are ordinary mail, so detection never drops a message
+
 #### Scenario: Tier 3 — skip
 - **WHEN** a message's triage action is `skip` or label exclusion matched
 - **THEN** the connector does not submit to Switchboard
 - **AND** skip counters are incremented for auditability — no silent drops
 
 #### Scenario: Default tier is always Tier 1
-- **WHEN** no triage rule matches a message
+- **WHEN** no triage rule matches a message that is not an automated reply or bounce
 - **THEN** the default action is `pass_through` which maps to Tier 1 (safety: never silently drop potentially important mail)
 
 #### Scenario: Policy pipeline order
