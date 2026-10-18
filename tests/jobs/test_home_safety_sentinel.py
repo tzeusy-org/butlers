@@ -538,7 +538,7 @@ async def test_edge_event_then_reconcile_yield_one_condition(
             pool,
             [_LEAK],
             {_LEAK.entity_id: SensorReading("on", _since(120))},
-            now=datetime.now(UTC),
+            now=_NOW,
             snapshot_complete=False,
             notify=notify,
         )
