@@ -1674,7 +1674,11 @@ class ContactsSyncRuntime:
             try:
                 await self._on_cycle_complete(result)
             except Exception as exc:
-                logger.warning("Post-sync callback failed: %s", exc, exc_info=True)
+                logger.warning(
+                    "Post-sync callback failed account_id=%s error_class=%s",
+                    self._account_id,
+                    type(exc).__name__,
+                )
         return result
 
     async def _run_loop(self) -> None:
@@ -1684,7 +1688,12 @@ class ContactsSyncRuntime:
             try:
                 await self.run_sync_cycle()
             except Exception as exc:  # pragma: no cover - caller observes via logs/state
-                logger.warning("Contacts sync poll cycle failed: %s", exc, exc_info=True)
+                # Content-free: an exception can carry a contact's name or address.
+                logger.warning(
+                    "Contacts sync poll cycle failed account_id=%s error_class=%s",
+                    self._account_id,
+                    type(exc).__name__,
+                )
 
             if self._stopping.is_set():
                 break

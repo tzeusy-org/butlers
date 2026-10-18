@@ -428,9 +428,10 @@ class ContactBackfillWriter:
                 entity_type,
             )
             return row["id"] if row else None
-        except asyncpg.PostgresError:
+        except asyncpg.PostgresError as exc:
+            # Content-free: neither the canonical name nor the database message is logged.
             logger.warning(
-                "ContactBackfill: entity creation failed for %r", canonical, exc_info=True
+                "ContactBackfill: entity creation failed error_class=%s", type(exc).__name__
             )
             return None
 

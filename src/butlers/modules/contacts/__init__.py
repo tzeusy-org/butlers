@@ -288,8 +288,16 @@ class ContactsModule(Module):
             except ContactsSyncError as exc:
                 return {"error": str(exc), "provider": prov_name, "mode": mode}
             except Exception as exc:
-                logger.exception("contacts_sync_now failed for %s", prov_name)
-                return {"error": f"Sync failed: {exc}", "provider": prov_name, "mode": mode}
+                # Content-free: this result and log reach session logs, and an exception can
+                # carry a contact's name or address.
+                logger.warning(
+                    "contacts_sync_now failed for %s error_class=%s", prov_name, type(exc).__name__
+                )
+                return {
+                    "error": f"Sync failed: {type(exc).__name__}",
+                    "provider": prov_name,
+                    "mode": mode,
+                }
 
             summary: dict[str, Any] = {
                 "fetched": result.fetched_contacts,
@@ -321,12 +329,14 @@ class ContactsModule(Module):
                 )
             except Exception as exc:
                 logger.warning(
-                    "contacts_sync_status: state load failed for %s: %s",
+                    "contacts_sync_status: state load failed for %s error_class=%s",
                     prov_name,
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
-                return {"error": f"Failed to load sync state: {exc}", "provider": prov_name}
+                return {
+                    "error": f"Failed to load sync state: {type(exc).__name__}",
+                    "provider": prov_name,
+                }
 
             return {
                 "provider": prov_name,
