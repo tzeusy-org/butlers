@@ -9,9 +9,14 @@ window-scoped aggregate envelope instead.
 ## What Changes
 
 - `core-credentials` requirement `Lifecycle Notification Remediation and Delivery Honesty`: owner
-  quiet-hours policy holds park one aggregate envelope per window (atomic supersede), record
-  `deferred`, and a parked state is not re-alerted once pending or delivered. Context-bus
-  suppression and an unresolvable policy window keep the record-and-drop behaviour.
+  quiet-hours policy holds park one aggregate envelope per window (atomic supersede) and record
+  `deferred`. Context-bus suppression and an unresolvable policy window keep the record-and-drop
+  behaviour.
+- `core-credentials` requirement `Transition-Debounced Lifecycle Delivery`: a parked state is
+  skipped only while its parked row is the newest lifecycle marker and the envelope that carried
+  that credential is pending or delivered.
+- `core-credentials` requirement `Audit Action Vocabulary for Credential Lifecycle`: adds
+  `lifecycle_state_parked`.
 
 ## Impact
 
