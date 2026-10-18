@@ -9,7 +9,8 @@ fire inside the owner quiet window, so its notifications would always be held or
 
 ## What Changes
 
-- Owner-facing schedules that name an owner-local time carry that hour in their cron.
+- Owner-facing schedules that name an owner-local time fire at that hour: an owner-local cron
+  with that hour, or a cron pinned to a zone in which it reaches the same instant.
 - A `[[butler.schedule]]` entry may set `timezone`; sync honours it. Infrastructure
   schedules commented in UTC pin `Etc/UTC` (the literal `UTC` is the owner-zone sentinel).
 - Sync logs one warning per prompt-mode notifying schedule whose every firing in a week
