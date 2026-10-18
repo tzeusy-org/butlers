@@ -87,7 +87,7 @@ from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
 from butlers.modules.approvals.redaction import redact_execution_result
-from butlers.modules.approvals.rules import is_rule_effective
+from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
 from butlers.modules.base import ToolMeta
 
@@ -803,6 +803,22 @@ def _approval_rule_to_api(rule: ApprovalRuleModel) -> ApprovalRule:
         use_count=rule.use_count,
         active=rule.active,
     )
+
+
+def _risk_tier_for_butler_tool(butler_name: str, tool_name: str) -> Any:
+    """Effective risk tier of *tool_name* under *butler_name*'s approvals config.
+
+    A butler without an enabled approvals config resolves to ``medium``, matching the
+    MCP module's behaviour when no policy is bound.
+    """
+    from butlers.api.deps import _DEFAULT_ROSTER_DIR
+    from butlers.config import ApprovalRiskTier, load_config, parse_approval_config
+
+    config = load_config(_DEFAULT_ROSTER_DIR / butler_name)
+    approval_config = parse_approval_config(config.modules.get("approvals"))
+    if approval_config is None or not approval_config.enabled:
+        return ApprovalRiskTier.MEDIUM
+    return approval_config.get_effective_risk_tier(tool_name)
 
 
 def _configured_gated_tools_for(butler_name: str) -> list[tuple[str, str, int]]:
@@ -1620,11 +1636,35 @@ async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalRule]:
-    """Create a new standing approval rule."""
+    """Create a new standing approval rule in the named butler's schema.
+
+    The rule is validated like the MCP tool (risk-tier bounds) before it is written.
+    """
+    if request.butler not in db_mgr.butler_names:
+        raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
     named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
-    if not named_pools:
-        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
-    action_butler, target_pool = named_pools[0]
+    target = next(((n, p) for n, p in named_pools if n == request.butler), None)
+    if target is None:
+        raise HTTPException(
+            status_code=503, detail=f"Approvals unavailable for butler: {request.butler}"
+        )
+    action_butler, target_pool = target
+
+    try:
+        risk_tier = _risk_tier_for_butler_tool(request.butler, request.tool_name)
+    except Exception:
+        logger.warning("Could not resolve approval policy for %s", request.butler, exc_info=True)
+        raise HTTPException(status_code=503, detail="Approval policy unavailable")
+    constraint_error = validate_rule_constraints(
+        tool_name=request.tool_name,
+        risk_tier=risk_tier,
+        arg_constraints=request.arg_constraints,
+        expires_at=request.expires_at,
+        max_uses=request.max_uses,
+    )
+    if constraint_error is not None:
+        raise HTTPException(status_code=400, detail=constraint_error)
+
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:

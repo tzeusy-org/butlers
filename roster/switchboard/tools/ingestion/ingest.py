@@ -888,6 +888,11 @@ async def ingest_v1(
             "ingestion_tier": ingestion_tier,
             **({"pinned_target": pinned_target} if pinned_target is not None else {}),
             **(
+                {"automated_kind": envelope.control.automated_kind}
+                if envelope.control.automated_kind
+                else {}
+            ),
+            **(
                 {"payload_type": envelope.control.payload_type}
                 if envelope.control.payload_type
                 else {}
