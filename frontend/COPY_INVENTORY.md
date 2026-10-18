@@ -2361,6 +2361,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Nothing scheduled across your domains. Tomorrow is clear.
 - Day briefing
 
+## `frontend/src/components/calendar/DebriefCard.tsx`
+
+- Sent. View conversation
+- e.g. "send Sam the deck by Friday", or "nothing agreed"
+- Meeting debriefs
+
 ## `frontend/src/components/calendar/LinkedPeopleAvatars.tsx`
 
 - Linked people: {}
