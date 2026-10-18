@@ -272,9 +272,9 @@ async def run_health_briefing_contribution(
 
     Queries:
     - Medication adherence today (overdue doses as missed, later doses as "due later";
-      as-needed medications never; see ``dose_status_today``)
+      as-needed medications never; see ``dose_status_today``), plus the adherence
+      percentage of doses already due that were taken
     - Latest weight measurement
-    - Medication adherence percentage (doses already due that were taken)
     - Next upcoming appointment (``predicate='appointment'`` temporal facts, scope ``health``)
 
     State key: ``briefing/daily/<YYYY-MM-DD>``

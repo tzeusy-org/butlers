@@ -77,8 +77,8 @@ The contribution SHALL carry these highlights, each only when it applies: missed
 - **THEN** the contribution has no adherence highlight and the summary has no `Adherence` part
 
 #### Scenario: Next appointment is highlighted
-- **WHEN** an active Health appointment fact starts tomorrow at 14:30 owner-local time and no earlier one is still ahead
-- **THEN** the contribution includes an `appointment` highlight with priority "high" and text `Next appointment: <title> on Thu 26 Mar 14:30`
+- **WHEN** an active Health appointment fact starts tomorrow (owner-local date) at 14:30 owner-local time and no earlier one is still ahead
+- **THEN** the contribution includes an `appointment` highlight with priority "high" and text `Next appointment: <title> on <Day DD Mon HH:MM>` in owner-local time (for example `Thu 26 Mar 14:30`)
 
 #### Scenario: No upcoming appointment
 - **WHEN** the Health butler has no active appointment fact at or after the current time

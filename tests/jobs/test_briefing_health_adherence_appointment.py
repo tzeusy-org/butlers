@@ -24,8 +24,8 @@ def _med(name, frequency, schedule, taken=0):
     return {"name": name, "frequency": frequency, "schedule": schedule, "doses_taken": taken}
 
 
-def _appointment(starts_at, title="Dentist"):
-    return {"content": title, "valid_at": starts_at, "metadata": {}}
+def _appointment(starts_at, title="Dentist", metadata=None):
+    return {"content": title, "valid_at": starts_at, "metadata": metadata or {}}
 
 
 async def _run(meds=(), appointment=None, timezone_setting=None):
@@ -129,7 +129,6 @@ async def test_next_appointment_text_names_the_title_and_owner_local_time():
 async def test_no_upcoming_appointment_emits_no_appointment_highlight():
     pool, result, envelope = await _run(appointment=None)
 
-    # Owner-local "now" is Tue 24 Mar 15:55 PDT, so the appointment is two days out.
     assert _texts(envelope, "appointment") == {}
     assert result["has_updates"] is False
     assert envelope["summary"] == "No health updates today."
@@ -141,4 +140,26 @@ async def test_appointment_query_reads_active_health_facts_from_now_onwards():
     (sql, *args) = next(c[0] for c in pool.fetchrow.call_args_list if "'appointment'" in c[0][0])
     assert "FROM facts" in sql and "scope = 'health'" in sql and "validity = 'active'" in sql
     assert "ORDER BY valid_at ASC" in sql and "LIMIT 1" in sql
+    assert "valid_at >= $1" in sql
     assert args == [_NOW.astimezone(UTC)]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ({"title": "Annual check-up"}, "Annual check-up"),
+        ({"name": "Eye exam"}, "Eye exam"),
+        ({"title": "Annual check-up", "name": "Eye exam"}, "Annual check-up"),
+        ({}, "Dentist"),
+    ],
+    ids=["title", "name", "title-wins", "content-fallback"],
+)
+async def test_next_appointment_title_prefers_metadata_title_then_name_then_content(
+    metadata, expected
+):
+    starts_at = datetime(2026, 3, 26, 14, 30, tzinfo=SGT).astimezone(UTC)
+    _, _, envelope = await _run(appointment=_appointment(starts_at, metadata=metadata))
+
+    assert list(_texts(envelope, "appointment")) == [
+        f"Next appointment: {expected} on Thu 26 Mar 14:30"
+    ]
