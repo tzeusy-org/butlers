@@ -67,7 +67,10 @@ The migration does not backfill any of this. Right after upgrading, the
 ## Fleet-condition handoff
 
 `BUTLERS_FLEET_CONDITION_HANDOFF` defaults to `0` in every Compose service.
-Set it to `1` in both the Dashboard API and the daemon process to switch on
+In the Helm chart, `values.yaml` keeps `"0"` and `values.dev.yaml` sets `"1"`
+in `commonEnv`, which reaches the Dashboard API and the daemon workloads. Per
+environment: dev on (once the chart is rolled out, an owner/ops step), prod off
+until owner decision bu-s6tb7h. Set it to `1` in both the Dashboard API and the daemon process to switch on
 the handoff:
 
 - QA's `infra_state` source stops emitting per-butler `ButlerHeartbeatStale`
