@@ -90,13 +90,15 @@ export function Pill({ selected = false, count, children, className, ...props }:
           // Hidden from AT only when the count is already folded into the
           // button's own aria-label above (plain-text children). For a
           // non-text label there's no button-level aria-label to fold into,
-          // so this span keeps its own aria-label as a fallback — better an
-          // "unlabelled span" pattern than a count no AT ever announces.
+          // so the count stays visible text and gains a screen-reader-only
+          // unit (an aria-label on a plain span would be ignored).
           aria-hidden={computedAriaLabel ? "true" : undefined}
-          aria-label={computedAriaLabel ? undefined : `${count} ${count === 1 ? "item" : "items"}`}
           className="tabular-nums"
         >
           {count}
+          {!computedAriaLabel && (
+            <span className="sr-only">{count === 1 ? " item" : " items"}</span>
+          )}
         </span>
       )}
     </button>

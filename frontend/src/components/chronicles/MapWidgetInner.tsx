@@ -359,7 +359,7 @@ export function MapWidgetInner({
     <div
       ref={containerRef}
       className={`w-full ${height} rounded-md overflow-hidden`}
-      aria-label="Location map"
+      role="region" aria-label="Location map"
       data-testid="map-container"
     />
   )

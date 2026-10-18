@@ -1289,7 +1289,7 @@ function AttentionRail({
       <div
         data-plex-overlay
         className="pointer-events-auto absolute left-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
-        aria-label="Worth attention"
+        role="region" aria-label="Worth attention"
         data-testid="plex-rail"
       >
         <section>
@@ -1349,7 +1349,7 @@ function AttentionRail({
       <div
         data-plex-overlay
         className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
-        aria-label="Capacity"
+        role="region" aria-label="Capacity"
       >
         {!attentionLoading && attentionError && (
           <SourceDegradedNote label="Capacity" detail="ranking source unavailable" />

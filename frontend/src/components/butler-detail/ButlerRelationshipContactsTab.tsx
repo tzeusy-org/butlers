@@ -268,7 +268,7 @@ function TierDistributionPanel({ ranking, isLoading, isError }: TierDistribution
               <div
                 className="h-full rounded-full bg-primary"
                 style={{ width: warmthBarWidth(avgWarmth) }}
-                aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
+                role="img" aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
               />
             </div>
           </li>

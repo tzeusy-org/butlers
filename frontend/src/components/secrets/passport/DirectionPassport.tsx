@@ -531,7 +531,7 @@ export function DirectionPassport({
           <div
             ref={pageRef}
             tabIndex={-1}
-            aria-label="Credential page"
+            role="region" aria-label="Credential page"
             data-testid="passport-page"
             className={`overflow-y-auto min-w-0 outline-none focus-visible:ring-[3px] focus-visible:ring-focus${
               enteredWithFocus ? " max-md:order-first" : ""

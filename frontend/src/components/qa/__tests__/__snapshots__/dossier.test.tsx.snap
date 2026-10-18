@@ -30,6 +30,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
         <div
           aria-label="QA state: pr"
           class="flex flex-wrap items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] tnum"
+          role="group"
         >
           <span
             class="inline-flex items-center gap-1"
@@ -275,6 +276,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
         <div
           aria-label="Counter evidence"
           class="divide-y divide-border/60 border-y border-border/60"
+          role="group"
         >
           <div
             class="grid grid-cols-[1fr_auto] gap-3 py-2 font-mono text-[10px] leading-snug tnum"
@@ -380,6 +382,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
           <div
             aria-label="Diff preview"
             class="overflow-x-auto border border-border/60 font-mono text-[11px] leading-relaxed tnum"
+            role="group"
           >
             <div
               class="grid grid-cols-[24px_minmax(0,1fr)] bg-muted text-muted-foreground"

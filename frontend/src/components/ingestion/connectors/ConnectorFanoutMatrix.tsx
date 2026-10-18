@@ -164,8 +164,9 @@ export function ConnectorFanoutMatrix() {
                     {row.target_butler}
                   </td>
                   <td className="py-3 text-right align-top font-mono text-[13px] tabular-nums">
-                    <span aria-label={`${formatCount(row.message_count)} messages from ${sourceLabel(row)} to ${row.target_butler}`}>
-                      {formatCount(row.message_count)}
+                    {formatCount(row.message_count)}
+                    <span className="sr-only">
+                      {` messages from ${sourceLabel(row)} to ${row.target_butler}`}
                     </span>
                   </td>
                 </tr>

@@ -113,7 +113,7 @@ export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps)
         {/* Healthy/total pill */}
         <div
           className="flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1"
-          aria-label={`${healthy} of ${total} reporting healthy`}
+          role="img" aria-label={`${healthy} of ${total} reporting healthy`}
         >
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} aria-hidden="true" />
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">

@@ -225,7 +225,7 @@ export function SourceStateBadgeStrip() {
     <TooltipProvider>
       <div
         className="flex flex-wrap items-center gap-2"
-        aria-label="Source adapter state"
+        role="group" aria-label="Source adapter state"
         data-testid="source-state-badge-strip"
       >
         {isError ? (

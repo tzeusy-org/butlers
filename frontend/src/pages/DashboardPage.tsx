@@ -481,7 +481,7 @@ export default function DashboardPage() {
         {/* Left column: narrative */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "28px" }}
-          aria-label="Briefing"
+          role="region" aria-label="Briefing"
         >
           {/* Date eyebrow with briefing status pill */}
           <DateEyebrow
@@ -548,7 +548,7 @@ export default function DashboardPage() {
         {/* Right column: index */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-          aria-label="Operations and now"
+          role="region" aria-label="Operations and now"
         >
           <ButlerIndex
             butlers={model.operationsRows}
@@ -575,7 +575,7 @@ export default function DashboardPage() {
           flexDirection: "column",
           gap: "24px",
         }}
-        aria-label="Cost"
+        role="region" aria-label="Cost"
       >
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <CostWidget

@@ -331,7 +331,7 @@ export function ProviderMark({
 }) {
   return (
     <span
-      aria-label={label}
+      role="img" aria-label={label}
       data-provider-mark="true"
       className={cn(
         "inline-flex items-center justify-center shrink-0 font-mono font-medium",

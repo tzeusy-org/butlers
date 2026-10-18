@@ -39,6 +39,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next eligible
 - Reason
 - Shared digest
+- Approval origin:
 - Legacy push failed
 - Undo
 - loading…
@@ -81,7 +82,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Approvals
 - Waiting
 - Stalled
-- Approval origin: {}
 - {} Undo
 - Deny reason (optional)
 - None
@@ -3224,7 +3224,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - No routed messages recorded in the last 7 days.
 - Connector-to-butler routing distribution for the last 7 days
 - routing metrics
-- {} messages from {} to {}
 
 ## `frontend/src/components/ingestion/connectors/ConnectorHistogram.tsx`
 
@@ -3655,11 +3654,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/overview/ButlerIndex.tsx`
 
+- sessions in the last 24 hours
 - Butler health source unavailable.
 - No butlers active.
 - Operations
 - View {}
-- {} sessions in the last 24 hours
 
 ## `frontend/src/components/overview/KpiStrip.tsx`
 
@@ -3812,12 +3811,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - empty hidden
 - top-3 share
+- Rank
 - (e.share != null && e.share
 - Retry
 - Predicate filter
-- {} entities
 - Open {}
-- Rank {}
 - Weight {} of {}
 - Weight sum: {}
 - Fact count: {}
@@ -4916,4 +4914,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3916*

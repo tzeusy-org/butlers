@@ -27,7 +27,7 @@ export function TimelineDensity({
   const buttonsRef = useRef<Array<HTMLButtonElement | null>>([]);
 
   if (isLoading && !histogram) {
-    return <div className="h-24 rounded border border-border bg-muted/20" aria-label="Loading timeline density" />;
+    return <div className="h-24 rounded border border-border bg-muted/20" role="status" aria-label="Loading timeline density" />;
   }
 
   if (isError && !histogram) {

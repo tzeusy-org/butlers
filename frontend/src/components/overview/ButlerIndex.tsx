@@ -81,9 +81,9 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
                   color: "var(--muted-foreground)",
                   lineHeight: 1.4,
                 }}
-                aria-label={`${butler.sessions24h} sessions in the last 24 hours`}
               >
                 {butler.sessions24h}
+                <span className="sr-only"> sessions in the last 24 hours</span>
               </span>
 
               <span

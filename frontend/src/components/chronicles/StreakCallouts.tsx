@@ -69,7 +69,7 @@ export function StreakCallouts({ episodeParams, refetchInterval }: StreakCallout
   return (
     <div
       className="flex flex-wrap gap-2"
-      aria-label="Longest activity streaks"
+      role="group" aria-label="Longest activity streaks"
       data-testid="streak-callouts"
     >
       {streaks.map((streak) => {

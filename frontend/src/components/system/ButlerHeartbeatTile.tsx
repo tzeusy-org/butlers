@@ -107,7 +107,7 @@ function ButlerRow({ row, onTriggerTick, isTicking }: ButlerRowProps) {
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block size-2 shrink-0 rounded-full ${dotClassFor(row.activity)}`}
-              aria-label={`Liveness: ${row.activity}`}
+              role="img" aria-label={`Liveness: ${row.activity}`}
               title={row.activity}
             />
             <span className="truncate text-sm font-medium">{row.name}</span>

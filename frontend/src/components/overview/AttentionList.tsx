@@ -167,7 +167,7 @@ export function AttentionList({ items, selectedId = null }: AttentionListProps) 
           <>
             {/* Mark column: severity glyph */}
             <span
-              aria-label={`Severity: ${item.severity}`}
+              role="img" aria-label={`Severity: ${item.severity}`}
               style={{
                 fontFamily: "var(--font-mono)",
                 fontSize: "14px",

@@ -88,7 +88,7 @@ function ApprovalRow({ action }: ApprovalRowProps) {
       <span
         className={`shrink-0 h-2 w-2 rounded-full ${dotClass}`}
         data-severity={severity}
-        aria-label={`${severity} severity`}
+        role="img" aria-label={`${severity} severity`}
         data-testid="severity-dot"
       />
 

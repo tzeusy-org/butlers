@@ -68,7 +68,11 @@ function StatusLine({
         : "var(--muted-foreground)";
   const word = state === "present" ? "present" : state === "missing" ? "missing" : "unknown";
   return (
-    <div className="flex items-center justify-between gap-3 py-1.5">
+    <div
+      role="group"
+      aria-label={`${label}: ${word}`}
+      className="flex items-center justify-between gap-3 py-1.5"
+    >
       <div className="flex items-center gap-2 min-w-0">
         <span
           className="h-1.5 w-1.5 rounded-full shrink-0"
@@ -80,7 +84,6 @@ function StatusLine({
       <span
         className="font-mono text-[11px] uppercase tracking-wider tabular-nums shrink-0"
         style={{ color: tone }}
-        aria-label={`${label}: ${word}`}
       >
         {detail ?? word}
       </span>

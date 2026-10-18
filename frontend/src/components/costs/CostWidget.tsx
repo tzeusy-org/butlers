@@ -87,7 +87,7 @@ export default function CostWidget({
             testId="cost-widget-source-unavailable"
           />
         ) : hasUnpricedModels ? (
-          <p className="text-2xl font-bold" data-testid="cost-widget-unpriced" aria-label="unpriced">
+          <p className="text-2xl font-bold" data-testid="cost-widget-unpriced">
             {"—"}/unpriced
           </p>
         ) : (

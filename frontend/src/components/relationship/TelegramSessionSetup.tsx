@@ -286,7 +286,7 @@ export function TelegramSessionSetup({
       </div>
 
       {status && step === "idle" && (
-        <div className="flex flex-col gap-1.5 text-sm" aria-label="Telegram credential status">
+        <div className="flex flex-col gap-1.5 text-sm" role="group" aria-label="Telegram credential status">
           <span>{status.has_api_id ? "+" : "−"} API ID</span>
           <span>{status.has_api_hash ? "+" : "−"} API hash</span>
           <span>{status.has_session ? "+" : "−"} session</span>

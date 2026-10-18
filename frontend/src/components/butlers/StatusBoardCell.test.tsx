@@ -634,7 +634,7 @@ describe("StatusBoardCell: ActivityStripe embedded", () => {
   it("renders 24 ActivityStripe cells (role=img wrapper)", () => {
     const html = renderToStaticMarkup(<StatusBoardCell row={makeRow()} />)
     // The ActivityStripe is wrapped in role="img". Extract that section and count flex-1 cells.
-    const stripeStart = html.indexOf('role="img"')
+    const stripeStart = html.lastIndexOf('role="img"')
     expect(stripeStart).toBeGreaterThan(-1)
     const stripeSection = html.slice(stripeStart)
     const matches = stripeSection.match(/flex-1/g) ?? []

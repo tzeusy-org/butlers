@@ -266,7 +266,7 @@ export function HomeAssistantDrawerContent() {
                 ? "var(--amber)"
                 : "var(--dim)",
           }}
-          aria-label={isConnected ? "connected" : isConfigured ? "configured" : "not configured"}
+          role="img" aria-label={isConnected ? "connected" : isConfigured ? "configured" : "not configured"}
           data-ha-status-dot="true"
         />
         {status?.masked_url && (
@@ -804,7 +804,7 @@ export function SteamDrawerContent() {
                           ? "var(--amber)"
                           : "var(--red)",
                   }}
-                  aria-label={account.status}
+                  role="img" aria-label={account.status}
                   data-steam-account-dot={account.status}
                 />
                 <Mono size={12} className="flex-1 min-w-0 truncate">

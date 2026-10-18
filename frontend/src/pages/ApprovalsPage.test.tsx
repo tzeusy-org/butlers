@@ -680,7 +680,7 @@ describe("ApprovalsPage — load-more", () => {
     // Both the note and the surviving row render.
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).not.toBeNull();
     expect(container.textContent).toContain("send email");
-    expect(container.querySelector('[data-testid="rail-item"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="rail-item"] [data-approval-origin="Prepared"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')?.getAttribute("role")).toBe("alert");
   });
 
@@ -872,7 +872,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
         await flush();
       });
       const label = origin === "prepared" ? "Prepared" : "Origin unknown";
-      expect(container.querySelectorAll(`[aria-label="Approval origin: ${label}"]`)).toHaveLength(2);
+      expect(container.querySelectorAll(`[data-approval-origin="${label}"]`)).toHaveLength(2);
       expect(container.querySelector('[data-testid="rail-item"]')?.textContent).toContain("pending");
       expect(container.querySelector('[data-testid="dossier-push-failed"]')).toBeNull();
       expect(container.querySelector('[data-testid="rail-item-push-failed"]')).toBeNull();
@@ -924,7 +924,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
       await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
       await flush();
     });
-    expect(container.querySelectorAll('[aria-label="Approval origin: Prepared"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-approval-origin="Prepared"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="rail-item-push-failed"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="dossier-push-failed"]')?.getAttribute("role")).toBe("alert");
   });
@@ -2189,9 +2189,9 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
     expect(getApprovalDetail).toHaveBeenCalledWith("a2");
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
-    await flushUntil(() => container.querySelectorAll('[aria-label="Approval origin: Prepared"]').length === 2);
-    expect(container.querySelector('[data-approval-id="a1"] [aria-label="Approval origin: Origin unknown"]')).not.toBeNull();
-    expect(container.querySelector('[data-approval-id="a2"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
+    await flushUntil(() => container.querySelectorAll('[data-approval-origin="Prepared"]').length === 2);
+    expect(container.querySelector('[data-approval-id="a1"] [data-approval-origin="Origin unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-approval-id="a2"] [data-approval-origin="Prepared"]')).not.toBeNull();
 
     vi.mocked(getApprovalDetail).mockClear();
     act(() => root.unmount());

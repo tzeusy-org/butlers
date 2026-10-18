@@ -466,7 +466,7 @@ function Toolbar({
                   <span
                     className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-[var(--amber)]"
                     data-testid={`view-modified-dot-${view.id}`}
-                    aria-label="Filters differ from this saved view"
+                    role="img" aria-label="Filters differ from this saved view"
                   />
                 )}
               </button>
@@ -507,7 +507,7 @@ function Toolbar({
                       <span
                         className="absolute top-1 right-2 size-1.5 rounded-full bg-[var(--amber)]"
                         data-testid={`view-modified-dot-${view.id}`}
-                        aria-label="Filters differ from this saved view"
+                        role="img" aria-label="Filters differ from this saved view"
                       />
                     )}
                   </button>
@@ -1453,7 +1453,7 @@ function FooterRollupBand({
       <div
         className="border-t border-border py-2 bg-muted/5"
         data-testid="footer-rollup-band"
-        aria-label="Filter window aggregate counts"
+        role="group" aria-label="Filter window aggregate counts"
       >
         <SourceDegradedNote
           label="window rollup"
@@ -1480,7 +1480,7 @@ function FooterRollupBand({
     <div
       className="flex items-center justify-center gap-8 border-t border-border py-2 bg-muted/5"
       data-testid="footer-rollup-band"
-      aria-label="Filter window aggregate counts"
+      role="group" aria-label="Filter window aggregate counts"
     >
       {cell("events", events !== undefined ? events.toLocaleString() : "—")}
       <div className="w-px h-4 bg-border/60" aria-hidden />

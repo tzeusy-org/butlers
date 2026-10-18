@@ -44,7 +44,7 @@ export function DiffPreview({ lines, className }: DiffPreviewProps) {
         "overflow-x-auto border border-border/60 font-mono text-[11px] leading-relaxed tnum",
         className,
       )}
-      aria-label="Diff preview"
+      role="group" aria-label="Diff preview"
     >
       {lines.map((line, index) => {
         const meta = diffKindMeta[line.kind];

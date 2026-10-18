@@ -91,10 +91,10 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
             <span
               className="inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-muted-foreground leading-none"
               data-testid="predicate-tab-count"
-              aria-label={`${entity_count} entities`}
             >
               {entity_count}
             </span>
+            <span className="sr-only"> entities</span>
           </button>
         );
       })}
@@ -198,8 +198,8 @@ function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowPr
         {/* Rank badge */}
         <span
           className="inline-flex items-center justify-center h-5 w-6 shrink-0 rounded text-xs font-mono tabular-nums bg-muted text-muted-foreground"
-          aria-label={`Rank ${rank}`}
         >
+          <span className="sr-only">Rank </span>
           {rank}
         </span>
 

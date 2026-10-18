@@ -24,7 +24,7 @@ export function CounterEvidence({ items, className }: CounterEvidenceProps) {
   return (
     <div
       className={cn("divide-y divide-border/60 border-y border-border/60", className)}
-      aria-label="Counter evidence"
+      role="group" aria-label="Counter evidence"
     >
       {items.map((item, index) => (
         <div

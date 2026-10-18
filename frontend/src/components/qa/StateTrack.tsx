@@ -39,7 +39,7 @@ export function StateTrack({ stage, className }: StateTrackProps) {
         "flex flex-wrap items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] tnum",
         className,
       )}
-      aria-label={`QA state: ${stage}`}
+      role="group" aria-label={`QA state: ${stage}`}
     >
       {TRACK_STAGES.map((trackStage, index) => (
         <span key={trackStage} className="inline-flex items-center gap-1">

@@ -54,7 +54,7 @@ function SeverityGlyph({ severity }: { severity: number }) {
   return (
     <span
       className={`mt-0.5 h-2 w-2 shrink-0 ${cls}`}
-      aria-label={labels[severity] ?? "unknown"}
+      role="img" aria-label={labels[severity] ?? "unknown"}
     />
   );
 }

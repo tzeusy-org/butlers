@@ -231,7 +231,7 @@ function FreshnessChips({ sources }: FreshnessChipsProps) {
   return (
     <div
       style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}
-      aria-label="Data freshness"
+      role="group" aria-label="Data freshness"
       data-testid="freshness-chips"
     >
       {chips.map((c) => (
@@ -433,7 +433,7 @@ export default function HealthOverviewPage() {
         {/* ===================== LEFT COLUMN — narrative ===================== */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "28px" }}
-          aria-label="Health briefing"
+          role="region" aria-label="Health briefing"
         >
           {/* Butler identity mark + date eyebrow + briefing status pill */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -519,7 +519,7 @@ export default function HealthOverviewPage() {
         {/* ===================== RIGHT COLUMN — indexes ===================== */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-          aria-label="Health indexes"
+          role="region" aria-label="Health indexes"
           data-testid="health-attention-index"
         >
           <HealthLedgerIndex />

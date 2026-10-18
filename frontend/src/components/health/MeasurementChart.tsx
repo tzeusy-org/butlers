@@ -343,7 +343,7 @@ export default function MeasurementChart() {
                   </span>
                   <span
                     className="text-right font-mono text-[12px] text-muted-foreground"
-                    aria-label={
+                    role="img" aria-label={
                       delta == null || delta === 0
                         ? "no change"
                         : delta > 0

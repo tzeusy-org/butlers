@@ -165,7 +165,7 @@ export function DayRibbon({
         <div
           className="relative h-4 w-full rounded-sm bg-[var(--muted)]/30"
           data-testid="day-ribbon-intent-track"
-          aria-label="Planned calendar blocks (intent)"
+          role="group" aria-label="Planned calendar blocks (intent)"
         >
           {intentBlocks.map((b) => (
             <div
@@ -198,7 +198,7 @@ export function DayRibbon({
         <div
           className="relative h-7 w-full rounded-sm bg-[var(--muted)]/20"
           data-testid="day-ribbon-activity-track"
-          aria-label="Lived activity blocks"
+          role="group" aria-label="Lived activity blocks"
         >
           {activityBlocks.map((b) => {
             const lane = laneFor(b.episode);

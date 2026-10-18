@@ -90,7 +90,7 @@ export function CaseList({
               >
                 <span
                   className={cn("mt-1 h-2.5 w-2.5 shrink-0", qaSeverityClassName[qaCase.sev])}
-                  aria-label={`${qaCase.sev} severity`}
+                  role="img" aria-label={`${qaCase.sev} severity`}
                 />
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
@@ -122,7 +122,7 @@ export function CaseList({
                     "mt-1.5 h-2 w-2 justify-self-end rounded-full",
                     qaCase.pr_state ? prStateClass[qaCase.pr_state] : "bg-border",
                   )}
-                  aria-label={qaCase.pr_state ? `PR ${qaCase.pr_state}` : "No PR"}
+                  role="img" aria-label={qaCase.pr_state ? `PR ${qaCase.pr_state}` : "No PR"}
                 />
               </button>
               {sessionTraceDoor ? (

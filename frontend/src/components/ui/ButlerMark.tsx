@@ -177,7 +177,7 @@ export function ButlerMark({
       style={{ ...baseStyle, ...toneStyle }}
       className={className}
       title={showNameOnHover ? fullName : undefined}
-      aria-label={fullName}
+      role="img" aria-label={fullName}
     >
       {initial}
     </span>
