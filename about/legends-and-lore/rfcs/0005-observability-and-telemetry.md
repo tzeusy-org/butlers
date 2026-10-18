@@ -177,6 +177,26 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 
 The domain-event counter MUST be recorded only after `mark_delivery_failed()` has successfully returned `failed_permanent`. It is deliberately best-effort after the durable ledger write: exporter failure MUST NOT roll back, replace, or otherwise alter the delivery outcome. Event IDs, types, payloads, exception text, and timestamps are forbidden attributes.
 
+#### Chronicler Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.chronicler.episode_participants_resolved` | Counter | `source_butler` (the butler schema whose calendar instance was projected) | Participant `episode_entities` rows written by the calendar adapter (owner row excluded) |
+
+Exported to Prometheus as `butlers_chronicler_episode_participants_resolved_total`; the Chronicler dashboard panel reads that name.
+
+#### Runtime-Attention Delivery Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.switchboard.runtime_attention.delivery` | Counter | `outcome` (the `TransportOutcome` set), `error_class` (the `TransportErrorClass` set, or `none`) | Delivery attempts by typed transport outcome |
+| `butlers.switchboard.runtime_attention.recovered` | Counter | none | Claims fenced to uncertain by a recovery sweep |
+| `butlers.switchboard.runtime_attention.fenced` | Counter | none | Transitions refused because the claim was no longer current |
+| `butlers.switchboard.runtime_attention.lease_lost` | Counter | none | Delivery cycles cut short by losing the sole service lease |
+| `butlers.switchboard.runtime_attention.record_failed` | Counter | none | Terminal transitions that raised after transport had already returned an outcome |
+
+Recipient, body, credential and provider text are forbidden attributes.
+
 ### Cardinality Discipline
 
 All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`.

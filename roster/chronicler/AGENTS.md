@@ -712,7 +712,7 @@ bead. A follow-up bead can wire the actual panel.
 
 ### Proposed panel 1: Adapter participant resolution rate
 
-- **Metric:** `rate(chronicler_episode_participants_resolved_total[5m])` grouped by `schema`
+- **Metric:** `rate(butlers_chronicler_episode_participants_resolved_total[5m])` grouped by `source_butler`
 - **Type:** Time-series
 - **Why useful:** Shows how many participant `episode_entities` rows the calendar adapter
   resolves per second, broken down by butler schema. A sustained rate of zero for a schema
@@ -732,7 +732,7 @@ bead. A follow-up bead can wire the actual panel.
 
 ### Gap insight
 
-The gap between `chronicler_episode_participants_resolved_total` (adapter writes) and the
+The gap between `butlers_chronicler_episode_participants_resolved_total` (adapter writes) and the
 `participant_join` request rate (API filter usage) is the key signal:
 
 - **High adapter rate + zero participant_join calls:** backfill is running but no client

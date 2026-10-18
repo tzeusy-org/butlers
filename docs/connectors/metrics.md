@@ -37,6 +37,14 @@ All metrics include `connector_type` and `endpoint_identity` labels.
 | `connector_attachment_skipped_oversized_total` | Counter | `media_type` | Attachments skipped due to per-type or global size cap. |
 | `connector_attachment_type_distribution_total` | Counter | `media_type` | Processed attachments by MIME type. |
 
+## Scrape Coverage
+
+`prometheus_client` instruments only reach Prometheus from processes that serve `/metrics`, and only when a scrape job targets them.
+
+- **Compose:** `observability/prometheus/prometheus.yml` has a job for every connector that serves `/metrics`: telegram-bot, telegram-user, gmail, whatsapp-user, spotify, google-calendar, owntracks, activitywatch, home-assistant, google-drive, live-listener, steam and google-health. The Discord user connector serves `/metrics` but has no Compose service, so it has no job.
+- **Kubernetes (k3s):** the Helm chart ships no scrape configuration (no ServiceMonitor, PodMonitor or scrape annotations) and deploys no Prometheus; it consumes the site's existing LGTM stack. Connector `/metrics` is therefore not scraped there until the site's Prometheus is pointed at the connector pods.
+- **Butler daemons and the dashboard API** serve no `/metrics`. Their telemetry is OpenTelemetry over OTLP (RFC 0005), so any instrument defined in those processes must be an OTel instrument to be visible at all.
+
 ## ConnectorMetrics Class
 
 Each connector instance creates a `ConnectorMetrics` object at startup:

@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from opentelemetry import metrics
 
-from butlers.metrics_registry import get_or_create_counter
 from butlers.tools.switchboard.notification.deliver import deliver
 from butlers.tools.switchboard.routing.transport import (
     CONFIRMED,
@@ -50,28 +50,29 @@ Transport = Callable[[OutboxEpisode], Awaitable[TransportResult]]
 Sleeper = Callable[[float], Awaitable[None]]
 
 # Typed outcome counters only. No recipient, body, credential, or provider
-# string is a label value here, and none can become one: every label is drawn
-# from the closed transport vocabulary.
-_delivery_total = get_or_create_counter(
-    "switchboard_runtime_attention_delivery_total",
-    "Runtime-attention delivery attempts by typed transport outcome.",
-    labelnames=["outcome", "error_detail"],
+# string is an attribute value here, and none can become one: every attribute is
+# drawn from the closed transport vocabulary. OpenTelemetry, not prometheus_client:
+# the switchboard daemon exports OTLP and exposes no /metrics endpoint (RFC 0005).
+_meter = metrics.get_meter("butlers.switchboard.runtime_attention")
+_delivery_total = _meter.create_counter(
+    "butlers.switchboard.runtime_attention.delivery",
+    description="Runtime-attention delivery attempts by typed transport outcome.",
 )
-_recovered_total = get_or_create_counter(
-    "switchboard_runtime_attention_recovered_total",
-    "Runtime-attention claims fenced to uncertain by a recovery sweep.",
+_recovered_total = _meter.create_counter(
+    "butlers.switchboard.runtime_attention.recovered",
+    description="Runtime-attention claims fenced to uncertain by a recovery sweep.",
 )
-_fenced_total = get_or_create_counter(
-    "switchboard_runtime_attention_fenced_total",
-    "Runtime-attention transitions refused because the claim was no longer current.",
+_fenced_total = _meter.create_counter(
+    "butlers.switchboard.runtime_attention.fenced",
+    description="Runtime-attention transitions refused because the claim was no longer current.",
 )
-_lease_lost_total = get_or_create_counter(
-    "switchboard_runtime_attention_lease_lost_total",
-    "Delivery cycles cut short because the sole service lease was lost mid-cycle.",
+_lease_lost_total = _meter.create_counter(
+    "butlers.switchboard.runtime_attention.lease_lost",
+    description="Delivery cycles cut short because the sole service lease was lost mid-cycle.",
 )
-_record_failed_total = get_or_create_counter(
-    "switchboard_runtime_attention_record_failed_total",
-    "Terminal transitions that raised after transport already returned an outcome.",
+_record_failed_total = _meter.create_counter(
+    "butlers.switchboard.runtime_attention.record_failed",
+    description="Terminal transitions that raised after transport already returned an outcome.",
 )
 
 
@@ -128,7 +129,7 @@ class RuntimeAttentionDeliveryWorker:
                     # A successor already holds the service lease. Claiming
                     # again would put a second delivery service on the wire,
                     # which is the single thing this lease exists to prevent.
-                    _lease_lost_total.inc()
+                    _lease_lost_total.add(1)
                     logger.warning(
                         "runtime-attention delivery lease lost mid-cycle after %d episode(s); "
                         "stopping before claiming another",
@@ -145,7 +146,7 @@ class RuntimeAttentionDeliveryWorker:
         for claim in await self._repository.list_recoverable(lease):
             if await self._repository.fence_stale_claim(claim, lease):
                 recovered += 1
-                _recovered_total.inc()
+                _recovered_total.add(1)
                 logger.warning(
                     "runtime-attention claim %s fenced to uncertain by recovery "
                     "(prior lease epoch %s); it will not be retried",
@@ -162,7 +163,7 @@ class RuntimeAttentionDeliveryWorker:
             # recovery sweep may have declared this claim dead while we were
             # backing off, and a fenced claimant must put nothing on the wire.
             if not await self._repository.claim_is_current(episode):
-                _fenced_total.inc()
+                _fenced_total.add(1)
                 logger.warning(
                     "runtime-attention episode %s abandoned: claim no longer current",
                     episode.id,
@@ -175,10 +176,13 @@ class RuntimeAttentionDeliveryWorker:
             if attempt < MAX_TRANSPORT_ATTEMPTS:
                 await self._sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
 
-        _delivery_total.labels(
-            outcome=str(result.outcome),
-            error_detail=str(result.error_detail) if result.error_detail else "none",
-        ).inc()
+        _delivery_total.add(
+            1,
+            {
+                "outcome": str(result.outcome),
+                "error_class": str(result.error_class) if result.error_class else "none",
+            },
+        )
         try:
             await self._record(episode, result)
         except Exception as exc:  # noqa: BLE001 - reduced to a typed log below
@@ -188,7 +192,7 @@ class RuntimeAttentionDeliveryWorker:
             # observes the still-``sending`` row and fences it.  The outcome is
             # still reported so the cycle's counts stay truthful.  Only the
             # exception *type* is logged, never its message.
-            _record_failed_total.inc()
+            _record_failed_total.add(1)
             logger.warning(
                 "runtime-attention episode %s outcome %s could not be recorded (%s)",
                 episode.id,
@@ -236,7 +240,7 @@ class RuntimeAttentionDeliveryWorker:
             )
 
         if not applied:
-            _fenced_total.inc()
+            _fenced_total.add(1)
             logger.warning(
                 "runtime-attention episode %s outcome %s not recorded: claim was fenced",
                 episode.id,

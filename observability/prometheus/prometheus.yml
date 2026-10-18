@@ -21,6 +21,9 @@
 #   connector-home-assistant:  40087  (compose CONNECTOR_HEALTH_PORT override)
 #   connector-google-drive:    40088  (compose CONNECTOR_HEALTH_PORT override)
 #   connector-live-listener:   40091  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-telegram-user:   40080  (default, no compose override)
+#   connector-steam:           40089  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-google-health:   40090  (compose CONNECTOR_HEALTH_PORT override)
 #
 # Each connector runs in its own container with its own network namespace,
 # so port 40082 on connector-gmail and connector-whatsapp-user are distinct.
@@ -101,3 +104,24 @@ scrape_configs:
       - targets: ["connector-live-listener:40091"]
         labels:
           connector: live_listener
+
+  # ── Connector: Telegram User ──────────────────────────────────────────
+  - job_name: connector-telegram-user
+    static_configs:
+      - targets: ["connector-telegram-user:40080"]
+        labels:
+          connector: telegram_user
+
+  # ── Connector: Steam ──────────────────────────────────────────────────
+  - job_name: connector-steam
+    static_configs:
+      - targets: ["connector-steam:40089"]
+        labels:
+          connector: steam
+
+  # ── Connector: Google Health ──────────────────────────────────────────
+  - job_name: connector-google-health
+    static_configs:
+      - targets: ["connector-google-health:40090"]
+        labels:
+          connector: google_health

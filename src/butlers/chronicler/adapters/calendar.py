@@ -86,7 +86,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from prometheus_client import Counter
+from opentelemetry import metrics
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
@@ -95,13 +95,21 @@ from butlers.chronicler.storage import upsert_episode
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Prometheus counters
+# Telemetry
 # ---------------------------------------------------------------------------
 
-chronicler_episode_participants_resolved_total = Counter(
-    "chronicler_episode_participants_resolved_total",
-    "Number of episode_entities participant rows resolved by the calendar adapter, by schema.",
-    ["schema"],
+# OpenTelemetry, not prometheus_client: the chronicler runs in a butler daemon, which
+# exports OTLP and exposes no /metrics endpoint for Prometheus to scrape (RFC 0005).
+# Exported as ``butlers_chronicler_episode_participants_resolved_total``. The module
+# attribute keeps its historical name so the public export is unchanged.
+chronicler_episode_participants_resolved_total = metrics.get_meter(
+    "butlers.chronicler"
+).create_counter(
+    "butlers.chronicler.episode_participants_resolved",
+    description=(
+        "Number of episode_entities participant rows resolved by the calendar adapter, "
+        "by source butler."
+    ),
 )
 
 # Role-precedence used when collapsing multiple roles for the same entity_id.
@@ -220,8 +228,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 # participant rows written (excludes the owner row, which is always
                 # written but is not a "participant" in the multi-entity sense).
                 if participant_ids:
-                    chronicler_episode_participants_resolved_total.labels(schema=schema).inc(
-                        len(participant_ids)
+                    chronicler_episode_participants_resolved_total.add(
+                        len(participant_ids), {"source_butler": schema}
                     )
                 # NOTE: we intentionally do NOT increment result.episodes_closed here.
                 # A past calendar block (ends_at <= now) means the appointment was
