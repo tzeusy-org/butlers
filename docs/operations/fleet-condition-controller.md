@@ -88,8 +88,10 @@ the handoff:
   retirement signal. All of these must hold: the cycle is complete, the episode
   has a non-null `source_butler`, that butler's `roster/<name>/` directory was
   absent from the Dashboard's startup discovery, and that discovery reported no
-  config that failed to parse. A directory that lacks `butler.toml` still counts
-  as present. Absence from the expected set alone never retires an episode, and
+  config that failed to parse or whose `butler.name` differs from its directory
+  name (liveness episodes key on `butler.name`, the signal on the directory, so a
+  mismatch disables retirement fleet-wide until fixed). A directory that lacks
+  `butler.toml` still counts as present. Absence from the expected set alone never retires an episode, and
   "roster" means the discovery pass at Dashboard startup, not live Git state.
   A Dashboard restart re-evaluates the signal.
 
