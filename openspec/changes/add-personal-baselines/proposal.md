@@ -31,8 +31,8 @@ is dead, and none keeps an anomaly out of its own baseline (bu-q7vx1q.15, JARVIS
 
 - Slice 2: `metric_baseline_get` core tool, `GET /api/health/baselines`, and the measurements-tab
   band with an "n of m days" plaque.
-- Slice 3: Home energy on week-bucket baselines; removal of the `energy_baseline` prose facts.
 - Slice 4: Finance anomaly detection and the briefing on `metric_baselines` with currency-scoped
   keys; removal of the `spending_baseline` facts and the briefing's 2x average.
 - Slice 5: chronicler balance lanes and session spend adopt the scorer.
 - Slice 1 shipped the `day` and `dow` buckets; the `week` bucket (one caller-aggregated sample per week) was added for slice 3 (bu-q7vx1q.94.2).
+- Slice 3 shipped (bu-q7vx1q.78): the Home energy digest judges against week-bucket baselines and the `energy_baseline` prose facts are retracted.

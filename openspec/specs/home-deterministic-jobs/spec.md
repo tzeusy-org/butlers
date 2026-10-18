@@ -193,7 +193,7 @@ The `environment_report` job SHALL read environmental sensors per area, compare 
 
 ### Requirement: Energy Digest Job
 
-The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers and trends vs. baselines, and send a structured weekly digest.
+The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers, judge each device and the house total against the owner's own week-bucket personal baselines (`butlers.core.baselines`, `bucket = week`, `min_n = 4`), and send a structured weekly digest.
 
 #### Scenario: Energy sensor discovery
 
@@ -220,20 +220,27 @@ The `energy_digest` job SHALL fetch weekly energy statistics, compute top consum
 - **WHEN** at least one discovered sensor has a complete finite hourly `change` series and at least one does not
 - **THEN** the job SHALL report only the supported device series and identify the omitted sensors visibly
 - **AND** it SHALL NOT present a whole-home total, whole-home trend, savings claim, or percentage share
-- **AND** it SHALL NOT read or store an overall energy baseline, though supported per-device baselines and anomalies MAY still be processed
+- **AND** it SHALL NOT score the week or write any baseline, and SHALL NOT judge any device as unusual
 
 #### Scenario: Baseline comparison
 
-- **WHEN** weekly statistics are retrieved
-- **THEN** the job SHALL query memory facts with `predicate="energy_baseline"` for overall and per-device baselines
-- **AND** it SHALL compute percentage deviation from baseline for total consumption and top individual devices
+- **WHEN** weekly statistics are retrieved for a complete (non-partial) run
+- **THEN** the job SHALL score the house total (`energy.total`) and each device (`energy.device:<entity_id>`) against the median and MAD band of its preceding complete weeks, taken from Home Assistant's hourly long-term statistics summed over trailing 7-day windows, and persist each band in `metric_baselines`
+- **AND** a week whose hourly buckets are materially incomplete SHALL be left out of the history rather than counted as a quiet week
+- **AND** a rerun for the same week SHALL leave every stored band unchanged
 
 #### Scenario: Anomaly detection
 
-- **WHEN** energy thresholds are loaded from state store key `home:thresholds:energy` (default: `{"anomaly_pct": 20, "high_severity_pct": 100}`)
-- **AND** a device's weekly consumption exceeds its baseline by the `anomaly_pct` threshold (default 20%) or more
-- **THEN** it SHALL be flagged as an anomaly
-- **AND** if consumption exceeds baseline by the `high_severity_pct` threshold (default 100%, i.e., 2x) or more, it SHALL be classified as high severity
+- **WHEN** a device's weekly consumption is above its own usual range (a ready band, scored above)
+- **THEN** it SHALL be flagged as an anomaly carrying the usual range and the weeks it rests on (for example "31 kWh, usual 18-24")
+- **AND** consumption of at least twice the band's centre SHALL be classified as high severity
+- **AND** one anomalous week SHALL NOT become the next week's yardstick: a week inside an open deviation episode is excluded from later bands
+
+#### Scenario: Thin history is not an anomaly
+
+- **WHEN** a device or the house total has fewer than four complete weeks of history
+- **THEN** it SHALL be listed as "not enough weeks yet" and SHALL NOT be flagged as an anomaly
+- **AND** a device seen for the first time SHALL start with no band and fill over four weeks
 
 #### Scenario: Top consumer ranking
 
@@ -242,8 +249,9 @@ The `energy_digest` job SHALL fetch weekly energy statistics, compute top consum
 
 #### Scenario: Baseline memory update
 
-- **WHEN** a complete digest is composed with cumulative-energy statistics for every discovered sensor
-- **THEN** the job SHALL call `store_fact` with `predicate="energy_baseline"`, `permanence="standard"`, containing the current week's total and top consumer breakdown
+- **WHEN** the job runs
+- **THEN** it SHALL NOT write or read any `energy_baseline` memory fact
+- **AND** it SHALL retract (`validity = 'retracted'`, rows kept) the `energy_baseline` facts it wrote earlier, identified by `system` authority, `home` source and its own tags, leaving any owner-authored `energy_baseline` fact untouched
 - **AND** if anomalies were detected, it SHALL call `store_fact` with `predicate="energy_spike"`, `permanence="volatile"`, for each anomalous device
 
 #### Scenario: Digest notification
@@ -251,6 +259,7 @@ The `energy_digest` job SHALL fetch weekly energy statistics, compute top consum
 - **WHEN** the digest is composed
 - **THEN** the job SHALL send a Telegram notification via the notify helper with `intent="send"`
 - **AND** the message SHALL include: weekly total with trend vs. baseline, top 5 consumers with percentages, anomaly alerts (if any), and 2-3 actionable recommendations
+- **AND** the message SHALL describe the week as within the normal range only when the house total was scored `within` a ready baseline band, and SHALL NOT when the house total has thin history, sits above or below its band, or any device is flagged
 
 #### Scenario: No energy sensors available
 
@@ -261,7 +270,7 @@ The `energy_digest` job SHALL fetch weekly energy statistics, compute top consum
 #### Scenario: Job return value
 
 - **WHEN** the job completes successfully with cumulative-energy statistics for every discovered sensor
-- **THEN** it SHALL return a dict with keys `total_kwh` (float), `devices_ranked` (int), `anomalies_found` (int), `baseline_updated` (bool)
+- **THEN** it SHALL return a dict with keys `total_kwh` (float), `devices_ranked` (int), `anomalies_found` (int), `baseline_updated` (bool, true when a stored band changed)
 - **WHEN** the job completes with both supported and unsupported sensor series
 - **THEN** it SHALL return a dict with `partial=true`, `omitted_sensors` (list of entity IDs), `devices_ranked` (int), `anomalies_found` (int), and `baseline_updated=false`, without a `total_kwh` key
 

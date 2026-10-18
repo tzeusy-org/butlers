@@ -89,6 +89,7 @@ from butlers.jobs.home_baselines import (
     retire_prose_energy_baselines,
     score_energy_week,
     scored_week_anchor,
+    total_is_within,
     unjudged_names,
     usual_total_kwh,
 )
@@ -1601,8 +1602,13 @@ def _build_digest_message(
     *,
     omitted_sensor_names: list[str] | None = None,
     not_judged_names: list[str] | None = None,
+    total_within: bool = False,
 ) -> str:
-    """Compose the weekly energy digest Telegram message."""
+    """Compose the weekly energy digest Telegram message.
+
+    ``total_within`` is True only when the house total was scored within a ready personal
+    baseline; the digest never calls the week normal on any weaker evidence.
+    """
     lines: list[str] = ["**Weekly Energy Digest**"]
     is_partial = bool(omitted_sensor_names)
 
@@ -1662,7 +1668,7 @@ def _build_digest_message(
         recs.append(
             f"Review {top_name} usage patterns — it accounts for the most energy this week."
         )
-    if total_kwh > 0 and not anomalies and not is_partial:
+    if total_within and total_kwh > 0 and not anomalies and not is_partial:
         recs.append("Energy usage within normal range this week.")
 
     if recs:
@@ -1891,6 +1897,7 @@ async def run_energy_digest(
             anomalies=anomalies,
             baseline_total=baseline_total_kwh,
             not_judged_names=not_judged,
+            total_within=total_is_within(findings),
             omitted_sensor_names=[
                 sensor_names.get(entity_id, entity_id) for entity_id in unsupported_entity_ids
             ],

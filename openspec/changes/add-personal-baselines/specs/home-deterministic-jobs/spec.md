@@ -4,6 +4,8 @@
 
 The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers, judge each device and the house total against the owner's own week-bucket personal baselines (`butlers.core.baselines`, `bucket = week`, `min_n = 4`), and send a structured weekly digest.
 
+ID: REQ-home-deterministic-jobs-006
+
 #### Scenario: Energy sensor discovery
 
 - **WHEN** the `energy_digest` job runs
@@ -68,6 +70,7 @@ The `energy_digest` job SHALL fetch weekly energy statistics, compute top consum
 - **WHEN** the digest is composed
 - **THEN** the job SHALL send a Telegram notification via the notify helper with `intent="send"`
 - **AND** the message SHALL include: weekly total with trend vs. baseline, top 5 consumers with percentages, anomaly alerts (if any), and 2-3 actionable recommendations
+- **AND** the message SHALL describe the week as within the normal range only when the house total was scored `within` a ready baseline band, and SHALL NOT when the house total has thin history, sits above or below its band, or any device is flagged
 
 #### Scenario: No energy sensors available
 

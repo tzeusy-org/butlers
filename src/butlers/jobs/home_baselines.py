@@ -298,12 +298,24 @@ def anomalies_from(findings: list[EnergyFinding]) -> list[dict[str, Any]]:
 
 
 def unjudged_names(findings: list[EnergyFinding]) -> list[str]:
-    """Devices whose band is not ready: listed as 'not enough weeks yet', never as anomalies."""
+    """Metrics (the house total included) whose band is not ready: 'not enough weeks yet'."""
     return [
-        finding.name
-        for finding in findings
-        if finding.entity_id is not None and finding.state is BaselineState.INSUFFICIENT_HISTORY
+        finding.name for finding in findings if finding.state is BaselineState.INSUFFICIENT_HISTORY
     ]
+
+
+def total_is_within(findings: list[EnergyFinding]) -> bool:
+    """True only when the house total was scored ``within`` a ready band.
+
+    The digest may call the week normal on this alone: a total with no ready band, or one above
+    its band, has no honest "normal" to report even when no single device is anomalous.
+    """
+    return any(
+        finding.key == TOTAL_KEY
+        and finding.baseline.status == "ready"
+        and finding.state is BaselineState.WITHIN
+        for finding in findings
+    )
 
 
 def usual_total_kwh(findings: list[EnergyFinding]) -> float | None:
