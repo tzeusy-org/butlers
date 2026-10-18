@@ -2,7 +2,7 @@
 
 ### Requirement: Scheduled Tasks
 
-The education butler SHALL run five scheduled tasks: a nightly analytics job, a weekly progress digest prompt, a weekly stale-flow check, a daily spaced-repetition nudge, and a daily briefing contribution job.
+The education butler SHALL run five scheduled tasks: a nightly analytics job, a weekly progress digest task, a weekly stale-flow check, a daily spaced-repetition nudge, and a daily briefing contribution job.
 
 The weekly stale-flow check is the only sweep that can reach an unfinished mind map, so its work list SHALL be the mind map table rather than teaching-flow state. Keying it off flow state left maps whose flow state was never written permanently unreachable by cleanup.
 
@@ -23,12 +23,12 @@ Scope: v1-mandatory
 
 - **WHEN** Sunday at 09:00 arrives
 - **THEN** the education butler executes a scheduled task named `weekly-progress-digest` on cron `0 9 * * 0`
-- **AND** the task MUST use `dispatch_mode = "prompt"` with a prompt that instructs the spawned LLM session to read analytics snapshots for the past 7 days, identify trends, highlight achievements, flag struggling areas, and deliver the digest via the user's preferred channel
+- **AND** the task asks the model-backed work it triggers, through whichever mechanism the runtime uses for scheduled model work, to read analytics snapshots for the past 7 days, identify trends, highlight achievements, flag struggling areas, and deliver the digest via the user's preferred channel
 
 #### Scenario: Weekly stale-flow check configuration
 
 - **WHEN** the education butler daemon is running
-- **THEN** it includes a scheduled task (job or prompt dispatch) whose work list is drawn from rows in `education.mind_maps` with `status IN ('draft', 'active')`, not from the set of `flow:*` KV keys
+- **THEN** it includes a scheduled task (a deterministic job or scheduled model work) whose work list is drawn from rows in `education.mind_maps` with `status IN ('draft', 'active')`, not from the set of `flow:*` KV keys
 - **AND** the task MUST abandon a map whose teaching flow has `last_session_at` older than 30 days
 - **AND** the task MUST abandon a `draft` map with zero nodes whose `created_at` is older than 24 hours, whether or not it has flow state
 - **AND** the task MUST clean up associated pending review schedules for abandoned flows
@@ -45,7 +45,7 @@ Scope: v1-mandatory
 
 - **WHEN** 17:00 arrives each day
 - **THEN** the education butler executes a scheduled task named `daily-spaced-repetition-nudge` on cron `0 17 * * *`
-- **AND** the task MUST use `dispatch_mode = "prompt"` with a prompt that lists active mind maps, collects pending reviews per map, and sends a single summary through `notify(intent="send", ...)` without naming a transport, only when at least one open review card is due (sending nothing when there are zero due cards)
+- **AND** the task asks the model-backed work it triggers to list active mind maps, collect due review cards per map, and send a single summary through `notify(intent="send", ...)` without naming a transport, only when at least one open review card is due (sending nothing when there are zero due cards)
 
 #### Scenario: Daily briefing contribution job configuration
 

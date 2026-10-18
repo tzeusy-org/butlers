@@ -2,7 +2,7 @@
 
 ### Requirement: Quiz response recording
 
-The system SHALL persist every quiz interaction as a row in the `quiz_responses` table. A quiz response MUST capture the node, mind map, question text, user answer, SM-2 quality score (integer 0–5), response type, optional session ID, optional evaluator notes (free-text rationale recorded by the grading session, added in migration `002_add_evaluator_notes`), and timestamp. The `quality` column MUST be constrained to values between 0 and 5 inclusive. The `mastery_record_response()` function MUST be the sole write path for quiz responses and MUST return the UUID of the newly created row.
+The system SHALL persist every quiz interaction as a row in the `quiz_responses` table. A quiz response MUST capture the node, mind map, question text, user answer, SM-2 quality score (integer 0–5, or absent only for a captured-but-ungraded answer, see "Owner evidence gates mastery movement"), response type, the writing invocation's lineage taken only from the runtime's verified provenance for the call (never from a caller-supplied session identifier, and null where the runtime supplies none), optional evaluator notes (free-text rationale recorded by the grading session, added in migration `002_add_evaluator_notes`), and timestamp. The `quality` column MUST be constrained to values between 0 and 5 inclusive. The `mastery_record_response()` function MUST be the sole write path for quiz responses and MUST return the UUID of the newly created row.
 
 Every quiz response is evidence-bearing, because every response type can move a node's mastery. `user_answer` MUST therefore be present and nonblank (not `NULL`, not empty, not whitespace-only), and the function MUST reject a null or blank answer, together with any call that does not meet the owner-evidence requirement ("Owner evidence gates mastery movement"), before it writes any row: no `quiz_responses` row, no node projection change, no transition, and no review card SHALL result from a rejected call. A response with no owner answer is not a score of 0; it is no evidence.
 
@@ -32,8 +32,9 @@ Scope: v1-mandatory
 
 #### Scenario: Response recorded with optional session ID
 
-- **WHEN** `mastery_record_response(pool, node_id, mind_map_id, question_text="...", user_answer="...", quality=3, response_type="teach", session_id=some_uuid)` is called
-- **THEN** the resulting row MUST have `session_id` set to `some_uuid`
+- **WHEN** `mastery_record_response(pool, node_id, mind_map_id, question_text="...", user_answer="...", quality=3, response_type="teach")` is called with a lineage or session identifier among its arguments
+- **THEN** any identifier supplied in the call arguments MUST be ignored for attribution
+- **AND** the writing invocation's lineage, where the runtime records one, MUST come only from the runtime's verified provenance for the call and MUST be null when the runtime supplies none
 
 #### Scenario: Quality below 0 is rejected
 
@@ -188,13 +189,13 @@ Scope: v1-mandatory
 
 ### Requirement: Owner evidence gates mastery movement
 
-A node's `mastery_status` and `mastery_score` SHALL move only on **owner evidence**: a nonblank answer whose provenance is derived from the server-held runtime session and routing context of the call (`src/butlers/core/tool_call_capture.py`), identifying the owner as its originator. A caller-supplied `session_id`, `evidence_kind` or `evidence_ref` is not authority and SHALL NOT, by itself, establish owner evidence. The recorded `evidence_kind` and `evidence_ref` SHALL be those the server derived.
+A node's `mastery_status` and `mastery_score` SHALL move only on **owner evidence**: a nonblank answer whose provenance the runtime itself derives and verifies for the call, identifying the owner as its originator; the property is that the runtime vouches for the origin, not which mechanism carries the proof. A caller-supplied session or lineage identifier, `evidence_kind` or `evidence_ref` is not authority and SHALL NOT, by itself, establish owner evidence. The recorded `evidence_kind` and `evidence_ref` SHALL be those the server derived.
 
-A session that was started by the scheduler, or that was model-initiated, has no owner-answer authority. Such a session MAY create or ask a review card, but SHALL NOT grade mastery unless it presents a distinct owner-originated evidence reference. The language model MAY grade a captured owner answer; it SHALL NOT manufacture the answer, its provenance, a delivery outcome, a curriculum association, or a transition timestamp.
+An invocation that was started by the scheduler, or that was model-initiated, has no owner-answer authority. Such an invocation MAY create or ask a review card, but SHALL NOT grade mastery unless it presents a distinct owner-originated evidence reference. The language model MAY grade a captured owner answer; it SHALL NOT manufacture the answer, its provenance, a delivery outcome, a curriculum association, or a transition timestamp.
 
 A call that lacks owner evidence SHALL be rejected before any database write (see "Quiz response recording"). Replaying the same owner evidence reference SHALL be idempotent: it SHALL yield exactly one `quiz_responses` row and at most one ledger entry, and SHALL return the existing result. Two different owner answers for the same node SHALL be serialized with a row lock on the node, so the second is evaluated against the committed result of the first and no update is lost.
 
-When an owner answer has been captured but grading fails, the answer SHALL be retained as answered and ungraded and the node's mastery SHALL be unchanged. When a failure occurs before the answer is captured, no answer and no mastery claim SHALL be invented.
+When an owner answer has been captured but grading fails, the answer SHALL be retained as a `quiz_responses` row with its `user_answer` and owner evidence reference and with a null `quality` (the 0–5 constraint applies only when `quality` is present), for every response type including `teach` and `diagnostic`. Such an ungraded row SHALL NOT move `mastery_status` or `mastery_score`, SHALL NOT advance SM-2 state, SHALL NOT write a ledger entry, and SHALL NOT count toward `measured_over`, the summary average, or velocity. When the response was a review, the corresponding review card is `answered`. A later grading call carrying the same owner evidence reference SHALL complete the existing row rather than inserting a second one. When a failure occurs before the answer is captured, no answer and no mastery claim SHALL be invented.
 
 ID: REQ-module-education-mastery-004
 Source: bu-h40h2b.4 (education-evidence-honesty); bu-6e8j89
@@ -205,9 +206,9 @@ Scope: v1-mandatory
 - **WHEN** a nonblank answer with server-derived owner provenance is graded `quality=4` on a `learning` node
 - **THEN** the node's `mastery_status` SHALL become `reviewing`
 
-#### Scenario: Scheduled session alone cannot grade
+#### Scenario: Scheduled invocation alone cannot grade
 
-- **WHEN** a scheduler-started session calls `mastery_record_response()` with a nonblank answer it composed itself and no owner-originated evidence reference
+- **WHEN** a scheduler-started invocation calls `mastery_record_response()` with a nonblank answer it composed itself and no owner-originated evidence reference
 - **THEN** the call SHALL be rejected before any write
 - **AND** mastery SHALL be unchanged
 
@@ -232,9 +233,15 @@ Scope: v1-mandatory
 #### Scenario: Grader failure preserves an ungraded answer
 
 - **WHEN** an owner answer was captured and the grader fails
-- **THEN** the answer SHALL remain recorded as answered and ungraded
+- **THEN** the answer SHALL remain recorded as a `quiz_responses` row with null `quality`, for a `teach` or `diagnostic` response as well as a `review`
 - **AND** `mastery_status` and `mastery_score` SHALL be unchanged
-- **AND** no ledger entry SHALL be written
+- **AND** no ledger entry SHALL be written and no SM-2 field SHALL change
+- **AND** the row SHALL NOT be counted in `measured_over`
+
+#### Scenario: A later grading call completes the ungraded row
+
+- **WHEN** a grading call arrives with the same owner evidence reference as an ungraded row
+- **THEN** that row SHALL be graded in place and exactly one `quiz_responses` row SHALL exist for the reference
 
 ### Requirement: Mastery transition ledger
 

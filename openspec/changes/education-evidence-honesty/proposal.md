@@ -62,12 +62,36 @@ Capabilities touched (see `specs/`): `module-education-curriculum`, `module-educ
 ## Overlap and sequencing
 
 - `education-mind-map-lifecycle-integrity` is implemented (PR #4421) and waits only for
-  post-deploy verification and archive (`bu-27dxl.17`). This change is separate so built and
-  unbuilt requirements are not mixed. It restates the lifecycle change's `Scheduled Tasks`
-  block with one added paragraph and a transport-neutral nudge, so that whichever archives
-  second must be rebuilt against the other (see `tasks.md`, section 0).
-- Requirements this change rewrites that the lifecycle change does not touch were rebuilt
-  against the current baseline text in `openspec/specs/`.
+  post-deploy verification and archive (`bu-27dxl.14` landed it; `bu-27dxl.17` verifies). This change
+  is separate so built and unbuilt requirements are not mixed. It restates the lifecycle change's
+  `Scheduled Tasks` block with added paragraphs, so whichever archives second must be rebuilt.
+- `generalist-lead-focused-delegation` (RFC 0038, owner-accepted) MODIFIES four requirements this
+  change also MODIFIES: `butler-education` `Scheduled Tasks`, `module-education-mastery` `Quiz
+  response recording`, `module-education-spaced-repetition` `Schedule Creation via Core Scheduler`
+  and `Review Delivery via notify()`. RFC 0038 wins wherever it decides. To keep the four blocks
+  neutral to that cutover they now:
+  - never use a prompt-mode `schedule_create` (review schedules are occurrences of a git-declared
+    obligation created through the scheduler's internal API);
+  - never take a caller-supplied session identifier as attribution (lineage comes from the
+    runtime's verified provenance, null when none);
+  - state the owner-evidence property (the runtime vouches for the origin) without naming
+    `tool_call_capture.py` or any other mechanism.
+  The blocks must still be rebuilt on that change's archived text (see `tasks.md`, section 0).
+- Requirements this change rewrites that neither change touches were rebuilt against the current
+  baseline text in `openspec/specs/`.
+
+## Open owner questions (not settled by RFC 0038)
+
+- Which public writer wins. RFC 0038's delta has the reply-evaluating lead call
+  `spaced_repetition_record_response()`; this change makes `mastery_record_response()` the single
+  public evidence writer and demotes the spaced-repetition function to an internal SM-2 helper.
+  Pick one before either change is archived.
+- Transport in the daily nudge and review delivery. RFC 0038's delta keeps "single Telegram
+  summary" and a Telegram default; this change makes both transport-neutral through `notify()`
+  (vision rule 7). RFC 0038 restates the baseline wording without deciding the question.
+- Where a failed-grade answer is kept. This change keeps it as a `quiz_responses` row with a null
+  `quality` (the 0-5 check applies when present), which requires relaxing the not-null on that
+  column. The alternative is a separate ungraded-answers table.
 
 ## Decisions for the owner
 

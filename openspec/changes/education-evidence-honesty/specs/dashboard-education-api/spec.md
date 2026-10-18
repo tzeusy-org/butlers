@@ -19,14 +19,21 @@ Scope: v1-mandatory
 #### Scenario: Reviews due for a mind map with scheduled nodes
 
 - **WHEN** a GET request is made to `/api/education/mind-maps/{id}/pending-reviews`
-- **AND** the mind map exists with 3 nodes having `next_review_at` in the past
+- **AND** the mind map exists with 3 open review cards whose `scheduled_for` is in the past
 - **THEN** the response status SHALL be 200
-- **AND** the response body SHALL contain exactly 3 node objects with their review metadata
+- **AND** the response body SHALL contain exactly 3 review-card objects, each with its `review_card_id` and review metadata
 
 #### Scenario: No reviews due
 
 - **WHEN** a GET request is made to `/api/education/mind-maps/{id}/pending-reviews`
-- **AND** the mind map exists but all nodes have `next_review_at` in the future or NULL
+- **AND** the mind map exists but every open review card has `scheduled_for` in the future, or the map has no open review card
+- **THEN** the response status SHALL be 200
+- **AND** the response body SHALL be an empty array
+
+#### Scenario: A node with next_review_at but no card yields no pending review
+
+- **WHEN** a GET request is made to `/api/education/mind-maps/{id}/pending-reviews`
+- **AND** the mind map has a node whose `next_review_at` is in the past and which has no open review card
 - **THEN** the response status SHALL be 200
 - **AND** the response body SHALL be an empty array
 

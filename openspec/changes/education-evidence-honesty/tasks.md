@@ -4,14 +4,30 @@ Implementation is owned by `bu-h40h2b.4`, serialized in three slices, and begins
 change is adopted. This change performs none of the work below, so every box stays unchecked until
 the corresponding piece lands.
 
-### 0. Archive ordering with education-mind-map-lifecycle-integrity
+### 0. Archive ordering and rebuild preconditions
 
 - [ ] 0.1 Archive `education-mind-map-lifecycle-integrity` first (`bu-27dxl.17`), then rebuild this
-      change's `butler-education` `Scheduled Tasks` block against the archived text and run
-      `make check-spec-overwrites`.
+      change's `butler-education` `Scheduled Tasks` block against the archived text.
+- [ ] 0.2 Archive `generalist-lead-focused-delegation` (RFC 0038) before this change, then rebuild
+      the four blocks both changes modify (`butler-education` `Scheduled Tasks`, `module-education-mastery`
+      `Quiz response recording`, `module-education-spaced-repetition` `Schedule Creation via Core
+      Scheduler` and `Review Delivery via notify()`) on its text. RFC 0038 wins where it decides; resolve
+      the open owner questions in `proposal.md` first.
+- [ ] 0.3 Several kept scenario headings no longer describe their bodies (mastery "Response recorded
+      with null user answer" and "Mastered node is not regressed"; spaced-repetition "Schedule name
+      encodes node and repetition", "Failed recall resets repetition counter in schedule name" and
+      "Delivery channel defaults to the owner contact's preferred channel"), because OpenSpec 1.9
+      refuses a MODIFIED block that drops a baseline scenario name. Archive the doctrine
+      retire/restore rename pair (guarantee-phrased headings) back to back before this change, then
+      rebuild these blocks on the new names. `generalist-lead-focused-delegation` carries the
+      null-answer heading too, so coordinate with 0.2.
+- [ ] 0.4 Repoint the `scenario` fields of this change's entries in
+      `scripts/spec-overwrite-baseline.json` to the new headings by hand, without
+      `--update-baseline`, and run `make check-spec-overwrites`.
 
 Acceptance:
-- The archived `Scheduled Tasks` block carries both the lifecycle paragraph and the transport-neutral nudge.
+- The archived `Scheduled Tasks` block carries the lifecycle paragraph, RFC 0038's obligation wording and the transport-neutral nudge.
+- No kept heading contradicts its body, and the baseline entries still match.
 
 ### 1. Slice 1: representation and claim honesty
 

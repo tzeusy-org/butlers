@@ -2,7 +2,7 @@
 
 ### Requirement: Schedule Creation via Core Scheduler
 
-The card reconciler (see "Review card schedule reconciliation"), not the response-recording path, SHALL create the one-shot review schedule for a review card via `schedule_create()`, so that a scheduler failure can never undo recorded learning evidence. The cron expression encodes the exact target review datetime of the card's `scheduled_for` (minute and hour resolution). The schedule's `until_at` is set to `scheduled_for + 24 hours` so that if the review window is missed, the schedule auto-disables without firing.
+The card reconciler (see "Review card schedule reconciliation"), not the response-recording path, SHALL create the one-shot review schedule for a review card through the core scheduler's internal API, never through a model-reachable tool and never as a prompt-mode schedule: the schedule is an occurrence of the education review obligation declared in git, so it fixes no new capability and spawns nothing of its own. Creating it in the reconciler means a scheduler failure can never undo recorded learning evidence. The cron expression encodes the exact target review datetime of the card's `scheduled_for` (minute and hour resolution). The schedule's `until_at` is set to `scheduled_for + 24 hours` so that if the review window is missed, the schedule auto-disables without firing.
 
 ID: REQ-module-education-spaced-repetition-005
 Source: bu-h40h2b.4 (education-evidence-honesty); bu-6e8j89
@@ -11,20 +11,20 @@ Scope: v1-mandatory
 #### Scenario: One-shot cron computed from next review datetime
 
 - **WHEN** the reconciler materializes a card whose `scheduled_for` is `2026-03-05 14:30 UTC`
-- **THEN** `schedule_create()` is called with `cron="30 14 5 3 *"`
-- **AND** `dispatch_mode="prompt"`
+- **THEN** a one-shot review schedule is created with `cron="30 14 5 3 *"` as an occurrence of the git-declared education review obligation
+- **AND** it is not a `dispatch_mode="prompt"` schedule and no model-reachable tool created it
 
 #### Scenario: until_at set to next_review_at plus 24 hours
 
 - **WHEN** the reconciler materializes a card whose `scheduled_for` is `2026-03-05T14:30:00Z`
-- **THEN** `schedule_create()` is called with `until_at=2026-03-06T14:30:00Z` (scheduled_for + 24 hours)
+- **THEN** the review schedule is created with `until_at=2026-03-06T14:30:00Z` (scheduled_for + 24 hours)
 - **AND** if the scheduled task fires after `until_at`, the scheduler auto-disables it without dispatching
 
 #### Scenario: Prompt includes enough context for the ephemeral session
 
-- **WHEN** `schedule_create()` is called for a review schedule
-- **THEN** the `prompt` argument includes the `review_card_id`, `node_id`, `mind_map_id`, `node.label`, the upcoming repetition number, and the current `ease_factor`
-- **AND** the prompt instructs the session to conduct a spaced repetition review quiz for the named concept
+- **WHEN** a review schedule becomes due
+- **THEN** the review work it requests carries the `review_card_id`, `node_id`, `mind_map_id`, `node.label`, the upcoming repetition number, and the current `ease_factor`
+- **AND** it asks for a spaced repetition review quiz for the named concept
 
 #### Scenario: Missed review window auto-disables
 
@@ -43,7 +43,7 @@ Scope: v1-mandatory
 #### Scenario: Schedule name encodes node and repetition
 
 - **WHEN** the reconciler materializes the card with id `abc123` (node repetition `3`)
-- **THEN** `schedule_create()` is called with `name="review-card-abc123"`
+- **THEN** the review schedule is created with `name="review-card-abc123"`
 
 #### Scenario: Prior-cycle schedule is superseded on new record
 
@@ -59,7 +59,7 @@ Scope: v1-mandatory
 
 #### Scenario: Duplicate schedule name rejected by scheduler
 
-- **WHEN** `schedule_create()` is called with a name that already exists in `scheduled_tasks`
+- **WHEN** a schedule is created with a name that already exists in `scheduled_tasks`
 - **THEN** the core scheduler raises a `ValueError`
 - **AND** the reconciler treats the existing schedule as the card's schedule and creates no second one
 
@@ -197,9 +197,9 @@ Scope: v1-mandatory
 
 ### Requirement: Review Delivery via notify()
 
-Review prompts SHALL be delivered to the user via the `notify()` core tool, without naming a transport. The education butler does not hold direct Telegram or email credentials — it routes all outbound messages through the Switchboard to the Messenger butler, which chooses the channel from the owner's posture. No review schedule, review prompt, daily nudge, or review-related skill instruction SHALL hardcode a channel such as Telegram.
+Review prompts SHALL be delivered to the owner via the `notify()` capability, without naming a transport. The education butler does not hold direct Telegram or email credentials — it routes all outbound messages through the Switchboard to the Messenger butler, which chooses the channel from the owner's posture. No review schedule, review prompt, daily nudge, or review-related skill instruction SHALL hardcode a channel such as Telegram.
 
-Every review prompt SHALL carry the `review_card_id` of the card it asks about. The delivery outcome recorded on the card (`notice_outcome`, `notice_accepted_at`) SHALL be copied from `public.attention_ledger`'s own record of the dispatch. An absent, unreadable, failed, suppressed or deferred ledger record SHALL be preserved as that exact outcome and SHALL NOT be upgraded to "delivered". Channel acceptance proves only that a channel accepted the message; it SHALL NOT be read as the owner having seen, read or answered it.
+Every review request SHALL carry the `review_card_id` of the card it asks about. The delivery outcome recorded on the card (`notice_outcome`, `notice_accepted_at`) SHALL be copied from `public.attention_ledger`'s own record of the dispatch. An absent, unreadable, failed, suppressed or deferred ledger record SHALL be preserved as that exact outcome and SHALL NOT be upgraded to "delivered". Channel acceptance proves only that a channel accepted the message; it SHALL NOT be read as the owner having seen, read or answered it.
 
 ID: REQ-module-education-spaced-repetition-004
 Source: bu-h40h2b.4 (education-evidence-honesty); bu-6e8j89
@@ -207,14 +207,14 @@ Scope: v1-mandatory
 
 #### Scenario: Scheduled review session dispatches a notify call
 
-- **WHEN** a review schedule fires and the ephemeral session runs
-- **THEN** the session calls `notify(message=<quiz_content>, intent="send")` without a `channel` argument
+- **WHEN** a review schedule fires and its review work runs
+- **THEN** the work calls `notify(message=<quiz_content>, intent="send")` without a `channel` argument
 - **AND** the quiz content includes the concept being reviewed and one or more questions
-- **AND** the prompt carries the `review_card_id`
+- **AND** the work carries the `review_card_id`
 
 #### Scenario: Delivery channel defaults to the owner contact's preferred channel
 
-- **WHEN** the review prompt is constructed
+- **WHEN** the review request is constructed
 - **THEN** it SHALL NOT name a channel
 - **AND** channel selection SHALL be left to the Messenger butler's posture for the owner
 
@@ -231,35 +231,35 @@ Scope: v1-mandatory
 
 #### Scenario: Batch review session notify includes count of pending nodes
 
-- **WHEN** a batch review session fires (triggered by the `review-{mind_map_id}-batch` schedule)
-- **THEN** the session calls `notify()` with a message that states how many nodes are due for review
-- **AND** the session interleaves questions for multiple nodes within the session
+- **WHEN** a batch review fires (triggered by the `review-{mind_map_id}-batch` schedule)
+- **THEN** the work calls `notify()` with a message that states how many nodes are due for review
+- **AND** it interleaves questions for multiple nodes
 
 #### Scenario: Review response from user is captured as a quiz_responses row
 
-- **WHEN** the user responds to a review quiz question during an ephemeral session
-- **THEN** the session calls `mastery_record_response()` with the owner's answer and the evaluated quality score, as the single public evidence writer
+- **WHEN** the owner responds to a review quiz question
+- **THEN** the owner's answer is evaluated and recorded through `mastery_record_response()` with the evaluated quality score, as the single public evidence writer, whichever invocation carries the reply
 - **AND** a new row is inserted into `quiz_responses` with `response_type='review'`, `quality`, `question_text`, `user_answer`, and `responded_at`
-- **AND** the session does not also call a spaced-repetition writer for the same answer
+- **AND** no second writer records the same answer
 
 #### Scenario: notify() failure does not corrupt node state
 
-- **WHEN** the ephemeral session fails to deliver the review notification (e.g., Messenger butler unreachable)
+- **WHEN** the review work fails to deliver the review notification (e.g., Messenger butler unreachable)
 - **THEN** no response has been recorded (delivery precedes quality recording)
 - **AND** the card's recorded delivery outcome SHALL reflect the failure and SHALL NOT claim delivery
 - **AND** the node's `next_review_at` remains set from the prior schedule
-- **AND** the failed session logs the error to the session log
+- **AND** the failure is recorded in the runtime's own log of the failed work
 
 #### Scenario: Review prompt instructs the session to evaluate user answer and call record_response
 
-- **WHEN** the scheduler fires the review schedule and spawns an ephemeral session
-- **THEN** the session prompt includes an explicit directive to: (1) ask the quiz question via notify, (2) await user response (via a subsequent trigger), (3) evaluate the owner's answer on a 0-5 scale, and (4) call `mastery_record_response()` with the owner's answer and the quality score
+- **WHEN** a review schedule becomes due
+- **THEN** the review request directs the work to: (1) ask the quiz question via notify, (2) not wait for the owner's reply, which arrives as a later, separate owner-originated request, (3) evaluate that owner's answer on a 0-5 scale, and (4) record it through `mastery_record_response()` with the owner's answer and the quality score
 
 ## ADDED Requirements
 
 ### Requirement: Review cards are the pending-review authority
 
-The system SHALL persist each review as a durable `education.review_cards` row. A card SHALL carry `id`, `node_id`, `mind_map_id`, `scheduled_for`, `repetition`, `state` (`scheduled`, `asked`, `delivered`, `answered`, `graded`, `expired` or `superseded`), `schedule_name`, `question_text`, `asked_session_id`, `notice_outcome`, `notice_accepted_at`, `answer_evidence_kind`, `answer_evidence_ref`, `user_answer`, `quality`, `grader_model`, `graded_at`, `quiz_response_id`, `superseded_by`, and timestamps.
+The system SHALL persist each review as a durable `education.review_cards` row. A card SHALL carry `id`, `node_id`, `mind_map_id`, `scheduled_for`, `repetition`, `state` (`scheduled`, `asked`, `delivered`, `answered`, `graded`, `expired` or `superseded`), `schedule_name`, `question_text`, `asked_by` (the runtime-verified lineage of the asking invocation, null where the runtime supplies none), `notice_outcome`, `notice_accepted_at`, `answer_evidence_kind`, `answer_evidence_ref`, `user_answer`, `quality`, `grader_model`, `graded_at`, `quiz_response_id`, `superseded_by`, and timestamps.
 
 A review card, not a node's `next_review_at`, a `scheduled_tasks` row, or a scheduler row count, SHALL be the source of truth for what is pending. The presence of a schedule SHALL NOT be taken as proof that a question existed, was delivered, was answered or was graded. `spaced_repetition_pending_reviews()` and every dashboard review projection SHALL read cards.
 
@@ -295,7 +295,7 @@ Scope: v1-mandatory
 
 #### Scenario: Failure before capture invents nothing
 
-- **WHEN** the session fails before an owner answer is captured
+- **WHEN** the asking work fails before an owner answer is captured
 - **THEN** the card SHALL remain `asked` or `delivered` as the evidence supports
 - **AND** no `user_answer`, `quality` or transition SHALL be recorded
 
