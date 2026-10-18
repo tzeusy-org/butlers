@@ -17,6 +17,7 @@ from butlers.connectors.gmail_policy import (
     detect_automated_reply,
     evaluate_message_policy,
 )
+from butlers.connectors.metrics import prometheus_endpoint_identity
 from butlers.ingestion_policy import PolicyDecision
 
 pytestmark = pytest.mark.unit
@@ -44,7 +45,9 @@ def _evaluate(message: dict[str, Any]):
 def _counter(ingestion_tier: str, reason: str) -> float:
     """Current value of the tier counter for the test endpoint."""
     return _gmail_tier_counter.labels(
-        endpoint_identity="test", ingestion_tier=ingestion_tier, reason=reason
+        endpoint_identity=prometheus_endpoint_identity("test"),
+        ingestion_tier=ingestion_tier,
+        reason=reason,
     )._value.get()
 
 
