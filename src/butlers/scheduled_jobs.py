@@ -2093,33 +2093,11 @@ async def _run_secret_probe_log_prune_job(
     )
 
 
-async def _run_activitywatch_events_prune_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Prune old evidence rows from connectors.activitywatch_events (>=90-day retention).
-
-    Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
-    See docs/operations/data-retention.md §[E] and butlers.jobs.retention.
-    """
-    from butlers.jobs.retention import prune_activitywatch_events
-
-    args = job_args or {}
-    return await prune_activitywatch_events(
-        pool,
-        enabled=bool(args.get("enabled", False)),
-        dry_run=bool(args.get("dry_run", True)),
-        ttl_days=int(args.get("ttl_days", 90)),
-        batch_limit=int(args.get("batch_limit", 500)),
-    )
-
-
 # Pruners over shared ``connectors`` / ``public`` tables run from ``general`` only.
 _RETENTION_PRUNER_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
     "insight_candidates_prune": _run_insight_candidates_prune_job,
     "secret_probe_log_prune": _run_secret_probe_log_prune_job,
-    "activitywatch_events_prune": _run_activitywatch_events_prune_job,
 }
 
 

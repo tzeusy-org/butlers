@@ -206,39 +206,44 @@ Switchboard.
 - **AND** `idempotency_key` follows
   `activitywatch:<machine_id>:<bucket_id>:<ts_iso>`
 
-### Requirement: Evidence retention is opt-in
+### Requirement: Evidence retention purge
 
-The system SHALL provide an opt-in pruner for `connectors.activitywatch_events`
-that is disabled by default and deletes only rows whose event timestamp `ts` is
-older than a configured TTL of at least 90 days. No deployment configuration
-SHALL enable it by default: enabling it is an owner operation. The pruner SHALL
-NOT delete Chronicler projections.
+While the connector has a database pool it SHALL run a background purge that deletes rows of
+`connectors.activitywatch_events` whose event timestamp `ts` is older than the retention period,
+every 6 hours, with the first purge one interval after the connector starts. The retention period
+is `ACTIVITYWATCH_RETENTION_DAYS` days, default 14 and minimum 1. The purge SHALL NOT delete
+Chronicler projections. A purge failure SHALL be logged at WARNING and SHALL NOT stop the connector;
+consecutive failures SHALL degrade the connector's reported health until a purge succeeds.
 
 ID: REQ-connector-activitywatch-retention-001
-Source: bu-60pwv6.14; archived change add-activitywatch-connector task 5.4; docs/operations/data-retention.md
+Source: add-activitywatch-connector task 5.4 (delivered by bu-il04h, PR #3559); [Observed] src/butlers/connectors/activitywatch.py ActivityWatchRetention, ActivityWatchConnector.start phase 7, ActivityWatchConfig.from_env
 Scope: v1-mandatory
 
-#### Scenario: Disabled by default
+#### Scenario: Default retention
 
-- **WHEN** the pruner job runs without `enabled = true`
-- **THEN** it reads and deletes nothing
+- **WHEN** the connector starts with `ACTIVITYWATCH_RETENTION_DAYS` unset or blank
+- **THEN** it purges evidence rows older than 14 days every 6 hours
 
-#### Scenario: Dry run counts only
+#### Scenario: Owner override
 
-- **WHEN** the pruner runs enabled with `dry_run = true`
-- **THEN** it reports the number of rows older than the TTL and deletes none
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to an integer of 1 or more
+- **THEN** the purge uses that many days as the cutoff
 
-#### Scenario: TTL floor protects re-projection
+#### Scenario: Below-minimum value refuses to start
 
-- **WHEN** the pruner is invoked enabled with `ttl_days` below 90
-- **THEN** it raises an error before touching any row
-- **AND** the floor exceeds the bounded first-run backfill window so idempotent re-projection keeps its evidence
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to an integer below 1
+- **THEN** configuration loading raises an error and the connector does not start
 
-#### Scenario: Bounded batches delete oldest first
+#### Scenario: Non-integer value falls back
 
-- **WHEN** the pruner runs enabled with `dry_run = false`
-- **THEN** it deletes at most `batch_limit` rows older than the TTL, oldest first
-- **AND** a rerun resumes with the remaining eligible rows
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to a value that is not an integer
+- **THEN** the connector logs a warning and uses the default of 14 days
+
+#### Scenario: Failed purge is non-fatal
+
+- **WHEN** a purge cycle raises a database error
+- **THEN** it is logged at WARNING and the next cycle still runs
+- **AND** the connector reports degraded health until a purge succeeds
 
 ### Requirement: Bounded First-Run Backfill
 
