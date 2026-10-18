@@ -26,8 +26,9 @@ SAMPLE_LIMIT = 30
 #: Runs created this long before a shard was created are still candidates for being in flight.
 CONCURRENCY_WINDOW = 2 * 3600
 RUN_INDEX_PAGES = 3
-#: Job reads beyond the sample runs' own (already fetched) jobs; the rest are unattributable.
-CONCURRENT_RUN_READS = 40
+#: Job reads beyond the sample runs' own (already fetched) jobs. A normal 30-sample window
+#: needs on the order of 100; samples are read newest first, so the oldest lose first.
+CONCURRENT_RUN_READS = 120
 NOT_ON_A_RUNNER = {"queued", "waiting", "pending", "requested"}
 
 
@@ -142,14 +143,15 @@ def event_class(event):
 def concurrency(at, runs):
     """Jobs executing on a runner at ``at``, split by the event that triggered their run.
 
-    ``runs`` is ``[(event, jobs_or_None)]``; ``None`` means the run's jobs could not be read.
-    A job that ran but lacks usable timestamps makes the whole sample unattributable rather
-    than letting it silently count as zero.
+    ``runs`` is ``[(event, jobs)]`` where ``jobs`` is the run's job list, or a string naming
+    why it could not be read (``None`` counts as ``unreadable-run``). A job that ran but lacks
+    usable timestamps makes the whole sample unattributable rather than letting it silently
+    count as zero; the sample records why.
     """
     counts = {"pull_request": 0, "merge_group": 0, "other": 0}
     for event, jobs in runs:
-        if jobs is None:
-            return unattributable()
+        if jobs is None or isinstance(jobs, str):
+            return unattributable(jobs or "unreadable-run")
         for job in jobs:
             try:
                 status, conclusion = job["status"], job["conclusion"]
@@ -160,7 +162,7 @@ def concurrency(at, runs):
                 start = timestamp(job["started_at"])
                 end = None if status == "in_progress" else timestamp(job["completed_at"])
             except (KeyError, TypeError, ValueError):
-                return unattributable()
+                return unattributable("missing-timestamps")
             if start <= at and (end is None or at < end):
                 counts[event_class(event)] += 1
     present = [name for name, value in counts.items() if value]
@@ -169,15 +171,29 @@ def concurrency(at, runs):
         "concurrent_merge_group_jobs": counts["merge_group"],
         "concurrent_other_jobs": counts["other"],
         "attribution": "none" if not present else present[0] if len(present) == 1 else "mixed",
+        "unattributable_reason": None,
     }
 
 
-def unattributable():
+UNATTRIBUTABLE_REASONS = (
+    "read-budget",
+    "unreadable-run",
+    "over-100-jobs",
+    "missing-timestamps",
+    "index-truncated",
+    "stage-failure",
+    "deadline",
+)
+
+
+def unattributable(reason):
+    assert reason in UNATTRIBUTABLE_REASONS
     return {
         "concurrent_pull_request_jobs": None,
         "concurrent_merge_group_jobs": None,
         "concurrent_other_jobs": None,
         "attribution": "unattributable",
+        "unattributable_reason": reason,
     }
 
 
@@ -232,6 +248,7 @@ def attribute(read, repository, samples, sample_jobs):
         "job_reads": 0,
         "job_read_budget": CONCURRENT_RUN_READS,
         "failure": None,
+        "unattributable_reasons": {},
     }
     created = {
         row["run"]: min(
@@ -264,10 +281,12 @@ def attribute(read, repository, samples, sample_jobs):
         cache = {row["run"]: sample_jobs[row["run"]] for row in samples}
 
         def jobs_of(run):
+            """The run's jobs, or the reason they are unavailable."""
             key = run["id"]
             if key not in cache:
-                cache[key] = None
-                if summary["job_reads"] < CONCURRENT_RUN_READS:
+                if summary["job_reads"] >= CONCURRENT_RUN_READS:
+                    cache[key] = "read-budget"
+                else:
                     summary["job_reads"] += 1
                     try:
                         endpoint = (
@@ -275,16 +294,23 @@ def attribute(read, repository, samples, sample_jobs):
                             f"{run['run_attempt']}/jobs?per_page=100"
                         )
                         response = read(endpoint)
-                        if response["total_count"] <= 100 and isinstance(response["jobs"], list):
+                        if not isinstance(response["jobs"], list):
+                            cache[key] = "unreadable-run"
+                        elif response["total_count"] > 100:
+                            cache[key] = "over-100-jobs"
+                        else:
                             cache[key] = response["jobs"]
+                    except TimeoutError:
+                        cache[key] = "deadline"
                     except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
-                        pass
+                        cache[key] = "unreadable-run"
             return cache[key]
 
-        for row in samples:
+        # Newest first, so an exhausted read budget costs the oldest samples.
+        for row in sorted(samples, key=lambda item: created[item["run"]], reverse=True):
             at = created[row["run"]]
             if covered_from is not None and at - CONCURRENCY_WINDOW < covered_from:
-                row.update(unattributable())
+                row.update(unattributable("index-truncated"))
                 continue
             candidates = [
                 run
@@ -294,10 +320,25 @@ def attribute(read, repository, samples, sample_jobs):
                 and (run["status"] != "completed" or timestamp(run["updated_at"]) >= at)
             ]
             row.update(concurrency(at, [(run["event"], jobs_of(run)) for run in candidates]))
-    except (ValueError, TypeError, KeyError, OSError, TimeoutError, subprocess.SubprocessError):
-        summary["failure"] = "read-unavailable"
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        OSError,
+        TimeoutError,
+        subprocess.SubprocessError,
+    ) as exc:
+        summary["failure"] = "read-timeout" if isinstance(exc, TimeoutError) else "read-unavailable"
         for row in samples:
-            row.update(unattributable())
+            row.update(
+                unattributable("deadline" if isinstance(exc, TimeoutError) else "stage-failure")
+            )
+    for row in samples:
+        if row["attribution"] == "unattributable":
+            reason = row["unattributable_reason"]
+            summary["unattributable_reasons"][reason] = (
+                summary["unattributable_reasons"].get(reason, 0) + 1
+            )
     summary["hourly"] = hourly(samples)
     return summary
 
@@ -503,11 +544,22 @@ def write_report(report, output):
         lines += [
             "Shard scheduling wait attribution: jobs executing on a runner when each merge_group "
             "run's shards were created, by triggering event (own run excluded). Unattributable "
-            "samples (an unreadable run or a job without usable timestamps) are counted, not "
-            f"dropped. Extra job reads: {attribution['job_reads']} of "
+            "samples are counted, not dropped, with the cause of each recorded. Only each other "
+            "run's latest attempt is read. Extra job reads: "
+            f"{attribution['job_reads']} of "
             f"{attribution['job_read_budget']}; run-index pages: {attribution['run_index_pages']}"
             + ("; run index truncated" if attribution["run_index_truncated"] else "")
             + (f"; failure: {attribution['failure']}" if attribution["failure"] else "")
+            + ".",
+            "",
+            "Unattributable causes: "
+            + (
+                ", ".join(
+                    f"{reason} {count}"
+                    for reason, count in sorted(attribution["unattributable_reasons"].items())
+                )
+                or "none"
+            )
             + ".",
             "",
             "| Hour (UTC) | Samples | None | PR | merge_group | Other | Mixed | Unattributable "

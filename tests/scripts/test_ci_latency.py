@@ -432,3 +432,131 @@ def test_observe_attributes_each_sample_and_reports_an_hourly_breakdown(tmp_path
         latency.observe(repository="owner/repo", fetch=fetch)["samples"][0].get("attribution")
         is None
     )
+
+
+def _attribution_fetch(rows, extra_runs, jobs_for):
+    """Fake API: ci runs and jobs for sample runs, plus an all-workflow index."""
+    fetch, _ = fake_api(rows)
+
+    def attributing(endpoint):
+        if "/attempts/" in endpoint:
+            for run_id, answer in jobs_for.items():
+                if f"/runs/{run_id}/" in endpoint:
+                    if isinstance(answer, Exception):
+                        raise answer
+                    return answer
+        elif "workflows/ci.yml" not in endpoint:
+            indexed = [{**copy.deepcopy(row), "updated_at": stamp(300)} for row in rows]
+            return {
+                "total_count": len(indexed) + len(extra_runs),
+                "workflow_runs": indexed + extra_runs,
+            }
+        return fetch(endpoint)
+
+    return attributing
+
+
+def _pr(identifier):
+    return {
+        "id": identifier,
+        "run_attempt": 1,
+        "event": "pull_request",
+        "status": "in_progress",
+        "created_at": stamp(-30),
+        "updated_at": stamp(60),
+    }
+
+
+def _running(name="x"):
+    return {
+        "total_count": 1,
+        "jobs": [{"name": name, **_flight(0, None, status="in_progress"), "conclusion": None}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("scenario", "reason"),
+    [
+        ("budget", "read-budget"),
+        ("unreadable", "unreadable-run"),
+        ("oversized", "over-100-jobs"),
+        ("timestamps", "missing-timestamps"),
+        ("deadline", "deadline"),
+        ("truncated", "index-truncated"),
+    ],
+)
+def test_every_unattributable_sample_records_its_cause(monkeypatch, scenario, reason):
+    """bu-gvut0.5.7 C1: the report names why a sample could not be attributed."""
+    rows = [run(1)]
+    jobs_for = {900: _running()}
+    if scenario == "budget":
+        monkeypatch.setattr(latency, "CONCURRENT_RUN_READS", 0)
+    elif scenario == "unreadable":
+        jobs_for[900] = ValueError("unavailable bounded read")
+    elif scenario == "oversized":
+        jobs_for[900] = {"total_count": 101, "jobs": []}
+    elif scenario == "timestamps":
+        jobs_for[900] = {
+            "total_count": 1,
+            "jobs": [{"name": "x", **_flight(None, 90), "status": "completed"}],
+        }
+    elif scenario == "deadline":
+        jobs_for[900] = TimeoutError("observer deadline")
+    fetch = _attribution_fetch(rows, [_pr(900)], jobs_for)
+    if scenario == "truncated":
+        inner = fetch
+
+        def fetch(endpoint):
+            result = inner(endpoint)
+            if "/attempts/" not in endpoint and "workflows/ci.yml" not in endpoint:
+                result = {**result, "total_count": result["total_count"] + 5}
+            return result
+
+    report = latency.observe(repository="owner/repo", attribution=True, fetch=fetch)
+
+    (sample,) = report["samples"]
+    assert sample["attribution"] == "unattributable"
+    assert sample["unattributable_reason"] == reason
+    assert report["attribution"]["unattributable_reasons"] == {reason: 1}
+    assert report["verdict"] == "INSUFFICIENT_SAMPLES" and report["failure"] is None
+
+
+def test_an_attributable_sample_has_no_unattributable_reason():
+    fetch = _attribution_fetch([run(1)], [_pr(900)], {900: _running()})
+    report = latency.observe(repository="owner/repo", attribution=True, fetch=fetch)
+    assert report["samples"][0]["unattributable_reason"] is None
+    assert report["attribution"]["unattributable_reasons"] == {}
+
+
+def test_a_normal_thirty_sample_window_is_fully_attributable():
+    """The read budget must cover a real window of 30 samples with several PR runs each."""
+    rows = [run(i) for i in range(1, 31)]
+    extra = [_pr(1000 + i) for i in range(90)]
+    jobs_for = {1000 + i: _running() for i in range(90)}
+    report = latency.observe(
+        repository="owner/repo", attribution=True, fetch=_attribution_fetch(rows, extra, jobs_for)
+    )
+    assert report["attribution"]["unattributable_reasons"] == {}
+    assert report["attribution"]["job_reads"] == 90
+
+
+def test_main_enables_attribution_and_writes_it_to_the_report(tmp_path, monkeypatch):
+    """bu-gvut0.5.7 C2: dropping attribution=True from main() must fail a test."""
+    real_observe = latency.observe
+    seen = {}
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        fetch = _attribution_fetch([run(1)], [_pr(900)], {900: _running()})
+        return real_observe(**{**kwargs, "fetch": fetch})
+
+    monkeypatch.setattr(latency, "observe", spy)
+    monkeypatch.setattr(sys, "argv", ["ci_latency.py", "--output", str(tmp_path)])
+
+    latency.main()
+
+    assert seen["attribution"] is True
+    markdown = (tmp_path / "report.md").read_text()
+    assert "Shard scheduling wait attribution" in markdown
+    assert "Unattributable causes: none." in markdown
+    assert "latest attempt" in markdown
