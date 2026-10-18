@@ -52,6 +52,47 @@ from butlers.storage import BlobStorageStartupError, S3BlobStore
 logger = logging.getLogger(__name__)
 
 
+async def _sync_toml_schedules(daemon: Any, pool: Any, credential_store: Any) -> None:
+    """Sync the butler's TOML schedules, with each schedule's timezone and the quiet policy."""
+    # Staffer-typed agents skip daily_briefing_contribution schedule entries
+    # per the staffer-archetype spec (briefing exclusion decision point).
+    _is_staffer = daemon.config.type == ButlerType.STAFFER
+    schedules = [
+        {
+            "name": s.name,
+            "cron": s.cron,
+            "dispatch_mode": s.dispatch_mode.value,
+            "prompt": s.prompt,
+            "job_name": s.job_name,
+            "job_args": s.job_args,
+            "max_token_budget": s.max_token_budget,
+            "complexity": s.complexity,
+            "continuity": s.continuity,
+            "timezone": s.timezone,
+        }
+        for s in daemon.config.schedules
+        if not (_is_staffer and s.job_name == "daily_briefing_contribution")
+    ]
+    # Interpret hour-pinned crons in the owner's configured timezone (failing
+    # open to UTC) so e.g. a daily "5 1 * * *" fires at 01:05 local, not 01:05
+    # UTC. Resolved from the shared general settings via the credential store.
+    default_timezone = await resolve_general_timezone(credential_store.shared_pool)
+    # Owner quiet window, used only for the warn-only always-suppressed schedule lint.
+    quiet_policy = (
+        await get_approvals_policy_quiet_hours(credential_store.shared_pool)
+        if credential_store.shared_pool is not None
+        else None
+    )
+    await sync_schedules(
+        pool,
+        schedules,
+        stagger_key=daemon.config.name,
+        skills_dir=get_skills_dir(daemon.config_dir),
+        default_timezone=default_timezone,
+        quiet_policy=quiet_policy,
+    )
+
+
 async def run_startup(daemon: Any) -> None:
     """Execute the full butler startup sequence.
 
@@ -357,43 +398,7 @@ async def run_startup(daemon: Any) -> None:
 
     # 10. Sync TOML schedules before modules register their defaults. This makes
     # the TOML-orphan state observable to the module-default recovery boundary.
-    # Staffer-typed agents skip daily_briefing_contribution schedule entries
-    # per the staffer-archetype spec (briefing exclusion decision point).
-    _is_staffer = daemon.config.type == ButlerType.STAFFER
-    schedules = [
-        {
-            "name": s.name,
-            "cron": s.cron,
-            "dispatch_mode": s.dispatch_mode.value,
-            "prompt": s.prompt,
-            "job_name": s.job_name,
-            "job_args": s.job_args,
-            "max_token_budget": s.max_token_budget,
-            "complexity": s.complexity,
-            "continuity": s.continuity,
-            "timezone": s.timezone,
-        }
-        for s in daemon.config.schedules
-        if not (_is_staffer and s.job_name == "daily_briefing_contribution")
-    ]
-    # Interpret hour-pinned crons in the owner's configured timezone (failing
-    # open to UTC) so e.g. a daily "5 1 * * *" fires at 01:05 local, not 01:05
-    # UTC. Resolved from the shared general settings via the credential store.
-    default_timezone = await resolve_general_timezone(credential_store.shared_pool)
-    # Owner quiet window, used only for the warn-only always-suppressed schedule lint.
-    quiet_policy = (
-        await get_approvals_policy_quiet_hours(credential_store.shared_pool)
-        if credential_store.shared_pool is not None
-        else None
-    )
-    await sync_schedules(
-        pool,
-        schedules,
-        stagger_key=daemon.config.name,
-        skills_dir=get_skills_dir(daemon.config_dir),
-        default_timezone=default_timezone,
-        quiet_policy=quiet_policy,
-    )
+    await _sync_toml_schedules(daemon, pool, credential_store)
 
     # 11. Call module on_startup (non-fatal per-module)
     started_modules: list[Any] = []

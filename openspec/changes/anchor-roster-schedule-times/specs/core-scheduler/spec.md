@@ -78,7 +78,7 @@ for `next_run_at` and then apply deterministic staggering as specified below.
 
 #### Scenario: Roster schedules fire at the time they state
 - **WHEN** a roster schedule's own prompt or comment names an owner-local time
-- **THEN** its cron hour SHALL equal that local hour
+- **THEN** the schedule SHALL fire at that local hour, either as an owner-local cron with that hour or as a cron pinned to a zone in which it reaches the same instant
 - **AND** a roster schedule commented with a UTC time SHALL declare `timezone = "Etc/UTC"`
 
 ## ADDED Requirements
@@ -86,8 +86,9 @@ for `next_run_at` and then apply deterministic staggering as specified below.
 ### Requirement: Always-Quiet Schedule Warning
 When `sync_schedules()` is given a usable owner quiet-window policy, it SHALL log one
 warning per prompt-mode schedule that references `notify` and whose every firing in the
-next seven days, taking the later of the nominal instant and the stagger-shifted instant,
-falls inside the quiet window, because its notifications would always be held or dropped.
+next seven days, at both its nominal instant and the latest instant the schedule stagger can
+move it to, falls inside the quiet window, because its notifications would always be held or
+dropped.
 The check SHALL be warn-only: it SHALL NOT reject a schedule or stop synchronization, and it
 SHALL NOT warn when the policy is missing or invalid, the window is empty, the cron is
 invalid or fires irregularly often, or the schedule is job-mode or does not reference
@@ -104,6 +105,10 @@ invalid or fires irregularly often, or the schedule is job-mode or does not refe
 #### Scenario: Uncertain cases stay silent
 - **WHEN** no owner policy is configured, or the schedule is job-mode
 - **THEN** sync logs no quiet-window warning
+
+#### Scenario: A firing that only staggers into the window is not warned about
+- **WHEN** the quiet window starts at 22:00 and a notifying schedule fires at 21:50 with a 15 minute stagger
+- **THEN** sync logs no warning, because the nominal firing is outside the window
 
 ### Requirement: TOML Schedule Timezone Key
 A `[[butler.schedule]]` entry MAY set `timezone` to an IANA zone name. The config parser
