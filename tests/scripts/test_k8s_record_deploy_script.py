@@ -72,15 +72,24 @@ def test_success_records_one_success_row_after_both_rollouts(tmp_path: Path, bin
                               "--source deploy --result success")  # fmt: skip
 
 
-def test_failed_release_records_failed_row_and_keeps_exit_status(
+def test_helm_failure_records_failed_row_and_skips_rollout_waits(
     tmp_path: Path, bin_dir: Path
 ) -> None:
     code, _stderr, calls = _run(tmp_path, bin_dir, helm="1")
     assert code == 3
     assert len(_records(calls)) == 1
     assert calls[-1].endswith("--source deploy --result failed --git-sha tag123")
-    # A failed helm upgrade never waits on rollouts.
     assert not any("rollout status" in c for c in calls)
+
+
+def test_rollout_timeout_records_failed_row_and_keeps_exit_status(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    code, _stderr, calls = _run(tmp_path, bin_dir, rollout="dashboard-api")
+    assert code == 1
+    assert len(_records(calls)) == 1
+    assert calls[-1].endswith("--source deploy --result failed --git-sha tag123")
+    assert not any("deploy/butlers-up" in c for c in calls)
 
     code, _stderr, calls = _run(tmp_path, bin_dir, rollout="butlers-up")
     assert code == 1
