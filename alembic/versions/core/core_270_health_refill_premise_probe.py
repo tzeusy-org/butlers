@@ -18,7 +18,11 @@ mirroring ``public.resolve_finance_bill_status`` (core_255):
   non-skipped ``took_dose`` facts since ``quantity_updated_at``) is within
   ``warning_days``; false when stopped or refilled past the window; NULL when
   unknown (never recorded, or no supply quantity).  It deliberately returns no
-  count or day figure, so EXECUTE is not a by-name read of the owner's supply.
+  count or day figure directly; because ``doses_per_day`` and ``warning_days`` are
+  caller-supplied, a caller holding EXECUTE can still bisect ``warning_days`` to recover a
+  named medication's remaining supply.  EXECUTE is therefore granted to the Switchboard role
+  only, and bounding the answer to a single verdict needs server-owned parameters
+  (follow-up bu-r0izuo).
 - ``REVOKE ... FROM PUBLIC``; EXECUTE is granted to the Switchboard role only.
 
 The function is plpgsql so ``health.facts`` resolves at call time, and the
