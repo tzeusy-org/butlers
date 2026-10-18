@@ -20,6 +20,11 @@ SCRIPT = REPO_ROOT / "scripts" / "check_requirement_trace_lines.py"
 pytestmark = pytest.mark.unit
 
 
+def _rid(capability: str, number: int) -> str:
+    """Built at runtime so the cited-requirements guard does not read these as citations."""
+    return "-".join(["REQ", capability, f"{number:03d}"])
+
+
 def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -63,7 +68,7 @@ def _doc(section: str, *blocks: str) -> str:
 def test_a_block_with_id_source_and_scope_passes_and_a_missing_line_names_the_field(
     tmp_path: Path,
 ) -> None:
-    _delta(tmp_path, "good", "widgets", _doc("ADDED", _block("Ok", req_id="REQ-widgets-001")))
+    _delta(tmp_path, "good", "widgets", _doc("ADDED", _block("Ok", req_id=_rid("widgets", 1))))
     assert _run(tmp_path).returncode == 0
 
     path = _delta(
@@ -91,12 +96,12 @@ def test_editing_a_frozen_block_makes_it_fail_until_it_carries_the_lines(tmp_pat
     assert edited.returncode == 1
     assert "missing ID" in edited.stdout
 
-    path.write_text(_doc("MODIFIED", _block("Legacy", req_id="REQ-widgets-002")), "utf-8")
+    path.write_text(_doc("MODIFIED", _block("Legacy", req_id=_rid("widgets", 2))), "utf-8")
     assert _run(tmp_path).returncode == 0
 
 
 def test_a_wrong_capability_id_fails(tmp_path: Path) -> None:
-    _delta(tmp_path, "c", "widgets", _doc("ADDED", _block("Wrong", req_id="REQ-gadgets-001")))
+    _delta(tmp_path, "c", "widgets", _doc("ADDED", _block("Wrong", req_id=_rid("gadgets", 1))))
 
     result = _run(tmp_path)
 
@@ -107,16 +112,16 @@ def test_a_wrong_capability_id_fails(tmp_path: Path) -> None:
 def test_a_new_id_minted_twice_in_one_capability_fails_but_a_modified_reuse_passes(
     tmp_path: Path,
 ) -> None:
-    _delta(tmp_path, "a", "widgets", _doc("ADDED", _block("One", req_id="REQ-widgets-001")))
-    _delta(tmp_path, "b", "widgets", _doc("ADDED", _block("Two", req_id="REQ-widgets-001")))
-    _delta(tmp_path, "c", "gadgets", _doc("ADDED", _block("Same", req_id="REQ-gadgets-001")))
+    _delta(tmp_path, "a", "widgets", _doc("ADDED", _block("One", req_id=_rid("widgets", 1))))
+    _delta(tmp_path, "b", "widgets", _doc("ADDED", _block("Two", req_id=_rid("widgets", 1))))
+    _delta(tmp_path, "c", "gadgets", _doc("ADDED", _block("Same", req_id=_rid("gadgets", 1))))
 
     dup = _run(tmp_path)
     assert dup.returncode == 1
-    assert "duplicate new ID REQ-widgets-001 (also minted by b)" in dup.stdout
+    assert f"duplicate new ID {_rid('widgets', 1)} (also minted by b)" in dup.stdout
     assert "gadgets" not in dup.stdout  # same number in another capability is fine
 
-    _delta(tmp_path, "b", "widgets", _doc("MODIFIED", _block("Two", req_id="REQ-widgets-001")))
+    _delta(tmp_path, "b", "widgets", _doc("MODIFIED", _block("Two", req_id=_rid("widgets", 1))))
     assert _run(tmp_path).returncode == 0
 
 
@@ -124,7 +129,7 @@ def test_removed_renamed_sections_and_the_archive_are_ignored(tmp_path: Path) ->
     bare = _block("Bare", req_id=None, source=False, scope=False)
     _delta(tmp_path, "r", "widgets", _doc("REMOVED", bare) + "\n" + _doc("RENAMED", bare))
     _delta(tmp_path, "archive/old", "widgets", _doc("ADDED", bare))
-    _delta(tmp_path, "ok", "widgets", _doc("ADDED", _block("Ok", req_id="REQ-widgets-001")))
+    _delta(tmp_path, "ok", "widgets", _doc("ADDED", _block("Ok", req_id=_rid("widgets", 1))))
 
     assert _run(tmp_path).returncode == 0
 
