@@ -10,13 +10,15 @@ Switchboard broker re-checks that fact at send through the registered
 ``health`` schema directly.  This migration adds the one narrow lookup it uses,
 mirroring ``public.resolve_finance_bill_status`` (core_255):
 
-- ``public.resolve_health_medication_refill(subject, doses_per_day)``
+- ``public.resolve_health_medication_refill(subject, doses_per_day, warning_days)``
   (SECURITY DEFINER, ``search_path = pg_catalog, pg_temp``): resolves the
   medication by its stable ``subject`` (an edit or refill supersedes the fact
-  row and so changes its id), returns whether it is still active and the
-  estimated days of supply left, counted exactly as the insight scan counts them
-  (non-skipped ``took_dose`` facts since ``quantity_updated_at``).  No row means
-  the medication was never recorded; the probe then answers unknown.
+  row and so changes its id) and returns ONE nullable boolean: true while it is
+  active and its estimated supply (counted as the insight scan counts it,
+  non-skipped ``took_dose`` facts since ``quantity_updated_at``) is within
+  ``warning_days``; false when stopped or refilled past the window; NULL when
+  unknown (never recorded, or no supply quantity).  It deliberately returns no
+  count or day figure, so EXECUTE is not a by-name read of the owner's supply.
 - ``REVOKE ... FROM PUBLIC``; EXECUTE is granted to the Switchboard role only.
 
 The function is plpgsql so ``health.facts`` resolves at call time, and the
@@ -34,52 +36,56 @@ branch_labels = None
 depends_on = None
 
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
-_REFILL_SIG = "public.resolve_health_medication_refill(text, numeric)"
+_REFILL_SIG = "public.resolve_health_medication_refill(text, numeric, numeric)"
 
 CREATE_REFILL_FN = """
 CREATE OR REPLACE FUNCTION public.resolve_health_medication_refill(
     p_subject text,
-    p_doses_per_day numeric
+    p_doses_per_day numeric,
+    p_warning_days numeric
 )
-RETURNS TABLE(is_active boolean, days_remaining numeric)
+RETURNS boolean
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $fn$
+DECLARE
+    v_id uuid;
+    v_validity text;
+    v_meta jsonb;
+    v_doses bigint;
 BEGIN
-    RETURN QUERY
-    WITH med AS (
-        SELECT f.id, f.validity, f.metadata
-        FROM health.facts f
-        WHERE f.predicate = 'medication'
-          AND f.scope = 'health'
-          AND f.subject = p_subject
-        ORDER BY (f.validity = 'active') DESC, f.created_at DESC
-        LIMIT 1
-    ),
-    doses AS (
-        SELECT count(*) AS n
-        FROM health.facts d, med m
-        WHERE d.predicate = 'took_dose'
-          AND d.scope = 'health'
-          AND d.validity = 'active'
-          AND d.metadata ->> 'medication_id' = m.id::text
-          AND d.valid_at >= (m.metadata ->> 'quantity_updated_at')::timestamptz
-          AND COALESCE((d.metadata ->> 'skipped')::boolean, false) = false
-    )
-    SELECT (m.validity = 'active'
-            AND COALESCE((m.metadata ->> 'active')::boolean, false)),
-           CASE
-               WHEN m.metadata ->> 'quantity' IS NULL
-                 OR m.metadata ->> 'quantity_updated_at' IS NULL
-                 OR p_doses_per_day IS NULL
-                 OR p_doses_per_day <= 0
-               THEN NULL
-               ELSE GREATEST(0, ((m.metadata ->> 'quantity')::numeric - doses.n)
-                                / p_doses_per_day)
-           END
-    FROM med m, doses;
+    SELECT f.id, f.validity, f.metadata INTO v_id, v_validity, v_meta
+    FROM health.facts f
+    WHERE f.predicate = 'medication'
+      AND f.scope = 'health'
+      AND f.subject = p_subject
+    ORDER BY (f.validity = 'active') DESC, f.created_at DESC
+    LIMIT 1;
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+    IF NOT (v_validity = 'active' AND COALESCE((v_meta ->> 'active')::boolean, false)) THEN
+        RETURN false;
+    END IF;
+    IF v_meta ->> 'quantity' IS NULL
+       OR v_meta ->> 'quantity_updated_at' IS NULL
+       OR p_doses_per_day IS NULL
+       OR p_doses_per_day <= 0
+       OR p_warning_days IS NULL THEN
+        RETURN NULL;
+    END IF;
+    SELECT count(*) INTO v_doses
+    FROM health.facts d
+    WHERE d.predicate = 'took_dose'
+      AND d.scope = 'health'
+      AND d.validity = 'active'
+      AND d.metadata ->> 'medication_id' = v_id::text
+      AND d.valid_at >= (v_meta ->> 'quantity_updated_at')::timestamptz
+      AND COALESCE((d.metadata ->> 'skipped')::boolean, false) = false;
+    RETURN GREATEST(0, ((v_meta ->> 'quantity')::numeric - v_doses) / p_doses_per_day)
+           <= p_warning_days;
 END;
 $fn$;
 """
@@ -126,5 +132,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     _execute_best_effort(
-        "DROP FUNCTION IF EXISTS public.resolve_health_medication_refill(text, numeric)"
+        "DROP FUNCTION IF EXISTS public.resolve_health_medication_refill(text, numeric, numeric)"
     )
