@@ -20,14 +20,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from datetime import date as date_cls
 from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from butlers.config import ButlerType, list_butlers
-from butlers.core.state import state_delete, state_list, state_set
+from butlers.core.general_settings import GENERAL_SETTINGS_STATE_KEY
+from butlers.core.state import state_delete, state_get, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
@@ -106,6 +108,25 @@ class CombinedBriefingPayload(TypedDict):
 def today_sgt() -> date_cls:
     """Return today's date in SGT (UTC+8)."""
     return datetime.now(tz=SGT).date()
+
+
+async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
+    """Return the owner's configured timezone for day-window math, else SGT.
+
+    Reads the shared ``settings.general`` timezone (the single source the scheduler,
+    the dashboard and the session filters use).  The documented fallback is SGT: it
+    applies when the owner never saved a timezone, when the shared settings cannot be
+    read, and when the stored name is not a valid IANA zone, so the briefing keeps its
+    historical day window instead of silently switching to UTC.
+    """
+    try:
+        stored = await state_get(pool, GENERAL_SETTINGS_STATE_KEY)
+        name = stored.get("timezone") if isinstance(stored, dict) else None
+        if isinstance(name, str) and name.strip():
+            return ZoneInfo(name.strip())
+    except Exception:
+        logger.warning("Could not resolve owner timezone for briefing; using SGT", exc_info=True)
+    return SGT
 
 
 def contribution_key(date: str) -> str:
@@ -259,12 +280,16 @@ async def run_health_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
-    today_str = today_dt.isoformat()
-    # Compute SGT day boundaries (midnight SGT -> next midnight SGT) and convert to UTC
-    sgt_midnight = datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=SGT)
-    today_start = sgt_midnight.astimezone(UTC)
-    today_end = (sgt_midnight + timedelta(days=1)).astimezone(UTC)
+    # The contribution key/date stays on the fleet-wide SGT briefing date (every reader
+    # of ``briefing/daily/<date>`` keys on it); only the dose day window and the
+    # missed / due-later split follow the owner's configured timezone.
+    today_str = today_sgt().isoformat()
+    owner_zone = await owner_briefing_zone(pool)
+    now_local = datetime.now(tz=owner_zone)
+    # Owner-local day boundaries (midnight -> next midnight) converted to UTC.
+    local_midnight = datetime(now_local.year, now_local.month, now_local.day, tzinfo=owner_zone)
+    today_start = local_midnight.astimezone(UTC)
+    today_end = (local_midnight + timedelta(days=1)).astimezone(UTC)
 
     highlights: list[BriefingHighlight] = []
 
@@ -308,7 +333,6 @@ async def run_health_briefing_contribution(
 
     from butlers.tools.health._medication_utils import dose_status_today
 
-    now_local = datetime.now(tz=SGT)
     missed_names: list[str] = []
     due_later_names: list[str] = []
     for row in med_rows:
@@ -343,7 +367,7 @@ async def run_health_briefing_contribution(
 
     # --- Taken doses today (for adherence context) ---
     # Count non-skipped dose facts (predicate='took_dose', scope='health') whose
-    # valid_at (taken_at) falls within today's SGT window.
+    # valid_at (taken_at) falls within today's owner-local window.
     taken_rows = await pool.fetch(
         """
         SELECT COUNT(*) AS cnt

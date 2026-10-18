@@ -123,3 +123,5 @@ For domain-specific workflows, load the relevant skill:
 - **Proactive insights**: when logging data, add context from trends or adherence patterns
 
 # Notes to self
+
+- Briefing day window and timezone (bu-dyb9ca): the 06:55 `daily_briefing_contribution` job computes "today's" dose window and the missed / due-later split in the owner's configured timezone, read from the shared `settings.general` timezone (the same source the scheduler and dashboard use). The documented fallback is SGT (UTC+8), used only when the owner never saved a timezone, the settings cannot be read, or the stored name is not a valid IANA zone; it is not a silent UTC switch. The contribution key and envelope `date` stay on the fleet-wide SGT briefing date, because every reader of `briefing/daily/<date>` keys on it.
