@@ -19,11 +19,18 @@ What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requir
 * ``ID: REQ-<capability>-<NNN>`` present, with ``<capability>`` equal to the spec directory name;
 * ``Source: <non-empty>`` present;
 * ``Scope: v1-mandatory | v1-reserved | post-v1`` present;
-* an ADDED ID is not minted twice within one capability across active changes, and does not
-  already exist in the canonical ``openspec/specs/<capability>/spec.md``.
+* an ID is not minted twice within one capability across active changes.  An ADDED block mints
+  its ID, and so does a MODIFIED block whose ID the canonical spec lacks (backfilling an ID onto
+  an existing requirement).  Blocks that share a requirement name may share a minted ID (a
+  pending-parent sibling modifying what another change adds), but two ADDED blocks may not;
+* an ADDED ID does not already exist in the canonical ``openspec/specs/<capability>/spec.md``,
+  and a MODIFIED ID that the canonical spec gives to a different requirement name fails.
 
 The line patterns are copied from the shared th-projects validator
-(``spec-trace-check.py``); they are duplicated here because CI cannot see ``~/.dotfiles``.
+(``spec-trace-check.py``); they are duplicated here because CI cannot see ``~/.dotfiles``.  The
+block reader (case-insensitive header, marker-and-length code fences, stray ``###`` headings kept
+inside the block) matches OpenSpec's own parser, so no block ``openspec archive`` applies is hidden
+from the gate.
 
 Baseline ratchet
 ----------------
@@ -59,9 +66,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = Path(__file__).resolve().parent / "requirement-trace-baseline.json"
 
 SECTION_HEADER = re.compile(r"^##\s+(.+?)\s*$")
-REQUIREMENT_HEADER = re.compile(r"^###\s+Requirement:\s*(.+?)\s*$")
-ANY_H3 = re.compile(r"^###\s")
-FENCE = re.compile(r"^\s*(```|~~~)")
+# Parity with OpenSpec's own reader (dist/core/parsers/requirement-blocks.js, code-fence.js),
+# which is what `openspec archive` applies: a block this guard cannot see could still be archived.
+REQUIREMENT_HEADER = re.compile(r"^###\s*Requirement:\s*(.+?)\s*$", re.IGNORECASE)
+FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})")
+FENCE_CLOSE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 
 # Copied from th-projects spec-trace-check.py:47-50.
 ID_LINE = re.compile(r"^ID:\s*(\S+)\s*$")
@@ -88,31 +97,47 @@ class Block:
 
     @property
     def digest(self) -> str:
+        # The section kind is part of the digest: a frozen block moved between ADDED and
+        # MODIFIED is a different block and must carry the lines.
         normalized = " ".join(
-            " ".join(line.split()) for line in [self.name, *self.body] if line.strip()
+            " ".join(line.split()) for line in [self.kind, self.name, *self.body] if line.strip()
         )
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _fence_mask(lines: list[str]) -> list[bool]:
+    """True for lines inside (or delimiting) a fenced code block, as OpenSpec computes it.
+
+    A fence closes only on a bare fence of the same character that is at least as long as the
+    opener, so a lone ``` inside a ~~~ fence does not flip the mask.
+    """
     mask = [False] * len(lines)
-    inside = False
+    active: tuple[str, int] | None = None
     for index, line in enumerate(lines):
-        if FENCE.match(line):
-            mask[index] = True
-            inside = not inside
-        else:
-            mask[index] = inside
+        if active is None:
+            opener = FENCE_OPEN.match(line)
+            if opener:
+                active = (opener.group(1)[0], len(opener.group(1)))
+                mask[index] = True
+            continue
+        mask[index] = True
+        closer = FENCE_CLOSE.match(line)
+        if closer and closer.group(1)[0] == active[0] and len(closer.group(1)) >= active[1]:
+            active = None
     return mask
 
 
-def parse_blocks(text: str) -> list[tuple[str, str, int, list[str]]]:
-    """``(section kind, requirement name, 1-based header line, body lines)`` for ADDED/MODIFIED."""
+def iter_blocks(text: str) -> list[tuple[str | None, str, int, list[str]]]:
+    """``(section header, requirement name, 1-based header line, body lines)`` for every block.
+
+    A block runs from its header to the next requirement header or ``## `` section header; a stray
+    ``###`` heading stays inside the block, exactly as ``openspec archive`` treats it.
+    """
     lines = text.splitlines()
     mask = _fence_mask(lines)
-    blocks: list[tuple[str, str, int, list[str]]] = []
-    kind: str | None = None
-    current: tuple[str, str, int, list[str]] | None = None
+    blocks: list[tuple[str | None, str, int, list[str]]] = []
+    section: str | None = None
+    current: tuple[str | None, str, int, list[str]] | None = None
 
     def close() -> None:
         nonlocal current
@@ -122,25 +147,31 @@ def parse_blocks(text: str) -> list[tuple[str, str, int, list[str]]]:
 
     for index, line in enumerate(lines):
         if not mask[index]:
-            section = SECTION_HEADER.match(line)
-            if section and not line.startswith("###"):
-                close()
-                upper = section.group(1).upper()
-                kind = "ADDED" if "ADDED" in upper else "MODIFIED" if "MODIFIED" in upper else None
-                continue
             header = REQUIREMENT_HEADER.match(line)
             if header:
                 close()
-                if kind is not None:
-                    current = (kind, header.group(1), index + 1, [])
+                current = (section, header.group(1), index + 1, [])
                 continue
-            if ANY_H3.match(line):
+            heading = SECTION_HEADER.match(line)
+            if heading and not line.startswith("###"):
                 close()
+                section = heading.group(1)
                 continue
         if current is not None:
             current[3].append(line)
     close()
     return blocks
+
+
+def parse_blocks(text: str) -> list[tuple[str, str, int, list[str]]]:
+    """``(kind, name, line, body)`` for blocks under ADDED/MODIFIED headings only."""
+    out: list[tuple[str, str, int, list[str]]] = []
+    for section, name, line, body in iter_blocks(text):
+        upper = (section or "").upper()
+        kind = "ADDED" if "ADDED" in upper else "MODIFIED" if "MODIFIED" in upper else None
+        if kind is not None:
+            out.append((kind, name, line, body))
+    return out
 
 
 def check_block(block: Block) -> None:
@@ -174,18 +205,18 @@ def check_block(block: Block) -> None:
         block.problems.append("missing Scope (v1-mandatory|v1-reserved|post-v1)")
 
 
-def canonical_ids(root: Path, capability: str) -> set[str]:
+def canonical_ids(root: Path, capability: str) -> dict[str, set[str]]:
+    """``{ID: {requirement names}}`` for the canonical spec of one capability."""
     path = root / "openspec" / "specs" / capability / "spec.md"
+    ids: dict[str, set[str]] = {}
     if not path.exists():
-        return set()
-    ids: set[str] = set()
-    lines = path.read_text("utf-8").splitlines()
-    mask = _fence_mask(lines)
-    for index, line in enumerate(lines):
-        if not mask[index]:
-            match = ID_LINE.match(line)
+        return ids
+    for _section, name, _line, body in iter_blocks(path.read_text("utf-8")):
+        mask = _fence_mask(body)
+        for index, line in enumerate(body):
+            match = None if mask[index] else ID_LINE.match(line)
             if match:
-                ids.add(match.group(1))
+                ids.setdefault(match.group(1), set()).add(name)
     return ids
 
 
@@ -196,6 +227,46 @@ def collect(root: Path) -> tuple[list[Block], int]:
     files = 0
     if not changes_dir.is_dir():
         return blocks, files
+    for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
+        if change_dir.name == "archive":
+            continue
+        for spec_path in sorted(change_dir.glob("specs/*/spec.md")):
+            files += 1
+            capability = spec_path.parent.name
+            for kind, name, line, body in parse_blocks(spec_path.read_text("utf-8")):
+                block = Block(change_dir.name, capability, name, kind, spec_path, line, body)
+                check_block(block)
+                blocks.append(block)
+
+    canonical: dict[str, dict[str, set[str]]] = {}
+    minted: dict[tuple[str, str], list[Block]] = {}
+    for block in blocks:
+        if not block.req_id:
+            continue
+        existing = canonical.setdefault(block.capability, canonical_ids(root, block.capability))
+        owners = existing.get(block.req_id)
+        if block.kind == "ADDED":
+            if owners:
+                block.problems.append(
+                    f"ID {block.req_id} already exists in openspec/specs/{block.capability}"
+                )
+            minted.setdefault((block.capability, block.req_id), []).append(block)
+        elif owners is None:
+            # A MODIFIED block with an ID the canonical spec lacks mints it, like an ADDED one.
+            minted.setdefault((block.capability, block.req_id), []).append(block)
+        elif block.name not in owners:
+            block.problems.append(
+                f"ID {block.req_id} belongs to requirement "
+                f"{sorted(owners)[0]!r} in openspec/specs/{block.capability}"
+            )
+    for (_capability, req_id), group in minted.items():
+        names = {b.name for b in group}
+        added = sum(1 for b in group if b.kind == "ADDED")
+        if len(group) > 1 and (len(names) > 1 or added > 1):
+            for block in group:
+                others = ", ".join(sorted(o.change for o in group if o is not block))
+                block.problems.append(f"duplicate new ID {req_id} (also minted by {others})")
+    return blocks, files
     for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
         if change_dir.name == "archive":
             continue
