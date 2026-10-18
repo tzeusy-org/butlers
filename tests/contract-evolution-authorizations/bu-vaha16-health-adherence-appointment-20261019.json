@@ -1,0 +1,131 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-vaha16-health-adherence-appointment-20261019",
+  "bead": "bu-vaha16",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-o5bhf2 for implementation bead bu-vaha16 (the Health morning briefing adds a medium-priority medication adherence highlight whenever a due dose was not taken, and a next-appointment highlight). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-vaha16 (contract-review-lane local verdict CLEAN-pending-CE after the C1 fix, recomputed pre-manifest; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-vaha16 head b4c39db35812b87e5f9dded86fc9faacb68065c8 plus the reviewer-computed request. Governing requirement REQ-cross-butler-briefing-contribution-004 (Health Butler Contribution) in openspec/specs/cross-butler-briefing-contribution/spec.md, whose ID-only header lands in this same change ahead of the manifest. The 2 owners (tests/jobs/test_briefing_medication_due.py and tests/jobs/test_briefing_owner_timezone.py) each gain exactly one expected highlight entry, the adherence line the requirement now adds; their fixtures and other assertions are unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/jobs/test_briefing_medication_due.py::test_only_overdue_doses_are_missed_and_later_ones_are_low_priority",
+      "after": "tests/jobs/test_briefing_medication_due.py::test_only_overdue_doses_are_missed_and_later_ones_are_low_priority",
+      "contracts": [
+        "REQ-cross-butler-briefing-contribution-004"
+      ],
+      "reason": "The case pins the exact highlight set of a missed-dose day. REQ-cross-butler-briefing-contribution-004 now adds a medium-priority medication adherence highlight whenever some due dose was not taken, so the expected set gains exactly one entry: 'Medication adherence today: 50% (1 of 2 due doses taken)' (Morning pill missed, Taken pill taken; the 20:00, weekly and as-needed medications are not due). The fixture, the missed and due-later entries, the missed_doses count and the summary assertion are unchanged."
+    },
+    {
+      "before": "tests/jobs/test_briefing_owner_timezone.py::test_missed_and_due_later_split_uses_owner_local_time",
+      "after": "tests/jobs/test_briefing_owner_timezone.py::test_missed_and_due_later_split_uses_owner_local_time",
+      "contracts": [
+        "REQ-cross-butler-briefing-contribution-004"
+      ],
+      "reason": "The case pins the exact highlight set of a missed-dose day read in the owner's timezone. REQ-cross-butler-briefing-contribution-004 now adds a medium-priority medication adherence highlight whenever some due dose was not taken, so the expected set gains exactly one entry: 'Medication adherence today: 0% (0 of 1 due doses taken)' (at 06:55 PDT only the 06:00 dose is due, and it is untaken; the 20:00 dose is still ahead). The fixture, the owner-local missed and due-later entries and the missed_doses count are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/cross-butler-briefing-contribution/spec.md",
+      "id": "REQ-cross-butler-briefing-contribution-004",
+      "before_sha256": "5e779b37bba1d37414f13958674fadc40126fbc4fe3d109bcf9c7cea033dd4f5",
+      "after_sha256": "311191fdc110e23323e102db421c5afa2475237e36d4e3fc2c25f3d85f4bfa17"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/health/tools/_medication_utils.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "79fa2b7fdc37edbb66738eec3f4a488891ae01bda712bb49390e7cfe403189b3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c81225c6882f9eae37f2be40761b1f73d050b675521cab6515f0e40a5fe46cdc"
+      }
+    },
+    {
+      "path": "src/butlers/jobs/briefing.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "31625e5529a833d59983b41d536e5eb623e13a757f776070f7b1d9b5ca3c6aa3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "65ec4b76abe410dfe04eaada3a6a3d42f27655378700fae1cbd8a872c50f275d"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-vaha16-health-adherence-appointment-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "938e2bcdf16663c23ab4e4d8707741d0bd143f94dff37d73796fea70cff83fca"
+      }
+    },
+    {
+      "path": "tests/jobs/test_briefing_health_adherence_appointment.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "89004f7cce0ad8e228f4d55eb6977e83697b31cb492f3c09cf64e2745b53f74b"
+      }
+    },
+    {
+      "path": "tests/jobs/test_briefing_medication_due.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "07e253ea67f148e311cd860b3f23601b704c3ed136c761fa761884c7362bea38"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "61af207736abb21741398120149b0b44fe3940092d4d6d9c173e1749659bbd9a"
+      }
+    },
+    {
+      "path": "tests/jobs/test_briefing_owner_timezone.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "804dd54f0d6382561c30ed0db869064cfdf3c7209a56aea8cdb8b97b865ea050"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "927f5eff1e0cdf924abbedd2ed1b9ba72eae2eafab0ef6dd772fbeaec1dcc06a"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
