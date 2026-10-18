@@ -84,8 +84,13 @@ def _to_gemini_server(server: Mapping[str, Any]) -> dict[str, Any]:
 
     Gemini's ``url`` selects the SSE transport and ``httpUrl`` the streamable-HTTP one; the
     butler endpoint is streamable HTTP. ``headers`` carries the invocation binding header.
+
+    ``trust`` is set because headless ``--prompt`` runs treat a confirmation prompt as a denial and
+    Gemini defaults MCP servers to untrusted; this is scoped to the butler's own allow-listed
+    server.
     """
     entry = {key: value for key, value in server.items() if key != "url"}
+    entry["trust"] = True
     if "url" in server:
         entry["httpUrl"] = server["url"]
     return entry
@@ -277,7 +282,9 @@ class GeminiAdapter(RuntimeAdapter):
         system settings file (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini
         ranks above user and project settings), and ``--allowed-mcp-server-names``
         limits the session to the configured servers so user- or project-level
-        MCP servers are not reachable. The user home is left alone so the CLI's
+        MCP servers are not reachable. That confinement covers MCP servers
+        only: Gemini's built-in shell, file and web tools are not confined
+        (``--sandbox=false``). The user home is left alone so the CLI's
         OAuth credentials keep working.
 
         Parameters

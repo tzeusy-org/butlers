@@ -95,3 +95,8 @@ async def test_no_servers_adds_no_mcp_wiring() -> None:
     seen = await _invoke({})
     assert seen["settings_path"] is None
     assert "--allowed-mcp-server-names" not in seen["cmd"]
+
+
+async def test_invoke_trusts_the_butler_server_so_headless_tool_calls_are_not_denied() -> None:
+    seen = await _invoke(_SERVERS)
+    assert seen["settings"]["mcpServers"]["my-butler"]["trust"] is True
