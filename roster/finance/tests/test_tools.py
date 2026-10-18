@@ -875,7 +875,9 @@ class TestTrackBillPaymentDestination:
         engine = MagicMock()
         engine.embed.return_value = [0.1] * 384
         engine.model_name = "test-model"
-        monkeypatch.setattr("butlers.tools.finance.facts._get_embedding_engine", lambda: engine)
+        from butlers.tools.finance import facts as facts_module
+
+        monkeypatch.setattr(facts_module, "_get_embedding_engine", lambda: engine)
 
     @pytest.fixture(autouse=True)
     async def _clear_destinations(self, pool):
