@@ -1810,6 +1810,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Shutdown
 - Identity & routing
 - Session timeout
+- Memory read ceiling
 - System prompt
 - Prompt diff · v{} to v{} · {}
 - Edit system prompt · {}
