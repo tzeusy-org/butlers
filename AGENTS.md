@@ -221,6 +221,8 @@ retain normal defaults until complete comparable evidence selects a change.
 receipt scopes and original pending hard targets. Preserve the test ladder,
 watchdogs, healthy-workload floors, full merge-group and coverage publisher.
 
+On a red shard, `gh run download <run-id> -n ci-<lane>-test-evidence` and read `failed-nodes.txt` for the exact failing pytest node ids (empty when green).
+
 <!-- bv-agent-instructions-v1 -->
 
 ## Beads Workflow Integration

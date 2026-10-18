@@ -77,3 +77,57 @@ def test_sanitize_junit_report_writes_safe_empty_evidence_when_report_is_missing
     assert "No test timing metadata was produced" in duration_report.read_text(encoding="utf-8")
     root = ET.parse(sanitized_report).getroot()
     assert root.find(".//error") is not None
+
+
+def test_failed_nodes_lists_sorted_failures_and_errors_without_payloads(tmp_path: Path) -> None:
+    raw_report = tmp_path / "raw-junit.xml"
+    failed_nodes = tmp_path / "failed-nodes.txt"
+    raw_report.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest">
+  <testcase classname="tests.zeta.TestZ" name="test_b[x-1]" time="1">
+    <failure message="secret assertion text">secret body</failure>
+  </testcase>
+  <testcase classname="tests.alpha" name="test_a" time="1"><error message="boom" /></testcase>
+  <testcase classname="tests.alpha" name="test_skipped" time="1"><skipped /></testcase>
+  <testcase classname="tests.alpha" name="test_ok" time="1" />
+</testsuite></testsuites>
+""",
+        encoding="utf-8",
+    )
+
+    summary.sanitize_junit_report(
+        raw_report=raw_report,
+        sanitized_report=tmp_path / "junit.xml",
+        duration_report=tmp_path / "top.txt",
+        limit=5,
+        failed_nodes_report=failed_nodes,
+    )
+
+    assert failed_nodes.read_text(encoding="utf-8") == (
+        "tests/alpha.py::test_a\ntests/zeta.py::TestZ::test_b[x-1]\n"
+    )
+
+
+def test_failed_nodes_is_empty_when_green_and_flag_is_opt_in(tmp_path: Path) -> None:
+    raw_report = tmp_path / "raw-junit.xml"
+    raw_report.write_text(
+        '<testsuites><testsuite><testcase classname="tests.a" name="test_ok" time="1" />'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    failed_nodes = tmp_path / "nested" / "failed-nodes.txt"
+    with_flag = {"sanitized_report": tmp_path / "j1.xml", "duration_report": tmp_path / "d1.txt"}
+    without_flag = {"sanitized_report": tmp_path / "j2.xml", "duration_report": tmp_path / "d2.txt"}
+
+    summary.sanitize_junit_report(
+        raw_report=raw_report, limit=5, failed_nodes_report=failed_nodes, **with_flag
+    )
+    summary.sanitize_junit_report(raw_report=raw_report, limit=5, **without_flag)
+
+    assert failed_nodes.read_text(encoding="utf-8") == ""
+    assert (
+        with_flag["sanitized_report"].read_bytes() == without_flag["sanitized_report"].read_bytes()
+    )
+    assert with_flag["duration_report"].read_bytes() == without_flag["duration_report"].read_bytes()
+    assert not (tmp_path / "failed-nodes.txt").exists()
