@@ -513,7 +513,7 @@ treated as `normal`.
 
 ### Requirement: Recall Entity and Predicate Filters Apply Before Ranking
 
-The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it.
+The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it. `recall` and `search` SHALL refuse a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity`, naming the unknown key and the allowed keys, before any read, rather than ignore it.
 
 ID: REQ-module-memory-015
 Source: bu-s11n0s.19 (run-16 move #11 slice S1); RFC 0038 D15
