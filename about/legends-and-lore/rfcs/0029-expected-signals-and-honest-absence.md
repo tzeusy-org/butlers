@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-09-03
 
+Governing doctrine: [vision.md, What Success Looks Like](../../heart-and-soul/vision.md#what-success-looks-like) (the lead reports partial or unknown outcomes rather than asserting them) and [architecture.md, The Core Loop](../../heart-and-soul/architecture.md#the-core-loop) (reconcile evidence before recording an outcome).
+
 ## Context
 
 Elapsed time is not evidence of owner behavior when the instrument that would

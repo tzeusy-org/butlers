@@ -77,3 +77,4 @@ column is a one-word summary of it.
 - **Normative language:** "MUST", "SHOULD", "MAY" follow their usual meaning.
 - **Cross-references:** By RFC number (e.g., "see RFC 0003").
 - **Date:** ISO 8601 format.
+- **Governing doctrine:** Each RFC header carries one `Governing doctrine:` line linking the specific vision.md non-negotiable rule or the architecture.md, security.md or v1.md section it implements, or a `Doctrine exception:` line stating scope and guardrails.

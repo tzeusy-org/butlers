@@ -3,6 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-04-29
 **Owner-channel amendment:** 2026-09-13
+Governing doctrine: [security.md, Goal and Delegation Authority](../../heart-and-soul/security.md#goal-and-delegation-authority) (only the owner is messaged without approval; a party counts as the owner only when it resolves uniquely) and [security.md, Approval Gates](../../heart-and-soul/security.md#approval-gates).
 
 ---
 

@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
+Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (the context bus is a named v1 capability).
 
 ## Summary
 
