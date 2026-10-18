@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -921,6 +922,50 @@ async def test_conditions_attention_unreadable_is_unavailable_not_silent():
     assert fleet["attention"] == qa["attention"]
     assert fleet["attention"]["status"] == "unavailable"
     assert other["attention"] is None
+
+
+@pytest.mark.parametrize(
+    ("age_min", "resolved_after_min", "expected"),
+    [
+        (30, None, "not_raised"),
+        (2, None, "within_grace"),
+        (30, 3, None),
+        (30, 20, "not_raised"),
+    ],
+    ids=["aged-active", "inside-grace", "resolved-inside-grace", "resolved-after-grace"],
+)
+async def test_conditions_without_marker_report_not_raised_or_within_grace(
+    age_min, resolved_after_min, expected
+):
+    """No marker: aged paging rows read not_raised, never a calm absence (bu-q7vx1q.55)."""
+    detected = datetime.now(UTC) - timedelta(minutes=age_min)
+    row = _paging_condition_rows()[0]
+    row["first_detected_at"] = detected
+    if resolved_after_min is not None:
+        row["state"] = "resolved"
+        row["resolved_at"] = detected + timedelta(minutes=resolved_after_min)
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(return_value=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[row])
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    [condition] = resp.json()["data"]["conditions"]
+    got = condition["attention"]
+    assert (got["status"] if got else None) == expected
+
+
+def test_attention_grace_mirror_agrees_with_the_producer():
+    """The Python mirror of the producer's attention grace must match init-db.sql."""
+    from butlers.api.runtime_attention_status import CONDITION_ATTENTION_GRACE
+
+    sql = (Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql").read_text()
+    match = re.search(r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", sql)
+    assert match is not None
+    assert CONDITION_ATTENTION_GRACE.total_seconds() == int(match.group(1)) * 60
 
 
 async def test_conditions_rejects_invalid_state():
