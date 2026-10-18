@@ -21,6 +21,7 @@ Scope: v1-mandatory
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
 - **THEN** the system requests a signed Switchboard runtime probe for each enabled model concurrently with a bounded concurrency of 8
+- **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
 - **AND** only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
 - **AND** a control-plane unavailable result preserves the prior verification evidence and is reported separately from a completed failed probe
 - **AND** the response data contains exactly `accepted`, `total`, `ok`, `failed`, and `unavailable`
