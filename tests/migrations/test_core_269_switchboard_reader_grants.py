@@ -90,6 +90,30 @@ def test_existing_wide_grants_are_narrowed_and_future_tables_are_not_readable(
         assert _readable(db_url, role) == {"message_inbox"}, role
 
 
+def test_core_269_restores_a_revoked_message_inbox_grant(postgres_container) -> None:
+    """Repair path: the inbox grant is missing, core_269 runs, and the grant is restored."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    core, chain = _configs(db_url)
+    command.upgrade(core, "core@head")
+    command.upgrade(chain, "switchboard@head")
+    command.downgrade(core, "core_268")
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            for role in _ROLES:
+                connection.execute(text(f"REVOKE ALL ON switchboard.message_inbox FROM {role}"))
+    finally:
+        engine.dispose()
+    for role in _ROLES:
+        assert _select_grants(db_url, role)["message_inbox"] is False, role
+
+    command.upgrade(core, "core@head")
+
+    for role in _ROLES:
+        assert _readable(db_url, role) == {"message_inbox"}, role
+
+
 def test_downgrade_restores_the_previous_grants_and_upgrade_repeats_cleanly(
     postgres_container,
 ) -> None:

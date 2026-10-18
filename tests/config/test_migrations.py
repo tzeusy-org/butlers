@@ -569,13 +569,16 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
     finally:
         engine.dispose()
 
-    with pytest.raises(ProgrammingError, match="permission denied"):
+    # sw_047 grants the reader as soon as the chain creates message_inbox.
+    assert (
         _execute_as_role(
             db_url,
             RUNTIME_ROLES["relationship"],
             "SELECT COUNT(*) FROM switchboard.message_inbox",
             scalar=True,
         )
+        == 1
+    )
 
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
     # pinned-revision: both genuine schema histories must finish core_083's
