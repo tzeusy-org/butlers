@@ -2659,7 +2659,7 @@ class HomeAssistantModule(Module):
             logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
             return
 
-        rows: list[tuple[str, str, str, str | None]] = []
+        rows: list[tuple[str, str, str, str | None, str | None]] = []
         for e in entities:
             # Merge registry-derived area data into the persisted attributes so
             # the dashboard/job area filters work against the snapshot table.
@@ -2675,23 +2675,25 @@ class HomeAssistantModule(Module):
                     e.state,
                     _json.dumps(attrs),
                     e.last_updated or None,
+                    e.last_changed or None,
                 )
             )
 
         await pool.executemany(
             """
             INSERT INTO ha_entity_snapshot
-                (entity_id, state, attributes, last_updated, captured_at)
-            -- $3/$4 are bound as text and cast in-SQL.  ``attributes`` is sent as
+                (entity_id, state, attributes, last_updated, last_changed, captured_at)
+            -- $3/$4/$5 are bound as text and cast in-SQL.  ``attributes`` is sent as
             -- a JSON string and cast text->jsonb (binding it as jsonb would route
             -- through the connection's jsonb codec and double-encode the string).
-            -- ``last_updated`` is an ISO 8601 string; binding it as timestamptz
-            -- would make asyncpg's executemany reject the str.
-            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, now())
+            -- ``last_updated`` and ``last_changed`` are ISO 8601 strings; binding them as
+            -- timestamptz would make asyncpg's executemany reject the str.
+            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, $5::text::timestamptz, now())
             ON CONFLICT (entity_id) DO UPDATE SET
                 state        = EXCLUDED.state,
                 attributes   = EXCLUDED.attributes,
                 last_updated = EXCLUDED.last_updated,
+                last_changed = EXCLUDED.last_changed,
                 captured_at  = now()
             """,
             rows,

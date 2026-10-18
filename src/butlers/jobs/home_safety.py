@@ -443,16 +443,19 @@ async def run_safety_sentinel(
         return {"status": "source_unmeasurable"}
 
     rows = await pool.fetch(
-        "SELECT entity_id, state, last_updated FROM ha_entity_snapshot WHERE entity_id = ANY($1)",
+        "SELECT entity_id, state, last_changed, last_updated FROM ha_entity_snapshot "
+        "WHERE entity_id = ANY($1)",
         [e.entity_id for e in entries],
     )
-    readings = {
-        r["entity_id"]: SensorReading(
-            state=r["state"],
-            since=r["last_updated"].astimezone(UTC) if r["last_updated"] else None,
+    readings = {}
+    for r in rows:
+        # last_changed moves only on a state change, as the edge path judges; last_updated moves
+        # on any attribute update too.  A row written before last_changed existed has no value
+        # until the module's next persist, so it falls back to last_updated for that one cycle.
+        since = r["last_changed"] or r["last_updated"]
+        readings[r["entity_id"]] = SensorReading(
+            state=r["state"], since=since.astimezone(UTC) if since else None
         )
-        for r in rows
-    }
     result = await reconcile_safety(
         pool,
         entries,

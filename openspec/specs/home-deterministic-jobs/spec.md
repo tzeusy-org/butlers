@@ -469,3 +469,30 @@ Home Assistant service, and no LLM tool SHALL expose it.
   `DELETE /api/home/safety-watch/{entity_id}/{role}`, each requiring dashboard owner authority
 - **AND** only `binary_sensor.*` entities and the four roles above SHALL be accepted, with a
   1-to-80 character label
+
+#### Scenario: The job debounces on the last state change, not the last attribute update
+
+- **WHEN** the `home_safety_sentinel` job judges a declared sensor from `ha_entity_snapshot`
+- **THEN** it SHALL measure the 60-second hold from `last_changed` (Home Assistant moves it only on
+  a state change), the same instant the websocket hook judges, and SHALL fall back to
+  `last_updated` only for a row that has no `last_changed` yet
+- **AND** a sensor that has held `on` for longer than the window SHALL remain an alarm when an
+  attribute update refreshes `last_updated` seconds ago
+- **AND** the Home module SHALL persist `last_changed` with every snapshot row, added by the
+  nullable `ha_entity_snapshot.last_changed` column
+
+#### Scenario: A still-active safety alarm re-sends on a faster ladder
+
+- **WHEN** a `home:safety` condition stays open while its sensor stays on
+- **THEN** the owner SHALL be re-sent the alert 15 minutes after it opened, then 1 hour, then 4
+  hours after the previous re-send, then every 24 hours
+- **AND** every other `public.owner_conditions` source SHALL keep the shared 15-minute-grace,
+  1-day, 3-day, 7-day ladder, since the faster ladder is an opt-in of the safety producer
+
+#### Scenario: A concurrent confirmation keeps the delivery marker
+
+- **WHEN** the reconcile job confirms a `home:safety` condition with metadata built before the
+  websocket hook recorded `notified_at`
+- **THEN** the stored `notified_at` SHALL be kept, so the owner is not sent a duplicate for the
+  same opening
+- **AND** a producer that does not opt in SHALL keep replace-on-confirm metadata semantics
