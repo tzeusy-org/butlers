@@ -165,8 +165,10 @@ The Python definition scan above sees pytest definitions only. The same
 required CI guard) therefore also runs `scripts/frontend_test_deletions.py` after the Python
 verdict. It derives case ids `<path>::<describe> > <it>` for every
 `frontend/**/*.{test,spec}.{ts,tsx,mjs}` file at the exact base and in the working tree. An id
-whose live count dropped is a loss: a deleted case, a deleted file, a `.skip` or `.todo`, or a
-commented-out case. Added cases and untouched files never need evidence.
+whose live count dropped is a loss: a deleted case or file, a case that becomes `.skip`,
+`.todo` or `.fails` (or sets `{ skip | todo | fails: true }` in an options object), or a
+commented-out case. An inline `.each([...])` table counts one case per top-level row, so
+removing a row is a loss. Added cases and untouched files never need evidence.
 
 A loss is excused only by a mapping file that the same change adds under
 `tests/frontend-test-deletions/`:
@@ -179,9 +181,12 @@ Every lost id needs an entry, every entry must be a real loss, and each successo
 live id that is not itself lost. Mapping files already on the base excuse nothing, so a later
 deletion is never hidden by an old entry. The Python ledger result and its output are
 unchanged; a frontend refusal prints `{"status": "REFUSED", "category": ...}` and exits 1.
-Limits: the scanner is a small lexer, not a TypeScript parser; a case with a non-literal title
-is counted as `<dynamic>`, and a row removed from an `.each` table is not seen (the id is the
-title), so table edits stay a review item. This does not run any frontend test.
+Limits: the scanner is a small lexer, not a TypeScript parser, and a case with a non-literal
+title is counted as `<dynamic>`. These forms still pass silently (follow-up bu-9faxpx): weakening
+a case's body, `it("x")` with no function, `if (false)` wrappers, vitest `include`/`exclude`
+edits, `.each` tables given as an identifier, spread or tagged template (counted as one row),
+conditional `skipIf`/`runIf`, and the node:test cases in
+`frontend/scripts/worktree-tooling-contract.mjs`. This does not run any frontend test.
 
 ## Independently authorized contract evolution
 

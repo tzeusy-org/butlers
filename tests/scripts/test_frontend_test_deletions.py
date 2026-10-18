@@ -222,3 +222,81 @@ def test_ledger_entry_point_reports_the_refusal(repo: Path, capsys) -> None:
         "status": "REFUSED",
         "category": "frontend-test-deleted-without-successor-mapping",
     }
+
+
+JSX_SUITE = """\
+describe("Panel", () => {
+  it("renders", () => {
+    render(<Child onClick={() => go()} />);
+  });
+  it("hides", () => {
+    render(<Y b={2} />);
+  });
+});
+"""
+
+
+def test_jsx_self_closing_tag_after_a_brace_prop_does_not_swallow_the_line() -> None:
+    """``/>`` after ``{...}`` is punctuation; a regex read would drift the describe depth."""
+    ids = set(fe.case_ids(PATH, JSX_SUITE + 'describe("Next", () => { it("a", () => {}); });\n'))
+    assert f"{PATH}::Panel > renders" in ids
+    assert f"{PATH}::Panel > hides" in ids
+    assert f"{PATH}::Next > a" in ids
+    assert not any("Panel > Next" in i or "hides > " in i for i in ids)
+
+
+EACH_SUITE = """\
+describe("Rows", () => {
+  it.each([
+    [1, 2],
+    [3, 4],
+    { a: [5, 6] },
+  ])("adds %s", (a, b) => {});
+  it.each(TABLE)("table %s", () => {});
+  it.each([...MORE])("spread %s", () => {});
+  it.each([])("empty %s", () => {});
+});
+"""
+
+
+def test_inline_each_rows_are_counted_and_uncountable_tables_are_one() -> None:
+    ids = fe.case_ids(PATH, EACH_SUITE)
+    assert ids[f"{PATH}::Rows > adds %s"] == 3
+    assert ids[f"{PATH}::Rows > table %s"] == 1
+    assert ids[f"{PATH}::Rows > spread %s"] == 1
+    assert ids[f"{PATH}::Rows > empty %s"] == 1
+
+
+def test_removing_an_inline_each_row_is_refused(repo: Path) -> None:
+    _write(repo, EACH_SUITE)
+    _git(repo, "commit", "-qam", "table")
+    _write(repo, EACH_SUITE.replace("    [3, 4],\n", ""))
+    with pytest.raises(fe.FrontendDeletionError, match="without-successor-mapping"):
+        fe.check(repo, "HEAD")
+
+
+@pytest.mark.parametrize(
+    "weakened",
+    [
+        'it.fails("x", () => {});',
+        'it("x", { skip: true }, () => {});',
+        'it("x", { todo: true }, () => {});',
+        'it("x", { fails: true }, () => {});',
+        'it("x", () => {}, { skip: true });',
+        'it.skip.each([1])("x", () => {});',
+    ],
+)
+def test_fails_and_option_object_weakening_forms_are_not_live(weakened: str) -> None:
+    assert not fe.case_ids(PATH, f'describe("S", () => {{ {weakened} }});')
+
+
+@pytest.mark.parametrize(
+    "live",
+    [
+        'it("x", { skip: false }, () => {});',
+        'it("x", { timeout: 10 }, () => { const o = { skip: true }; });',
+        'it("x", () => { const o = { skip: true }; });',
+    ],
+)
+def test_options_that_do_not_weaken_the_case_stay_live(live: str) -> None:
+    assert len(fe.case_ids(PATH, f'describe("S", () => {{ {live} }});')) == 1
