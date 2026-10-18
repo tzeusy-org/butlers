@@ -39,11 +39,14 @@ All metrics include `connector_type` and `endpoint_identity` labels.
 
 ## Scrape Coverage
 
-`prometheus_client` instruments only reach Prometheus from processes that serve `/metrics`, and only when a scrape job targets them.
+`prometheus_client` instruments only reach Prometheus from processes that serve `/metrics` on an address a scraper can reach, and only when a scrape job targets them.
 
-- **Compose:** `observability/prometheus/prometheus.yml` has a job for every connector that serves `/metrics`: telegram-bot, telegram-user, gmail, whatsapp-user, spotify, google-calendar, owntracks, activitywatch, home-assistant, google-drive, live-listener, steam and google-health. The Discord user connector serves `/metrics` but has no Compose service, so it has no job.
-- **Kubernetes (k3s):** the Helm chart ships no scrape configuration (no ServiceMonitor, PodMonitor or scrape annotations) and deploys no Prometheus; it consumes the site's existing LGTM stack. Connector `/metrics` is therefore not scraped there until the site's Prometheus is pointed at the connector pods.
+- **Reachability:** almost every connector binds its health and `/metrics` server to `127.0.0.1` on purpose (see `make_health_socket("127.0.0.1", ...)` in each connector, and the loopback note in [Telegram User Client](telegram-user-client.md)). An out-of-pod scraper, on Compose or on k3s, cannot reach a loopback bind. Only OwnTracks (`0.0.0.0`) and Steam (all interfaces) answer from outside their container; on k3s the OwnTracks pod is further limited by the `butlers-host-ingress` NetworkPolicy. The Discord user connector also binds loopback and has no Compose service.
+- **Compose:** `observability/prometheus/prometheus.yml` lists a job per connector, but the jobs for loopback-bound connectors fail to connect. Treat only `connector-owntracks` and `connector-steam` as working scrape targets. The other jobs are retained until connector metrics move to OTLP (bu-n80xsk).
+- **Kubernetes (k3s):** the Helm chart ships no scrape configuration (no ServiceMonitor, PodMonitor or scrape annotations) and deploys no Prometheus; it consumes the site's existing LGTM stack. Connector `/metrics` is not scraped there.
 - **Butler daemons and the dashboard API** serve no `/metrics`. Their telemetry is OpenTelemetry over OTLP (RFC 0005), so any instrument defined in those processes must be an OTel instrument to be visible at all.
+
+Until connector metrics are exported over OTLP, the `connector_*` Prometheus series should not be assumed to exist in any deployment other than for OwnTracks and Steam.
 
 ## ConnectorMetrics Class
 
