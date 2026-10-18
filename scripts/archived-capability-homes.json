@@ -1,0 +1,12 @@
+{
+  "education-api-write": "dashboard-education-api",
+  "education-butler-identity": "butler-education",
+  "education-curriculum-planning": "module-education-curriculum",
+  "education-dashboard-ui": "dashboard-education-ui",
+  "education-diagnostic-assessment": "module-education-diagnostic",
+  "education-learning-analytics": "module-education-analytics",
+  "education-mastery-tracking": "module-education-mastery",
+  "education-mind-map": "module-education-mind-map",
+  "education-spaced-repetition": "module-education-spaced-repetition",
+  "education-teaching-flows": "module-education-teaching-flows"
+}

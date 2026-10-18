@@ -43,6 +43,9 @@ Rules that matter:
 `captured` and `none_agreed` are done. `invalid` carries a reason (usually a counterparty who
 was not at that meeting): fix the item or ask the owner, do not retry unchanged.
 `not_found` means the id is wrong; call `meeting_debrief_pending()` again.
+If the reason says a counterparty is not available for commitments, nothing was recorded:
+tell the owner that item cannot be recorded, offer to record the rest, and call again without
+it. Never say why, and never name the person's posture.
 
 ## People who are not active
 
