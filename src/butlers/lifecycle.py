@@ -27,6 +27,7 @@ from butlers.config import (
     ButlerType,
     load_config,
 )
+from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
@@ -370,6 +371,7 @@ async def run_startup(daemon: Any) -> None:
             "max_token_budget": s.max_token_budget,
             "complexity": s.complexity,
             "continuity": s.continuity,
+            "timezone": s.timezone,
         }
         for s in daemon.config.schedules
         if not (_is_staffer and s.job_name == "daily_briefing_contribution")
@@ -378,12 +380,19 @@ async def run_startup(daemon: Any) -> None:
     # open to UTC) so e.g. a daily "5 1 * * *" fires at 01:05 local, not 01:05
     # UTC. Resolved from the shared general settings via the credential store.
     default_timezone = await resolve_general_timezone(credential_store.shared_pool)
+    # Owner quiet window, used only for the warn-only always-suppressed schedule lint.
+    quiet_policy = (
+        await get_approvals_policy_quiet_hours(credential_store.shared_pool)
+        if credential_store.shared_pool is not None
+        else None
+    )
     await sync_schedules(
         pool,
         schedules,
         stagger_key=daemon.config.name,
         skills_dir=get_skills_dir(daemon.config_dir),
         default_timezone=default_timezone,
+        quiet_policy=quiet_policy,
     )
 
     # 11. Call module on_startup (non-fatal per-module)
