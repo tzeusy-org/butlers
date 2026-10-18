@@ -931,8 +931,19 @@ async def test_conditions_attention_unreadable_is_unavailable_not_silent():
         (2, None, "within_grace"),
         (30, 3, None),
         (30, 20, "not_raised"),
+        (6, None, "within_grace"),
+        (30, 6, None),
+        (9, None, "not_raised"),
     ],
-    ids=["aged-active", "inside-grace", "resolved-inside-grace", "resolved-after-grace"],
+    ids=[
+        "aged-active",
+        "inside-grace",
+        "resolved-inside-grace",
+        "resolved-after-grace",
+        "inside-pass-allowance",
+        "resolved-inside-pass-allowance",
+        "past-pass-allowance",
+    ],
 )
 async def test_conditions_without_marker_report_not_raised_or_within_grace(
     age_min, resolved_after_min, expected
