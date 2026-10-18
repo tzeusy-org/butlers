@@ -435,3 +435,101 @@ async def test_unbound_flag_does_not_outlive_the_request(owner_session: str) -> 
         assert (await resolve_content_authority(object())).authority == "owner"
     finally:
         reset_current_runtime_session_id(token)
+
+
+# ---------------------------------------------------------------------------
+# Response-side transport admission: initialize records the binding (bu-84ffid)
+# ---------------------------------------------------------------------------
+
+
+async def _initialize_response(
+    guard: _McpRuntimeSessionGuard, token: str, transport: bytes
+) -> None:
+    """Run an initialize request whose response hands out *transport* as its MCP session id."""
+    from butlers.core import fact_authority
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"mcp-session-id", transport)],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+    guard._app = app
+    await guard(
+        _http_scope(headers=[(fact_authority.INVOCATION_HEADER.lower().encode(), token.encode())]),
+        _empty_receive,
+        _discard_send,
+    )
+
+
+async def test_initialize_response_records_the_transport_binding(owner_session: str) -> None:
+    from butlers.core import fact_authority
+
+    guard = _McpRuntimeSessionGuard(_discard_send, butler_name="relationship")
+    transport = b"handed-out-transport"
+    first = await fact_authority.register_invocation(
+        "relationship", "first-invocation", source_endpoint=None, routed=True
+    )
+    second = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    try:
+        await _initialize_response(guard, first, transport)
+        # The transport was bound by the response alone, so another valid invocation that
+        # presents it cannot take it over and its locator stays diagnostic.
+        context, authority = await _observe_with_guard(
+            guard,
+            _http_scope(
+                query_string=f"runtime_session_id={owner_session}".encode(),
+                headers=[
+                    (fact_authority.INVOCATION_HEADER.lower().encode(), second.encode()),
+                    (b"mcp-session-id", transport),
+                ],
+            ),
+        )
+    finally:
+        fact_authority.settle_invocation(first)
+        fact_authority.settle_invocation(second)
+
+    assert context is None
+    assert authority == "third_party"
+
+
+async def test_initialize_response_cannot_rebind_a_transport_bound_elsewhere(
+    owner_session: str,
+) -> None:
+    from butlers.core import fact_authority
+
+    guard = _McpRuntimeSessionGuard(_discard_send, butler_name="relationship")
+    transport = b"shared-transport"
+    owner = await fact_authority.register_invocation(
+        "relationship", owner_session, source_endpoint=None, routed=True
+    )
+    other = await fact_authority.register_invocation(
+        "relationship", "other-invocation", source_endpoint=None, routed=True
+    )
+    try:
+        await _initialize_response(guard, owner, transport)
+        # A second invocation's initialize response names the same transport; it must not
+        # displace the first binding.
+        await _initialize_response(guard, other, transport)
+        context, authority = await _observe_with_guard(
+            guard,
+            _http_scope(
+                query_string=f"runtime_session_id={owner_session}".encode(),
+                headers=[
+                    (fact_authority.INVOCATION_HEADER.lower().encode(), owner.encode()),
+                    (b"mcp-session-id", transport),
+                ],
+            ),
+        )
+    finally:
+        fact_authority.settle_invocation(owner)
+        fact_authority.settle_invocation(other)
+
+    assert context == _OWNER_CONTEXT
+    assert authority == "owner"
