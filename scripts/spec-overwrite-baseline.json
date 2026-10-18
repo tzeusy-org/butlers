@@ -429,6 +429,364 @@
       "scenario": "QA module MCP tool registration"
     }
   ],
+  "education-evidence-honesty/butler-education/Scheduled Tasks": [
+    {
+      "digest": "0196750d4291",
+      "excerpt": "The education butler SHALL run five scheduled tasks: a nightly analytics job, a weekly progress digest prompt, a week...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "404154cdc642",
+      "excerpt": "- **AND** the task MUST use `dispatch_mode = \"prompt\"` with a prompt that instructs the spawned LLM session to read a...",
+      "kind": "clause",
+      "scenario": "Weekly progress digest prompt configuration"
+    },
+    {
+      "digest": "3fc9b13605b6",
+      "excerpt": "- **THEN** it includes a scheduled task (job or prompt dispatch) that checks for teaching flows with `last_session_at...",
+      "kind": "clause",
+      "scenario": "Weekly stale-flow check configuration"
+    },
+    {
+      "digest": "9f02bd6ddc09",
+      "excerpt": "- **AND** the task MUST use `dispatch_mode = \"prompt\"` with a prompt that lists active mind maps, collects pending re...",
+      "kind": "clause",
+      "scenario": "Daily spaced-repetition nudge configuration"
+    }
+  ],
+  "education-evidence-honesty/dashboard-education-api/Curriculum request receipt lifecycle": [
+    {
+      "digest": "2b069ec8ed44",
+      "excerpt": "The task SHALL settle `status = completed` only when the triggered session reported success **and** a mind map create...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "e76bebe32b8f",
+      "excerpt": "- **WHEN** the triggered session reports success but no mind map was created at or after `triggered_at`",
+      "kind": "clause",
+      "scenario": "Session exits without creating a curriculum"
+    }
+  ],
+  "education-evidence-honesty/dashboard-education-api/Pending reviews endpoint": [
+    {
+      "digest": "a2943383da37",
+      "excerpt": "The endpoint SHALL accept an optional `horizon_days` query parameter (integer, `>= 0`). When omitted, only overdue no...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "e2e154335d08",
+      "excerpt": "The response SHALL be a JSON array of node objects, each containing: `node_id`, `label`, `ease_factor`, `repetitions`...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "0fb717815d92",
+      "excerpt": "- **AND** the mind map exists with 3 nodes having `next_review_at` in the past",
+      "kind": "clause",
+      "scenario": "Reviews due for a mind map with scheduled nodes"
+    },
+    {
+      "digest": "dcd4a18e4baa",
+      "excerpt": "- **AND** the mind map exists but all nodes have `next_review_at` in the future or NULL",
+      "kind": "clause",
+      "scenario": "No reviews due"
+    }
+  ],
+  "education-evidence-honesty/module-education-mastery/Mastery status state machine": [
+    {
+      "digest": "8930b4cfc644",
+      "excerpt": "- **AND** `mastery_record_response()` is called with `quality=1`",
+      "kind": "clause",
+      "scenario": "Mastered node is not regressed"
+    },
+    {
+      "digest": "7d171f08ab71",
+      "excerpt": "- **THEN** the node's `mastery_status` MUST remain `'mastered'` (mastered nodes are not demoted via this mechanism)",
+      "kind": "clause",
+      "scenario": "Mastered node is not regressed"
+    }
+  ],
+  "education-evidence-honesty/module-education-mastery/Quiz response recording": [
+    {
+      "digest": "42c8cd08386f",
+      "excerpt": "- **THEN** the insert MUST succeed",
+      "kind": "clause",
+      "scenario": "Response recorded with null user answer"
+    },
+    {
+      "digest": "c5d3549e409d",
+      "excerpt": "- **AND** the resulting row MUST have `user_answer = NULL` and `quality = 0`",
+      "kind": "clause",
+      "scenario": "Response recorded with null user answer"
+    },
+    {
+      "digest": "c61ad7272166",
+      "excerpt": "- **THEN** the resulting row MUST have `session_id` set to `some_uuid`",
+      "kind": "clause",
+      "scenario": "Response recorded with optional session ID"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Batch Review Cap \u2014 Maximum 20 Pending Schedules Per Mind Map": [
+    {
+      "digest": "99f96b6c8e16",
+      "excerpt": "To prevent schedule proliferation, no mind map SHALL have more than 20 pending review schedules active simultaneously...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "766cd034950c",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called for a mind map with 15 pending review schedules",
+      "kind": "clause",
+      "scenario": "Schedule created when under cap"
+    },
+    {
+      "digest": "eeab65d1876c",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called for a mind map that already has 20 pending review schedules",
+      "kind": "clause",
+      "scenario": "Individual schedule blocked when cap is reached"
+    },
+    {
+      "digest": "2624111c1092",
+      "excerpt": "- **THEN** it returns a list of dicts for all nodes in that mind map where `next_review_at <= now()`",
+      "kind": "clause",
+      "scenario": "`spaced_repetition_pending_reviews` returns only overdue nodes"
+    },
+    {
+      "digest": "de3ffd514fe9",
+      "excerpt": "- **AND** nodes where `next_review_at IS NULL` or `next_review_at > now()` are excluded",
+      "kind": "clause",
+      "scenario": "`spaced_repetition_pending_reviews` returns only overdue nodes"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Node State Updates and Mastery Status Transitions": [
+    {
+      "digest": "b5a5ed64ba90",
+      "excerpt": "`spaced_repetition_record_response()` SHALL update the node's persistent state in `mind_map_nodes` after every call: ...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "99bef0bb061f",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called with `quality >= 3` on a node with `mastery_status='review...",
+      "kind": "clause",
+      "scenario": "Successful recall leaves mastery_status unchanged"
+    },
+    {
+      "digest": "6467f1f51ce5",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called with `quality < 3` on a node with `mastery_status='reviewi...",
+      "kind": "clause",
+      "scenario": "Failed recall demotes a reviewing node back to learning"
+    },
+    {
+      "digest": "bc2e43a6a431",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called with `quality < 3` on a node with `mastery_status='mastered'`",
+      "kind": "clause",
+      "scenario": "Failed recall demotes a mastered node to reviewing"
+    },
+    {
+      "digest": "48c246f8dccd",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` updates a node",
+      "kind": "clause",
+      "scenario": "Node state update is atomic"
+    },
+    {
+      "digest": "e5c946435fc1",
+      "excerpt": "- **AND** if the subsequent `schedule_create()` call fails, the transaction is rolled back and the node retains its p...",
+      "kind": "clause",
+      "scenario": "Node state update is atomic"
+    },
+    {
+      "digest": "f2bd57a7ac77",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called for any node",
+      "kind": "clause",
+      "scenario": "`updated_at` timestamp is refreshed on every state update"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Review Delivery via notify()": [
+    {
+      "digest": "0cf4cb4c8ca3",
+      "excerpt": "- **WHEN** a review schedule fires and the ephemeral session runs",
+      "kind": "clause",
+      "scenario": "Scheduled review session dispatches a notify call"
+    },
+    {
+      "digest": "f42c6ccc49ff",
+      "excerpt": "- **THEN** the session calls `notify(channel=<user_preferred_channel>, message=<quiz_content>, intent=\"send\")`",
+      "kind": "clause",
+      "scenario": "Scheduled review session dispatches a notify call"
+    },
+    {
+      "digest": "44695a725402",
+      "excerpt": "- **THEN** the session resolves the user's preferred channel from `public.contact_info` for the owner contact",
+      "kind": "clause",
+      "scenario": "Delivery channel defaults to the owner contact's preferred channel"
+    },
+    {
+      "digest": "3978f4d238d0",
+      "excerpt": "- **AND** if no explicit preference is set, `channel=\"telegram\"` is used as the default",
+      "kind": "clause",
+      "scenario": "Delivery channel defaults to the owner contact's preferred channel"
+    },
+    {
+      "digest": "88b1a4a46ca5",
+      "excerpt": "- **AND** the session interleaves questions for multiple nodes within the session",
+      "kind": "clause",
+      "scenario": "Batch review session notify includes count of pending nodes"
+    },
+    {
+      "digest": "5120aace498c",
+      "excerpt": "- **WHEN** the user responds to a review quiz question during an ephemeral session",
+      "kind": "clause",
+      "scenario": "Review response from user is captured as a quiz_responses row"
+    },
+    {
+      "digest": "8407e9af0164",
+      "excerpt": "- **THEN** the session calls `spaced_repetition_record_response(pool, node_id, quality)` with the evaluated quality s...",
+      "kind": "clause",
+      "scenario": "Review response from user is captured as a quiz_responses row"
+    },
+    {
+      "digest": "667213431d9f",
+      "excerpt": "- **THEN** `spaced_repetition_record_response()` has not yet been called (delivery precedes quality recording)",
+      "kind": "clause",
+      "scenario": "notify() failure does not corrupt node state"
+    },
+    {
+      "digest": "7ef327918468",
+      "excerpt": "- **AND** the failed session logs the error to the session log",
+      "kind": "clause",
+      "scenario": "notify() failure does not corrupt node state"
+    },
+    {
+      "digest": "3ccf82d46639",
+      "excerpt": "- **WHEN** the scheduler fires the review schedule and spawns an ephemeral session",
+      "kind": "clause",
+      "scenario": "Review prompt instructs the session to evaluate user answer and call record_response"
+    },
+    {
+      "digest": "1579239ac960",
+      "excerpt": "- **THEN** the session prompt includes an explicit directive to: (1) ask the quiz question via notify, (2) await user...",
+      "kind": "clause",
+      "scenario": "Review prompt instructs the session to evaluate user answer and call record_response"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Schedule Cleanup on Mind Map Completion or Abandonment": [
+    {
+      "digest": "b77063422f88",
+      "excerpt": "- **THEN** all `scheduled_tasks` rows whose names match `review-{node_id}-*` for nodes in that mind map are deleted",
+      "kind": "clause",
+      "scenario": "Cleanup removes all node review schedules on completion"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Schedule Creation via Core Scheduler": [
+    {
+      "digest": "0968897fbae6",
+      "excerpt": "After computing the new SM-2 state, `spaced_repetition_record_response()` SHALL create a one-shot review schedule via...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "fb6f13e194e4",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called and the next review datetime is computed as `2026-03-05 14...",
+      "kind": "clause",
+      "scenario": "One-shot cron computed from next review datetime"
+    },
+    {
+      "digest": "66e995ad1929",
+      "excerpt": "- **THEN** `schedule_create()` is called with `cron=\"30 14 5 3 *\"`",
+      "kind": "clause",
+      "scenario": "One-shot cron computed from next review datetime"
+    },
+    {
+      "digest": "e2aaef16acf5",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` computes `next_review_at = 2026-03-05T14:30:00Z`",
+      "kind": "clause",
+      "scenario": "until_at set to next_review_at plus 24 hours"
+    },
+    {
+      "digest": "911a96866b94",
+      "excerpt": "- **THEN** `schedule_create()` is called with `until_at=2026-03-06T14:30:00Z` (next_review_at + 24 hours)",
+      "kind": "clause",
+      "scenario": "until_at set to next_review_at plus 24 hours"
+    },
+    {
+      "digest": "77e153217e82",
+      "excerpt": "- **WHEN** `schedule_create()` is called for a review schedule",
+      "kind": "clause",
+      "scenario": "Prompt includes enough context for the ephemeral session"
+    },
+    {
+      "digest": "a4a026d28acc",
+      "excerpt": "- **AND** the prompt instructs the session to conduct a spaced repetition review quiz for the named concept",
+      "kind": "clause",
+      "scenario": "Prompt includes enough context for the ephemeral session"
+    }
+  ],
+  "education-evidence-honesty/module-education-spaced-repetition/Schedule Naming Convention": [
+    {
+      "digest": "d4c586d296b2",
+      "excerpt": "Each review schedule SHALL be named following the pattern `review-{node_id}-rep{N}`, where `node_id` is the node's UU...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "78a8a1d211f1",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called for node `abc123` and the new repetition count is `3`",
+      "kind": "clause",
+      "scenario": "Schedule name encodes node and repetition"
+    },
+    {
+      "digest": "963d0ccb6b76",
+      "excerpt": "- **THEN** `schedule_create()` is called with `name=\"review-abc123-rep3\"`",
+      "kind": "clause",
+      "scenario": "Schedule name encodes node and repetition"
+    },
+    {
+      "digest": "a31086a10156",
+      "excerpt": "- **WHEN** a node advances from `repetitions=2` to `repetitions=3` after a successful review",
+      "kind": "clause",
+      "scenario": "Prior-cycle schedule is superseded on new record"
+    },
+    {
+      "digest": "c7754698bae4",
+      "excerpt": "- **THEN** the new schedule is named `review-{node_id}-rep3`",
+      "kind": "clause",
+      "scenario": "Prior-cycle schedule is superseded on new record"
+    },
+    {
+      "digest": "83cd35f70969",
+      "excerpt": "- **AND** the prior schedule named `review-{node_id}-rep2` is deleted (or was already auto-disabled by its `until_at`...",
+      "kind": "clause",
+      "scenario": "Prior-cycle schedule is superseded on new record"
+    },
+    {
+      "digest": "e527780fa130",
+      "excerpt": "- **WHEN** `spaced_repetition_record_response()` is called with `quality=1` on a node that had `repetitions=5`",
+      "kind": "clause",
+      "scenario": "Failed recall resets repetition counter in schedule name"
+    },
+    {
+      "digest": "265c47a2f701",
+      "excerpt": "- **THEN** the new schedule is named `review-{node_id}-rep0`",
+      "kind": "clause",
+      "scenario": "Failed recall resets repetition counter in schedule name"
+    },
+    {
+      "digest": "36dc569741b8",
+      "excerpt": "- **WHEN** `schedule_create()` is called with a name that already exists in `scheduled_tasks`",
+      "kind": "clause",
+      "scenario": "Duplicate schedule name rejected by scheduler"
+    },
+    {
+      "digest": "4cb88dd99919",
+      "excerpt": "- **AND** `spaced_repetition_record_response()` deletes the prior schedule with the same name before creating the new...",
+      "kind": "clause",
+      "scenario": "Duplicate schedule name rejected by scheduler"
+    }
+  ],
   "education-mind-map-lifecycle-integrity/butler-education/Scheduled Tasks": [
     {
       "digest": "3fc9b13605b6",
@@ -2571,10 +2929,10 @@
   ],
   "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
     {
-      "kind": "prose",
-      "scenario": null,
       "digest": "982c41ec33eb",
-      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
