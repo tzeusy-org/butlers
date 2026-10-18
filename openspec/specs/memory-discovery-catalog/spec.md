@@ -139,6 +139,35 @@ transaction as the endorsement.
 
 ---
 
+### Requirement: In-place fact edits refresh the catalog row
+
+A domain tool that edits a fact's content in place, outside the memory store
+write path, SHALL refresh that fact's `public.memory_catalog` row in the same
+operation: the row's `summary`, `embedding`, `search_vector` and the
+enrichment columns derived from the fact (`title`, `predicate`, `scope`,
+`valid_at`, `entity_id`, `object_entity_id`, `importance`, `retention_class`,
+`sensitivity`) SHALL be rewritten from the fact as it now stands, so catalog
+readers never see superseded content. The refresh SHALL be best-effort (a
+failure is logged and never blocks the edit), SHALL only update an existing
+row (a fact with no row is left to the backfill), and SHALL mark the row stale
+instead of refreshing it when the fact is no longer live or its `sensitivity`
+is `pii` or `confidential`. It MUST NOT create a row for such a fact.
+
+#### Scenario: A Health measurement or meal edit updates the catalog summary
+
+- **WHEN** a cataloged Health measurement or meal fact is edited in place
+- **THEN** its catalog row's `summary` and `embedding` MUST reflect the edited
+  content
+
+#### Scenario: An edit of a confidential fact writes no catalog row
+
+- **WHEN** a fact whose `sensitivity` is `confidential` or `pii` is edited in
+  place
+- **THEN** no catalog row is created for it, and an existing row is marked
+  stale rather than refreshed
+
+---
+
 ### Requirement: Atomic catalog disownment on forget, expiry, and purge
 
 The storage layer SHALL mark a disowned fact's or rule's `public.memory_catalog` row stale (`confidence = 0`, `invalid_at` set) in the SAME database transaction as the canonical state change, for every path that permanently disowns a memory — `memory_forget` (plain or correction-driven), the decay sweep's terminal expiry transition, and `purge_superseded_facts`. Unlike the best-effort, eventually-consistent write-behind used for new catalog entries and the supersession cascade, this disownment cascade MUST NOT swallow its own failures — a catalog-write error here rolls back the whole transaction so the canonical disownment and the catalog can never diverge, even across a crash between the two writes.

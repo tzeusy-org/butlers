@@ -525,6 +525,92 @@ async def _mark_catalog_stale(
     )
 
 
+async def refresh_catalog_for_edited_fact(
+    pool: Pool,
+    fact_id: uuid.UUID,
+    *,
+    embedding_engine: EmbeddingEngine,
+) -> bool:
+    """Bring a fact's ``public.memory_catalog`` row in line after an in-place edit.
+
+    Domain tools that edit a fact's content with a plain ``UPDATE facts`` (Health
+    measurement and meal edits) bypass ``store_fact``'s write-behind, so the catalog row
+    would keep the pre-edit summary and embedding and cross-butler search would return the
+    superseded value. This rewrites the row's summary, embedding and search vector from
+    the fact as it now stands, exactly as ``store_fact`` builds them.
+
+    Best-effort and never raises, like every catalog write: a failure is logged and the
+    canonical edit stands. Only an existing row is touched (a fact with no row yet is
+    cataloged with its current content by the backfill), so this never creates a row, and
+    a fact whose ``sensitivity`` is excluded from the catalog
+    (``CATALOG_WRITE_EXCLUDED_SENSITIVITIES``) has any row marked stale instead of
+    refreshed. A stale row's content is refreshed too, so reviving it later never brings
+    back the superseded summary.
+
+    Returns True when a catalog row was updated or marked stale.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT subject, predicate, content, scope, valid_at, importance,"
+            " retention_class, sensitivity, entity_id, object_entity_id, validity"
+            " FROM facts WHERE id = $1",
+            fact_id,
+        )
+        if row is None:
+            return False
+        if row["validity"] not in ("active", "fading") or _is_catalog_write_excluded(
+            row["sensitivity"]
+        ):
+            status = await pool.execute(
+                "UPDATE public.memory_catalog SET confidence = 0, invalid_at = now(),"
+                " updated_at = now() WHERE source_table = 'facts' AND source_id = $1"
+                " AND invalid_at IS NULL",
+                fact_id,
+            )
+            return status != "UPDATE 0"
+        searchable = f"{row['subject']} {row['predicate']} {row['content']}"
+        status = await pool.execute(
+            f"""
+            UPDATE public.memory_catalog
+            SET summary = $2,
+                embedding = $3,
+                search_vector = {tsvector_sql("$4")},
+                title = $5,
+                predicate = $6,
+                scope = $7,
+                valid_at = $8,
+                entity_id = $9,
+                object_entity_id = $10,
+                importance = $11,
+                retention_class = $12,
+                sensitivity = $13,
+                updated_at = now()
+            WHERE source_table = 'facts' AND source_id = $1
+            """,
+            fact_id,
+            f"{row['subject']} {row['predicate']}: {row['content']}",
+            str(embedding_engine.embed(searchable)),
+            preprocess_text(searchable),
+            f"{row['subject']} {row['predicate']}",
+            row["predicate"],
+            row["scope"],
+            row["valid_at"],
+            row["entity_id"],
+            row["object_entity_id"],
+            row["importance"],
+            row["retention_class"],
+            row["sensitivity"],
+        )
+        return status != "UPDATE 0"
+    except Exception:
+        logger.warning(
+            "memory_catalog: failed to refresh catalog entry for edited fact %s",
+            fact_id,
+            exc_info=True,
+        )
+        return False
+
+
 async def _cascade_catalog_disownment(
     conn: Connection,
     source_table: str,
