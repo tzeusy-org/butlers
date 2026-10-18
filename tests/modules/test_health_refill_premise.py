@@ -185,7 +185,7 @@ class TestRefillPremiseAgainstPostgres:
         )
         med_id = await pool.fetchval(
             "INSERT INTO health.facts (subject, predicate, scope, validity, metadata) "
-            "VALUES ('medication:Metformin', 'medication', 'health', $1, $2::jsonb) RETURNING id",
+            "VALUES ('medication:Metformin', 'medication', 'health', $1, $2::text::jsonb) RETURNING id",
             validity,
             meta,
         )
@@ -233,6 +233,7 @@ class TestRefillPremiseAgainstPostgres:
             message="Metformin supply estimated to run out in 8 day(s)",
             expires_at=_PINNED_NOW + timedelta(days=7),
             premise=probe_premise(*_PROBE, _ARGS),
+            now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
         await pool.execute("UPDATE health.facts SET validity = 'superseded'")
