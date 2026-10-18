@@ -110,55 +110,85 @@ async def test_a_catalog_failure_is_logged_and_never_raised(caplog) -> None:
     assert any("failed to refresh catalog entry" in r.getMessage() for r in caplog.records)
 
 
-async def test_measurement_update_refreshes_the_catalog_after_the_edit() -> None:
-    from butlers.tools.health import measurements
+class _EditPool:
+    """A stateful fake pool: records every statement and applies the facts edit to its row."""
 
+    def __init__(self, row: dict) -> None:
+        self.row = dict(row)
+        self.sql: list[str] = []
+
+    async def fetchval(self, sql: str, *args):
+        return "health"
+
+    async def fetchrow(self, sql: str, *args):
+        return dict(self.row)
+
+    async def execute(self, sql: str, *args):
+        self.sql.append(sql)
+        if sql.startswith("UPDATE facts SET predicate"):
+            self.row.update(predicate=args[1], content=args[2])
+        return "UPDATE 1"
+
+
+def _edit_row(**overrides) -> dict:
     row = {
         "id": _ID,
+        "subject": "owner",
         "predicate": "measurement_weight",
         "content": "weight: 70 kg",
         "valid_at": None,
         "created_at": None,
         "metadata": {"value": 70},
+        "scope": "health",
+        "importance": 5.0,
+        "retention_class": "operational",
+        "sensitivity": "normal",
+        "entity_id": None,
+        "object_entity_id": None,
+        "validity": "active",
     }
-    pool = _pool(row)
-    engine = _engine()
-    getter = MagicMock(return_value=engine)
-    with (
-        patch.object(measurements, "_get_embedding_engine", getter),
-        patch(
-            "butlers.modules.memory.storage.refresh_catalog_for_edited_fact", new=AsyncMock()
-        ) as refresh,
-    ):
+    row.update(overrides)
+    return row
+
+
+def _assert_catalog_refreshed_after_edit(pool: _EditPool, engine: MagicMock, text: str) -> None:
+    engine.embed.assert_called_once_with(text)
+    edit = next(i for i, s in enumerate(pool.sql) if s.startswith("UPDATE facts SET predicate"))
+    catalog = [i for i, s in enumerate(pool.sql) if "public.memory_catalog" in s]
+    assert len(catalog) == 1 and catalog[0] > edit
+
+
+async def test_measurement_edit_refreshes_the_catalog_from_the_edited_text() -> None:
+    from butlers.tools.health import measurements
+
+    pool, engine = _EditPool(_edit_row()), _engine()
+    with patch.object(measurements, "_get_embedding_engine", lambda: engine):
         await measurements.measurement_update(pool, str(_ID), value=72)
 
-    refresh.assert_awaited_once_with(pool, _ID, engine_factory=getter)
-    assert pool.execute.await_count == 1  # the UPDATE happened before the refresh
+    _assert_catalog_refreshed_after_edit(pool, engine, "owner measurement_weight weight: 72 kg")
 
 
-async def test_meal_update_refreshes_the_catalog_after_the_edit() -> None:
+async def test_meal_edit_refreshes_the_catalog_from_the_edited_text() -> None:
     from butlers.tools.health import diet
 
-    row = {
-        "id": _ID,
-        "predicate": "meal_lunch",
-        "content": "salad",
-        "valid_at": None,
-        "created_at": None,
-        "metadata": {},
-    }
-    pool = _pool(row)
+    pool = _EditPool(_edit_row(predicate="meal_lunch", content="salad", metadata={}))
     engine = _engine()
-    getter = MagicMock(return_value=engine)
-    with (
-        patch.object(diet, "_get_embedding_engine", getter),
-        patch(
-            "butlers.modules.memory.storage.refresh_catalog_for_edited_fact", new=AsyncMock()
-        ) as refresh,
-    ):
+    with patch.object(diet, "_get_embedding_engine", lambda: engine):
         await diet.meal_update(pool, str(_ID), description="tuna salad")
 
-    refresh.assert_awaited_once_with(pool, _ID, engine_factory=getter)
+    _assert_catalog_refreshed_after_edit(pool, engine, f"owner meal_lunch {pool.row['content']}")
+
+
+async def test_an_excluded_edit_never_loads_the_embedding_engine() -> None:
+    from butlers.tools.health import measurements
+
+    pool = _EditPool(_edit_row(sensitivity="confidential"))
+    loaded = MagicMock()
+    with patch.object(measurements, "_get_embedding_engine", loaded):
+        await measurements.measurement_update(pool, str(_ID), value=72)
+
+    loaded.assert_not_called()
+    assert len([s for s in pool.sql if "public.memory_catalog" in s]) == 1
 
 
 async def test_the_engine_factory_is_not_called_when_the_row_is_staled() -> None:
