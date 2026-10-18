@@ -8,6 +8,7 @@ the DB-backed test runs the real retract-then-backfill round trip (CI-only).
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from decimal import Decimal
@@ -83,7 +84,11 @@ async def test_a_settled_loan_fact_is_never_projected():
 async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_container):
     from butlers.core.cost_claims import retract_claim
 
-    db_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    # create_migrated_test_db runs Alembic through asyncio.run, which cannot be called from
+    # this running loop; a worker thread gets its own loop.
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db, postgres_container, migration_db_name(), chains=["core"]
+    )
     admin = await asyncpg.connect(db_url)
     pool = None
     try:
