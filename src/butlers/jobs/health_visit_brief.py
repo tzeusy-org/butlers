@@ -1,7 +1,7 @@
 """Health ``health_visit_brief``: a pre-appointment brief for the owner (bu-jv1moa.15).
 
 A deterministic job (no LLM, no cross-schema read besides ``public.facts`` / ``public.state``).
-Once a day it looks for appointments on Health's own calendar that start within the next
+Once a day it looks for appointments on Health's own calendar (see below) that start within the next
 two days and have not been briefed. For each one it composes a plain-text brief for the
 period since the previous visit (90 days when there is none, and the brief says so) and
 sends it to the owner only.
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import statistics
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -57,6 +58,9 @@ DEFAULT_LOOKBACK_DAYS = 90
 _GENERAL_SETTINGS_KEY = "settings.general"
 #: Documented fallback owner zone (matches the daily briefing): SGT.
 _SGT = timezone(timedelta(hours=8))
+
+#: Session advisory-lock key serializing visit-brief runs (any fixed bigint).
+_RUN_LOCK_KEY = 7_411_550_015
 
 _ORIGIN = "health"
 _NOTIFY_TIMEOUT_S = 30
@@ -123,24 +127,39 @@ _SERIES: tuple[_Series, ...] = (
     ),
 )
 
-# Appointments on Health's calendar: provider (user-lane) events that are timed, not
-# cancelled, not butler-generated and not declined by the owner. A recurring series
-# contributes its instances. ``event_id`` is the stable key the brief is recorded under.
-_APPOINTMENTS_SQL = """
-    WITH appts AS (
-        SELECT ce.id::text AS event_id, ce.title AS title,
-               ce.starts_at AS starts_at, ce.ends_at AS ends_at
-        FROM calendar_events ce
-        JOIN calendar_sources cs ON cs.id = ce.source_id
-        WHERE ce.recurrence_rule IS NULL
-          AND ce.status <> 'cancelled' AND ce.all_day = false AND cs.lane = 'user'
-          AND COALESCE(ce.metadata->>'butler_generated', 'false') <> 'true'
+# Appointments on Health's calendar: timed, non-cancelled events the owner has not declined, on
+# the butler-specific calendar source whose ``butler_name`` is ``health``. That covers an
+# appointment Health booked (``calendar_create_event`` titles it ``BUTLER: ...`` and marks it
+# butler-generated) and one the owner added to that calendar. Health's own scheduled-task and
+# reminder mirrors are also butler-generated but carry no ``BUTLER:`` title, so they are
+# excluded. Every other calendar source (primary, shared, subscribed) triggers nothing in S1.
+# A recurring series contributes its instances. ``event_id`` is the key the brief is recorded
+# under.
+_SOURCE_AND_KIND = """
+          AND cs.butler_name = 'health'
+          AND COALESCE(cs.metadata->>'butler_specific', 'false') = 'true'
+          AND (COALESCE(ce.metadata->>'butler_generated', 'false') <> 'true'
+               OR upper(left(ce.title, 7)) = 'BUTLER:')
           AND NOT EXISTS (
               SELECT 1 FROM jsonb_array_elements(
                   CASE WHEN jsonb_typeof(ce.metadata->'attendees') = 'array'
                        THEN ce.metadata->'attendees' ELSE '[]'::jsonb END) a
               WHERE a->>'self' = 'true'
                 AND lower(COALESCE(a->>'response_status', a->>'responseStatus', '')) = 'declined')
+"""
+
+_APPOINTMENTS_SQL = (
+    """
+    WITH appts AS (
+        SELECT ce.id::text AS event_id, ce.title AS title,
+               ce.starts_at AS starts_at, ce.ends_at AS ends_at
+        FROM calendar_events ce
+        JOIN calendar_sources cs ON cs.id = ce.source_id
+        WHERE ce.recurrence_rule IS NULL
+          AND ce.status <> 'cancelled' AND ce.all_day = false
+"""
+    + _SOURCE_AND_KIND
+    + """
         UNION ALL
         SELECT ce.id::text || ':' || ci.origin_instance_ref, ce.title, ci.starts_at, ci.ends_at
         FROM calendar_event_instances ci
@@ -148,16 +167,13 @@ _APPOINTMENTS_SQL = """
         JOIN calendar_sources cs ON cs.id = ce.source_id
         WHERE ce.recurrence_rule IS NOT NULL
           AND ce.status <> 'cancelled' AND ci.status <> 'cancelled'
-          AND ce.all_day = false AND cs.lane = 'user'
-          AND COALESCE(ce.metadata->>'butler_generated', 'false') <> 'true'
-          AND NOT EXISTS (
-              SELECT 1 FROM jsonb_array_elements(
-                  CASE WHEN jsonb_typeof(ce.metadata->'attendees') = 'array'
-                       THEN ce.metadata->'attendees' ELSE '[]'::jsonb END) a
-              WHERE a->>'self' = 'true'
-                AND lower(COALESCE(a->>'response_status', a->>'responseStatus', '')) = 'declined')
+          AND ce.all_day = false
+"""
+    + _SOURCE_AND_KIND
+    + """
     )
 """
+)
 
 _UPCOMING_SQL = (
     _APPOINTMENTS_SQL
@@ -232,8 +248,14 @@ def _component(value: Any, component: str | None) -> float | None:
     return _number(value.get(component)) if isinstance(value, dict) else None
 
 
+_TITLE_PREFIX = re.compile(r"^\s*BUTLER:\s*", re.IGNORECASE)
+_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
+
 def _clean_title(title: Any) -> str:
-    text = " ".join(str(title or "").split())
+    """The event title without the ``BUTLER:`` prefix or URLs (no link preview unfurls)."""
+    text = _URL.sub("", _TITLE_PREFIX.sub("", str(title or "")))
+    text = " ".join(text.split())
     return text[:_MAX_TITLE_CHARS] if text else "your appointment"
 
 
@@ -488,16 +510,24 @@ async def _condition_lines(
         return ["Conditions: no changes recorded in this period."]
     lines = ["Conditions changed:"]
     for row in rows:
-        change = (
-            f"{row['previous']} to {row['status']}" if row["previous"] else f"new, {row['status']}"
-        )
+        status, previous = row["status"], row["previous"]
+        if previous and previous == status:
+            continue  # A notes-only update is not a change in status.
+        if previous and status:
+            change = f"{previous} to {status}"
+        elif status:
+            change = f"new, {status}"
+        else:
+            change = "updated, status not recorded"
         lines.append(f"- {row['name']}: {change}")
         figures.add(
             "conditions",
             row["name"],
-            {"status": row["status"], "previous": row["previous"]},
+            {"status": status, "previous": previous},
             [row["id"]],
         )
+    if len(lines) == 1:
+        return ["Conditions: no changes recorded in this period."]
     return lines
 
 
@@ -516,7 +546,8 @@ async def compose_brief(
     days = max((now - period_start).days, 1)
     if since_visit is not None:
         covers = (
-            f"Covers the {days} days since your last visit on {_fmt_day(_day(since_visit, zone))}."
+            f"Covers the {_n(days, 'day')} since your last visit on "
+            f"{_fmt_day(_day(since_visit, zone))}."
         )
     else:
         covers = (
@@ -622,8 +653,32 @@ async def run_visit_brief(
     notify_fn: NotifyFn | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Brief the owner before each unbriefed appointment starting within the lead window."""
+    """Brief the owner before each unbriefed appointment starting within the lead window.
+
+    One run at a time: a session advisory lock held on a dedicated connection for the whole
+    run serializes overlapping runs (the scheduler tick and the dashboard Trigger button). A
+    run that cannot take it sends nothing and reports ``skipped_concurrent``. A crash drops
+    the connection and so the lock.
+    """
     del job_args
+    async with pool.acquire() as lock_conn:
+        if not await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", _RUN_LOCK_KEY):
+            return {
+                "considered": 0,
+                "sent": 0,
+                "skipped": 0,
+                "retry": 0,
+                "skipped_concurrent": True,
+            }
+        try:
+            return await _run_locked(pool, notify_fn=notify_fn, now=now)
+        finally:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", _RUN_LOCK_KEY)
+
+
+async def _run_locked(
+    pool: asyncpg.Pool, *, notify_fn: NotifyFn | None, now: datetime | None
+) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     send = notify_fn or (lambda message: send_owner_brief(pool, message))
     zone = await owner_zone(pool)
