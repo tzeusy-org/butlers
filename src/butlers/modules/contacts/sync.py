@@ -1314,8 +1314,9 @@ class ContactsSyncEngine:
         account_id: str,
         mode: ContactsSyncMode = "incremental",
     ) -> ContactsSyncResult:
-        if self._batch_finalizer is None:
-            return await self._sync(account_id=account_id, mode=mode)
+        # One lock per account for every provider: the poller and contacts_sync_now share this
+        # engine, and two overlapping runs would resolve and write the same contacts twice.
+        # The later run waits, then starts from the state the first one saved.
         async with self._account_locks.setdefault(account_id, asyncio.Lock()):
             return await self._sync(account_id=account_id, mode=mode)
 
