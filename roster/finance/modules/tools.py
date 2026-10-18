@@ -1086,8 +1086,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             """Compute statistical spending baselines from 6-month rolling history.
 
             Calculates per-merchant (median, stddev) and per-category (weekly velocity)
-            baselines from finance.transactions. Results are stored as memory facts with
-            predicate='spending_baseline' for use by anomaly detection.
+            figures from finance.transactions. Nothing is stored: category spend is judged
+            against the weekly personal baselines the anomaly-insight-scan job keeps in
+            metric_baselines.
 
             Returns: {computed_merchants, computed_categories, as_of}
             """

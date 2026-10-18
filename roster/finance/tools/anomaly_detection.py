@@ -2,8 +2,7 @@
 
 Provides:
 - ``compute_baselines``: per-merchant (median, stddev) and per-category
-  (weekly velocity) baselines from a 6-month rolling window.  Results are
-  stored as memory facts with ``predicate='spending_baseline'``.
+  (weekly velocity) figures from a 6-month rolling window.  Nothing is stored.
 - ``anomaly_scan``: compare recent transactions against baselines; flag
   amount anomalies, new merchants, and category velocity anomalies.
 - ``detect_duplicates``: find same-merchant, same-amount transactions on
@@ -19,6 +18,14 @@ from decimal import Decimal
 from typing import Any
 
 import asyncpg
+
+from butlers.jobs.finance_spend_baselines import (
+    finding_evidence,
+    money,
+    score_week_to_date,
+    usual_range_words,
+)
+from butlers.tools.finance.budgets import resolve_budget_zone
 
 logger = logging.getLogger(__name__)
 
@@ -138,19 +145,18 @@ async def compute_baselines(
 
     - ``weekly_velocity`` — mean of per-week aggregate spend
 
-    Baselines are stored as memory facts (``predicate='spending_baseline'``)
-    when ``memory_pool`` is provided.  When no memory pool is available
-    (typical in tests), results are returned but not persisted.
+    Nothing is persisted: the ``spending_baseline`` memory facts this used to
+    write are gone (bu-q7vx1q.79).  Category spend is judged by the week-bucket
+    personal baselines in ``metric_baselines`` (see
+    :mod:`butlers.jobs.finance_spend_baselines`); the per-category velocity here
+    is kept only as a descriptive figure.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool for the finance schema.
     memory_pool:
-        Optional asyncpg connection pool for the memory / facts schema.
-        When provided, baselines are upserted as ``public.facts`` rows with
-        ``predicate='spending_baseline'``.  When ``None``, persistence is
-        skipped.
+        Deprecated and ignored; kept so existing callers keep working.
     now:
         Optional reference timestamp used as the upper bound of the rolling
         window.  Defaults to ``datetime.now(UTC)``; tests inject a fixed
@@ -244,10 +250,6 @@ async def compute_baselines(
             }
         )
 
-    # --- Persist to memory facts if memory_pool provided ---
-    if memory_pool is not None and (merchant_baselines or category_baselines):
-        await _persist_baselines_to_memory(memory_pool, merchant_baselines, category_baselines, now)
-
     status = "ok" if (merchant_baselines or category_baselines) else "insufficient_data"
     return {
         "merchant_baselines": merchant_baselines,
@@ -255,64 +257,6 @@ async def compute_baselines(
         "status": status,
         "computed_at": now.isoformat(),
     }
-
-
-async def _persist_baselines_to_memory(
-    memory_pool: asyncpg.Pool,
-    merchant_baselines: list[dict[str, Any]],
-    category_baselines: list[dict[str, Any]],
-    now: datetime,
-) -> None:
-    """Upsert baseline facts into ``public.facts``.
-
-    Uses ``ON CONFLICT (subject, predicate)`` to replace stale baselines.
-    Silently skips if the facts table does not exist.
-    """
-    try:
-        for b in merchant_baselines:
-            await memory_pool.execute(
-                """
-                INSERT INTO public.facts (subject, predicate, content, metadata, updated_at)
-                VALUES ($1, 'spending_baseline', $2, $3, now())
-                ON CONFLICT (subject, predicate)
-                DO UPDATE SET
-                    content    = EXCLUDED.content,
-                    metadata   = EXCLUDED.metadata,
-                    updated_at = now()
-                """,
-                b["merchant"],
-                f"median={b['median']}, stddev={b['stddev']}, n={b['sample_count']}",
-                {
-                    "type": "merchant",
-                    "median": b["median"],
-                    "stddev": b["stddev"],
-                    "sample_count": b["sample_count"],
-                    "computed_at": now.isoformat(),
-                },
-            )
-        for b in category_baselines:
-            subject = f"category:{b['category']}"
-            await memory_pool.execute(
-                """
-                INSERT INTO public.facts (subject, predicate, content, metadata, updated_at)
-                VALUES ($1, 'spending_baseline', $2, $3, now())
-                ON CONFLICT (subject, predicate)
-                DO UPDATE SET
-                    content    = EXCLUDED.content,
-                    metadata   = EXCLUDED.metadata,
-                    updated_at = now()
-                """,
-                subject,
-                f"weekly_velocity={b['weekly_velocity']}, weeks={b['week_count']}",
-                {
-                    "type": "category",
-                    "weekly_velocity": b["weekly_velocity"],
-                    "week_count": b["week_count"],
-                    "computed_at": now.isoformat(),
-                },
-            )
-    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-        logger.warning("public.facts table unavailable; baselines not persisted to memory")
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +279,8 @@ async def anomaly_scan(
        where N is determined by ``sensitivity``.
     2. **new_merchant** — merchant has never appeared in the 6-month baseline
        window (first-time merchant).
-    3. **category_velocity_anomaly** — category's spend in the scan window
-       exceeds the expected weekly velocity by more than the sensitivity factor.
+    3. **category_velocity_anomaly** — category's spend so far this week is
+       above its stored personal baseline band (per currency).
 
     Returns ``status="insufficient_data"`` when no baseline data is available
     (fewer than ``_MIN_MERCHANT_TRANSACTIONS`` transactions across all merchants
@@ -389,9 +333,6 @@ async def anomaly_scan(
     merchant_baselines: dict[str, dict[str, float]] = {
         b["merchant"]: {"median": b["median"], "stddev": b["stddev"]}
         for b in baseline_result["merchant_baselines"]
-    }
-    category_velocity: dict[str, float] = {
-        b["category"]: b["weekly_velocity"] for b in baseline_result["category_baselines"]
     }
 
     # Fetch recent transactions to scan.
@@ -480,49 +421,37 @@ async def anomaly_scan(
                 )
 
     # --- Category velocity anomaly ---
-    # Compute actual per-category spend over the scan window and compare to
-    # the baseline weekly velocity scaled to the scan window length.
-    if scanned > 0 and category_velocity:
-        cat_spend_rows = await pool.fetch(
-            f"""
-            SELECT category, SUM(amount) AS total_spend
-            FROM transactions
-            WHERE direction = 'debit'
-              AND posted_at >= $1
-              {deleted_filter}
-              AND category IS NOT NULL
-            GROUP BY category
-            """,
-            scan_start,
-        )
-        weeks_in_window = max(days_back / 7.0, 1.0)
-        for row in cat_spend_rows:
-            cat = row["category"]
-            actual_spend = float(row["total_spend"])
-            weekly_vel = category_velocity.get(cat)
-            if weekly_vel is None or weekly_vel <= 0:
+    # This week's spend (owner-local, per currency) against the stored week-bucket personal
+    # baseline (bu-q7vx1q.79). Only an ``above`` state is an anomaly: thin, stale or missing
+    # history is said nowhere here, and the sensitivity setting does not move the band.
+    if scanned > 0:
+        zone = await resolve_budget_zone(pool)
+        for finding in await score_week_to_date(pool, now=now, zone=zone, active_since=scan_start):
+            if not finding.is_anomaly:
                 continue
-            expected_spend = weekly_vel * weeks_in_window
-            if actual_spend > expected_spend * multiplier:
-                ratio = actual_spend / expected_spend
-                anomalies.append(
-                    {
-                        "transaction_id": None,
-                        "merchant": None,
-                        "amount": str(Decimal(str(actual_spend)).quantize(Decimal("0.01"))),
-                        "currency": None,
-                        "posted_at": None,
-                        "type": "category_velocity_anomaly",
-                        "severity": "high" if ratio > 3.0 else "medium",
-                        "category": cat,
-                        "explanation": (
-                            f"Category '{cat}' spend ${actual_spend:.2f} is "
-                            f"{ratio:.1f}x the expected ${expected_spend:.2f} "
-                            f"for a {days_back}-day window "
-                            f"(baseline weekly velocity: ${weekly_vel:.2f})"
-                        ),
-                    }
-                )
+            band = finding.usual_range
+            assert band is not None
+            mad_units = finding.deviation.mad_units or 0.0
+            anomalies.append(
+                {
+                    "transaction_id": None,
+                    "merchant": None,
+                    "amount": str(Decimal(str(finding.week_spend)).quantize(Decimal("0.01"))),
+                    "currency": finding.currency,
+                    "posted_at": None,
+                    "type": "category_velocity_anomaly",
+                    "severity": "high" if mad_units >= 2 * finding.metric.k_mad else "medium",
+                    "category": finding.category,
+                    "mad_units": round(mad_units, 2),
+                    "band": {"low": band[0], "high": band[1]},
+                    "baseline_evidence": dict(finding_evidence(finding)),
+                    "explanation": (
+                        f"Category '{finding.category}' spend "
+                        f"{money(finding.currency, finding.week_spend)} so far this week is above "
+                        f"your {usual_range_words(finding)}"
+                    ),
+                }
+            )
 
     status = "ok" if scanned > 0 else "insufficient_data"
     return {

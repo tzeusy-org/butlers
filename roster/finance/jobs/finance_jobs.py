@@ -28,6 +28,10 @@ from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.credential_store import CredentialStore
+from butlers.jobs.finance_spend_baselines import (
+    refresh_category_baselines,
+    retire_spending_baseline_facts,
+)
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
@@ -1630,6 +1634,15 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info("Running finance anomaly insight scan job")
 
     async with _finance_scoped_connection(db_pool) as conn:
+        # Producer of the week-bucket category bands the scan judges against; a rerun with
+        # unchanged inputs is a no-op. Also retires the spending_baseline facts once.
+        zone = await resolve_budget_zone(conn)
+        try:
+            await refresh_category_baselines(conn, now=datetime.now(UTC), zone=zone)
+        except asyncpg.PostgresError as exc:
+            # The merchant checks do not depend on the bands, so they still run.
+            logger.warning("Finance category baselines not refreshed (%s)", type(exc).__name__)
+        await retire_spending_baseline_facts(conn)
         result = await anomaly_scan(conn, days_back=1, sensitivity="medium")
     status = result.get("status", "ok")
 
@@ -1662,7 +1675,11 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         priority = _ANOMALY_SEVERITY_PRIORITY.get(severity, 35)
         txn_id = anomaly.get("transaction_id")
         category = anomaly.get("category")
-        identity = txn_id or (f"category-{category}" if category else anomaly.get("type", "n-a"))
+        currency = anomaly.get("currency")
+        category_identity = (
+            f"category-{category}-{currency}" if currency else f"category-{category}"
+        )
+        identity = txn_id or (category_identity if category else anomaly.get("type", "n-a"))
         dedup_key = f"finance:anomaly:{identity}:{today.isoformat()}"
 
         merchant = anomaly.get("merchant")
@@ -1679,7 +1696,15 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=2),
             cooldown_days=1,
-            metadata={"anomaly_type": anomaly.get("type"), "severity": severity},
+            metadata={
+                "anomaly_type": anomaly.get("type"),
+                "severity": severity,
+                **(
+                    {"baseline_evidence": anomaly["baseline_evidence"]}
+                    if anomaly.get("baseline_evidence")
+                    else {}
+                ),
+            },
         )
         if status_result == "filtered":
             counts["filtered"] += 1

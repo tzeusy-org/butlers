@@ -28,5 +28,18 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
-Home energy, Finance spend and the dashboard band are later slices; see
+## Finance category spend (slice 4)
+
+Finance judges a category's "unusual spending" against a weekly personal baseline per category and
+currency (`spend.category:<category>:<CCY>`; `src/butlers/jobs/finance_spend_baselines.py`). The daily
+`anomaly-insight-scan` job stores the median and MAD band of up to 26 complete owner-local weeks
+(Monday start) in the finance schema's `metric_baselines`; a week with no spend is not a sample, and
+a category needs 4 weeks of spend before it has a band. The `anomaly_scan` tool and the daily
+briefing score the spend of the week so far against the stored band and report only an `above` state
+with the usual range and the weeks it is drawn from; thin, stale or missing history is never called
+an anomaly. Currencies are never mixed. Merchant amount anomalies and new-merchant detection keep
+their inline computation, and the old write-only `spending_baseline` memory facts are retracted
+(rows kept) by the same job.
+
+Home energy and the dashboard band are later slices; see
 `openspec/changes/add-personal-baselines/proposal.md`.

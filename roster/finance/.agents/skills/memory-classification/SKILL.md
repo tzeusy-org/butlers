@@ -116,7 +116,6 @@ Use tags like: `subscription`, `bill`, `budget`, `account`, `merchant`, `price-c
 
 ### Analytics-Specific Predicates (store as memory facts)
 
-- `spending_baseline`: Per-merchant or per-category statistical baseline (`stable` permanence); subject is merchant or category name
 - `anomaly_threshold`: Configured sensitivity threshold for anomaly detection (`stable`)
 - `alert_config`: Alert rule configuration (`stable`); created/read by `alert_configure` / `alert_list`
 - `subscription_audit_date`: Date of last subscription audit (`standard`); subject is `"finance_butler"`
