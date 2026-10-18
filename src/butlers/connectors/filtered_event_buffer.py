@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -219,6 +220,17 @@ def _split_legacy_conversation_identity(
         event_section.setdefault("reply_target_ref", reply_target_ref)
 
 
+def _raise_site(exc: BaseException) -> str:
+    """``file:line:func`` of the innermost frame that raised ``exc`` (no locals, no message)."""
+    tb = exc.__traceback__
+    if tb is None:
+        return "unknown"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    code = tb.tb_frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{tb.tb_lineno}:{code.co_name}"
+
+
 async def drain_replay_pending(
     pool: asyncpg.Pool,
     connector_type: str,
@@ -276,9 +288,11 @@ async def drain_replay_pending(
                             payload_dict: dict[str, Any] = json.loads(raw_payload)
                         except Exception as exc:
                             _log.warning(
-                                "replay drain: failed to parse full_payload for id=%s: %s",
+                                "replay drain: failed to parse full_payload for id=%s "
+                                "(error_class=%s raised_at=%s)",
                                 row_id,
-                                exc,
+                                type(exc).__name__,
+                                _raise_site(exc),
                             )
                             await conn.execute(
                                 _REPLAY_UPDATE_SQL,
@@ -315,10 +329,12 @@ async def drain_replay_pending(
                     except Exception as exc:
                         error_msg = str(exc)
                         _log.warning(
-                            "replay drain: failed to replay message %s (id=%s): %s",
+                            "replay drain: failed to replay message %s (id=%s) "
+                            "(error_class=%s raised_at=%s)",
                             external_message_id,
                             row_id,
-                            exc,
+                            type(exc).__name__,
+                            _raise_site(exc),
                         )
                         await conn.execute(
                             _REPLAY_UPDATE_SQL,
