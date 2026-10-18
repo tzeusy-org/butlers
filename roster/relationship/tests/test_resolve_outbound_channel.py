@@ -51,6 +51,7 @@ async def pool(provisioned_postgres_pool):
                 canonical_name TEXT        NOT NULL DEFAULT '',
                 entity_type    TEXT        NOT NULL DEFAULT 'person',
                 roles          TEXT[]      NOT NULL DEFAULT '{}',
+                metadata       JSONB,
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
             )
