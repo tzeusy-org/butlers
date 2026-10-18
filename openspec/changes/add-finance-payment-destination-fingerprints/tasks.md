@@ -10,4 +10,3 @@
 
 - [x] 2.1 Real-Postgres cases through `track_bill` in `roster/finance/tests/test_tools.py`, including the no-raw-storage scan.
 - [x] 2.2 Unit tests for normalization, fingerprinting, key resolution and verdict logic.
-- [x] 2.3 Update the inline-DDL copy of `finance.bills` in `roster/finance/tests/test_integration.py`.

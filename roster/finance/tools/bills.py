@@ -260,7 +260,8 @@ async def track_bill(
     payment_destination:
         The account number, IBAN or payment handle exactly as the bill shows it.
         It is normalized, classified (iban, account, handle) and reduced to a keyed
-        HMAC fingerprint; the raw value is never stored, logged or returned. The
+        HMAC fingerprint; Finance keeps the raw value out of its own tables, the SPO mirror,
+        logs and the result (session tool-call records are outside its control, bu-4mfhdq). The
         bill is stamped with ``destination_verdict``: ``known`` (seen before for
         this payee), ``new_for_counterparty`` (a payee with history now shows a
         different destination) or ``unverifiable`` (first destination for the
@@ -302,7 +303,9 @@ async def track_bill(
         if existing_id is not None:
             destination_sql = (
                 ", destination_fingerprint = COALESCE($17, destination_fingerprint)"
-                ", destination_verdict = $18"
+                ", destination_verdict = CASE WHEN $17::text IS NULL"
+                " AND destination_fingerprint IS NOT NULL"
+                " THEN destination_verdict ELSE $18 END"
                 if stamped
                 else ""
             )
