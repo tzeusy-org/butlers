@@ -4453,6 +4453,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Pending
 - Unknown
 
+## `frontend/src/components/settings/ModelAllowanceStrip.tsx`
+
+- Allowance
+
 ## `frontend/src/components/settings/QaStafferCard.tsx`
 
 - system · qa staffer
@@ -4900,4 +4904,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3905*
+*Total strings: 3906*

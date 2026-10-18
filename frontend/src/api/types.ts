@@ -5322,6 +5322,29 @@ export interface ModelAttentionObservation {
   episodes: Record<string, ModelAttentionEpisode>;
 }
 
+export interface AllowanceEntry {
+  id: string;
+  alias: string;
+}
+
+export type AllowanceState = "available" | "exhausted" | "unknown";
+export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
+
+export interface AllowanceAccount {
+  account_key: string;
+  state: AllowanceState;
+  reset_at: string | null;
+  reset_source: AllowanceResetSource;
+  first_seen_at: string;
+  updated_at: string;
+  entries: AllowanceEntry[];
+}
+
+export interface AllowanceObservation {
+  available: boolean;
+  accounts: AllowanceAccount[];
+}
+
 export interface ModelAttentionReissueResult {
   original_episode_id: string;
   successor_episode_id: string;
