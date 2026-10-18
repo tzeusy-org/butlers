@@ -62,6 +62,12 @@ vi.mock("@/hooks/use-model-catalog", () => ({
     isLoading: false,
     isError: false,
   })),
+  useModelAllowance: vi.fn(() => ({
+    data: { data: { available: true, accounts: [] } },
+    isLoading: false,
+    isError: false,
+    isForbidden: false,
+  })),
   useReissueModelAttention: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetModelTokenLimits: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResetModelUsage: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

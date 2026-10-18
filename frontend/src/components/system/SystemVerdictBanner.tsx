@@ -14,6 +14,8 @@
 // ---------------------------------------------------------------------------
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
+import { useModelAllowance } from "@/hooks/use-model-catalog";
+import { accountsOutOfAllowance, formatAllowanceCountdown } from "@/lib/allowance";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
@@ -45,6 +47,14 @@ function formatBackupRecency(lastBackupAt: string | null): string {
   return `backed up ${Math.floor(hours / 24)}d ago`;
 }
 
+function formatAllowanceUntil(resetAt: string | null): string {
+  const resetMs = resetAt ? new Date(resetAt).getTime() : Number.NaN;
+  const now = Date.now();
+  if (Number.isNaN(resetMs) || resetMs <= now) return "(reset time unknown)";
+  const clock = new Date(resetMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return `until ${clock} (${formatAllowanceCountdown(resetMs - now)})`;
+}
+
 function bindMountedWorktreeTruth(current: {
   source: string | null;
   serving_mode: string | null;
@@ -67,6 +77,7 @@ export function SystemVerdictBanner() {
   const posture = useHealthPosture();
   const drift = useDriftFacts();
   const deployments = useDeploymentFacts();
+  const allowance = useModelAllowance();
 
   const sources = [
     { label: "fleet status", isLoading: board.isLoading, isError: board.isError, href: "/butlers" },
@@ -82,6 +93,12 @@ export function SystemVerdictBanner() {
     { label: "security posture", isLoading: posture.isPending, isError: posture.isError },
     { label: "migration drift status", isLoading: drift.isPending, isError: drift.isError },
     { label: "deployment status", isLoading: deployments.isPending, isError: deployments.isError },
+    {
+      label: "allowance",
+      isLoading: allowance.isLoading,
+      // Reads "allowance unknown" via its own clause below, not "unavailable".
+      isError: false,
+    },
   ];
 
   const problems: VerdictClause[] = [];
@@ -212,6 +229,27 @@ export function SystemVerdictBanner() {
       key: "commits-behind",
       text: `serving ${n} commit${n === 1 ? "" : "s"} behind origin/main`,
     });
+  }
+
+  // bu-q7vx1q.50: an exhausted provider account is a real problem the owner
+  // can only otherwise find by reading failed sessions. An unreadable table
+  // reads "allowance unknown" (never all-clear); a non-owner (403) is silent
+  // like the egress source.
+  const allowanceData = allowance.data?.data;
+  if ((allowance.isError && !allowance.isForbidden) || (allowanceData && !allowanceData.available)) {
+    problems.push({
+      key: "allowance-unknown",
+      text: "allowance unknown",
+      href: "/settings/models",
+    });
+  } else if (allowanceData) {
+    for (const account of accountsOutOfAllowance(allowanceData.accounts)) {
+      problems.push({
+        key: `allowance-${account.account_key}`,
+        text: `${account.account_key} out of allowance ${formatAllowanceUntil(account.reset_at)}`,
+        href: "/settings/models",
+      });
+    }
   }
 
   const instanceData = instance.data?.data;
