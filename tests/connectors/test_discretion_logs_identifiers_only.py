@@ -7,6 +7,7 @@ may carry traceback text (``exc_info``).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from unittest.mock import AsyncMock
 
@@ -129,3 +130,11 @@ async def test_contact_resolver_debug_log_hides_the_channel_value(caplog, monkey
         await resolver.resolve("telegram", SENTINEL)
     _assert_clean(caplog)
     assert "channel_type=telegram value_sha=" in caplog.text
+
+
+def test_digest_is_keyed_and_stable_within_the_process() -> None:
+    plain = hashlib.sha256(b"1234").hexdigest()[:12]
+    assert discretion_mod._digest("1234") != plain
+    assert discretion_mod._digest("1234") == discretion_mod._digest("1234")
+    assert discretion_mod._digest("1234") != discretion_mod._digest("1235")
+    assert len(discretion_mod._digest("1234")) == 12

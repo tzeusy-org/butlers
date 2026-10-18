@@ -15,7 +15,9 @@ Design constraints:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
+import secrets
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -370,9 +372,15 @@ def _build_user_prompt(context_entries: list[ContextEntry], entry: ContextEntry)
 _FAILOVER_EXHAUSTED_CODE = "same_tier_failover_exhausted"
 
 
+# Per-process secret for the log digests.  A plain sha256 prefix plus a logged length is an
+# offline guessing oracle for short or enumerable text (digits, handles, phone numbers); keying
+# it keeps same-process correlation without that.  Never logged, exported or persisted.
+_DIGEST_KEY = secrets.token_bytes(32)
+
+
 def _digest(text: str) -> str:
-    """Short sha256 prefix: lets two log lines be correlated without carrying the text."""
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+    """Short keyed sha256 prefix: correlates log lines in one process without carrying the text."""
+    return hmac.new(_DIGEST_KEY, text.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:12]
 
 
 def _error_log_fields(exc: BaseException) -> str:
