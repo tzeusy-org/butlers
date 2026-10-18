@@ -33,12 +33,16 @@ image-%:
 
 # Wrapped so each release leaves one public.deployments row (success or failed).
 deploy-%:
+	@test -n "$(TAG)" || { echo "deploy-$*: TAG is empty; refusing to deploy" >&2; exit 1; }
 	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 
 # Build + push images for the current commit, then deploy them. Migrations run
 # in dashboard-api's initContainer on every rollout. Run under `bws run`.
+# A failed build must stop here: a failing command substitution alone would deploy an empty TAG.
 ship-%:
-	$(MAKE) deploy-$* TAG=$$(../../../scripts/k8s/build-push.sh $*)
+	tag=$$(../../../scripts/k8s/build-push.sh $*) || exit $$?; \
+	test -n "$$tag" || { echo "ship-$*: build-push.sh printed no image tag" >&2; exit 1; }; \
+	$(MAKE) deploy-$* TAG="$$tag"
 
 status-%:
 	kubectl -n $(NAMESPACE_$*) get pods,svc,pvc,externalsecret
