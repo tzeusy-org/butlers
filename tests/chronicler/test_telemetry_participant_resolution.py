@@ -18,9 +18,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from prometheus_client import REGISTRY
 
 from butlers.api.db import DatabaseManager
+from butlers.chronicler.adapters import calendar as calendar_module
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.models import Episode
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -84,13 +84,28 @@ def _chronicler_pool() -> AsyncMock:
     return pool
 
 
+class _RecordingCounter:
+    """OTel counter double: totals the amounts added per ``source_butler``."""
+
+    def __init__(self) -> None:
+        self.totals: dict[str, float] = {}
+
+    def add(self, amount: float, attributes: dict[str, str] | None = None) -> None:
+        key = (attributes or {})["source_butler"]
+        self.totals[key] = self.totals.get(key, 0.0) + amount
+
+
+_COUNTER = _RecordingCounter()
+
+
+@pytest.fixture(autouse=True)
+def _record_participant_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(calendar_module, "chronicler_episode_participants_resolved_total", _COUNTER)
+
+
 def _get_counter_value(schema: str) -> float:
-    """Return current value of chronicler_episode_participants_resolved_total for schema."""
-    val = REGISTRY.get_sample_value(
-        "chronicler_episode_participants_resolved_total",
-        {"schema": schema},
-    )
-    return val if val is not None else 0.0
+    """Return the recorded participant-resolution total for schema."""
+    return _COUNTER.totals.get(schema, 0.0)
 
 
 # ---------------------------------------------------------------------------
