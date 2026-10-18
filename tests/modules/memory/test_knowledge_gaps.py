@@ -428,7 +428,9 @@ async def test_a_closure_failure_never_fails_the_fact_write(
         )
         assert (await _gap(pool, entity, predicate))["status"] == "open"
         (point,) = _collect_metrics(reader)["butlers.memory.knowledge_gap_closure_failures_total"]
-        assert dict(point.attributes) == {"stage": "closure"} and point.value == 1
+        assert (
+            dict(point.attributes) == {"butler": "unknown", "stage": "closure"} and point.value == 1
+        )
     finally:
         _reset_metrics_global_state()
 
