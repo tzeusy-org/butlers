@@ -254,11 +254,31 @@ def collect(root: Path) -> tuple[list[Block], int]:
         elif owners is None:
             # A MODIFIED block with an ID the canonical spec lacks mints it, like an ADDED one.
             minted.setdefault((block.capability, block.req_id), []).append(block)
+            held = sorted(i for i, names in existing.items() if block.name in names)
+            if held:
+                block.problems.append(
+                    f"requirement {block.name!r} already has canonical ID {held[0]} in "
+                    f"openspec/specs/{block.capability}; a MODIFIED block must carry it, "
+                    f"not {block.req_id}"
+                )
         elif block.name not in owners:
             block.problems.append(
                 f"ID {block.req_id} belongs to requirement "
                 f"{sorted(owners)[0]!r} in openspec/specs/{block.capability}"
             )
+    pending: dict[tuple[str, str], dict[str, Block]] = {}
+    for block in blocks:
+        if block.kind == "ADDED" and block.req_id:
+            pending.setdefault((block.capability, block.name), {})[block.req_id] = block
+    for block in blocks:
+        if block.kind != "MODIFIED" or not block.req_id:
+            continue
+        for other_id, other in pending.get((block.capability, block.name), {}).items():
+            if other_id != block.req_id and other.change != block.change:
+                block.problems.append(
+                    f"requirement {block.name!r} is ADDED as {other_id} by {other.change}; "
+                    f"a MODIFIED block must carry that ID, not {block.req_id}"
+                )
     for (_capability, req_id), group in minted.items():
         names = {b.name for b in group}
         added = sum(1 for b in group if b.kind == "ADDED")
@@ -266,30 +286,6 @@ def collect(root: Path) -> tuple[list[Block], int]:
             for block in group:
                 others = ", ".join(sorted(o.change for o in group if o is not block))
                 block.problems.append(f"duplicate new ID {req_id} (also minted by {others})")
-    return blocks, files
-    for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
-        if change_dir.name == "archive":
-            continue
-        for spec_path in sorted(change_dir.glob("specs/*/spec.md")):
-            files += 1
-            capability = spec_path.parent.name
-            for kind, name, line, body in parse_blocks(spec_path.read_text("utf-8")):
-                block = Block(change_dir.name, capability, name, kind, spec_path, line, body)
-                check_block(block)
-                blocks.append(block)
-
-    minted: dict[tuple[str, str], list[Block]] = {}
-    for block in blocks:
-        if block.kind == "ADDED" and block.req_id:
-            minted.setdefault((block.capability, block.req_id), []).append(block)
-    for (capability, req_id), owners in minted.items():
-        existing = canonical_ids(root, capability)
-        for block in owners:
-            if len(owners) > 1:
-                others = ", ".join(sorted(o.change for o in owners if o is not block))
-                block.problems.append(f"duplicate new ID {req_id} (also minted by {others})")
-            if req_id in existing:
-                block.problems.append(f"ID {req_id} already exists in openspec/specs/{capability}")
     return blocks, files
 
 

@@ -292,3 +292,46 @@ def test_moving_a_frozen_block_between_sections_unfreezes_it(tmp_path: Path) -> 
     path.write_text(_doc("MODIFIED", bare), encoding="utf-8")
 
     assert _run(tmp_path).returncode == 1
+
+
+def test_a_modified_block_must_carry_the_id_its_requirement_already_has(tmp_path: Path) -> None:
+    held, fresh = _rid("widgets", 1), _rid("widgets", 5)
+    _canonical(tmp_path, "widgets", "## Requirements\n\n" + _block("Existing", req_id=held))
+    _delta(tmp_path, "c", "widgets", _doc("MODIFIED", _block("Existing", req_id=fresh)))
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert f"requirement 'Existing' already has canonical ID {held}" in result.stdout
+
+    _delta(tmp_path, "c", "widgets", _doc("MODIFIED", _block("Existing", req_id=held)))
+    assert _run(tmp_path).returncode == 0
+
+
+def test_a_modified_block_must_carry_the_id_another_change_adds_its_requirement_under(
+    tmp_path: Path,
+) -> None:
+    added, other = _rid("widgets", 3), _rid("widgets", 9)
+    _delta(tmp_path, "a", "widgets", _doc("ADDED", _block("Shared", req_id=added)))
+    _delta(tmp_path, "b", "widgets", _doc("MODIFIED", _block("Shared", req_id=other)))
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert f"requirement 'Shared' is ADDED as {added} by a" in result.stdout
+
+    _delta(tmp_path, "b", "widgets", _doc("MODIFIED", _block("Shared", req_id=added)))
+    assert _run(tmp_path).returncode == 0
+
+
+def test_two_added_blocks_with_one_requirement_name_and_id_collide_under_strict(
+    tmp_path: Path,
+) -> None:
+    rid = _rid("widgets", 2)
+    _delta(tmp_path, "a", "widgets", _doc("ADDED", _block("Same", req_id=rid)))
+    _delta(tmp_path, "b", "widgets", _doc("ADDED", _block("Same", req_id=rid)))
+
+    result = _run(tmp_path, "--strict")
+
+    assert result.returncode == 1
+    assert f"duplicate new ID {rid}" in result.stdout
