@@ -62,7 +62,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.git_env import harden_git_env, isolated_git_env
+from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.healing.dispatch import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
@@ -785,12 +785,15 @@ async def _detect_no_op_branch(
         proc = await asyncio.create_subprocess_exec(
             "git",
             "log",
+            # A planted ``log.showSignature`` with ``gpg.program`` would otherwise run the
+            # program for any commit carrying a ``gpgsig`` header.
+            "--no-show-signature",
             f"{base}..{branch_name}",
             "--oneline",
             cwd=str(repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            env=env,
+            env=harden_git_env(env),
         )
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
@@ -1113,10 +1116,14 @@ async def _capture_commit_diff_snapshot(worktree_path: Path) -> list[dict[str, s
             str(worktree_path),
             "diff",
             "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
             "HEAD~1..HEAD",
             "--unified=3",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # The worktree shares an agent-writable .git: no daemon secrets, no planted drivers.
+            env=isolated_git_env(),
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -2988,8 +2995,9 @@ async def _dispatch_pr_review_followup(
         # Materialize the exact remote-tracking ref that the worktree command
         # anchors below. A branch-only fetch can leave only FETCH_HEAD behind.
         remote_refspec = f"+refs/heads/{followup_branch}:refs/remotes/origin/{followup_branch}"
-        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
-        fetch_rc, fetch_out = await _run_git_here("fetch", "origin", remote_refspec)
+        fetch_rc, fetch_out = await _run_git_here(
+            "fetch", *FETCH_COMMAND_ARGS, "origin", remote_refspec
+        )
         if fetch_rc != 0:
             logger.warning(
                 "PR review follow-up: git fetch failed for branch %s (attempt=%s): %s",
@@ -3295,8 +3303,13 @@ async def _refresh_main_commit(repo_root: Path) -> str:
     """Fetch canonical main and return a verified immutable commit identity."""
     output = b""
     for args in (
-        # Retained tests pin this argv, so remote.origin.uploadpack is not pinned here.
-        ("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+        (
+            "fetch",
+            *FETCH_COMMAND_ARGS,
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ),
         ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
     ):
         proc = None
