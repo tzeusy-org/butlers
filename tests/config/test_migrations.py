@@ -490,7 +490,7 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
             ).scalar_one()
 
     # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     command.upgrade(relationship_core, "core_076")
     assert relationship_read_default() is False
     check_bootstrap_database(db_url)

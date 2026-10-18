@@ -7,7 +7,9 @@ core_269 narrows the relationship, messenger and travel roles from every Switchb
 to ``message_inbox`` alone.  On a fresh database the core chain runs before this chain has
 created the table, so the grant is made here, in the chain that owns the table.  On an
 existing database it repeats the grant core_269 already made.  Roles that do not exist are
-skipped.  The downgrade revokes only this grant.
+skipped.  The downgrade changes nothing: core_269 made the same grant, so revoking it here
+would strand an upgraded database at core_269 without the read; core_269's downgrade owns the
+restore of the prior grants.
 """
 
 from alembic import op
@@ -40,4 +42,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _each_role('REVOKE SELECT ON TABLE message_inbox FROM "{role}"')
+    # Intentionally empty: see the module docstring.
+    pass

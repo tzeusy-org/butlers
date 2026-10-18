@@ -7,12 +7,19 @@ used to hold SELECT on every Switchboard table (core_077, core_143), including
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
+from tests.config.test_schema_acl_isolation import _rerun_init_db_as_control
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
@@ -131,3 +138,52 @@ def test_downgrade_restores_the_previous_grants_and_upgrade_repeats_cleanly(
     command.upgrade(core, "core@head")  # idempotent for the next butler schema's core run
     for role in _ROLES:
         assert _readable(db_url, role) == {"message_inbox"}, role
+
+
+def _relationship_switchboard_default_acl(db_url: str) -> bool:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            return bool(
+                connection.execute(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl AS d "
+                        "JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
+                        "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) AS a "
+                        "WHERE n.nspname = 'switchboard' AND d.defaclobjtype = 'r' "
+                        "AND a.grantee = (SELECT oid FROM pg_catalog.pg_roles "
+                        "WHERE rolname = 'butler_relationship_rw') "
+                        "AND a.privilege_type = 'SELECT')"
+                    )
+                ).scalar_one()
+            )
+    finally:
+        engine.dispose()
+
+
+def test_rerunning_the_bootstrap_after_head_does_not_rewiden_relationship_reads(
+    postgres_container,
+) -> None:
+    """The documented bootstrap rerun must not restore the schema-wide read or its default."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    core, chain = _configs(db_url)
+    command.upgrade(core, "core@head")
+    command.upgrade(chain, "switchboard@head")
+    assert _readable(db_url, "butler_relationship_rw") == {"message_inbox"}
+
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    _rerun_init_db_as_control(
+        migration_bootstrap_db_url(postgres_container, db_name), migration_user
+    )
+
+    assert _readable(db_url, "butler_relationship_rw") == {"message_inbox"}
+    assert _relationship_switchboard_default_acl(db_url) is False
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("CREATE TABLE switchboard.later_table (id int)"))
+    finally:
+        engine.dispose()
+    assert _select_grants(db_url, "butler_relationship_rw")["later_table"] is False

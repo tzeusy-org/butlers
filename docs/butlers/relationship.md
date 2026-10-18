@@ -143,8 +143,9 @@ gate remain required; source inspection and collection alone are not runtime pro
   flood approvals. Cardinality cannot be read from `entity_predicate_registry`, which covers only
   the `entity_facts` store.
 - `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
-  grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
-  privileges).
+  grants `butler_relationship_rw` `USAGE` on schema `switchboard`, and migration `core_269` (with
+  `sw_047` on a fresh database) grants it `SELECT` on `switchboard.message_inbox` alone, with no
+  schema-wide read or default privilege.
 - Calendar interaction sync reads `relationship.calendar_events` explicitly through the
   Relationship role. It consumes the local Calendar module projection, including its attendee
   metadata, rather than falling back to a public or another butler's projection.

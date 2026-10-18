@@ -17,8 +17,10 @@ table does not exist yet when the core chain runs, so ``sw_047`` grants it once 
 chain has created it.
 
 The core chain runs once per butler schema over shared roles, and every statement is
-idempotent.  Revoking is not best-effort: only a role or schema that is absent is skipped, so
-a revoke that cannot take effect fails the migration.  Downgrade restores the core_077 and
+idempotent.  Only a role or schema that is absent is skipped.  The revokes are plain REVOKE
+statements, which PostgreSQL only warns about when the grantor holds no privilege to remove, so
+a revoke that cannot take effect does not fail the migration; the real-PG tests read the
+resulting grants back instead.  Downgrade restores the core_077 and
 core_143 grants exactly.
 """
 
