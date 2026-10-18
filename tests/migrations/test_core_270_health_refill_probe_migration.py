@@ -43,10 +43,12 @@ def engine(postgres_container):
     db_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
     engine = create_engine(db_url)
     with engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA health"))
+        # The managed bootstrap already created the role schemas in this fresh per-fixture
+        # database; creating the Health schema again raises DuplicateSchema.
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS health"))
         conn.execute(
             text(
-                "CREATE TABLE health.facts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
+                "CREATE TABLE IF NOT EXISTS health.facts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
                 "subject text, predicate text, scope text, validity text, metadata jsonb, "
                 "valid_at timestamptz, created_at timestamptz DEFAULT clock_timestamp())"
             )
