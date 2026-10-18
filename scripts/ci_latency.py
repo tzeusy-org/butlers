@@ -179,6 +179,7 @@ UNATTRIBUTABLE_REASONS = (
     "read-budget",
     "unreadable-run",
     "over-100-jobs",
+    "rerun-attempt",
     "missing-timestamps",
     "index-truncated",
     "stage-failure",
@@ -289,15 +290,27 @@ def attribute(read, repository, samples, sample_jobs):
                 else:
                     summary["job_reads"] += 1
                     try:
-                        endpoint = (
-                            f"repos/{repository}/actions/runs/{key}/attempts/"
-                            f"{run['run_attempt']}/jobs?per_page=100"
-                        )
+                        # A re-run's in-flight jobs at the instant may belong to an earlier
+                        # attempt, so read every attempt in the same single bounded page.
+                        rerun = run["run_attempt"] > 1
+                        if rerun:
+                            endpoint = f"repos/{repository}/actions/runs/{key}/jobs?filter=all&per_page=100"
+                        else:
+                            endpoint = (
+                                f"repos/{repository}/actions/runs/{key}/attempts/"
+                                f"{run['run_attempt']}/jobs?per_page=100"
+                            )
                         response = read(endpoint)
                         if not isinstance(response["jobs"], list):
                             cache[key] = "unreadable-run"
                         elif response["total_count"] > 100:
-                            cache[key] = "over-100-jobs"
+                            cache[key] = "rerun-attempt" if rerun else "over-100-jobs"
+                        elif rerun and not all(
+                            isinstance(job.get("run_attempt"), int)
+                            and 1 <= job["run_attempt"] <= run["run_attempt"]
+                            for job in response["jobs"]
+                        ):
+                            cache[key] = "rerun-attempt"
                         else:
                             cache[key] = response["jobs"]
                     except TimeoutError:
