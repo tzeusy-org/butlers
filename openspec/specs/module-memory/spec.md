@@ -114,6 +114,25 @@ The storage layer SHALL provide async functions for creating episodes, facts, ru
 
 ---
 
+### Requirement: In-place fact content edits recompute the fact's search fields
+
+A domain tool that rewrites a fact's `content` or `predicate` in place, outside
+`store_fact`, SHALL recompute that fact's own `embedding` and `search_vector`
+from `"{subject} {predicate} {content}"` as it now stands, using the same
+embedding call and text-search expression as `store_fact`, and SHALL record the
+embedding model version. The edit SHALL be embedded once: the vector SHALL be
+reused for the fact's catalog row refresh. The recompute SHALL be best-effort:
+a failure is logged with the exception class only and never fails the edit.
+
+#### Scenario: An edited meal or measurement is searchable by its new wording
+
+- **WHEN** a Health meal, measurement or symptom is edited in place
+- **THEN** full-text search over facts MUST match the edited wording and MUST
+  NOT match the superseded wording, and the stored embedding MUST be the
+  embedding of the edited text
+
+---
+
 ### Requirement: Content-Free Source Episode Tombstones
 
 The memory module SHALL preserve durable provenance when an episode is deleted

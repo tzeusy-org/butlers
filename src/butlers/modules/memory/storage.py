@@ -533,6 +533,7 @@ async def refresh_catalog_for_edited_fact(
     *,
     embedding_engine: EmbeddingEngine | None = None,
     engine_factory: Callable[[], EmbeddingEngine] | None = None,
+    embedding: list[float] | None = None,
 ) -> bool:
     """Bring a fact's ``public.memory_catalog`` row in line after an in-place edit.
 
@@ -560,6 +561,10 @@ async def refresh_catalog_for_edited_fact(
     a model-load failure cannot fail the edit, and the catalog step of a stale-marking edit
     never loads it.
 
+    ``embedding`` is the vector already computed for the edited fact (see
+    :func:`refresh_edited_fact`); when given it is stored as is, so the edit is embedded once
+    and the engine is not loaded for it.
+
     Returns True when a catalog row was updated or marked stale.
     """
     try:
@@ -584,7 +589,9 @@ async def refresh_catalog_for_edited_fact(
             )
             return status != "UPDATE 0"
         searchable = f"{row['subject']} {row['predicate']} {row['content']}"
-        engine = embedding_engine if embedding_engine is not None else engine_factory()
+        if embedding is None:
+            engine = embedding_engine if embedding_engine is not None else engine_factory()
+            embedding = engine.embed(searchable)
         status = await pool.execute(
             f"""
             UPDATE public.memory_catalog
@@ -605,7 +612,7 @@ async def refresh_catalog_for_edited_fact(
             """,
             fact_id,
             f"{row['subject']} {row['predicate']}: {row['content']}",
-            str(engine.embed(searchable)),
+            str(embedding),
             preprocess_text(searchable),
             f"{row['subject']} {row['predicate']}",
             row["predicate"],
@@ -626,6 +633,79 @@ async def refresh_catalog_for_edited_fact(
             exc_info=True,
         )
         return False
+
+
+async def refresh_edited_fact_search_fields(
+    pool: Pool,
+    fact_id: uuid.UUID,
+    *,
+    embedding_engine: EmbeddingEngine | None = None,
+    engine_factory: Callable[[], EmbeddingEngine] | None = None,
+) -> list[float] | None:
+    """Recompute a fact's own ``embedding`` and ``search_vector`` after an in-place edit.
+
+    ``store_fact`` derives both from ``"{subject} {predicate} {content}"``. A domain tool
+    that rewrites ``content`` / ``predicate`` with a plain ``UPDATE facts`` leaves them
+    computed from the old text, so semantic and full-text search over facts keep matching
+    the superseded wording. This rebuilds them from the fact as it now stands, with the
+    same text, embedding call and tsvector expression, and records the engine's model name.
+
+    Best-effort and never raises: a failure is logged (exception class only) and the edit
+    stands, to be repaired by a re-embed. Returns the new embedding so the catalog refresh
+    can reuse it, or None when the fact is gone or the recompute failed.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT subject, predicate, content FROM facts WHERE id = $1", fact_id
+        )
+        if row is None:
+            return None
+        searchable = f"{row['subject']} {row['predicate']} {row['content']}"
+        engine = embedding_engine if embedding_engine is not None else engine_factory()
+        embedding = engine.embed(searchable)
+        await pool.execute(
+            f"UPDATE facts SET embedding = $2, search_vector = {tsvector_sql('$3')},"
+            " embedding_model_version = $4 WHERE id = $1",
+            fact_id,
+            str(embedding),
+            preprocess_text(searchable),
+            engine.model_name,
+        )
+        return embedding
+    except Exception as exc:
+        logger.warning(
+            "memory: failed to recompute search fields for edited fact %s (%s)",
+            fact_id,
+            type(exc).__name__,
+        )
+        return None
+
+
+async def refresh_edited_fact(
+    pool: Pool,
+    fact_id: uuid.UUID,
+    *,
+    embedding_engine: EmbeddingEngine | None = None,
+    engine_factory: Callable[[], EmbeddingEngine] | None = None,
+) -> bool:
+    """Bring a fact's own search fields and its catalog row in line after an in-place edit.
+
+    The one call a domain tool makes after rewriting a fact's content with a plain
+    ``UPDATE facts``: recompute the fact's ``embedding`` / ``search_vector``
+    (:func:`refresh_edited_fact_search_fields`), then refresh its catalog row with that same
+    embedding (:func:`refresh_catalog_for_edited_fact`) so the edit is embedded once.
+    Returns the catalog refresh result.
+    """
+    embedding = await refresh_edited_fact_search_fields(
+        pool, fact_id, embedding_engine=embedding_engine, engine_factory=engine_factory
+    )
+    return await refresh_catalog_for_edited_fact(
+        pool,
+        fact_id,
+        embedding_engine=embedding_engine,
+        engine_factory=engine_factory,
+        embedding=embedding,
+    )
 
 
 async def _cascade_catalog_disownment(

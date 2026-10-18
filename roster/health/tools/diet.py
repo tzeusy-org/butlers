@@ -340,10 +340,11 @@ async def meal_update(
         new_meta,
         eaten_at,
     )
-    # The in-place edit bypasses store_fact's catalog write-behind: refresh the catalog row.
-    from butlers.modules.memory.storage import refresh_catalog_for_edited_fact
+    # The in-place edit bypasses store_fact: recompute the fact's own embedding and
+    # search_vector, and refresh its catalog row, from the edited content.
+    from butlers.modules.memory.storage import refresh_edited_fact
 
-    await refresh_catalog_for_edited_fact(pool, meal_uuid, engine_factory=_get_embedding_engine)
+    await refresh_edited_fact(pool, meal_uuid, engine_factory=_get_embedding_engine)
 
     return _fact_to_meal(
         {

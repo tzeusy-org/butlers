@@ -419,6 +419,11 @@ async def symptom_update(
         occurred_at,
         HEALTH_SENSITIVITY_CONFIDENTIAL,
     )
+    # The statement above also retired the catalog row; the fact's own embedding and
+    # search_vector still reflect the old name, so recompute them from the edited content.
+    from butlers.modules.memory.storage import refresh_edited_fact_search_fields
+
+    await refresh_edited_fact_search_fields(pool, sym_uuid, engine_factory=_get_embedding_engine)
 
     cond_id = new_meta.get("condition_id")
     cond_out = uuid.UUID(cond_id) if cond_id else None
