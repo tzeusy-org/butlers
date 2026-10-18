@@ -31,6 +31,7 @@ from butlers.credential_store import CredentialStore
 from butlers.jobs.finance_spend_baselines import (
     refresh_category_baselines,
     retire_spending_baseline_facts,
+    week_start,
 )
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
@@ -1609,6 +1610,25 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
+def _anomaly_dedup_key(anomaly: dict[str, Any], *, today: date, week: date) -> str:
+    """Dedup key for one anomaly insight candidate.
+
+    A category velocity anomaly judges the owner-local week against its week-bucket band, so
+    its key is the band's own week (``week`` is the Monday ``week_start`` gives the producer):
+    one candidate per category, currency and week, however many days of that week add a debit.
+    Every other anomaly stays per transaction (or type) and per UTC day.
+    """
+    category = anomaly.get("category")
+    currency = anomaly.get("currency")
+    category_identity = f"category-{category}-{currency}" if currency else f"category-{category}"
+    if anomaly.get("type") == "category_velocity_anomaly" and category:
+        return f"finance:anomaly:{category_identity}:week-{week.isoformat()}"
+    identity = anomaly.get("transaction_id") or (
+        category_identity if category else anomaly.get("type", "n-a")
+    )
+    return f"finance:anomaly:{identity}:{today.isoformat()}"
+
+
 async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the daily per-transaction anomaly scan and propose insight candidates.
 
@@ -1659,6 +1679,13 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         }
 
     today = datetime.now(UTC).date()
+    # The scan's own clock decides which owner-local week it judged; key the category
+    # candidates on that week so the producer, the scan and the dedup agree.
+    try:
+        scanned_at = datetime.fromisoformat(result["as_of"])
+    except (KeyError, TypeError, ValueError):
+        scanned_at = datetime.now(UTC)
+    anomaly_week = week_start(scanned_at, zone)
     anomalies = result.get("anomalies", [])
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
@@ -1673,18 +1700,13 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     for anomaly in selected:
         severity = anomaly.get("severity", "low")
         priority = _ANOMALY_SEVERITY_PRIORITY.get(severity, 35)
-        txn_id = anomaly.get("transaction_id")
-        category = anomaly.get("category")
-        currency = anomaly.get("currency")
-        category_identity = (
-            f"category-{category}-{currency}" if currency else f"category-{category}"
-        )
-        identity = txn_id or (category_identity if category else anomaly.get("type", "n-a"))
-        dedup_key = f"finance:anomaly:{identity}:{today.isoformat()}"
+        dedup_key = _anomaly_dedup_key(anomaly, today=today, week=anomaly_week)
+        # A weekly key must hold for the whole week; a per-transaction key only for a day.
+        cooldown_days = 7 if anomaly.get("type") == "category_velocity_anomaly" else 1
 
         merchant = anomaly.get("merchant")
         explanation = anomaly.get("explanation", "")
-        subject = merchant or category or anomaly.get("type", "transaction")
+        subject = merchant or anomaly.get("category") or anomaly.get("type", "transaction")
         message = f"Spending anomaly ({severity}): {subject} — {explanation}"
 
         counts["submitted"] += 1
@@ -1695,7 +1717,7 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             dedup_key=dedup_key,
             message=message,
             expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=2),
-            cooldown_days=1,
+            cooldown_days=cooldown_days,
             metadata={
                 "anomaly_type": anomaly.get("type"),
                 "severity": severity,
