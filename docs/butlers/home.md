@@ -33,6 +33,16 @@ create a new unambiguous action. A deliberately approved area/device/all command
 remains unverified when no explicit target can be observed. No retry or receipt-success shortcut
 is created. The fixed numerical subset is conservative gating, not a stored comfort preference.
 
+## Weekly energy digest
+
+The digest flags a device only when its week is above its own usual range, from a week-bucket
+personal baseline over at least four complete weeks (see
+[Personal baselines](../concepts/personal-baselines.md)). Devices with less history are listed as
+"not enough weeks yet", never as anomalies, and a partial run (sensors without cumulative
+statistics) is not scored. The job no longer writes or reads `energy_baseline` memory facts; it
+retracts the ones it wrote earlier. The old `anomaly_pct` / `high_severity_pct` state-store
+thresholds no longer drive the digest.
+
 ## Home Assistant source health
 
 `home.ha_entity_snapshot` is a last-known-state cache, not proof that Home Assistant is reachable.

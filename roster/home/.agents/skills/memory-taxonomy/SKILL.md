@@ -85,8 +85,7 @@ internal identifiers; they do not require entity resolution.
 - `automation_schedule`: A scheduled automation linked to a scene or recurring action
 - `schedule_pattern`: Observed patterns in room usage or device activation (e.g., "living room always used 7-10pm")
 - `device_issue`: Known device problems, quirks, maintenance needs, or firmware history (use tags to distinguish: `battery`, `offline`, `firmware`, `quirk`, `maintenance`)
-- `energy_baseline`: Typical energy consumption by device or time period (used for anomaly detection)
-- `energy_spike`: Anomalous energy consumption detected above baseline (volatile)
+- `energy_spike`: Anomalous energy consumption detected above the owner's usual range (volatile)
 - `energy_pattern`: Observed patterns in energy consumption over time (standard)
 - `usage_pattern`: Observed patterns in how user interacts with devices or scenes
 - `service_provider`: Known home service providers such as plumbers, electricians, cleaners, and contractors (fact anchored to service provider entity)
@@ -134,11 +133,11 @@ memory_store_fact(
 # From: analyzing energy consumption data
 memory_store_fact(
     subject="hvac",
-    predicate="energy_baseline",
+    predicate="energy_pattern",
     content="HVAC typically uses 40% of daily energy in winter, 25% in summer. Peak usage 7-9am and 6-8pm.",
     permanence="standard",
     importance=6.0,
-    tags=["energy", "hvac", "baseline"]
+    tags=["energy", "hvac", "pattern"]
 )
 
 # From: "I like it bright in the kitchen during the day"

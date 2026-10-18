@@ -46,8 +46,9 @@ To answer any energy question:
 
 Compare current consumption to historical patterns:
 
-1. **Call `memory_recall()`** to retrieve stored energy baselines:
-   - Look for `energy_baseline` facts about typical consumption by device or time
+1. **Call `memory_recall()`** to retrieve stored energy patterns:
+   - Look for `energy_pattern` facts about typical consumption by device or time
+   - The weekly digest's week-bucket baselines are not memory facts
 
 2. **Calculate deviations**:
    - Is this week higher/lower than typical?
@@ -57,7 +58,7 @@ Compare current consumption to historical patterns:
 3. **Identify anomalies**:
    - Device always-on when it should be off (e.g., AC running in winter)
    - Unexpected spike at unusual time
-   - Device consumption 20%+ above baseline
+   - Device consumption above its usual range
 
 ### Step 3: Store Energy Patterns as Memory
 
@@ -65,7 +66,7 @@ After analyzing consumption:
 
 1. **Call `memory_store_fact()`** to persist key findings:
    - `subject`: Device name or "energy"
-   - `predicate`: `energy_baseline`, `energy_spike`, or `energy_pattern`
+   - `predicate`: `energy_spike` or `energy_pattern`
    - `content`: Concise description of pattern or anomaly
    - `permanence`: `standard` (patterns may shift seasonally)
    - `importance`: 5-7 (depends on significance)
@@ -127,7 +128,7 @@ When anomalous consumption is detected:
 1. **Identify the anomaly**:
    - Unexpected device on (AC in winter, water heater running 6+ hours)
    - Unusual peak time (consumption spike at 2am)
-   - Device consumption 20%+ above baseline
+   - Device consumption above its usual range
 
 2. **Alert the user**:
    - Severity low: Include in weekly digest
@@ -215,7 +216,7 @@ where a user investigates high HVAC usage and adjusts settings.
 **Actions**:
 1. `ha_get_history(entity_ids=["climate.main_hvac"], start="<7 days ago ISO>")` — review recent HVAC state changes (setpoints, mode changes)
 2. `ha_get_statistics(statistic_ids=["sensor.hvac_energy"], start="<30 days ago ISO>", end="<now ISO>", period="day")` — day-by-day usage trend
-3. `memory_recall(subject="hvac", predicate="energy_baseline")` — check stored baseline
+3. `memory_recall(subject="hvac", predicate="energy_pattern")` — check stored usage pattern
 4. `notify(channel="telegram", message="HVAC analysis:\n• Running 14h/day on average (high for this time of year)\n• Peak usage: 7-9am and 6-9pm\n• 18% above your usual baseline\n\nSuggestions:\n1. Lower nighttime setpoint by 2°F (saves ~10% on heating)\n2. Pre-cool/pre-heat 30min before peak demand, then let it coast\n3. Check/replace air filter — dirty filters increase runtime\n\nWant me to adjust the night setpoint?", intent="reply", request_context=...)`
 
 **Turn 3 — User**: "Set bedroom temperature 2 degrees lower at night"

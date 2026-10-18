@@ -64,15 +64,12 @@ If every sensor is unsupported, notify the owner that cumulative-energy statisti
 unavailable and recommend configuring a Home Assistant energy helper for power-only sensors.
 Do not compute or store a baseline.
 
-### Step 3: Retrieve Baselines from Memory
+### Step 3: Baselines
 
-Call `memory_recall(subject="energy", predicate="energy_baseline")` to retrieve stored baseline
-consumption patterns.
-
-Also search for device-specific baselines:
-- `memory_recall(subject="hvac", predicate="energy_baseline")`
-- `memory_recall(subject="water-heater", predicate="energy_baseline")`
-- Any device baselines stored previously
+Baselines are not stored as memory facts. The deterministic `energy_digest` job scores each
+device and the house total against the owner's own week-bucket personal baseline (median and MAD
+band over at least 4 complete weeks) and reports the usual range. Do not recall or store
+baseline facts; with fewer than 4 weeks of history, say there are not enough weeks yet.
 
 ### Step 4: Compute Top Consumers and Trends
 
@@ -82,11 +79,11 @@ From the weekly statistics:
 2. **Calculate percentage share** of each device relative to total consumption.
 3. **Compare against baselines**:
    - Is this week's total higher or lower than typical?
-   - Are any devices consuming 20%+ above their baseline? (anomaly)
+   - Are any devices above their own usual range? (anomaly)
    - What was the peak consumption day?
 4. **Identify anomalies** (flag if present):
-   - Device consuming 2x or more than baseline (high severity)
-   - Device consuming 20-50% above baseline (medium severity)
+   - Device consuming 2x or more than its usual level (high severity)
+   - Device above its usual range but under 2x (medium severity)
    - Unexpected always-on consumption (low but persistent)
 
 ### Step 5: Generate Recommendations
@@ -101,18 +98,7 @@ Limit to 2-3 recommendations. Prioritize by impact.
 
 ### Step 6: Store Energy Patterns in Memory
 
-After analysis, persist key findings:
-
-```python
-memory_store_fact(
-    subject="energy",
-    predicate="energy_baseline",
-    content="Weekly consumption: <X> kWh total. Top consumers: HVAC (<Y>%), water heater (<Z>%)",
-    permanence="standard",
-    importance=6.0,
-    tags=["energy", "weekly-digest", "baseline"]
-)
-```
+After analysis, persist anomalies (not baselines; see Step 3):
 
 If an anomaly was detected:
 

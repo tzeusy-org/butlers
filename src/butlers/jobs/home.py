@@ -82,6 +82,16 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     resolve_owner_telegram_recipient,
 )
+from butlers.jobs.home_baselines import (
+    EnergyFinding,
+    anomalies_from,
+    fetch_weekly_history,
+    retire_prose_energy_baselines,
+    score_energy_week,
+    scored_week_anchor,
+    unjudged_names,
+    usual_total_kwh,
+)
 from butlers.modules.memory.storage import store_fact
 
 logger = logging.getLogger(__name__)
@@ -1548,33 +1558,6 @@ async def _fetch_weekly_statistics(
     }
 
 
-async def _load_energy_baselines(pool: asyncpg.Pool) -> dict[str, Any]:
-    """Query the facts table for energy_baseline facts.
-
-    Returns a dict with ``total_kwh`` baseline and per-device baselines
-    keyed by entity_id or subject.
-    """
-    try:
-        rows = await pool.fetch(
-            """
-            SELECT subject, content
-            FROM facts
-            WHERE predicate = 'energy_baseline'
-              AND validity = 'active'
-            ORDER BY created_at DESC
-            """,
-        )
-    except Exception:
-        logger.debug("Could not query energy_baseline facts", exc_info=True)
-        return {}
-
-    baselines: dict[str, Any] = {}
-    for row in rows:
-        subject: str = row["subject"]
-        baselines[subject] = {"content": row["content"]}
-    return baselines
-
-
 def _compute_device_totals(
     stats: dict[str, Any],
     sensors: list[dict[str, Any]],
@@ -1610,85 +1593,6 @@ def _compute_device_totals(
     return totals
 
 
-def detect_anomalies(
-    device_totals: list[dict[str, Any]],
-    baselines: dict[str, Any],
-    *,
-    anomaly_pct: float,
-    high_severity_pct: float,
-) -> list[dict[str, Any]]:
-    """Detect energy anomalies by comparing device totals against baselines.
-
-    An anomaly is triggered when a device's weekly_kwh exceeds its baseline by
-    ``anomaly_pct`` percent or more (default 20%).  If it exceeds by
-    ``high_severity_pct`` percent or more (default 100%), it is high severity.
-
-    Args:
-        device_totals: Ranked list from ``_compute_device_totals``.
-        baselines: Mapping from subject/entity_id to baseline data.
-        anomaly_pct: Minimum percentage above baseline to flag as anomaly.
-        high_severity_pct: Percentage above baseline for high-severity flag.
-
-    Returns:
-        List of anomaly dicts with keys: ``entity_id``, ``friendly_name``,
-        ``weekly_kwh``, ``baseline_kwh``, ``pct_above``, ``severity``
-        (``"high"`` | ``"anomaly"``).
-    """
-    anomalies: list[dict[str, Any]] = []
-    for item in device_totals:
-        entity_id = item["entity_id"]
-        weekly_kwh = item["weekly_kwh"]
-
-        # Look up baseline by entity_id or friendly_name
-        baseline_entry = baselines.get(entity_id) or baselines.get(item["friendly_name"])
-        if baseline_entry is None:
-            continue
-
-        # Parse baseline kWh from content string or numeric field
-        baseline_kwh: float | None = None
-        content = baseline_entry.get("content", "")
-        if isinstance(content, (int, float)):
-            baseline_kwh = float(content)
-        elif isinstance(content, str):
-            # Try to extract a leading numeric value
-            m = re.search(r"(\d+(?:\.\d+)?)\s*(?:kwh|kw|watt)?", content, re.IGNORECASE)
-            if m:
-                try:
-                    baseline_kwh = float(m.group(1))
-                except ValueError:
-                    pass
-
-        if baseline_kwh is None or baseline_kwh <= 0:
-            continue
-
-        pct_above = (weekly_kwh - baseline_kwh) / baseline_kwh * 100
-
-        if pct_above >= high_severity_pct:
-            anomalies.append(
-                {
-                    "entity_id": entity_id,
-                    "friendly_name": item["friendly_name"],
-                    "weekly_kwh": weekly_kwh,
-                    "baseline_kwh": baseline_kwh,
-                    "pct_above": round(pct_above, 1),
-                    "severity": "high",
-                }
-            )
-        elif pct_above >= anomaly_pct:
-            anomalies.append(
-                {
-                    "entity_id": entity_id,
-                    "friendly_name": item["friendly_name"],
-                    "weekly_kwh": weekly_kwh,
-                    "baseline_kwh": baseline_kwh,
-                    "pct_above": round(pct_above, 1),
-                    "severity": "anomaly",
-                }
-            )
-
-    return anomalies
-
-
 def _build_digest_message(
     total_kwh: float,
     top_consumers: list[dict[str, Any]],
@@ -1696,6 +1600,7 @@ def _build_digest_message(
     baseline_total: float | None,
     *,
     omitted_sensor_names: list[str] | None = None,
+    not_judged_names: list[str] | None = None,
 ) -> str:
     """Compose the weekly energy digest Telegram message."""
     lines: list[str] = ["**Weekly Energy Digest**"]
@@ -1730,10 +1635,19 @@ def _build_digest_message(
         lines.append("\n**⚠️ Anomaly alerts:**")
         for a in anomalies:
             sev = "🔴 HIGH" if a["severity"] == "high" else "🟡 Anomaly"
-            lines.append(
-                f"  {sev}: {a['friendly_name']} — "
-                f"{a['weekly_kwh']:.1f} kWh (+{a['pct_above']:.0f}% above baseline)"
+            usual = (
+                f", usual {a['usual_low']:.0f}-{a['usual_high']:.0f} kWh"
+                f" over {a['n_observed']} of {a['n_expected']} weeks"
+                if "usual_low" in a
+                else f" (+{a['pct_above']:.0f}% above baseline)"
             )
+            lines.append(f"  {sev}: {a['friendly_name']} — {a['weekly_kwh']:.1f} kWh{usual}")
+
+    if not_judged_names:
+        shown = ", ".join(not_judged_names[:5])
+        extra = len(not_judged_names) - 5
+        suffix = f" and {extra} more" if extra > 0 else ""
+        lines.append(f"\nNot enough weeks yet to tell what is usual for: {shown}{suffix}.")
 
     # Recommendations (up to 3)
     recs: list[str] = []
@@ -1772,14 +1686,16 @@ async def run_energy_digest(
 
     Steps:
     1. Discover energy sensors from ha_entity_snapshot.
-    2. Load energy thresholds from state store (``home:thresholds:energy``).
-    3. Resolve HA credentials (URL, token) for WebSocket API calls.
-    4. Fetch weekly historical statistics via HA WebSocket API.
-    5. Compute top consumers and percentage shares.
-    6. Compare vs baselines (from ``energy_baseline`` memory facts).
-    7. Detect anomalies using configurable thresholds.
-    8. Store updated baseline and spike facts in memory.
-    9. Send structured digest notification via Telegram.
+    2. Resolve HA credentials (URL, token) for WebSocket API calls.
+    3. Fetch weekly historical statistics via HA WebSocket API.
+    4. Compute top consumers and percentage shares.
+    5. Score the week against the owner's week-bucket personal baselines
+       (:mod:`butlers.jobs.home_baselines`): an anomaly is a device above its own usual
+       range; a device with fewer than 4 weeks of history is listed as not judged yet.
+       A partial run skips scoring. The prose ``energy_baseline`` facts the job used to
+       write are retracted once (``validity = 'retracted'``) and never written again.
+    6. Store spike facts in memory.
+    7. Send structured digest notification via Telegram.
 
     Args:
         pool: asyncpg connection pool for the Home butler's database.
@@ -1787,7 +1703,7 @@ async def run_energy_digest(
 
     Returns:
         ``{"total_kwh": float, "devices_ranked": int, "anomalies_found": int,
-        "baseline_updated": bool}`` on success, or
+        "baseline_updated": bool}`` on success (``baseline_updated``: a stored band changed), or
         ``{"partial": true, "omitted_sensors": [...], ...}`` when only some
         sensors expose cumulative-energy statistics, or an ``error`` result on
         early-exit conditions.
@@ -1842,13 +1758,6 @@ async def run_energy_digest(
 
     logger.info("run_energy_digest: discovered %d energy sensor(s)", len(sensors))
     entity_ids = [s["entity_id"] for s in sensors]
-
-    # ------------------------------------------------------------------
-    # 3. Load thresholds
-    # ------------------------------------------------------------------
-    thresholds = await _load_energy_thresholds(pool)
-    anomaly_pct = thresholds["anomaly_pct"]
-    high_severity_pct = thresholds["high_severity_pct"]
 
     # ------------------------------------------------------------------
     # 4. Resolve HA credentials and fetch statistics
@@ -1908,87 +1817,37 @@ async def run_energy_digest(
     top_consumers = device_totals[:_TOP_N_CONSUMERS]
 
     # ------------------------------------------------------------------
-    # 6. Load baselines and compute anomalies
+    # 6. Score the week against the owner's own week-bucket baselines
     # ------------------------------------------------------------------
-    baselines = {} if is_partial else await _load_energy_baselines(pool)
-    anomalies = detect_anomalies(
-        device_totals,
-        baselines,
-        anomaly_pct=anomaly_pct,
-        high_severity_pct=high_severity_pct,
-    )
+    await retire_prose_energy_baselines(pool)
 
-    # Baseline total from the "overall" energy_baseline fact, if present
-    baseline_total_kwh: float | None = None
-    if not is_partial:
-        for key, bval in baselines.items():
-            content = bval.get("content", "")
-            if "overall" in key.lower() or "total" in key.lower():
-                m = re.search(r"(\d+(?:\.\d+)?)\s*kwh", content, re.IGNORECASE)
-                if m:
-                    try:
-                        baseline_total_kwh = float(m.group(1))
-                    except ValueError:
-                        pass
-                break
-
-    # ------------------------------------------------------------------
-    # 7. Store baseline and spike facts in memory
-    # ------------------------------------------------------------------
+    findings: list[EnergyFinding] = []
     baseline_updated = False
+    if not is_partial and stats_result["available"] and ha_url and ha_token and device_totals:
+        end_dt = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+        history = await fetch_weekly_history(
+            [d["entity_id"] for d in device_totals],
+            ha_url=ha_url,
+            ha_token=ha_token,
+            end=end_dt,
+        )
+        findings, baseline_updated = await score_energy_week(
+            pool,
+            devices=device_totals,
+            total_kwh=total_kwh,
+            history=history,
+            as_of=scored_week_anchor(end_dt),
+            now=datetime.now(tz=UTC),
+        )
+    anomalies = anomalies_from(findings)
+    not_judged = unjudged_names(findings)
+    baseline_total_kwh = usual_total_kwh(findings)
+
+    # ------------------------------------------------------------------
+    # 7. Store spike facts in memory
+    # ------------------------------------------------------------------
     if total_kwh > 0:
         eng = _NoOpEmbeddingEngine()
-
-        if not is_partial:
-            # Store an overall baseline only when every discovered sensor is represented.
-            try:
-                top_summary = ", ".join(
-                    f"{d['friendly_name']}={d['weekly_kwh']:.1f}kWh" for d in top_consumers
-                )
-                await store_fact(
-                    pool,
-                    subject="overall",
-                    predicate="energy_baseline",
-                    content=(
-                        f"Weekly energy total: {total_kwh:.1f} kWh. Top consumers: {top_summary}."
-                    ),
-                    embedding_engine=eng,
-                    importance=5.0,
-                    permanence="standard",
-                    tags=["energy", "baseline", "weekly"],
-                    source_butler="home",
-                )
-                baseline_updated = True
-                logger.info(
-                    "run_energy_digest: stored energy_baseline fact (total_kwh=%.1f)",
-                    total_kwh,
-                )
-            except Exception:
-                logger.warning(
-                    "run_energy_digest: failed to store energy_baseline fact",
-                    exc_info=True,
-                )
-
-        # Store per-device energy baseline facts so anomaly detection can compare on next run
-        for device in device_totals:
-            try:
-                await store_fact(
-                    pool,
-                    subject=device["entity_id"],
-                    predicate="energy_baseline",
-                    content=f"{device['weekly_kwh']:.2f} kWh weekly baseline",
-                    embedding_engine=eng,
-                    importance=4.0,
-                    permanence="standard",
-                    tags=["energy", "baseline", "weekly", "per-device"],
-                    source_butler="home",
-                )
-            except Exception:
-                logger.warning(
-                    "run_energy_digest: failed to store per-device energy_baseline for %s",
-                    device["entity_id"],
-                    exc_info=True,
-                )
 
         # Store spike facts for anomalous devices
         for anomaly in anomalies:
@@ -2000,7 +1859,7 @@ async def run_energy_digest(
                     predicate="energy_spike",
                     content=(
                         f"{anomaly['friendly_name']}: {anomaly['weekly_kwh']:.1f} kWh this week "
-                        f"({anomaly['pct_above']:.0f}% above baseline "
+                        f"({anomaly['pct_above']:.0f}% above its usual "
                         f"{anomaly['baseline_kwh']:.1f} kWh) — {sev_label}"
                     ),
                     embedding_engine=eng,
@@ -2031,6 +1890,7 @@ async def run_energy_digest(
             top_consumers=top_consumers,
             anomalies=anomalies,
             baseline_total=baseline_total_kwh,
+            not_judged_names=not_judged,
             omitted_sensor_names=[
                 sensor_names.get(entity_id, entity_id) for entity_id in unsupported_entity_ids
             ],

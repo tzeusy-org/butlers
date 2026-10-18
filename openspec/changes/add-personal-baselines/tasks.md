@@ -9,6 +9,6 @@
 ## 2. Deferred slices
 
 - [ ] 2.1 Slice 2: `metric_baseline_get`, Health baselines API, measurements-tab band.
-- [ ] 2.2 Slice 3: Home energy on the scorer.
+- [x] 2.2 Slice 3: Home energy on the scorer.
 - [ ] 2.3 Slice 4: Finance anomaly detection and briefing on the scorer.
 - [ ] 2.4 Slice 5: chronicler balance lanes and session spend.

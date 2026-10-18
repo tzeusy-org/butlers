@@ -28,5 +28,20 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
-Home energy, Finance spend and the dashboard band are later slices; see
+## Home energy (slice 3)
+
+The Home weekly `energy_digest` judges "unusual" against `week` baselines
+(`src/butlers/jobs/home_baselines.py`): one metric for the house total (`energy.total`) and one per
+device (`energy.device:<entity_id>`), a median and MAD band over the preceding complete weeks with
+`min_n` 4 of an 8-week window. History is Home Assistant's hourly long-term statistics summed over
+trailing 7-day windows, so nothing is stored per week; a week with a recorder gap is left out, not
+counted as quiet. A device above its own usual range is an anomaly reported with the range and the
+weeks behind it; a device with fewer than 4 weeks is listed as "not enough weeks yet". A week inside
+an open episode is excluded from later bands, so one noisy week does not become the next yardstick.
+The prose `energy_baseline` facts are no longer written; the digest retracts the ones it wrote
+earlier (`system` authority, `home` source, its own tags) and leaves owner-authored facts alone.
+Backfill from long-term statistics is not verified against a live Home Assistant: if a series is
+short, the band starts as `insufficient_history` and fills over four weeks.
+
+Finance spend and the dashboard band are later slices; see
 `openspec/changes/add-personal-baselines/proposal.md`.
