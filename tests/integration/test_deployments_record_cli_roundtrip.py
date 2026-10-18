@@ -15,6 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from butlers.cli import cli
+from butlers.core.deployments import resolve_core_migration_head
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -57,7 +58,7 @@ async def test_record_verb_writes_one_image_served_deploy_row(
     try:
         rows = await conn.fetch(
             """
-            SELECT git_sha, result, source, serving_mode, serving_worktree
+            SELECT git_sha, result, source, serving_mode, serving_worktree, migration_head
             FROM public.deployments
             WHERE git_sha IN ('pod-image-sha', 'tag-x')
             ORDER BY git_sha
@@ -65,7 +66,13 @@ async def test_record_verb_writes_one_image_served_deploy_row(
         )
     finally:
         await conn.close()
+    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
+    try:
+        head = await resolve_core_migration_head(pool)
+    finally:
+        await pool.close()
+    assert head is not None  # the migrated database really has a core head to record
     assert [tuple(r) for r in rows] == [
-        ("pod-image-sha", "success", "deploy", "image", None),
-        ("tag-x", "failed", "deploy", "image", None),
+        ("pod-image-sha", "success", "deploy", "image", None, head),
+        ("tag-x", "failed", "deploy", "image", None, head),
     ]

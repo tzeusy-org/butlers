@@ -33,7 +33,7 @@ image-%:
 
 # Wrapped so each release leaves one public.deployments row (success or failed).
 deploy-%:
-	../../../scripts/k8s/record-deploy.sh $(NAMESPACE_$*) $(TAG) $(RELEASE_NAME) -- $(call helm_args,$*)
+	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 
 # Build + push images for the current commit, then deploy them. Migrations run
 # in dashboard-api's initContainer on every rollout. Run under `bws run`.

@@ -14,12 +14,20 @@ set -uo pipefail
 
 [ "$#" -ge 3 ] || { echo "usage: $0 <namespace> <tag> <release> -- <helm args...>" >&2; exit 2; }
 ns="$1" tag="$2" release="$3"
+# An empty argument (e.g. `make deploy-dev TAG=`) would shift the rest and run a wrong helm command.
+{ [ -n "$ns" ] && [ -n "$tag" ] && [ -n "$release" ]; } \
+  || { echo "namespace, tag and release must be non-empty" >&2; exit 2; }
 shift 3
 [ "${1:-}" = "--" ] && shift
 
+# The image's ENTRYPOINT wraps the CLI in `uv run`, which `kubectl exec` skips, and the venv is not
+# on PATH. Call the installed console script directly (no sync step); Dockerfile.base sets
+# WORKDIR /app and `uv sync` puts the project venv in /app/.venv.
+BUTLERS_BIN=/app/.venv/bin/butlers
+
 record() {
   kubectl -n "$ns" exec --pod-running-timeout=30s deploy/dashboard-api -- \
-    butlers deployments record --source deploy --result "$@"
+    "$BUTLERS_BIN" deployments record --source deploy --result "$@"
 }
 
 status=0
@@ -31,6 +39,6 @@ if [ "$status" -eq 0 ]; then
   record success || echo "warning: release succeeded but no deployment row was recorded" >&2
 else
   record failed --git-sha "$tag" \
-    || echo "no deployment row recorded: dashboard-api was unreachable" >&2
+    || echo "no deployment row recorded: kubectl exec or the ledger write failed" >&2
 fi
 exit "$status"

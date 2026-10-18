@@ -68,7 +68,7 @@ def test_success_records_one_success_row_after_both_rollouts(tmp_path: Path, bin
         "kubectl -n ns-x rollout status deploy/butlers-up --timeout=10m",
     ]
     assert len(_records(calls)) == 1
-    assert calls[-1].endswith("deploy/dashboard-api -- butlers deployments record "
+    assert calls[-1].endswith("deploy/dashboard-api -- /app/.venv/bin/butlers deployments record "
                               "--source deploy --result success")  # fmt: skip
 
 
@@ -107,3 +107,31 @@ def test_unreachable_pod_never_turns_failure_into_success_or_success_into_failur
     code, stderr, _calls = _run(tmp_path, bin_dir, exec="1", helm="1")
     assert code == 3
     assert "no deployment row recorded" in stderr
+
+
+@pytest.mark.parametrize("empty", ["ns", "tag", "release"])
+def test_an_empty_argument_is_refused_before_helm_runs(
+    tmp_path: Path, bin_dir: Path, empty: str
+) -> None:
+    log = tmp_path / "calls.log"
+    log.write_text("", encoding="utf-8")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CALL_LOG": log.as_posix()}
+    args = {"ns": "ns-x", "tag": "tag123", "release": "rel"} | {empty: ""}
+    result = subprocess.run(
+        ["bash", str(_REPO_ROOT / "scripts/k8s/record-deploy.sh"), *args.values(), "--", "--set", "x=1"],
+        capture_output=True, text=True, env=env, cwd=tmp_path,
+    )  # fmt: skip
+
+    assert result.returncode == 2
+    assert "non-empty" in result.stderr
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_a_failed_record_after_a_failed_release_does_not_blame_reachability(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    code, stderr, _calls = _run(tmp_path, bin_dir, helm="1", exec="1")
+
+    assert code == 3
+    assert "no deployment row recorded" in stderr
+    assert "unreachable" not in stderr
