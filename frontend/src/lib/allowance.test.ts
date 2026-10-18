@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import type { AllowanceAccount } from "@/api/types.ts";
 import {
-  accountsOutOfAllowance,
   allowanceSourceLabel,
   formatAllowanceCountdown,
   readAllowance,
@@ -60,10 +59,5 @@ describe("allowance helpers", () => {
     expect(readAllowance(account({ reset_at: null }), NOW)).toEqual({
       kind: "exhausted-no-reset",
     });
-  });
-
-  it("selects only exhausted accounts for the verdict", () => {
-    const list = [account({}), account({ account_key: "b", state: "available" })];
-    expect(accountsOutOfAllowance(list).map((a) => a.account_key)).toEqual(["acct-a"]);
   });
 });

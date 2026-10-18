@@ -15,7 +15,8 @@
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { useModelAllowance } from "@/hooks/use-model-catalog";
-import { accountsOutOfAllowance, formatAllowanceCountdown } from "@/lib/allowance";
+import type { AllowanceAccount } from "@/api/types.ts";
+import { formatAllowanceCountdown, readAllowance } from "@/lib/allowance";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
@@ -47,12 +48,26 @@ function formatBackupRecency(lastBackupAt: string | null): string {
   return `backed up ${Math.floor(hours / 24)}d ago`;
 }
 
-function formatAllowanceUntil(resetAt: string | null): string {
-  const resetMs = resetAt ? new Date(resetAt).getTime() : Number.NaN;
-  const now = Date.now();
-  if (Number.isNaN(resetMs) || resetMs <= now) return "(reset time unknown)";
-  const clock = new Date(resetMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return `until ${clock} (${formatAllowanceCountdown(resetMs - now)})`;
+/** The verdict clause for one account, or null when it needs nothing (available). */
+function allowanceClause(account: AllowanceAccount): string | null {
+  const reading = readAllowance(account, Date.now());
+  switch (reading.kind) {
+    case "available":
+      return null;
+    case "unknown":
+      return `${account.account_key} allowance unknown`;
+    case "should-be-back":
+      return `${account.account_key} out of allowance, should be back`;
+    case "exhausted-no-reset":
+      return `${account.account_key} out of allowance, reset unknown`;
+    case "countdown": {
+      const clock = new Date(account.reset_at as string).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `${account.account_key} out of allowance until ${clock} (${formatAllowanceCountdown(reading.msRemaining)})`;
+    }
+  }
 }
 
 function bindMountedWorktreeTruth(current: {
@@ -243,12 +258,15 @@ export function SystemVerdictBanner() {
       href: "/settings/models",
     });
   } else if (allowanceData) {
-    for (const account of accountsOutOfAllowance(allowanceData.accounts)) {
-      problems.push({
-        key: `allowance-${account.account_key}`,
-        text: `${account.account_key} out of allowance ${formatAllowanceUntil(account.reset_at)}`,
-        href: "/settings/models",
-      });
+    for (const account of allowanceData.accounts) {
+      const text = allowanceClause(account);
+      if (text) {
+        problems.push({
+          key: `allowance-${account.account_key}`,
+          text,
+          href: "/settings/models",
+        });
+      }
     }
   }
 
