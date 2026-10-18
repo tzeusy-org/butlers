@@ -412,13 +412,25 @@ async def test_a_closure_failure_never_fails_the_fact_write(
         raise RuntimeError("lock service down")
 
     monkeypatch.setattr(knowledge_gaps, "_lock_pair", boom)
-    before = knowledge_gaps.closure_failures
+    from tests.core.test_otel_metrics import (
+        _collect_metrics,
+        _make_in_memory_provider,
+        _reset_metrics_global_state,
+    )
 
-    stored = await _store(pool, entity, predicate, sender=owner)
+    _provider, reader = _make_in_memory_provider()
+    try:
+        stored = await _store(pool, entity, predicate, sender=owner)
 
-    assert await pool.fetchval("SELECT validity FROM facts WHERE id = $1", stored["id"]) == "active"
-    assert (await _gap(pool, entity, predicate))["status"] == "open"
-    assert knowledge_gaps.closure_failures == before + 1
+        assert (
+            await pool.fetchval("SELECT validity FROM facts WHERE id = $1", stored["id"])
+            == "active"
+        )
+        assert (await _gap(pool, entity, predicate))["status"] == "open"
+        (point,) = _collect_metrics(reader)["butlers.memory.knowledge_gap_closure_failures_total"]
+        assert dict(point.attributes) == {"stage": "closure"} and point.value == 1
+    finally:
+        _reset_metrics_global_state()
 
 
 async def test_a_schema_without_the_gap_table_is_a_one_probe_no_op():

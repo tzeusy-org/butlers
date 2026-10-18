@@ -441,6 +441,34 @@ def record_domain_event_delivery_failed_permanent(
 
 
 # ---------------------------------------------------------------------------
+# Memory knowledge-gap instruments
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES = frozenset({"closure"})
+
+
+def _knowledge_gap_closure_failures_total() -> metrics.Counter:
+    """Counter: swallowed knowledge-gap bookkeeping failures (stage label only)."""
+    return get_meter().create_counter(
+        name="butlers.memory.knowledge_gap_closure_failures_total",
+        description="Knowledge-gap bookkeeping failures swallowed so the fact write could commit",
+        unit="failures",
+    )
+
+
+def record_knowledge_gap_closure_failure(*, stage: str) -> None:
+    """Record one swallowed knowledge-gap closure failure.
+
+    ``stage`` is closed to the bookkeeping steps that run on a fact write's connection.
+    Entity, predicate, fact IDs and exception text are never metric attributes; the
+    butler identity comes from the OTel resource.
+    """
+    if stage not in _KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES:
+        raise ValueError(f"unsupported knowledge-gap closure failure stage: {stage!r}")
+    _knowledge_gap_closure_failures_total().add(1, {"stage": stage})
+
+
+# ---------------------------------------------------------------------------
 # Recovery instruments
 # ---------------------------------------------------------------------------
 
