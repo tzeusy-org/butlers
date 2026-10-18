@@ -220,6 +220,16 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
   text, tool calls, token usage or stderr with the same classifier-eligible posture.
 - Runtime args come only from `public.model_catalog.extra_args` (no `butler.toml` fallback);
   `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter.
+- Codex web search is OpenAI's hosted Responses `web_search` tool (search, open_page and find_in_page run
+  provider-side), so a sandboxed Codex needs egress only to the model provider to keep web search
+  (verified 2026-10-15, codex-cli 0.160.0, against a local fake provider). `-c web_search="live"` sends
+  `{type: web_search, external_web_access: true}`, `"cached"` sends `external_web_access: false`,
+  `"disabled"` sends no tool. With `--disable shell_tool --disable unified_exec --disable multi_agent
+  --disable goals --disable view_image` and `-c 'tools.experimental_request_user_input={enabled=false}'`
+  Codex sends only the hosted `web_search`; the adapter's default config (`--dangerously-bypass-approvals-and-sandbox`)
+  sends shell, sub-agent and goal tools as well as live web search. Claude Code `WebFetch` and
+  OpenCode `webfetch` fetch from the local pod. Tracked in bu-svqpzo.8 (interim lockdown) and epic
+  bu-6qaju2 (governed web research).
 - `RuntimeConfigAccessor.invalidate_cache()` sets `RuntimeConfigAccessor._cache_time` to
   `float("-inf")`, not `0.0`, which
   only expires once process uptime exceeds the TTL.

@@ -15,6 +15,7 @@
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
 - [Decision Beads](decision-beads.md) — owner-decision bead convention and its linter
+- [Agent Fleet Playbook](agent-fleet-playbook.md) — merge-queue, CI, contract-evolution, `bd`, worktree and subagent traps for agents and coordinators
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
 - [QA Publication Boundary](qa-publication-boundary.md) — durable publication operations and ambiguous-lineage holds (publication disabled)
