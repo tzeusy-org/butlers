@@ -6,9 +6,16 @@
 `snapshot_complete=True` resolves every active episode of that source that is not observed;
 `snapshot_complete=False` only confirms what it saw. Fingerprints come from
 `compute_fingerprint(source, version, identity_facts)`; evidence (summary, metadata) never
-enters identity. The Finance `insight-scan` job is the one existing producer
-(`roster/finance/jobs/finance_jobs.py`, `_reconcile_owner_conditions`): in-process, complete
-snapshot, failures logged and swallowed.
+enters identity. Producers on main today are Finance `insight-scan` (`finance:bill-overdue`,
+`finance:spending-anomaly`; `roster/finance/jobs/finance_jobs.py`, `_reconcile_owner_conditions`:
+in-process, complete snapshot, failures logged and swallowed, the model for this change), Health
+`baseline_watch` (`health:baseline-deviation`, `src/butlers/jobs/health_baselines.py`; governed
+by the open change `add-personal-baselines`), Relationship commitments (`relationship:commitment`
+via `src/butlers/core/commitments.py`, `snapshot_complete=False`), and the Switchboard
+`reconcile_owner_condition` broker for sessions
+(`roster/switchboard/modules/owner_conditions_broker.py`). This change adds the calendar, Home
+Assistant and finance-threshold producers. It adds no Health producer: that one exists, with
+its own fingerprint, direction vocabulary and failure semantics, and is not restated here.
 
 Everything below is grounded in code on main 7cfd3b301. Where a seam could not be verified it is
 marked `[Unknown]` here and in the spec delta, each with a verify task in `tasks.md`.
@@ -30,6 +37,13 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
 - The scan stays the single source of truth for "what is a conflict": the producer reuses
   `query_calendar_conflicts` unchanged, so the radar banner and the condition can never disagree
   about a candidate (provenance filter, all-day exclusion, RSVP/transparency filter, dedup).
+- Adoption note, source prefix: `src/butlers/core/owner_conditions.py:36-45` documents
+  `{origin_butler}:{category}`, and no `calendar` butler exists. `calendar:` is a non-butler
+  producer prefix, justified because the loop belongs to no butler; nothing parses the prefix
+  today, and a named alternative is `switchboard:calendar-overcommitment`. The loop also writes
+  through the Switchboard pool, whereas the ledger MCP surface requirement describes "a
+  deterministic scheduled job with its own database pool"; the adoption question is whether
+  the owner accepts that deviation or prefers the alternative name.
 
 ## D2: Calendar lookahead, window, and config owner
 
@@ -46,6 +60,12 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
   defaults (15 min, 6.0 h) so the radar and the condition agree. `[Unknown]` Whether the owner
   wants these tunable from a settings surface: no such surface exists today.
 - Cadence default: 1800 s, same as the deadman loop.
+- Adoption note, supervision: `REQ-infrastructure-reliability-001` says the dashboard lifespan
+  supervises exactly one named task for each current loop and lists them (`secrets_lifecycle`,
+  `model_verify`, ..., `calendar_sync_deadman`, `external_deadman`, `restore_drill`;
+  `openspec/specs/infrastructure-reliability/spec.md`). The RFC 0007 readiness `supervisors`
+  projection consumes that loop health. A new calendar loop therefore requires amending that
+  list at adoption; this draft deliberately adds no MODIFIED block.
 
 ## D3: Calendar qualifying issues, severity, identity
 
@@ -62,7 +82,11 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
   because it matches the radar's own issue list and proposal join.
   `[Unknown]` Whether `calendar_event_instances.id` stays stable across a provider resync of the
   same recurring instance. If it does not, a resync would resolve and reopen pair conditions;
-  verify before adoption (task 1.1).
+  verify before adoption (task 1.1). Related seam: `load_dedup_rules` and
+  `load_keep_separate_keys` fail open to the default strategy while `available` stays true, so a
+  dedup-store outage can change which copy survives a cluster and therefore which `instance_id`
+  feeds `overlap_pair_id`; a "complete" scan could then resolve and reopen pair conditions.
+  Task 1.1 covers both.
 - Grace: `initial_grace_seconds` defaults to 3600, mirroring Finance.
 
 ## D4: Resolution, concurrency, partial sync
@@ -87,11 +111,10 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
 ## D5: Threshold crossings are job-time, not write-time
 
 The bead says "ingestion-time"; today's seams are scheduled deterministic jobs that read stored
-state, not write-path hooks. The three threshold producers therefore run inside existing jobs
+state, not write-path hooks. The two threshold producers (Home and Finance) therefore run inside existing jobs
 and detect a crossing on the next run (latency = job cadence). A write-time hook (Home Assistant
-entity upsert at `roster/home/modules/__init__.py`, health measurement writes, transaction
-ingestion) is not specified: it would add a second writer per source and a lock-ordering surface.
-[decision] Adoption question: accept cadence latency (4 h home, daily health and finance) or
+entity upsert at `roster/home/modules/__init__.py`, transaction ingestion) is not specified: it would add a second writer per source and a lock-ordering surface.
+[decision] Adoption question: accept cadence latency (4 h home, daily finance) or
 fund write-time hooks as a separate change.
 
 ## D6: Home
@@ -101,7 +124,21 @@ fund write-time hooks as a separate change.
   `ha_entity_snapshot` with thresholds from the state store (`home:thresholds:battery`, loaded by
   `_load_battery_thresholds`).
 - Source `home:device-threshold`; identity `{entity_id, issue}` where `issue` is `battery` or
-  `offline`, so one device can hold both.
+  `offline`, so one device can hold both. Offline issues are keyed without a level: the
+  `critical` or `warning` level is evidence, so an offline device escalating from warning to
+  critical confirms the same episode.
+- Qualifying severities: `critical` and `warning` only, for both issue kinds. `classify_battery`
+  also returns `info` (default threshold 30%, `home.py:611-617`) and the job appends `info`
+  battery issues to its list, but an `info` battery does not qualify. A battery recovering from
+  15% to 25% therefore stops being observed and resolves.
+- Unmeasured battery: when a battery entity's state is `unavailable`, `unknown` or otherwise
+  not numeric, `float(state)` fails (`home.py:2165-2168`) and the job produces no battery issue.
+  The producer SHALL NOT read that absence as recovery: it carries the entity's active battery
+  condition forward with `confirm_only` and resolves it only on a numeric reading above the
+  warning threshold. (The same entity may separately open an offline condition.)
+- Empty snapshot: the job returns early on an empty `ha_entity_snapshot`
+  (`no_entity_snapshot`, `home.py:2129-2136`). The producer does not reconcile there, since an
+  empty complete snapshot would resolve every condition.
 - Degraded: `_require_ha_source_healthy` raising `HASourceUnmeasurableError` already skips the
   job today; the producer reconciles nothing in that case (no snapshot at all), so an HA outage
   never resolves a condition.
@@ -110,26 +147,15 @@ fund write-time hooks as a separate change.
   next episode and the ledger keeps the history. `[Unknown]` Whether device battery sensors report
   a stale `last_updated` that should count as unmeasured rather than low; verify against
   `is_steady_state_unknown` and the snapshot's `last_updated` (task 2.1).
+- Privacy: the level exists only for battery (the percentage); an offline issue's value is the
+  state string, and hours offline are not kept.
 
-## D7: Health
+## D7: Health (removed)
 
-- No absolute vital-sign thresholds exist today (verified: no threshold constants in
-  `roster/health/jobs/health_jobs.py` or `src/butlers/jobs/health_baselines.py`). The only
-  durable "reading left its normal range" state is the baseline deviation episode maintained by
-  `baseline_watch` (`run_baseline_watch`, `episode_spans`, `get_open_episode`). The health
-  producer therefore reconciles open baseline deviation episodes, and this draft adds no new
-  threshold.
-- Source `health:baseline-deviation`; identity `{metric_key}` (one open episode per metric).
-- Late and out-of-order samples: `baseline_watch` recomputes from the stored series for
-  `as_of = yesterday` each run, so late samples are absorbed by the recompute; the producer adds
-  no debounce of its own and inherits the episode state machine.
-- Degraded: a metric whose series is not `measurable` yields no observation and no resolution for
-  that metric (carry-forward via `confirm_only`); only metrics evaluated to a definite
-  non-deviating state may resolve. `[Unknown]` The exact shape of the "not measurable" state in
-  `_measurable`; verify before wording the scenario into code (task 3.1).
-- Privacy: health values are sensitive. Condition text and metadata carry the metric label,
-  direction (`high` or `low`) and the episode start date only. No raw reading, no baseline value,
-  no unit.
+Dropped on review. Health's baseline-deviation producer already exists
+(`CONDITION_SOURCE = "health:baseline-deviation"`, reconcile in `run_baseline_watch`), and the
+open change `add-personal-baselines` governs it. The section number is left vacant so D8 and the
+requirement IDs stay stable.
 
 ## D8: Finance
 
@@ -144,7 +170,16 @@ fund write-time hooks as a separate change.
 - Running totals read the same transaction set as the existing alert (`deleted_at` guard
   included), so a late or backdated transaction moves the total on the next scan; no separate
   out-of-order handling.
-- Degraded: a failing `budget_status()` skips this source's reconciliation (or passes
-  `snapshot_complete=False`); it never resolves.
+- Degraded: `budget_status()` has no degraded return shape (`roster/finance/tools/budgets.py`):
+  it raises, returns items, or returns `{"items": [], "count": 0}` when no budgets are active.
+  A raise skips this source's reconciliation (or passes `snapshot_complete=False`) and never
+  resolves; an empty result is a genuine complete snapshot and resolves, since the budgets were
+  removed or deactivated. Today `budget_status()` is not wrapped in `run_insight_scan`, so a
+  raise aborts the rest of the scan; the skip-this-source rule needs that wrapper.
+- Placement: `run_insight_scan` returns early in sections 1 and 2 and on a `filtered` candidate
+  submission in section 3. A reconcile placed after the budget section is skipped on those runs,
+  which is safe (nothing resolves) but adds latency. Reconciling from `budget_result` before the
+  candidate loop would avoid it; [decision] the early-exit latency is accepted and the producer
+  keeps the simpler placement after the budget section.
 - Privacy: category, period and utilisation percent plus spent and budget amounts, matching what
   the existing finance conditions and the budget insight already show the owner.
