@@ -180,7 +180,8 @@ docker_available = shutil.which("docker") is not None
 async def test_real_postgres_owner_beats_device_and_device_row_survives(
     provisioned_postgres_pool,
 ) -> None:
-    """Real facts + public.state: the owner zone comes from public.state, rows are kept."""
+    """Real facts + public.state: the owner zone comes from public.state (not an empty
+    health.state), and device rows are kept."""
     async with provisioned_postgres_pool(schema="health") as pool:
         await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
         await pool.execute(
@@ -190,6 +191,11 @@ async def test_real_postgres_owner_beats_device_and_device_row_survives(
         await pool.execute(
             "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
             {"timezone": SGT},
+        )
+        # An empty health.state shadows nothing: the zone must still come from public.state.
+        await pool.execute(
+            "CREATE TABLE IF NOT EXISTS health.state (key TEXT PRIMARY KEY, value JSONB NOT NULL,"
+            " updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
         )
         await pool.execute(
             "CREATE TABLE IF NOT EXISTS health.facts (id uuid PRIMARY KEY DEFAULT"

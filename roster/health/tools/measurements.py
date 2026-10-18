@@ -293,7 +293,7 @@ async def measurement_history(
     if type not in READABLE_MEASUREMENT_TYPES:
         raise ValueError(
             f"Unrecognized measurement type: {type!r}. "
-            f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+            f"Must be one of: {', '.join(sorted(READABLE_MEASUREMENT_TYPES))}"
         )
 
     predicate = f"measurement_{type}"
@@ -333,7 +333,7 @@ async def measurement_latest(
     if type not in READABLE_MEASUREMENT_TYPES:
         raise ValueError(
             f"Unrecognized measurement type: {type!r}. "
-            f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+            f"Must be one of: {', '.join(sorted(READABLE_MEASUREMENT_TYPES))}"
         )
 
     predicate = f"measurement_{type}"

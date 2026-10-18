@@ -6,6 +6,10 @@
 
 The connector SHALL run independent polling loops per data type bundle.
 
+ID: REQ-connector-google-health-005
+Source: bu-k5l35 (archived change 2026-04-24-google-health-connector); [Observed] `src/butlers/connectors/google_health.py` `RESOURCE_BUNDLES`
+Scope: v1-mandatory
+
 #### Scenario: Default poll intervals
 
 - **WHEN** the connector has no per-resource overrides configured

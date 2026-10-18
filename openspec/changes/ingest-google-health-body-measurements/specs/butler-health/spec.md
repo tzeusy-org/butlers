@@ -4,7 +4,11 @@
 
 ### Requirement: Owner-logged measurements dominate device readings
 
-Wherever Health reports a latest or per-day measurement value, an owner-logged value SHALL win over a device-reported value on the same owner-local calendar day. Device rows SHALL stay stored with their `metadata.source` and SHALL NOT be deleted.
+`measurement_latest`, `measurement_history` and `GET /measurements/latest` SHALL let an owner-logged value win over a device-reported value on the same owner-local calendar day. Device rows SHALL stay stored with their `metadata.source` and SHALL NOT be deleted.
+
+ID: REQ-butler-health-003
+Source: bu-q7vx1q.35; [Observed] `roster/health/tools/owner_dominance.py`
+Scope: v1-mandatory
 
 #### Scenario: Latest value on a day with an owner log
 
