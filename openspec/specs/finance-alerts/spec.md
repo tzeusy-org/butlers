@@ -150,6 +150,8 @@ Source: RFC 0011; RFC 0029 §Initial adoption
 - **THEN** the existing `subscription-renewal` candidate policy MAY run with its current priority,
   deduplication, expiry, and wording
 - **AND** that reminder MUST NOT claim whether the future charge was or will be observed
+- **AND** the cancellation door wording and the handling of unverified cancelled or paused status
+  are governed by REQ-finance-alerts-002
 
 #### Scenario: Existing predicted-bill policy remains forward-looking
 
