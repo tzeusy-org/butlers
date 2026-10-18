@@ -1,0 +1,11 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-mc01y5-13-qa-git-isolation-20261018",
+  "owners": [
+    "tests/core/qa/test_dispatch.py::test_capture_commit_diff_snapshot_runs_git_diff_against_worktree",
+    "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_fails",
+    "tests/core/qa/test_dispatch.py::test_dispatch_pr_review_followup_materializes_remote_ref_before_worktree_add",
+    "tests/integration/test_qa_pipeline.py::TestFullPatrolCycle::test_full_cycle_log_scanner_to_dispatch"
+  ],
+  "timeout_s": 300
+}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -368,4 +369,171 @@ async def test_main_refresh_never_runs_planted_ext_or_git_proxy_transport(
 
     with pytest.raises(qa_dispatch.MainRefreshError):
         await qa_dispatch._refresh_main_commit(repo_root)
+    assert not marker.exists()
+
+
+def _plant_uploadpack(tmp_path: Path, repo_root: Path) -> Path:
+    marker = tmp_path / "uploadpack.marker"
+    script = tmp_path / "uploadpack.sh"
+    script.write_text(
+        f'#!/bin/sh\necho "${{DATABASE_URL}}" >> {marker}\nexec git-upload-pack "$@"\n'
+    )
+    script.chmod(0o755)
+    _git(repo_root, "config", "remote.origin.uploadpack", str(script))
+    return marker
+
+
+@pytest.mark.asyncio
+async def test_main_refresh_pins_upload_pack_against_a_planted_remote_command(
+    tmp_path: Path, monkeypatch
+):
+    """bu-mc01y5.13: git keeps the first remote.origin.uploadpack, so the fetch pins it."""
+    repo_root, work, _markers = _repository(tmp_path)
+    _advance(work, "one")
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+    marker = _plant_uploadpack(tmp_path, repo_root)
+    _git(repo_root, "fetch", "-q", "origin")  # Control: the plant runs for an unpinned fetch.
+    assert marker.read_text().startswith("postgres://daemon:secret")
+    marker.unlink()
+    _advance(work, "two")
+
+    commit = await qa_dispatch._refresh_main_commit(repo_root)
+
+    assert commit == _git(work, "rev-parse", "main")
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_followup_fetch_pins_upload_pack_against_a_planted_remote_command(
+    tmp_path: Path, monkeypatch
+):
+    repo_root, work, _markers = _repository(tmp_path)
+    _advance(work, "one")
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+    marker = _plant_uploadpack(tmp_path, repo_root)
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    registry: list[asyncio.Task] = []
+    with (
+        patch.object(qa_dispatch, "anonymize", return_value="feedback"),
+        patch.object(qa_dispatch, "validate_anonymized", return_value=(True, [])),
+        patch.object(qa_dispatch, "_run_review_followup_session", new_callable=AsyncMock),
+    ):
+        dispatched = await qa_dispatch._dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=repo_root,
+            attempt_id=uuid.uuid4(),
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name=_BRANCH,
+            feedback_summary="comment",
+            config=qa_dispatch.QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token=_TOKEN,
+            task_registry=registry,
+        )
+        await asyncio.gather(*registry)
+
+    assert dispatched is True
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_commit_diff_snapshot_runs_no_planted_driver_and_sees_no_daemon_secret(
+    tmp_path: Path, monkeypatch
+):
+    """bu-mc01y5.13: diff.external and textconv planted in .git/config never run."""
+    repo_root, _work, _markers = _repository(tmp_path)
+    monkeypatch.setenv("GH_TOKEN", _TOKEN)
+    monkeypatch.setenv("DATABASE_URL", "postgres://daemon:secret@db/butlers")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "bootstrap-secret")
+    external = tmp_path / "external.sh"
+    textconv = tmp_path / "textconv.sh"
+    external.write_text(
+        f'#!/bin/sh\necho "${{DATABASE_URL}}" >> {tmp_path / "external.marker"}\nexit 0\n'
+    )
+    textconv.write_text(f'#!/bin/sh\necho ran >> {tmp_path / "textconv.marker"}\ncat "$1"\n')
+    for script in (external, textconv):
+        script.chmod(0o755)
+    (repo_root / ".gitattributes").write_text("*.txt diff=probe\n")
+    (repo_root / "change.txt").write_text("before\n")
+    _git(repo_root, "add", ".")
+    _git(repo_root, "commit", "-qm", "before")
+    (repo_root / "change.txt").write_text("after\n")
+    _git(repo_root, "commit", "-qam", "after")
+    _git(repo_root, "config", "diff.external", str(external))
+    _git(repo_root, "config", "diff.probe.textconv", str(textconv))
+
+    # Control: a plain daemon-environment diff really runs the planted drivers.
+    subprocess.run(["git", "diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True)
+    assert (tmp_path / "external.marker").read_text().startswith("postgres://daemon:secret")
+    (tmp_path / "external.marker").unlink()
+    (tmp_path / "textconv.marker").unlink(missing_ok=True)
+    # Control: with the external driver bypassed, the textconv plant fires on its own.
+    subprocess.run(
+        ["git", "diff", "--no-ext-diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True
+    )
+    assert (tmp_path / "textconv.marker").exists()
+    (tmp_path / "textconv.marker").unlink()
+
+    seen_env: list[dict[str, str]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        seen_env.append(dict(kwargs["env"]))
+        return await real_exec(*args, **kwargs)
+
+    with patch.object(qa_dispatch.asyncio, "create_subprocess_exec", side_effect=spy):
+        snapshot = await qa_dispatch._capture_commit_diff_snapshot(repo_root)
+
+    assert not (tmp_path / "external.marker").exists()
+    assert not (tmp_path / "textconv.marker").exists()
+    (env,) = seen_env
+    assert not {"GH_TOKEN", "DATABASE_URL", "POSTGRES_PASSWORD"} & set(env)
+    assert "bootstrap-secret" not in json.dumps(env)
+    assert {"kind": "-", "text": "before"} in snapshot
+    assert {"kind": "+", "text": "after"} in snapshot
+
+
+@pytest.mark.asyncio
+async def test_no_op_branch_detection_runs_no_planted_signature_program(tmp_path: Path):
+    """bu-mc01y5.13: log.showSignature plus gpg.program never runs during no-op detection."""
+    repo_root, _work, _markers = _repository(tmp_path)
+    marker = tmp_path / "gpg.marker"
+    program = tmp_path / "evil-gpg.sh"
+    program.write_text(f"#!/bin/sh\necho ran >> {marker}\nexit 1\n")
+    program.chmod(0o755)
+    tree = _git(repo_root, "rev-parse", "HEAD^{tree}")
+    parent = _git(repo_root, "rev-parse", "HEAD")
+    commit = (
+        f"tree {tree}\nparent {parent}\nauthor t <t@e> 1700000000 +0000\n"
+        "committer t <t@e> 1700000000 +0000\n"
+        "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fake\n -----END PGP SIGNATURE-----\n\nsigned\n"
+    )
+    sha = subprocess.run(
+        ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+        cwd=repo_root,
+        input=commit,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo_root, "update-ref", "refs/heads/agent-branch", sha)
+    _git(repo_root, "config", "log.showSignature", "true")
+    _git(repo_root, "config", "gpg.program", str(program))
+
+    # Control: the plain daemon-style log really runs the planted program.
+    subprocess.run(
+        ["git", "log", "main..agent-branch", "--oneline"], cwd=repo_root, capture_output=True
+    )
+    assert marker.exists()
+    marker.unlink()
+
+    no_op = await qa_dispatch._detect_no_op_branch(
+        repo_root, "agent-branch", {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    )
+
+    assert no_op is False
     assert not marker.exists()
