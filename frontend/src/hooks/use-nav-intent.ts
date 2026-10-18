@@ -39,8 +39,6 @@ export interface NavIntentHandlers {
   onBlur: () => void;
   /** Warm immediately before navigation or an imperative activation callback. */
   onActivate: () => void;
-  /** Cancel any pending timer without warming (e.g. effect cleanup). */
-  cancel: () => void;
 }
 
 /**
@@ -147,5 +145,5 @@ export function useNavIntent(
     queueMicrotask(endCycle);
   }, [clearTimer, warm, endCycle]);
 
-  return { onPointerEnter, onPointerLeave, onFocus, onBlur, onActivate, cancel: clearTimer };
+  return { onPointerEnter, onPointerLeave, onFocus, onBlur, onActivate };
 }

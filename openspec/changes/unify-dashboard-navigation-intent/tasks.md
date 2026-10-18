@@ -14,10 +14,11 @@
 
 ## 2. Adoption Gates
 
-- [ ] 2.1 Independent semantic review returns GO on the exact draft head or actionable corrections
-      are applied and reviewed again.
-- [ ] 2.2 Owner approves the exact artifact commit or digest, including
-      `OWNER-DECISION-NAV-001` and `OWNER-DECISION-NAV-002`.
+- [x] 2.1 Independent semantic review returns GO on the exact draft head or actionable corrections
+      are applied and reviewed again. (Evidence: artifact a872ca26 review, recorded on bu-2jtfw.15.)
+- [x] 2.2 Owner approves the exact artifact commit or digest, including
+      `OWNER-DECISION-NAV-001` and `OWNER-DECISION-NAV-002`. (Evidence: 2026-09-13 owner
+      implementation release, recorded on bu-2jtfw.15.)
 
 ## 3. Future Implementation, Outside This Change
 
