@@ -133,14 +133,20 @@ async def _scenario(db_url: str) -> tuple[dict, dict[str, int]]:
         await pool.close()
 
 
-def test_per_medication_dose_counts_respect_the_owner_local_day(migrated_db: str) -> None:
-    _, counts = asyncio.run(_scenario(migrated_db))
+@pytest.fixture(scope="module")
+def scenario_result(migrated_db: str) -> tuple[dict, dict[str, int]]:
+    """Seed once and run the job once; the facts are entity-less, so a reseed would collide."""
+    return asyncio.run(_scenario(migrated_db))
+
+
+def test_per_medication_dose_counts_respect_the_owner_local_day(scenario_result) -> None:
+    _, counts = scenario_result
 
     assert counts == {"Alpha": 2, "Beta": 1}
 
 
-def test_taken_total_counts_non_skipped_active_doses_in_the_window(migrated_db: str) -> None:
-    result, _ = asyncio.run(_scenario(migrated_db))
+def test_taken_total_counts_non_skipped_active_doses_in_the_window(scenario_result) -> None:
+    result, _ = scenario_result
 
     # Alpha 2 + Beta 1 + the inactive medication's dose 1; skipped, retracted and out-of-window
     # doses are excluded.
