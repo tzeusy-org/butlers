@@ -1,0 +1,172 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-gm93xc-tombstone-refusal-20261018",
+  "bead": "bu-gm93xc",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-18",
+    "reference": "Authorization bead bu-vcwgbn for implementation bead bu-gm93xc (PR #4666, the central fact writer refuses writes against merge-tombstoned entities). Reviewed before: main 5ea5bd4d95667361e0b4c914a61f71fccd3a4e3e plus the REQ-relationship-facts-002 header lines this change adds; approved subject: PR #4666 head 8164803f644dff28e50a16ec20b8bd24057c3406 (review bu-f9dwbf), merged with that main plus the request file. Governing requirement REQ-relationship-facts-002 (Central writer — relationship_assert_fact()) of openspec/specs/relationship-facts/spec.md, whose pre-change block carried no ID and gains it in this change, byte-identical to the header the open change relationship-fact-effective-time already carries in its MODIFIED copy. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py::TestFactEntityLockOrder::test_ordinary_supersede_waits_on_the_entity_while_a_merge_holds_it",
+      "after": "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py::TestFactEntityLockOrder::test_ordinary_supersede_waits_on_the_entity_while_a_merge_holds_it",
+      "contracts": [
+        "REQ-relationship-facts-002"
+      ],
+      "reason": "The removed assertions pinned the known gap (bu-gm93xc): a write queued behind a committing merge inserted onto the tombstoned source. REQ-relationship-facts-002 now requires the writer to refuse it with entity_tombstoned naming the survivor. The test keeps its lock-order intent (the writer queues on public.entities and the merge moves the original row intact) and now asserts the typed refusal, the survivor id and nothing active on the source."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/relationship-facts/spec.md",
+      "id": "REQ-relationship-facts-002",
+      "before_sha256": "aa5c520cd3ac9710d20e292c2010a0c445b824f63f563a29531ee56bb31141ae",
+      "after_sha256": "0c3159bc1ccf1d00a702ea51ce0d67c4ec4d7e621c0354d18b286d1b2f5ca5b4"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "openspec/changes/relationship-fact-effective-time/specs/relationship-facts/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "306b320542aeb36d2775042e64a5d07e30e592895985dceb17ca90e08abbf196"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "71c9a6848c3fcde871a858ea36fc66512cdb258ee8d919e94afb955aa4e24dda"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      }
+    },
+    {
+      "path": "roster/relationship/api/router.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fab34f6758221f59e21603d840c79a296212735c1368718ced5f92935e49c171"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "cba5d0213dfdd5f85ac407b73fd9b8796a7e170e00572c6efefbc429f038055b"
+      }
+    },
+    {
+      "path": "roster/relationship/tests/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b0fefad65682f7349936fc23356f55901e7b6744ee2144bdf5eb33b141c302fe"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b0fefad65682f7349936fc23356f55901e7b6744ee2144bdf5eb33b141c302fe"
+      }
+    },
+    {
+      "path": "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "608c91151cc7bf349d8c0c316f09b7532e82506ed25220816290360349f5fb1a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9dbb4fc74519892c85b756624e690076ac0945cdb464cb1c370f6cb753fd5ef6"
+      }
+    },
+    {
+      "path": "roster/relationship/tests/test_fact_authority_tombstone_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "58ed6e8e9acfa1d9b2799416f9d0aaaf604cf506db4309bedda21aa2cfae13e2"
+      }
+    },
+    {
+      "path": "roster/relationship/tests/test_fact_write_tombstone_refusal.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "75b4814a53b692c1af44eca70d9f0b41c109292450a13f55c2532a1eb0028b15"
+      }
+    },
+    {
+      "path": "roster/relationship/tools/fact_authority.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3509c350b5b5432c86027f3c91f5da3edf3a9275394bbd2c032d8b2f03d0d559"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "7b63895928712127ff28ef68a5bfcfffa6de22dca2232f2e81f75f10379822e6"
+      }
+    },
+    {
+      "path": "roster/relationship/tools/relationship_assert_fact.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c53a0464effcaa8b52c04769e4b7d7a6304301a31710263593ecce0c18a9ead3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e025fc922d9a196960bba2faaadd154ffac44892e8233d356f4e09671e7f8100"
+      }
+    },
+    {
+      "path": "tests/api/test_relationship_tombstone_409.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "239d8c3a26d2def3ec483f315c45649bcc152dc608f5747e94a56544114bfc60"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-gm93xc-tombstone-refusal-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "21c4f246d4b63dca6f75247c49911e24028cc6e4012b1375e342e817f1eaf9e0"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
