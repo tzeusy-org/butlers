@@ -2063,7 +2063,8 @@ class SteamConnector:
                 pass  # silence access log
 
         try:
-            with socketserver.TCPServer(("", self._health_port), _Handler) as httpd:
+            # Loopback only, like every other connector health server; probes curl in-pod.
+            with socketserver.TCPServer(("127.0.0.1", self._health_port), _Handler) as httpd:
                 httpd.serve_forever()
         except Exception:
             logger.warning("Health server failed to start on port %d", self._health_port)
