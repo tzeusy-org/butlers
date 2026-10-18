@@ -1,0 +1,9 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-ed7nzt-calendar-response-fence-20261018",
+  "owners": [
+    "tests/integration/test_calendar_response.py::test_migrated_response_atomic_park_committed_attempt_and_guarded_inverse",
+    "tests/modules/test_calendar_response.py::test_response_command_admission_execution_fence_replay_and_projection"
+  ],
+  "timeout_s": 300
+}
