@@ -195,6 +195,8 @@ The `environment_report` job SHALL read environmental sensors per area, compare 
 
 The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers and trends vs. baselines, and send a structured weekly digest.
 
+ID: REQ-home-deterministic-jobs-006
+
 #### Scenario: Energy sensor discovery
 
 - **WHEN** the `energy_digest` job runs
