@@ -36,8 +36,10 @@ def _work(seconds: int, values: list[int], *, lookback_days: int = 28) -> LaneBa
     ("offset", "state"),
     [
         (_HOUR - 1, "within"),
+        (_HOUR, "above"),
         (_HOUR + 1, "above"),
         (-(_HOUR - 1), "within"),
+        (-_HOUR, "below"),
         (-(_HOUR + 1), "below"),
     ],
 )
