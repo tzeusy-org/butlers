@@ -36,7 +36,7 @@ Goals:
   against without further design work.
 - Backfill and dual-write both legacy systems without loss, duplication, or vocabulary drift,
   while leaving them fully intact and authoritative until an explicit future read-cutover.
-- Reconcile `core-skills`'s direct-write authority and the active k3s DB-fallback delta so no
+- Reconcile `core-skills`'s direct-write authority so no
   runtime session ever gets a silent, unaudited identity-write path.
 - Name QA's reusable primitives and draw the line at `_create_qa_pr`/`healing_attempts` so the
   spine's PR adapter is substrate reuse, not a QA-authority claim.
@@ -272,49 +272,24 @@ representation (step 1) lands and is verified. This ordering means a partial cut
 landed, dual-write not yet — is always safely rollback-able to "read from legacy tables only,"
 because the legacy tables are still the only rows anything writes during that window.
 
-### D13: `core-skills` boundary is preventive, and its delta is authored as a full superset of the active k3s change's own delta
+### D13: `core-skills` boundary is preventive, and its delta is the canonical block plus this spine's TARGET-STATE text
 
 Today, no MCP tool wires a runtime butler session to `write_agents_md`/`append_agents_md` (a
 full-repo call-site scan finds only test callers and the functions' own definitions in
 `src/butlers/core/skills.py`). This draft's `core-skills` change is therefore preventive: it closes
-a latent authority (the functions exist, are importable, and the active `k3s-deployment-helm-chart`
-change extends their DB-fallback reach) before any future tool exposes either path to a runtime
+a latent authority (the functions exist and are importable) before any future tool exposes either path to a runtime
 session, rather than revoking an exercised capability.
 
-Because `k3s-deployment-helm-chart` is an active, unarchived change whose own `## MODIFIED
-Requirements` block already rewrites the same `AGENTS.md Read/Write Access` requirement (adding the
-`state`-table fallback for read-only filesystems), this draft's own block cannot be authored as an
-independent, narrower addition the way the `notify-confirm-interaction` precedent kept its three
-touched files' `## ADDED`-only blocks disjoint from the sibling `decision-loop-one-tap-approvals`
-change (that precedent's proposal.md "Coexistence note" — additive requirement names only, never a
-second `## MODIFIED` block on the same requirement). This draft's situation is the harder case that
-precedent explicitly avoided: two changes really do need to modify the same requirement. Two changes
-modifying the same requirement name against the same baseline is exactly what
-`scripts/check_spec_overwrites.py` polices for content loss on archive, and `openspec archive`
-itself has no cross-change conflict detection — it resolves whichever change archives against
-whatever is currently in `openspec/specs/` at that moment.
+This draft's `core-skills` delta is the current canonical `AGENTS.md Read/Write Access` requirement
+(body and scenarios unchanged) plus only this spine's own [TARGET-STATE] paragraph and its two
+[TARGET-STATE] scenarios (no direct runtime MCP path to either write function; future routing
+through `propose_amendment`). `scripts/check_spec_overwrites.py` polices the block against content
+loss on archive.
 
-This draft resolves it explicitly rather than leaving it for an archive-time surprise: its
-`core-skills` delta is authored as a full superset, carrying forward every scenario from
-`k3s-deployment-helm-chart`'s own MODIFIED block verbatim (the DB-fallback-on-read-only-filesystem
-scenarios) and adding the new runtime-tool-surface boundary scenario on top. This means:
-
-- If this draft archives first, `k3s-deployment-helm-chart`'s own delta becomes redundant with (not
-  contradicted by) what is now in `openspec/specs/core-skills/spec.md` — its author rebases its
-  block to a no-op or drops it, since every scenario it wanted is already present.
-- If `k3s-deployment-helm-chart` archives first, this draft's block, if archived unchanged, would
-  still carry forward every scenario correctly (it was authored as a superset of that exact text),
-  but its author should re-diff against the just-archived baseline before archiving to confirm
-  nothing in `k3s-deployment-helm-chart`'s final merged text drifted from what this draft copied.
-
-Either order is safe from silent content loss; neither is a no-op that this draft can force by
-itself. `proposal.md`'s Impact section names this as the exact prerequisite acceptance criterion 2
-requires, rather than presenting the sequencing as already resolved.
-
-**Update 2026-09-26 (bu-60pwv6.3):** the owner abandoned `k3s-deployment-helm-chart` (staying on
-Docker) and the change was removed without archiving, so the sequencing above no longer applies.
-The DB-fallback scenarios this delta copied from it now have no sponsor; task 2.5 (bu-60pwv6.27)
-drops them before review.
+The `k3s-deployment-helm-chart` change once also modified this requirement (adding a `state`-table
+DB fallback for read-only filesystems). The owner abandoned it (staying on Docker) and it was
+removed without archiving (bu-60pwv6.3), so no cross-change sequencing applies. An earlier draft of
+this delta copied that change's DB-fallback scenarios; task 2.5 (bu-60pwv6.27) dropped them.
 
 ## Rejected alternatives
 
@@ -401,7 +376,7 @@ activation, or deployment is required or authorized by this draft.
 2. Obtain separate owner approval naming the exact reviewed commit before any implementation of
    `bu-8cdl1.15` or its decomposed children claims this contract as authority.
 3. Resolved 2026-09-26: `k3s-deployment-helm-chart` was abandoned and removed, so no
-   `core-skills` sequencing remains; drop its copied DB-fallback scenarios (task 2.5).
+   `core-skills` sequencing remains; the copied DB-fallback scenarios were dropped (task 2.5).
 4. Implementation proceeds only under `bu-8cdl1.15`'s already-existing decomposition sequence
    (representation/backfill → transactional producers/adapters while legacy readers remain
    authoritative → dashboard read/review cutover → owner-authenticated DB effect adapters and

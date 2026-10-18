@@ -40,6 +40,10 @@ DEFAULT_FORCED_FULL_SYNC_DAYS = 6
 ContactsSyncMode = Literal["incremental", "full"]
 
 
+DEFAULT_FAILURE_ERROR = "contacts sync failed"
+ANCHOR_STALL_ERROR = "contacts source anchor unavailable"
+
+
 class ContactsSyncError(RuntimeError):
     """Base contacts sync error."""
 
@@ -1196,6 +1200,7 @@ class ContactsSyncStateStore:
         account_id: str,
         expected_state: ContactsSyncState,
         expired_cursor: bool = False,
+        last_error: str = DEFAULT_FAILURE_ERROR,
     ) -> None:
         """Record a bounded failure without replacing another cycle's progress."""
         async with self._pool.acquire() as conn:
@@ -1206,12 +1211,13 @@ class ContactsSyncStateStore:
                 if current != expected_state:
                     return
                 await conn.execute(
-                    "UPDATE contacts_sync_state SET last_error='contacts sync failed', "
+                    "UPDATE contacts_sync_state SET last_error=$4, "
                     "sync_cursor=CASE WHEN $3 THEN NULL ELSE sync_cursor END "
                     "WHERE provider=$1 AND account_id=$2",
                     provider,
                     account_id,
                     expired_cursor,
+                    last_error,
                 )
 
 

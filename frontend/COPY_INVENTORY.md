@@ -4157,6 +4157,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - |c:
 - probe all
 - Probe all {} credentials
+- Credential page
 - Spotify
 - Add credential
 - Probe all credentials
@@ -4899,4 +4900,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3904*
+*Total strings: 3905*

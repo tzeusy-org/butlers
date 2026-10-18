@@ -83,6 +83,15 @@ the handoff:
   complete cycle observes that exact roster daemon healthy. It records
   `resolution_reason=complete_receiver_snapshot_healthy`. Switching the flag on
   does not count as recovery.
+- A legacy episode for a butler that has left the roster resolves with
+  `resolution_reason=butler_retired_from_roster`, but only on a positive
+  retirement signal. All of these must hold: the cycle is complete, the episode
+  has a non-null `source_butler`, that butler's `roster/<name>/` directory was
+  absent from the Dashboard's startup discovery, and that discovery reported no
+  config that failed to parse. A directory that lacks `butler.toml` still counts
+  as present. Absence from the expected set alone never retires an episode, and
+  "roster" means the discovery pass at Dashboard startup, not live Git state.
+  A Dashboard restart re-evaluates the signal.
 
 To roll back, set the flag to `0` in both processes. Condition history is
 retained, and the ordinary complete-snapshot lifecycle continues. Do not

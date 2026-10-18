@@ -21,6 +21,7 @@ Scope: v1-mandatory
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
 - **THEN** the system requests a signed Switchboard runtime probe for each enabled model concurrently with a bounded concurrency of 8
+- **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
 - **AND** only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
 - **AND** a control-plane unavailable result preserves the prior verification evidence and is reported separately from a completed failed probe
 - **AND** the response data contains exactly `accepted`, `total`, `ok`, `failed`, and `unavailable`
@@ -290,8 +291,20 @@ Scope: v1-mandatory
 
 - **WHEN** a caller requests a manual reissue for a pending, sending, sent,
   failed, or already-reissued episode
-- **THEN** the API rejects it without creating an episode or external delivery
+- **THEN** the API rejects it with `409` ("Attention episode is not eligible for reissue") without creating an episode or external delivery
 - **AND** the UI keeps the control absent or disabled with an accessible reason
+
+#### Scenario: Reissue for an unknown episode is not found
+
+- **WHEN** a caller with valid owner-control authority requests a manual reissue for an episode id that does not exist
+- **THEN** the API returns `404` ("Attention episode not found")
+- **AND** no successor episode and no external delivery is created
+
+#### Scenario: Reissue is unavailable when the reissue path fails
+
+- **WHEN** a caller with valid owner-control authority requests a manual reissue and the reissue database operation fails for a reason other than ineligibility or a missing episode, the database connection is unavailable, or the operation returns no result
+- **THEN** the API returns `503` ("Attention reissue is unavailable") with no database error detail
+- **AND** no successor episode is reported as created
 
 #### Scenario: Attention observation degradation stays truthful
 

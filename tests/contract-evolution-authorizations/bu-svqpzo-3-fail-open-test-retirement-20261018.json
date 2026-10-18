@@ -1,0 +1,30 @@
+{
+  "schema": "governing-retirement-authorization/v1",
+  "id": "bu-svqpzo-3-fail-open-test-retirement-20261018",
+  "bead": "bu-eyx4dg",
+  "authority": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied by the coordinator on 2026-10-18 after independent review. Authorization bead bu-eyx4dg for implementation bead bu-svqpzo.3 (PR #4622, review bu-77vnvq). The two retired tests pinned the fail-open behaviour that REQ-dashboard-permissions-002 now forbids (no pool, failed lookup); each is replaced by its *_fails_closed counterpart. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission.",
+  "retired": [
+    {
+      "owner": "tests/core/test_permissions_enforcer.py::test_db_error_fails_open",
+      "base_sha256": "3821bb1bab9916544965647412600d0574ec0e12e792698e99cb1e12470ab0ce",
+      "reason": "Pinned check_permission allowing when the permissions read raises. REQ-dashboard-permissions-002 requires a denial with unavailable=True and an error log without raw exception text; replaced by test_db_error_fails_closed."
+    },
+    {
+      "owner": "tests/core/test_permissions_enforcer.py::test_none_pool_fails_open",
+      "base_sha256": "380b826e604a304079832cab8f4bc2057d86f75a70fe377abead52710bc0984e",
+      "reason": "Pinned check_permission allowing when no pool exists. REQ-dashboard-permissions-002 requires allowed=False, unavailable=True and reason 'permission store unavailable'; replaced by test_none_pool_fails_closed."
+    }
+  ],
+  "requirements": [
+    {
+      "path": "openspec/specs/dashboard-permissions/spec.md",
+      "requirement": "REQ-dashboard-permissions-002",
+      "before_sha256": "a2aac7112d37a5f88df0c27b83467e01685e8565c7a36a94416ab132a2cee661",
+      "after_sha256": "1970163310d559146d6049c44edc1b718807c3c0dab8d214fa5c5b4bae9a707f"
+    }
+  ],
+  "replacements": [
+    "tests/core/test_permissions_enforcer.py::test_db_error_fails_closed",
+    "tests/core/test_permissions_enforcer.py::test_none_pool_fails_closed"
+  ]
+}
