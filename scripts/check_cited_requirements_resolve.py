@@ -85,8 +85,8 @@ Python files are scanned in two scopes: test files (``tests/`` and
 ``*.py`` under ``src/`` and under ``roster/`` that is not beneath a ``tests``
 directory). A file is scanned once even when both scopes reach it. Only
 qualified ids are looked up, so change-local shorthand in a module docstring is
-still out of scope. Other file types (docs, TypeScript) are not scanned. Resolution is by exact id, so a requirement
-that was renumbered rather than removed reads as dangling -- which is the
+still out of scope. Other file types (docs, TypeScript) are not scanned. Resolution is by
+exact id, so a requirement that was renumbered rather than removed reads as dangling -- which is the
 intended reading, since the citation is then pointing at nothing.
 
 Usage:
@@ -274,7 +274,9 @@ def report_pending(pending_cited: dict[str, list[Citation]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Fail when a test or implementation module cites a REQ id with no canonical definition."
+        description=(
+            "Fail when a test or implementation module cites a REQ id with no canonical definition."
+        )
     )
     parser.add_argument(
         "--root",
