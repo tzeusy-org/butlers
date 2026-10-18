@@ -62,8 +62,9 @@ async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
 
     Returns a summary dict ``{total, ok, failed, unavailable}``, or ``None`` if no
     shared pool is configured (mirrors ``run_secrets_lifecycle_check``'s no-pool
-    short-circuit) or another sweep holds the cross-process lock. Never raises — a failure inside the verification
-    core is logged and swallowed so the loop is never killed by one bad tick.
+    short-circuit) or another sweep holds the cross-process lock (the tick is skipped and
+    logged). Never raises — a failure inside the verification core is logged and swallowed
+    so the loop is never killed by one bad tick.
     """
     try:
         pool = db.credential_shared_pool()

@@ -54,6 +54,13 @@ Scope: v1-mandatory
 - **AND** remaining eligible entries continue through the same signed
   Switchboard runtime-probe path
 
+#### Scenario: Cross-sweep exclusion
+- **WHEN** a verify-all sweep is running, started by `POST /api/settings/models/verify-all` or by the hourly sweep, in any dashboard-api process
+- **THEN** a second sweep SHALL NOT probe any model: the endpoint refuses with `429 Too Many Requests` and the hourly sweep skips that tick and logs it
+- **AND** exclusion is a non-blocking Postgres advisory lock taken inside `run_verify_all_models` and held for the whole sweep, so no allowance account sees probes from two sweeps at once
+- **AND** the lock is released when the sweep ends and by PostgreSQL if the holding connection dies
+- **AND** the dashboard waits for a synchronous verify-all response for a time derived from the per-probe budget and the longest serial account group, not the default 15 second read timeout
+
 ### Requirement: Hourly Automated Verification Sweep
 
 The dashboard-api process SHALL run an hourly background sweep
