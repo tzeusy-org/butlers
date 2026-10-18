@@ -70,7 +70,8 @@ resolution) — every function below is a thin facade binding
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -124,6 +125,8 @@ async def reconcile_snapshot(
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
     transaction_connection: asyncpg.Connection | None = None,
+    escalation_advance: Mapping[str, tuple[str, timedelta]] | None = None,
+    preserve_metadata_keys: Sequence[str] = (),
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -142,6 +145,10 @@ async def reconcile_snapshot(
     ``public.entity_graph_edges`` atomically with the ledger write.
     ``transaction_connection`` forwards an internal caller's active transaction
     to the same engine; otherwise the existing pool-owned transaction is used.
+
+    ``escalation_advance`` and ``preserve_metadata_keys`` are the engine's opt-ins
+    for a producer-specific re-escalation ladder and for keeping named metadata
+    keys across a confirmation; omitted, the shared behavior is unchanged.
     """
 
     async def _chained_post_write(
@@ -166,6 +173,8 @@ async def reconcile_snapshot(
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_chained_post_write,
+        escalation_advance=escalation_advance,
+        preserve_metadata_keys=preserve_metadata_keys,
         **connection_kwargs,
     )
 

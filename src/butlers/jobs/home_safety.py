@@ -35,7 +35,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
@@ -61,6 +61,17 @@ ESCALATION_GRACE_SECONDS = 900.0
 #: A condition whose delivery never succeeded is retried by later runs after this long, so the
 #: edge hook and the reconcile job do not both send for the one condition they just opened.
 RETRY_AFTER_SECONDS = 120.0
+#: Re-escalation ladder for a still-active alarm, as gaps between re-sends: the 15-minute grace
+#: above, then 1 hour, 4 hours, and daily from there while the sensor stays on.  The shared
+#: ledger default (1 day, 3 days, 7 days) is too slow for a live leak, smoke, CO or gas alarm.
+ESCALATION_ADVANCE: dict[str, tuple[str, timedelta]] = {
+    "L0": ("L1", timedelta(hours=1)),
+    "L1": ("L2", timedelta(hours=4)),
+    "L2": ("L3", timedelta(days=1)),
+    "L3": ("L3", timedelta(days=1)),
+}
+#: Metadata the delivery path writes after a send; a concurrent confirm must not drop it.
+_PRESERVED_METADATA: tuple[str, ...] = ("notified_at",)
 _FINGERPRINT_VERSION = 1
 _DELIVER_TIMEOUT_S = 30
 _ORIGIN = "home"
@@ -223,6 +234,8 @@ async def reconcile_safety(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=ESCALATION_GRACE_SECONDS,
+        escalation_advance=ESCALATION_ADVANCE,
+        preserve_metadata_keys=_PRESERVED_METADATA,
     )
     resolved = sum(1 for t in transitions if t.transition == "resolved")
 
@@ -281,6 +294,8 @@ async def reconcile_safety(
             ],
             snapshot_complete=False,
             initial_grace_seconds=ESCALATION_GRACE_SECONDS,
+            escalation_advance=ESCALATION_ADVANCE,
+            preserve_metadata_keys=_PRESERVED_METADATA,
         )
 
     return SafetyRunResult(
