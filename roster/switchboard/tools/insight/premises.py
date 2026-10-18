@@ -47,7 +47,7 @@ async def _health_medication_refill_still_due(
     """True while the medication is active and its supply is within the warning window.
 
     False once it is stopped or deleted, or a refill pushed depletion past the
-    window; None when it cannot be found or has no supply quantity to estimate from.
+    window; None when the definer answers unknown (not found, or no supply quantity).
     """
     subject = args.get("subject")
     doses_per_day = args.get("doses_per_day")
@@ -58,18 +58,14 @@ async def _health_medication_refill_still_due(
         return None
     if isinstance(warning_days, bool) or not isinstance(warning_days, int | float):
         return None
-    row = await pool.fetchrow(
-        "SELECT is_active, days_remaining FROM public.resolve_health_medication_refill($1, $2)",
+    due = await pool.fetchval(
+        "SELECT public.resolve_health_medication_refill("
+        "$1, $2::float8::numeric, $3::float8::numeric)",
         subject,
         doses_per_day,
+        warning_days,
     )
-    if row is None:
-        return None
-    if not row["is_active"]:
-        return False
-    if row["days_remaining"] is None:
-        return None
-    return float(row["days_remaining"]) <= warning_days
+    return None if due is None else bool(due)
 
 
 #: ``(butler, probe)`` -> probe. A butler adopts premises by registering here.

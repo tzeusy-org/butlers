@@ -11,7 +11,6 @@ DB-backed class runs the real definer and ``delivery_cycle`` (CI-only).
 from __future__ import annotations
 
 import importlib.util
-import json
 import shutil
 import sys
 from datetime import UTC, datetime, timedelta
@@ -27,6 +26,11 @@ _docker_available = shutil.which("docker") is not None
 _REPO = Path(__file__).resolve().parents[2]
 _PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 _PROBE = ("health", "medication_refill_still_due")
+_TELEGRAM_SENT = {
+    "notification_id": "n-1",
+    "status": "sent",
+    "result": {"ok": True, "result": {"message_id": 77, "chat": {"id": 123}}},
+}
 _ARGS = {"subject": "medication:Metformin", "doses_per_day": 1.0, "warning_days": 14}
 
 
@@ -100,27 +104,26 @@ class TestRefillProducerBinding:
 
 
 class TestRefillProbeVerdicts:
-    def _pool(self, row):
+    def _pool(self, verdict):
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=row)
+        pool.fetchval = AsyncMock(return_value=verdict)
         return pool
 
     @pytest.mark.parametrize(
-        ("row", "expected"),
-        [
-            ({"is_active": True, "days_remaining": 3}, True),
-            ({"is_active": True, "days_remaining": 14}, True),
-            ({"is_active": True, "days_remaining": 40}, False),
-            ({"is_active": False, "days_remaining": 3}, False),
-            ({"is_active": False, "days_remaining": None}, False),
-            ({"is_active": True, "days_remaining": None}, None),
-            (None, None),
-        ],
-        ids=["due", "edge", "refilled", "stopped", "stopped-no-qty", "no-qty", "unknown"],
+        ("verdict", "expected"),
+        [(True, True), (False, False), (None, None)],
+        ids=["due", "not-due", "unknown"],
     )
-    async def test_verdict(self, row, expected):
+    async def test_the_definer_verdict_is_passed_through_tri_state(self, verdict, expected):
         premise = probe_premise(*_PROBE, _ARGS)
-        assert await premises.check_premise(self._pool(row), premise) is expected
+        assert await premises.check_premise(self._pool(verdict), premise) is expected
+
+    async def test_the_probe_sends_subject_divisor_and_window_and_asks_for_one_verdict(self):
+        pool = self._pool(True)
+        await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS))
+        sql, *params = pool.fetchval.await_args.args
+        assert "resolve_health_medication_refill" in sql
+        assert params == ["medication:Metformin", 1.0, 14]
 
     @pytest.mark.parametrize(
         "args",
@@ -133,17 +136,17 @@ class TestRefillProbeVerdicts:
         ],
     )
     async def test_malformed_args_are_unknown_and_never_query(self, args):
-        pool = self._pool({"is_active": True, "days_remaining": 1})
+        pool = self._pool(True)
         assert await premises.check_premise(pool, probe_premise(*_PROBE, args)) is None
-        pool.fetchrow.assert_not_awaited()
+        pool.fetchval.assert_not_awaited()
 
     async def test_a_lookup_error_is_unknown_not_false(self):
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=RuntimeError("db down"))
+        pool.fetchval = AsyncMock(side_effect=RuntimeError("db down"))
         assert await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS)) is None
 
     async def test_removing_the_registry_entry_makes_the_premise_unknown(self):
-        pool = self._pool({"is_active": False, "days_remaining": None})
+        pool = self._pool(False)
         with patch.dict(premises.PREMISE_PROBES):
             del premises.PREMISE_PROBES[_PROBE]
             assert await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS)) is None
@@ -175,19 +178,28 @@ class TestRefillPremiseAgainstPostgres:
             await pool.execute(migration.CREATE_REFILL_FN)
             yield pool
 
-    async def _med(self, pool, *, active=True, quantity=10, validity="active", doses=0):
-        meta = json.dumps(
-            {
-                "active": active,
-                "quantity": quantity,
-                "quantity_updated_at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
-            }
-        )
+    async def _med(
+        self,
+        pool,
+        *,
+        subject="medication:Metformin",
+        active=True,
+        quantity=10,
+        validity="active",
+        doses=0,
+    ):
+        # A dict, not json.dumps: the pool's jsonb codec already encodes it.
+        meta = {
+            "active": active,
+            "quantity": quantity,
+            "quantity_updated_at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+        }
         med_id = await pool.fetchval(
             "INSERT INTO health.facts (subject, predicate, scope, validity, metadata) "
-            "VALUES ('medication:Metformin', 'medication', 'health', $1, $2::text::jsonb) RETURNING id",
+            "VALUES ($3, 'medication', 'health', $1, $2::jsonb) RETURNING id",
             validity,
             meta,
+            subject,
         )
         for _ in range(doses):
             await pool.execute(
@@ -218,28 +230,41 @@ class TestRefillPremiseAgainstPostgres:
     async def test_an_unrecorded_medication_is_unknown(self, pool):
         assert await self._verdict(pool) is None
 
-    async def test_a_refilled_reminder_is_withdrawn_at_send(self, pool):
+    async def test_a_refilled_reminder_is_withdrawn_at_send_and_a_due_one_is_not(self, pool):
         await self._med(pool, quantity=10)
+        lisinopril = {**_ARGS, "subject": "medication:Lisinopril"}
+        await self._med(pool, subject="medication:Lisinopril", quantity=10)
         await pool.execute(
             "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
             "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
         )
-        result = await broker.propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=60,
-            category="medication-refill",
-            dedup_key="health:medication-refill:m1",
-            message="Metformin supply estimated to run out in 8 day(s)",
-            expires_at=_PINNED_NOW + timedelta(days=7),
-            premise=probe_premise(*_PROBE, _ARGS),
-            now=_PINNED_NOW,
+        for key, name, args in (
+            ("m1", "Metformin", _ARGS),
+            ("m2", "Lisinopril", lisinopril),
+        ):
+            result = await broker.propose_insight_candidate(
+                pool,
+                origin_butler="health",
+                priority=60,
+                category="medication-refill",
+                dedup_key=f"health:medication-refill:{key}",
+                message=f"{name} supply estimated to run out in 8 day(s)",
+                expires_at=_PINNED_NOW + timedelta(days=7),
+                premise=probe_premise(*_PROBE, args),
+                now=_PINNED_NOW,
+            )
+            assert result["status"] == "accepted"
+        # Metformin is refilled (its fact is superseded by one with a large supply).
+        await pool.execute(
+            "UPDATE health.facts SET validity = 'superseded' WHERE subject = 'medication:Metformin'"
         )
-        assert result["status"] == "accepted"
-        await pool.execute("UPDATE health.facts SET validity = 'superseded'")
         await self._med(pool, quantity=90)
-        notify = AsyncMock()
-        await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
-        notify.assert_not_awaited()
-        status = await pool.fetchval("SELECT status FROM insight_candidates")
-        assert status == "withdrawn"
+        notify = AsyncMock(return_value=_TELEGRAM_SENT)
+        cycle = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+
+        assert cycle["withdrawn"] == 1
+        statuses = dict(await pool.fetch("SELECT dedup_key, status FROM insight_candidates"))
+        assert statuses["health:medication-refill:m1"] == "withdrawn"
+        assert statuses["health:medication-refill:m2"] != "withdrawn"
+        sent = " ".join(str(c.args[0]) for c in notify.await_args_list)
+        assert "Lisinopril" in sent and "Metformin" not in sent
