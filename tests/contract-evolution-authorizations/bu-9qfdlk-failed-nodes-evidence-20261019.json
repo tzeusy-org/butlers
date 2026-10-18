@@ -1,0 +1,137 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-9qfdlk-failed-nodes-evidence-20261019",
+  "bead": "bu-9qfdlk",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-lmw7xq for implementation bead bu-9qfdlk (PR #4669, every unit and integration CI shard evidence artifact also carries a privacy-stripped failed-nodes.txt rebuilt from JUnit). Reviewed before: main d23be86243dfbae822a1e7daa006444cd2745e77 as recorded in bu-q8ygxn; approved subject: PR #4669 head dfa11ffdc81a5f55e090ba1d37afc2005a570ce3 plus the reviewer-computed clause commit (spec-clause.patch). Governing requirement REQ-ci-shard-assurance-003 (Independent complete-identity execution reconciliation) in openspec/specs/ci-shard-assurance/spec.md, which already carries its ID; the change adds one Failing-node evidence paragraph inside the block. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift",
+      "after": "tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift",
+      "contracts": [
+        "REQ-ci-shard-assurance-003"
+      ],
+      "reason": "Strengthening only. The exact per-shard upload-path assertion now also requires failed-nodes.txt (after top-durations.txt) in every unit and integration child's test-evidence artifact, which REQ-ci-shard-assurance-003 now requires. No assertion is removed or weakened: the artifact `with` mapping is still compared exactly, so a missing, extra or reordered evidence path still fails."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-003",
+      "before_sha256": "7af0190e1af3d0a1815fae2dbb57257d7dde145d5634705cdf6aa5da991f1bde",
+      "after_sha256": "56cc30ec42cd4e5dc7553d968f055c8bce380692caf43f3cb90754f46233bd20"
+    }
+  ],
+  "inputs": [
+    {
+      "path": ".github/workflows/ci-coverage.yml",
+      "before": {
+        "mode": "100644",
+        "sha256": "9af2081a03929763e46b76a744121e1af6177cc5c3255d6c9e458c80b6b87c76"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "cd44709fbf2c49be8162e5a152fcc8bc9652bea7b94c7c71434b281dac72c0a0"
+      }
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "before": {
+        "mode": "100644",
+        "sha256": "f7f446d7414f6d1afb532d951889e12112ea28ea310c139dfac4e723f3feb1a2"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9b37aa6b70092e605666b42914ce04af9e2b7bfcb4024bbf16d4589db6f6f372"
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "9f1710bada2e50428465b16d83c6bdcc6beb3f0239f9bb438efc12944a0d1ff4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9b0075372b9a52dfdaff9fa1d278e976d71981a0f80a47c9f43a8e8dc26ceb53"
+      }
+    },
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "scripts/summarize_junit_durations.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "6f7aa40e86c343d4b89c01aaba85763fcda82456d1395a29ad9cc6171ed0fdbb"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ae63e5d0f6204f44655138363e1b475f7455266d17ce5d68ad22534a0969aeb9"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-9qfdlk-failed-nodes-evidence-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "a13a549c492bbf4d17dc8e0f2706b3c1d46c684c9e433eaf1affc7f0fd1887e8"
+      }
+    },
+    {
+      "path": "tests/contracts/test_ci_test_targets.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4929af930c50e08bd357da4469136f6906c4924dac4c9da949f1f2548ec63fe3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c1f8b1b2cde65ba71568ce134e24b23127399c89c76bd61996adfd400125d96e"
+      }
+    },
+    {
+      "path": "tests/scripts/test_summarize_junit_durations.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4d34635ed91ea677437c0009dbcec207a9d81f3e888cb3459d232c13c9fb8883"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1d4c47f9796e2932a1553af8da93abed49e7c89ffd184b54b65f07c0ef4bfd5e"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
