@@ -87,3 +87,25 @@ def test_deploy_with_an_empty_tag_is_refused_without_helm(tree: Path) -> None:
     assert "TAG is empty" in stderr
     assert _helm_calls(calls) == []
     assert not any(call.startswith("kubectl") for call in calls)
+
+
+def test_a_build_that_prints_a_tag_then_fails_does_not_deploy(tree: Path) -> None:
+    # Only `|| exit $$?` stops this: the tag is non-empty, so the empty-tag test alone passes.
+    (tree / "scripts/k8s/build-push.sh").write_text(
+        _STUB.format(body="echo abc123; exit 5"), encoding="utf-8"
+    )
+    code, stderr, calls = _make(tree, "ship-dev")
+
+    assert code != 0
+    assert "Error 5" in stderr
+    assert _helm_calls(calls) == []
+
+
+def test_deploy_to_an_unknown_environment_is_refused_without_helm(tree: Path) -> None:
+    # NAMESPACE_staging is empty. Quoted, record-deploy.sh refuses it (rc 2); unquoted, the
+    # arguments shift and helm would run with release `--` and namespace `-f`.
+    code, stderr, calls = _make(tree, "deploy-staging", "TAG=abc123")
+
+    assert code != 0
+    assert "Error 2" in stderr
+    assert _helm_calls(calls) == []
