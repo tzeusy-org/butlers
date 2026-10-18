@@ -42,6 +42,21 @@ reads that cannot distinguish absence from an outage return 503, presence signal
 untouched, and the Home briefing reports the outage instead of an all-clear. Operator triage:
 [Troubleshooting](../operations/troubleshooting.md#symptom-home-dashboard-says-home-assistant-is-unavailable).
 
+## Safety sentinel
+
+Leak, smoke, carbon monoxide and gas alerts do not depend on a model. On the dashboard (**Devices
+→ Safety sensors**) the owner declares each `binary_sensor` that guards against a hazard and the
+name to use in alerts; Home never guesses a role from a device class or from Home Assistant's own
+name for the device. A declared sensor that stays on for 60 seconds opens an owner condition
+(source `home:safety`) and sends one high-priority message through the notify path, which
+quiet hours and do-not-disturb do not hold. Two triggers feed the same ledger: the websocket
+event hook (seconds) and the `home_safety_sentinel` job every five minutes, so they never
+double-alert. If delivery fails the condition stays open and is retried, and a still-active alarm
+re-sends as the condition ages. A sensor that reads `unavailable`, or a Home Assistant source
+that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
+Assistant service. Code: `src/butlers/jobs/home_safety.py`; requirement: `home-deterministic-jobs`
+spec, "Home Safety Sentinel Job".
+
 ## Private person mappings
 
 The dashboard's **Devices → Person mappings** form, behind dashboard owner-auth, is the only
