@@ -59,7 +59,19 @@ async def _scenario(db_url: str) -> dict:
         still_expired = await store("still_expired_fact")
         for fact_id in (restored, still_expired):
             await pool.execute("UPDATE facts SET validity = 'expired' WHERE id = $1", fact_id)
+        # A fact reclassified after cataloging, as the health symptom-edit path does: the
+        # sensitivity change and the catalog row staling land in one statement, and the fact
+        # stays active. Its stale row must not be revived with the pre-classification summary.
+        reclassified = await store("reclassified_fact")
         first = await run_memory_catalog_backfill(pool, source_schema="public", batch_size=500)
+        await pool.execute(
+            "WITH updated AS (UPDATE facts SET sensitivity = 'confidential' WHERE id = $1"
+            " RETURNING id)"
+            " UPDATE public.memory_catalog AS mc SET confidence = 0, invalid_at = now(),"
+            " updated_at = now() FROM updated WHERE mc.source_schema = 'public'"
+            " AND mc.source_table = 'facts' AND mc.source_id = updated.id",
+            reclassified,
+        )
         # The restore: validity flips back to active while the catalog row stays stale.
         await pool.execute("UPDATE facts SET validity = 'active' WHERE id = $1", restored)
 
@@ -71,11 +83,23 @@ async def _scenario(db_url: str) -> dict:
             )
             return dict(record)
 
-        before = {"restored": await row(restored), "expired": await row(still_expired)}
+        before = {
+            "restored": await row(restored),
+            "expired": await row(still_expired),
+            "reclassified": await row(reclassified),
+        }
         second = await run_memory_catalog_backfill(pool, source_schema="public", batch_size=500)
-        after = {"restored": await row(restored), "expired": await row(still_expired)}
+        after = {
+            "restored": await row(restored),
+            "expired": await row(still_expired),
+            "reclassified": await row(reclassified),
+        }
         third = await run_memory_catalog_backfill(pool, source_schema="public", batch_size=500)
-        final = {"restored": await row(restored), "expired": await row(still_expired)}
+        final = {
+            "restored": await row(restored),
+            "expired": await row(still_expired),
+            "reclassified": await row(reclassified),
+        }
         return {
             "first": first,
             "second": second,
@@ -116,3 +140,10 @@ def test_repeated_backfills_change_nothing_more(outcome: dict) -> None:
     assert outcome["third"]["facts_refreshed"] == 0
     assert outcome["third"]["facts_reconciled"] == 0
     assert outcome["final"] == outcome["after"]
+
+
+def test_a_reclassified_fact_keeps_its_stale_row(outcome: dict) -> None:
+    assert outcome["before"]["reclassified"]["invalid_at"] is not None
+    assert outcome["after"]["reclassified"] == outcome["before"]["reclassified"]
+    assert outcome["after"]["reclassified"]["confidence"] == 0
+    assert outcome["second"]["facts_refreshed"] == 1

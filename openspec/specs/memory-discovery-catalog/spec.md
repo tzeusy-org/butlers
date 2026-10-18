@@ -341,9 +341,10 @@ A bounded, idempotent backfill mechanism SHALL exist that catalogs facts and
 rules written before write-behind was enabled (or before a specific butler
 opted in). Each invocation SHALL process at most a fixed batch of rows per
 table so that no single run holds a long-lived transaction across the full
-backlog, and SHALL be safe to invoke repeatedly — already-cataloged rows
+backlog, and SHALL be safe to invoke repeatedly — already-cataloged live rows
 (matched via the existing `UNIQUE(source_schema, source_table, source_id)`
-key) MUST be skipped rather than re-inserted or duplicated. The backfill
+key) MUST be skipped rather than re-inserted or duplicated; a stale row whose
+fact is live again is handled by the forward refresh below. The backfill
 SHALL run as a module-default scheduled job so the backlog drains without
 requiring a copy-pasted `butler.toml` schedule block per butler.
 
@@ -368,7 +369,7 @@ requiring a copy-pasted `butler.toml` schedule block per butler.
 - **WHEN** the backfill is invoked a second time after a prior run already
   cataloged a fact or rule
 - **THEN** the second run MUST NOT re-process, duplicate, or error on that
-  already-cataloged row
+  already-cataloged live row
 
 #### Scenario: Backfill runs as a module default, not per-butler toml
 
@@ -453,6 +454,43 @@ forward backfill's batching and idempotency contract.
   run already marked a drifted row stale
 - **THEN** the second run MUST NOT re-process, re-mark, or error on that
   already-stale row
+
+---
+
+### Requirement: Backfill refreshes catalog rows whose fact is live again
+
+The backfill mechanism SHALL also forward-refresh, in the same invocation as
+the forward backfill and reverse reconciliation described above: it SHALL
+revive any stale `public.memory_catalog` row (`invalid_at IS NOT NULL`) of a
+fact that is live again (`validity` `'active'` or `'fading'`) and whose
+`sensitivity` is not `pii` or `confidential`, by clearing `invalid_at` and
+restoring `confidence` from the fact. This repairs rows staled while a fact
+was expired and later restored, which the insert-only forward backfill cannot
+reach. A stale row whose fact is still terminal, has been hard-deleted, or is
+now `pii`/`confidential` SHALL stay stale, so a reclassified fact's earlier
+summary is never revived into cross-butler search. The refresh MUST NOT
+delete catalog rows, MUST be bounded per invocation, and MUST be safe to
+invoke repeatedly.
+
+#### Scenario: A restored fact's stale catalog row is revived
+
+- **WHEN** the backfill runs against a butler's schema containing a stale
+  catalog row (`invalid_at` set) whose source fact is `active` or `fading` and
+  not `pii`/`confidential`
+- **THEN** that row MUST have `invalid_at` cleared and `confidence` restored
+  from the fact
+- **AND** the catalog row MUST NOT be deleted
+
+#### Scenario: A row whose fact is still terminal, deleted or reclassified stays stale
+
+- **WHEN** the backfill runs against a stale catalog row whose source fact is
+  still terminal or hard-deleted, or is now `pii` or `confidential`
+- **THEN** that row MUST remain stale and unmodified
+
+#### Scenario: The refresh is idempotent across repeated runs
+
+- **WHEN** the backfill is invoked again after the refresh revived a row
+- **THEN** the later run MUST NOT re-process or modify that now-live row
 
 ---
 

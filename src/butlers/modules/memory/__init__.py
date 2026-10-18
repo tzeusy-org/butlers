@@ -96,8 +96,9 @@ _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
     # defaulted False for most of the catalog's life, so ~3,600 existing facts/rules
     # across the fleet predate write-behind and have no public.memory_catalog row.
     # Bounded per-run batch (200 facts + 200 rules); safe to re-run — already-
-    # cataloged rows are skipped via the UNIQUE(source_schema, source_table,
-    # source_id) key (see `run_memory_catalog_backfill`). Runs every 5 minutes
+    # cataloged live rows are skipped via the UNIQUE(source_schema, source_table,
+    # source_id) key, and stale rows whose fact is live again are revived (see
+    # `run_memory_catalog_backfill`). Runs every 5 minutes
     # until the backlog fully drains, then becomes a cheap no-op steady state.
     {
         "name": "memory_catalog_backfill",
