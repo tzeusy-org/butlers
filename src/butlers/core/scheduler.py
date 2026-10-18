@@ -26,6 +26,7 @@ from opentelemetry import trace
 
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
+from butlers.core.tick_guard import exclusive_tick
 
 logger = logging.getLogger(__name__)
 
@@ -2179,6 +2180,7 @@ async def _butler_dispatch_gated(
     return None
 
 
+@exclusive_tick
 async def tick(
     pool: asyncpg.Pool,
     dispatch_fn,

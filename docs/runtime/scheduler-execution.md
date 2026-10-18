@@ -48,6 +48,11 @@ The daemon calls `tick()` at a regular interval. Each tick:
 
 Dispatch failures are logged but do not prevent subsequent tasks from running. The error is stored in `last_result` for operator visibility.
 
+
+### One Tick At A Time
+
+At most one `tick()` runs per daemon. `tick()` takes a per-daemon lock (`src/butlers/core/tick_guard.py`), so two due jobs can never run concurrently because a tick was forced while another was running. The scheduler loop waits for a forced tick that is mid-run. A forced tick (the core `tick` tool and `POST /api/butlers/{name}/tick`) does not queue behind a running tick, since a tick can take minutes; it replies `{"status": "busy", "dispatched": 0}` and runs nothing, and the API reports that reply as `success: false`. When no tick is running the tool replies `{"status": "ran", "dispatched": <n>}`. The per-occurrence claim on `next_run_at` still prevents one occurrence from being dispatched twice.
+
 ## Task Continuity (opt-in)
 
 A prompt-mode task can set `continuity = true` (per-task, default `false`) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.

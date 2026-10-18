@@ -1600,6 +1600,15 @@ async def trigger_butler(
 # ---------------------------------------------------------------------------
 
 
+def _tick_reported_busy(message: str | None) -> bool:
+    """Whether the tick tool's reply says another tick was already running."""
+    try:
+        payload = json.loads(message) if message else None
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "busy"
+
+
 @router.post("/{name}/tick", response_model=ApiResponse[TickResponse])
 async def force_butler_tick(
     name: str,
@@ -1633,7 +1642,7 @@ async def force_butler_tick(
             if text:
                 message = text
 
-        tick_resp = TickResponse(success=True, message=message)
+        tick_resp = TickResponse(success=not _tick_reported_busy(message), message=message)
         await log_audit_entry(db, name, "tick", summary)
         return ApiResponse[TickResponse](data=tick_resp)
 

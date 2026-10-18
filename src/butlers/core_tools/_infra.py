@@ -18,6 +18,7 @@ from butlers.core.corrections import (
 )
 from butlers.core.scheduler import tick as _tick
 from butlers.core.telemetry import tool_span
+from butlers.core.tick_guard import run_forced_tick
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 
@@ -204,19 +205,25 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         """Evaluate due scheduled tasks and dispatch them now.
 
         Primarily driven by the internal scheduler loop. Retained as an MCP tool
-        for debugging and manual triggering.
+        for debugging and manual triggering. At most one tick runs per daemon: if the
+        scheduler loop (or another forced tick) is mid-tick, this returns
+        ``{"status": "busy", "dispatched": 0}`` without running anything; otherwise
+        ``{"status": "ran", "dispatched": n}``.
         """
         runtime_context = await daemon._build_scheduler_runtime_context()
-        count = await _tick(
-            pool,
-            daemon._dispatch_scheduled_task,
-            stagger_key=daemon.config.name,
-            butler_name=daemon.config.name,
-            prompt_hooks=runtime_context.prompt_hooks,
-            completion_hooks=runtime_context.completion_hooks,
-            default_timezone=runtime_context.default_timezone,
-        )
-        return {"dispatched": count}
+
+        async def run() -> int:
+            return await _tick(
+                pool,
+                daemon._dispatch_scheduled_task,
+                stagger_key=daemon.config.name,
+                butler_name=daemon.config.name,
+                prompt_hooks=runtime_context.prompt_hooks,
+                completion_hooks=runtime_context.completion_hooks,
+                default_timezone=runtime_context.default_timezone,
+            )
+
+        return await run_forced_tick(pool, run)
 
     async def correct(
         correction_type: str,
