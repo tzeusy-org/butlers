@@ -22,6 +22,8 @@ from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 _SOURCE = "finance:memorial-claim"
 _CLAIM = {
     "id": uuid.UUID("00000000-0000-0000-0000-0000000000a1"),
+    "asserted_by": "relationship",
+    "claim_key": "loan:sample",
     "direction": "inbound",
     "counterparty_name": "Sample Person",
 }
@@ -29,7 +31,7 @@ _CLAIM = {
 
 def _transition(kind: str, claim: dict = _CLAIM):
     fingerprint = finance_jobs.owner_condition_fingerprint(
-        _SOURCE, 1, {"claim_id": str(claim["id"])}
+        _SOURCE, 1, {"asserted_by": claim["asserted_by"], "claim_key": claim["claim_key"]}
     )
     return SimpleNamespace(
         condition_id=uuid.UUID("00000000-0000-0000-0000-0000000000c1"),
@@ -86,6 +88,15 @@ class TestMemorialClaimQuestionProducer:
         assert result["opened"] == 0
         assert reconcile.await_args.kwargs["observations"] == []
         propose.assert_not_awaited()
+
+    async def test_a_superseded_claim_keeps_its_identity_and_is_not_asked_again(self):
+        amended = {**_CLAIM, "id": uuid.UUID("00000000-0000-0000-0000-0000000000a2")}
+        _, first, _ = await self._run(claims=[_CLAIM], transitions=[_transition("opened")])
+        _, second, _ = await self._run(claims=[amended], transitions=[_transition("confirmed")])
+        before = first.await_args.kwargs["observations"]
+        after = second.await_args.kwargs["observations"]
+        assert [o.fingerprint for o in before] == [o.fingerprint for o in after]
+        assert after[0].metadata == {"claim_id": str(amended["id"])}
 
     async def test_an_unknown_read_changes_nothing(self):
         result, reconcile, propose = await self._run(claims=[], read_error=RuntimeError("down"))
@@ -147,8 +158,17 @@ async def _entity(conn: asyncpg.Connection, name: str, posture: str) -> uuid.UUI
     return entity_id
 
 
+async def _claim_again(db_url: str, entity_id: uuid.UUID, *, key: str, amount: int) -> uuid.UUID:
+    return await _claim(db_url, entity_id, key=key, amount=amount)
+
+
 async def _claim(
-    db_url: str, entity_id: uuid.UUID, *, key: str, kind: str = "receivable"
+    db_url: str,
+    entity_id: uuid.UUID,
+    *,
+    key: str,
+    kind: str = "receivable",
+    amount: int = 25,
 ) -> uuid.UUID:
     conn = await asyncpg.connect(db_url)
     try:
@@ -158,13 +178,14 @@ async def _claim(
             INSERT INTO public.cost_claims
                 (claim_key, asserted_by, kind, direction, amount, currency,
                  counterparty_entity_id, description)
-            VALUES ($1, 'relationship', $2, $3, 25, 'SGD', $4, 'Synthetic loan')
+            VALUES ($1, 'relationship', $2, $3, $5, 'SGD', $4, 'Synthetic loan')
             RETURNING id
             """,
             key,
             kind,
             "inbound" if kind == "receivable" else "outbound",
             entity_id,
+            amount,
         )
     finally:
         await conn.close()
@@ -199,6 +220,40 @@ class TestMemorialClaimReadAndSweep:
         finally:
             await conn.close()
         assert ids == {listed, payable}
+
+    async def test_an_amended_claim_between_sweeps_is_not_asked_again(self, db_url):
+        admin = await asyncpg.connect(db_url)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
+            await admin.execute(
+                "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+            person = await _entity(admin, "Memorial Sample", "memorial")
+            old_id = await _claim(db_url, person, key="loan")
+            await finance_jobs.run_cost_claim_reconciliation_sweep(pool)
+
+            # An amendment supersedes the row and re-asserts it under a new id, same claim_key.
+            await admin.execute(
+                "UPDATE public.cost_claims SET superseded_at = now() WHERE id = $1", old_id
+            )
+            await _claim_again(db_url, person, key="loan", amount=10)
+            await finance_jobs.run_cost_claim_reconciliation_sweep(pool)
+
+            conditions = await admin.fetch(
+                "SELECT state, episode FROM public.owner_conditions WHERE source = $1", _SOURCE
+            )
+            assert len(conditions) == 1
+            assert conditions[0]["state"] != "resolved" and conditions[0]["episode"] == 1
+            assert (
+                await admin.fetchval(
+                    "SELECT count(*) FROM insight_candidates WHERE category = 'memorial-claim'"
+                )
+                == 1
+            )
+        finally:
+            await pool.close()
+            await admin.close()
 
     async def test_the_sweep_asks_once_leaves_the_claim_alone_and_resolves_on_active(self, db_url):
         admin = await asyncpg.connect(db_url)
