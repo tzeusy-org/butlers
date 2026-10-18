@@ -38,7 +38,7 @@
   with server-derived actor, and truthful degraded-source disclosure.
 - [x] 1.13 Draft the `core-skills` MODIFIED delta closing the runtime-MCP-tool-surface gap for
   `write_agents_md`/`append_agents_md`, authored as a full superset of the active
-  `k3s-deployment-helm-chart` change's own delta on the same requirement, with the sequencing
+  `k3s-deployment-helm-chart` change's own delta on the same requirement (superseded by 2.5), with the sequencing
   dependency named explicitly in `proposal.md`/`design.md` rather than left implicit.
 - [x] 1.14 Confirm no change to RFC 0021, `pending_actions`, the approvals executor,
   `autonomy-suggestions`'s or `switchboard-rule-promotion`'s baseline requirements, or

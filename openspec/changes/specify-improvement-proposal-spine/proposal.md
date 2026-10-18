@@ -14,14 +14,14 @@ determined `.15` cannot proceed as implementation and proposed this spec-first p
 
 Three further conflicts make this a specification problem before it can be an implementation one:
 
-1. **`core-skills` already authorizes direct `AGENTS.md` writes**, and the active (unmerged, no
-   open PR found) `k3s-deployment-helm-chart` change goes further, adding a `state`-table DB
-   fallback so a read-only k3s pod can still persist "runtime agent notes" — which get read back
-   and concatenated into the next system prompt. Neither authority currently exists on any
+1. **`core-skills` already authorizes direct `AGENTS.md` writes** ("runtime agent notes", read
+   back into the next system prompt). That authority does not currently exist on any
    runtime-facing MCP tool surface (`write_agents_md`/`append_agents_md` are today only used by
-   tests and other developer-facing tooling, per a full-repo call-site scan), but both remain
+   tests and other developer-facing tooling, per a full-repo call-site scan), but it remains
    *latent* direct-write authority that a gated-PR-only identity contract must close off before
-   any future tool wires a runtime session to either path.
+   any future tool wires a runtime session to either function. (An earlier draft also had to
+   reconcile the `k3s-deployment-helm-chart` change's `state`-table DB fallback; that change was
+   abandoned and removed, bu-60pwv6.3.)
 2. **QA's `_create_qa_pr` (`src/butlers/core/qa/dispatch.py`) is finding-specific implementation**,
    not generic authority: it carries QA statuses (`healing_attempts`), QA labels, and QA prompt
    assumptions. Its clone/worktree/anonymization/whitelist/push/PR primitives are reusable
@@ -33,8 +33,8 @@ Three further conflicts make this a specification problem before it can be an im
 This change is specification only. It defines the public schema, state machines, target adapters,
 trust boundaries, actor derivation, audit events, dashboard API/UI, retry, concurrency,
 partial-effect, compatibility, and rollback semantics for one unified improvement-proposal spine —
-and it explicitly reconciles the `core-skills`/k3s conflict and draws the QA-substrate boundary
-so neither is a silent authority change. It performs no schema, runtime, Beads, branch, PR,
+and it explicitly closes the latent `core-skills` direct-write authority and draws the
+QA-substrate boundary so neither is a silent authority change. It performs no schema, runtime, Beads, branch, PR,
 dashboard, or deployment mutation. It is itself a draft artifact requiring separate owner approval
 before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
 
@@ -72,7 +72,7 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
     sources per this repository's fan-out convention
     (`docs/api_and_protocols/response-conventions.md`) rather than a silent empty/all-clear state.
 - Add a **`[TARGET-STATE]`** MODIFIED requirement to `core-skills`'s "AGENTS.md Read/Write Access"
-  requirement: `write_agents_md`/`append_agents_md` (file path or DB fallback alike) MUST NOT be
+  requirement: `write_agents_md`/`append_agents_md` MUST NOT be
   reachable from any runtime-facing MCP tool surface; any future exposure of agent-notes writing
   to a butler runtime session MUST route through `propose_amendment` and the PR target adapter
   instead of a direct call. Developer/deployment tooling callers (migrations, CLI scripts, the
