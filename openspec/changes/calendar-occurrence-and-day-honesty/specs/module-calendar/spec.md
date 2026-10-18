@@ -6,6 +6,8 @@ Calendar provider sync SHALL request provider-expanded instances (Google `single
 
 The provider payload parser SHALL retain the provider series and instance identity it currently drops: `recurringEventId` (the series id) and `originalStartTime` (the immutable scheduled start of the instance, a `dateTime` or a date-only `date`). A provider instance that carries both SHALL be keyed by `(source, recurringEventId, originalStartTime)`. The instance's `origin_instance_ref` SHALL be derived from that key (`{recurringEventId}:{originalStartTime normalized to UTC, or the date for an all-day instance}`) and SHALL NOT embed the instance's current display start. The key and the series id SHALL be carried in the projected event metadata so readers can group occurrences by series. A non-recurring provider event keeps its existing `origin_instance_ref` derivation.
 
+Each provider instance SHALL project to its own `calendar_events` row keyed by its provider instance id (`origin_ref`), with exactly one `calendar_event_instances` row. The series id and the occurrence key are metadata, not a shared parent row, so the existing per-event prune ("Superseded provider instance pruned on time-drifted re-sync") stays valid unchanged and never touches sibling occurrences.
+
 A moved instance (its displayed start or end changed while `originalStartTime` did not) SHALL keep its `origin_instance_ref`, update `starts_at`/`ends_at` in place, and remain one row. A cancelled exception (a provider instance with `status=cancelled`, possibly minimally populated with only its id, `recurringEventId` and `originalStartTime`) SHALL remove or suppress only that occurrence and SHALL NOT delete its siblings or the series. The provider-to-projection mapping SHALL NOT infer series membership from title, time or attendees.
 
 ID: REQ-module-calendar-031
@@ -88,6 +90,8 @@ Scope: v1-mandatory
 
 ### Requirement: Bounded Occurrence Projection Window and Honest Coverage
 
+The horizon defined below governs provider-expanded occurrences only. The canonical `RECURRENCE_PROJECTION_WINDOW_DAYS` (90-day) window for internally expanded RRULE and cron projection ("Recurrence projection window") is unchanged.
+
 Because provider expansion of an open-ended series is unbounded, occurrence projection SHALL be limited to a bounded window of `full_sync_window_days` back and a configured forward horizon ahead (default 180 days, never less than the 90-day maximum radar scan window). The full resync SHALL pass the window to the provider as `timeMin`/`timeMax`. Because a provider incremental token cannot carry `timeMin`/`timeMax`, the module SHALL enforce the same window when writing delivered changes and SHALL record, per source, the `coverage_through` instant up to which occurrences are known to be projected.
 
 Occurrences first entering the forward horizon as time passes are not delivered by an incremental token. When remaining forward coverage falls below a configured fraction of the horizon, the module SHALL run a bounded full resync to advance `coverage_through`. Until then, and whenever the source is failed or stale, any reader asking about a period beyond `coverage_through`, or about a source whose last successful sync is older than the stale threshold, SHALL receive an explicit partial or stale coverage indication and SHALL NOT be answered as though the period were empty. Coverage SHALL be exposed through the existing source freshness surface as additive fields (`coverage_through` and a `coverage` state of `complete`, `partial` or `stale`).
@@ -120,7 +124,9 @@ Scope: v1-mandatory
 
 ### Requirement: Structured Event Category Evidence
 
-The projection SHALL carry, per instance, a `category` drawn from `meeting`, `hold`, `travel`, `all_day` or `uncategorized`, derived only from explicit structured evidence, in this precedence: (1) an owner-recorded category on the event, set only through an explicit owner action and never overwritten by a sync; (2) provider structured fields: `all_day` (date-only boundaries) yields `all_day`; Google `eventType` of `outOfOffice` or `focusTime` yields `hold`; `workingLocation` is status-only and carries no category; and multi-party structure (at least one non-self, non-resource attendee, or provider conference data) yields `meeting`; (3) otherwise `uncategorized`.
+The projection SHALL carry, per instance, a `category` drawn from `meeting`, `hold`, `travel`, `all_day` or `uncategorized`, derived only from explicit structured evidence, in this precedence: (1) an owner-recorded category on the event, set only through an explicit owner action and never overwritten by a sync; (2) provider structured fields: `all_day` (date-only boundaries) yields `all_day`; Google `eventType` of `outOfOffice` or `focusTime` yields `hold`; `workingLocation` is status-only, carries no category and counts toward no day-load bucket (it is not `uncategorized`); and multi-party structure (at least one non-self, non-resource attendee, or provider conference data) yields `meeting`; (3) otherwise `uncategorized`. The provider rules in (2) apply first-match in the order listed.
+
+The provider parser SHALL retain, as projected event metadata, the provider `eventType`, each attendee's `self` and `resource` flags, and whether conference data is present. The canonical `CalendarEvent` model is unchanged. A reader of the category SHALL use this metadata; if a dedicated projected event-type column exists when this lands, the derivation SHALL read that column instead of a metadata copy.
 
 The category SHALL NOT be derived from the title, description, location text, calendar name, organizer string, source name or any free-text heuristic, including for flights and trips; an event the evidence does not classify is `uncategorized`, never silently `meeting` and never silently `travel`. The derivation SHALL be a pure function of the stored event so a reader can recompute it, and it SHALL be exposed to the shared analysis boundary as a category field on the conflict candidate. Provider fields used as evidence SHALL be read-side metadata only; no provider write authority is added.
 
@@ -148,6 +154,17 @@ Scope: v1-mandatory
 - **WHEN** a timed event is titled "Flight to Singapore" and has no owner category, no status `eventType` and no multi-party structure
 - **THEN** its category is `uncategorized`
 - **AND** the title is not consulted
+
+#### Scenario: Working location counts toward no bucket
+
+- **WHEN** a timed event has `eventType=workingLocation` (for example 09:00-17:00 "Office")
+- **THEN** it has no category and adds nothing to any day-load bucket, including `uncategorized`
+
+#### Scenario: Evidence survives for a pure-function derivation
+
+- **WHEN** an event is read back from the projection
+- **THEN** its provider `eventType`, attendee `self`/`resource` flags and conference-data presence are available as metadata
+- **AND** recomputing the category from the stored event yields the stored category
 
 #### Scenario: All-day boundaries are all-day
 

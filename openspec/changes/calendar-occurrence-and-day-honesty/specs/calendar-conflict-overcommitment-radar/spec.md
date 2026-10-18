@@ -35,7 +35,7 @@ Scope: v1-mandatory
 
 ### Requirement: Category-Honest Day Density
 
-Only an interval whose category is `meeting` SHALL count toward meeting density. `hold`, `travel` and `all_day` intervals SHALL NOT inflate meeting density, and an `uncategorized` interval SHALL be reported separately and SHALL NOT be presented as a meeting. The category SHALL come only from the calendar module's structured category evidence; the radar SHALL NOT infer a category from titles, sources or lanes. An interval in a `hold` or `travel` category remains visible in the workspace and still participates in overlap detection unless excluded by the existing filters.
+Only an interval whose category is `meeting` SHALL count toward meeting density. `hold`, `travel` and `all_day` intervals SHALL NOT inflate meeting density, and an `uncategorized` interval SHALL be reported separately and SHALL NOT be presented as a meeting. The category SHALL come only from the calendar module's structured category evidence; the radar SHALL NOT infer a category from titles, sources or lanes. An interval in a `hold` or `travel` category remains visible in the workspace and still participates in overlap detection unless excluded by the existing filters. Back-to-back and overlap detection are unchanged and are not filtered by category. A row with no category (`workingLocation`) counts toward no day-load bucket. This requirement defines the "meeting time" used by the canonical "Overloaded day detected" scenario, so the two read as one rule.
 
 Each day's load SHALL be reported as `meeting_minutes` (a lower bound: evidenced meetings only) and `uncategorized_minutes` (timed intervals the evidence does not classify). An `overloaded_day` issue with `severity: "warning"` SHALL be emitted only when `meeting_minutes` exceeds the budget. When `meeting_minutes` is within the budget but `meeting_minutes + uncategorized_minutes` exceeds it, the radar SHALL emit a possible-overload `overloaded_day` issue with `severity: "info"` whose summary states the uncategorized share, never a warning that asserts meetings.
 
@@ -48,6 +48,11 @@ Scope: v1-mandatory
 - **WHEN** a day holds 3 hours of `meeting`, a 5-hour `hold` and a 4-hour `travel` interval
 - **THEN** `meeting_minutes` is 180
 - **AND** no `overloaded_day` warning is emitted for a 6-hour budget
+
+#### Scenario: Back-to-back and overlap ignore category
+
+- **WHEN** two consecutive non-cancelled events are a `hold` and a `travel` interval with no gap
+- **THEN** the canonical back-to-back density result is unchanged by their categories
 
 #### Scenario: Uncategorized time is a separate, honest bucket
 
@@ -64,7 +69,7 @@ Scope: v1-mandatory
 
 `ConflictScanResponse` SHALL additively carry a `day_load` list with one entry per local day in the scan window: `date` (YYYY-MM-DD in the display timezone), `meeting_minutes`, `uncategorized_minutes`, `hold_minutes`, `travel_minutes`, `day_minutes` (the local day's actual duration), and `coverage` of `complete`, `partial`, `stale` or `unavailable`. Existing fields, `issues_available` semantics and the fail-open HTTP contract SHALL be unchanged.
 
-`coverage` SHALL be `unavailable` for every day when the events fan-out fails entirely, `partial` for every day when a partial per-schema failure occurred or when the day lies beyond a contributing source's `coverage_through`, and `stale` when a contributing source is stale. A day with `coverage` other than `complete` SHALL NOT be presented as quiet or free; consumers SHALL render the coverage state instead of a zero load. The radar remains a pure read: no provider call and no LLM call at request time.
+`coverage` SHALL be `unavailable` for every day when the events fan-out fails entirely, `partial` for every day when a partial per-schema failure occurred or when the day lies beyond a contributing source's `coverage_through`, and `stale` when a contributing source is stale. When more than one state applies to a day, the first of `unavailable`, `partial`, `stale` that applies wins, in that order (a day both stale and past `coverage_through` is `partial`, because no figure is known for it). A day with `coverage` other than `complete` SHALL NOT be presented as quiet or free; consumers SHALL render the coverage state instead of a zero load. The radar remains a pure read: no provider call and no LLM call at request time.
 
 ID: REQ-calendar-conflict-overcommitment-radar-012
 Source: bu-h40h2b.6 acceptance 4 and 5; bu-vpn5ij
@@ -84,6 +89,11 @@ Scope: v1-mandatory
 
 - **WHEN** a day lies after a contributing source's `coverage_through`
 - **THEN** that day reports `coverage = "partial"` even though no row exists for it
+
+#### Scenario: Stale and past coverage resolves to partial
+
+- **WHEN** a contributing source is stale and a day also lies beyond its `coverage_through`
+- **THEN** that day reports `coverage = "partial"`
 
 #### Scenario: Healthy empty day is complete
 

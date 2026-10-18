@@ -20,7 +20,7 @@ Scope: v1-mandatory
 
 ### Requirement: Calendar Day Load Line With Truthful State
 
-The Calendar day and week headers SHALL render, for each visible day, a day-load line from `ConflictScanResponse.day_load`: meeting hours and, when nonzero, uncategorized hours. A day whose `coverage` is `partial`, `stale` or `unavailable` SHALL render that named state instead of a load figure and SHALL NOT render as quiet, free or all-clear. A source or read failure SHALL never produce an empty or zero-hours line. The line SHALL be an additive element and SHALL leave the existing radar banner behavior (hidden when `issues_available` is false) unchanged.
+The Calendar day and week headers SHALL render, for each visible day, a day-load line from `ConflictScanResponse.day_load`: meeting hours and, when nonzero, uncategorized hours. A day whose `coverage` is `stale` SHALL render its last known load figures marked stale. A day whose `coverage` is `partial` or `unavailable` SHALL render that named state with no load figure. No non-`complete` day SHALL render as quiet, free or all-clear. A source or read failure SHALL never produce an empty or zero-hours line. The line SHALL be an additive element and SHALL leave the existing radar banner behavior (hidden when `issues_available` is false) unchanged.
 
 ID: REQ-dashboard-domain-pages-051
 Source: bu-h40h2b.6 acceptance 5; bu-vpn5ij
@@ -40,7 +40,12 @@ Scope: v1-mandatory
 #### Scenario: Stale day names staleness
 
 - **WHEN** a day has `coverage = "stale"`
-- **THEN** the header shows the last known load marked stale
+- **THEN** the header shows the last known load figures marked stale
+
+#### Scenario: Partial day shows the state and no figure
+
+- **WHEN** a day has `coverage = "partial"`
+- **THEN** the header shows the partial state and no load figure
 
 ### Requirement: Settled-Day Reconciliation Header Line
 

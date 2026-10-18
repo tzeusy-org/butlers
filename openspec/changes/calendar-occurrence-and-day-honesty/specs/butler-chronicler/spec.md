@@ -4,7 +4,7 @@
 
 The Chronicler SHALL own an additive, scheduled, idempotent reconciliation run for settled historical days. For each settled local day (strictly before the owner's current local date and past the settling delay) it SHALL read the approved migration-tracked calendar read surface under `butler_chronicler_rw` and its own evidence layers, and SHALL persist one run record per `(local_day, algorithm_version)` in Chronicler-owned storage. The run SHALL report only deterministic outcomes per scheduled calendar block: `contradicted` (an independent rest-lane or conflicting-activity evidence contradicts the block, the same rule `reconcile_day()` already applies), or `unknown` (no evidence either way). It SHALL record counts, `computed_at`, and a `coverage` of `complete`, `partial` or `unavailable` that reflects the freshness and completeness of the calendar source and of the evidence layers it consulted.
 
-The run SHALL NOT label any block as attended, SHALL NOT count a calendar block as lived time (the "Calendar Scheduled Blocks Are Not Attendance Assertions" requirement is unchanged), SHALL NOT overwrite or hide an owner correction in the correction overlay, and SHALL NOT mutate any non-Chronicler schema: Calendar gains no cross-schema write authority, the grant surface is the existing restricted calendar read surface (no cursors, no arbitrary schemas, no provider access), and no provider or runtime action is introduced. A rerun SHALL replace only its own run record for the same key, never an owner correction, and a replay SHALL be idempotent. A day whose calendar source was stale or failed when evaluated SHALL record `coverage = "partial"` or `"unavailable"` and SHALL be re-evaluated on a later run; it SHALL NOT be recorded as a clean run. Block references SHALL use the stable `calendar:{origin_instance_ref}` source reference so a moved or cancelled occurrence maps to the same block.
+The run SHALL NOT label any block as attended, SHALL NOT count a calendar block as lived time (the "Calendar Scheduled Blocks Are Not Attendance Assertions" requirement is unchanged), SHALL NOT overwrite or hide an owner correction in the correction overlay, and SHALL NOT mutate any non-Chronicler schema: Calendar gains no cross-schema write authority, the grant surface is the existing restricted calendar read surface (no cursors, no arbitrary schemas, no provider access), and no provider or runtime action is introduced. The run SHALL execute as a deterministic job-mode schedule (`dispatch_mode = "job"`). It SHALL NOT spawn an LLM session, use a prompt-mode schedule, or send an owner-facing message. The day-close prompt is unchanged and does not depend on the run. A rerun SHALL replace only its own run record for the same key, never an owner correction, and a replay SHALL be idempotent. A day whose calendar source was stale or failed when evaluated SHALL record `coverage = "partial"` or `"unavailable"` and SHALL be re-evaluated on a later run; it SHALL NOT be recorded as a clean run. Block references SHALL use the stable `calendar:{origin_instance_ref}` source reference so a moved or cancelled occurrence maps to the same block.
 
 ID: REQ-butler-chronicler-008
 Source: bu-h40h2b.6 acceptance 2 and 6; bu-vpn5ij; decision A1 (bu-2o1dn8); Calendar Scheduled Blocks Are Not Attendance Assertions
@@ -36,6 +36,11 @@ Scope: v1-mandatory
 
 - **WHEN** the scheduler runs for a local day that is today or later
 - **THEN** no run record is written
+
+#### Scenario: Run is a deterministic job
+
+- **WHEN** the run fires
+- **THEN** no runtime session is spawned and no `notify()` call is made
 
 #### Scenario: Calendar has no write path
 
