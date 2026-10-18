@@ -40,14 +40,18 @@ Qualifying evidence SHALL be limited to what the system already holds from user-
 inbound messages recorded in `switchboard.message_inbox` on `email`, `telegram_user_client` and
 `whatsapp_user_client`, and the owner's own messages on `telegram_user_client` and
 `whatsapp_user_client` that those connectors report through the batch envelope's `owner_sender_id`.
-Interaction facts that `interaction_sync` wrote with a server attestation SHALL be an equivalent,
-day-resolution form of the same evidence. The following SHALL NOT qualify: messages with
+Interaction facts that `interaction_sync` wrote with a server attestation MAY be read only as a lossy
+day-resolution fallback for evidence that has left `switchboard.message_inbox`, never as an
+equivalent of it: a day on which only the owner wrote produces no fact
+(`relationship_jobs.py:1274-1293`), and automated replies and bounces are written as incoming facts
+today because `automated_kind` is unread there (bu-4q1jpm). A read that rests on facts alone SHALL
+NOT yield `whose_turn` = `owner`, and a missing owner-side fact SHALL read `unknown`, not absence of
+a reply. The following SHALL NOT qualify: messages with
 `interaction_eligible` false, chats over 20 participants, Telegram bot, Discord and calendar-derived
 interactions, automated replies and bounces (`control.automated_kind` set), legacy or unattested
 interaction rows, messages whose sender is the owner's own identity on the inbound side, and rows
-whose identity does not resolve to a canonical person. Gmail outbound evidence SHALL come only from an
-on-demand owner-Gmail read where that capability exists and is granted; until then email outbound
-SHALL be `not_tracked`. The Gmail `in:sent` Message-ID set and `connectors.owner_outbound_events`
+whose identity does not resolve to a canonical person. Email outbound SHALL be `not_tracked`; a later owner-approved change may add an on-demand
+owner-Gmail read as outbound evidence. The Gmail `in:sent` Message-ID set and `connectors.owner_outbound_events`
 SHALL NOT be evidence.
 
 ID: REQ-relationship-turn-status-002
@@ -58,6 +62,12 @@ Scope: v1-reserved
 
 - **WHEN** a WhatsApp direct chat contains a message from a resolved person and a later owner message reported through `owner_sender_id`
 - **THEN** both are qualifying evidence
+
+#### Scenario: Facts alone never say it is the owner's turn
+
+- **WHEN** a person's only evidence is an incoming interaction fact and no owner-side fact exists
+- **THEN** `whose_turn` is `unknown`, not `owner`
+- **AND** the basis names the fact fallback as lossy
 
 #### Scenario: Large group is excluded
 
@@ -118,20 +128,26 @@ outbound, only if all of these hold: both directions are `observed` or `no_signa
 source channel (neither is `not_tracked` or `unavailable` there); no newer evidence exists on a channel
 where a direction is `not_tracked` or `unavailable`; and the order of the newest inbound and outbound
 events is established. Otherwise it SHALL be `unknown` with the reason in the basis. Order SHALL be
-established by `occurred_at` when its basis is `source_stated`, and otherwise by the day of receipt.
+established by `occurred_at` only when its basis is `source_stated` and its precision is `instant`,
+and otherwise by the day of receipt.
 Interaction facts carry only a day plus a synthetic hour offset, so same-day inbound and outbound
 evidence with no `source_stated` time SHALL give `unknown`; the synthetic offset SHALL NOT be read as
 an order. Evidence older than the retention of its source SHALL NOT be assumed absent: a turn that
 would depend on it SHALL be `unknown`.
 
 ID: REQ-relationship-turn-status-004
-Source: bu-h40h2b.14 Slice A (event-time versus ingest-time) and Slice C (unknown); [Observed] roster/relationship/jobs/relationship_jobs.py gives outgoing facts a +12 hour offset so they coexist with incoming facts, roster/relationship/tools/dunbar.py reads `metadata->>'direction'`; connector-event-clock REQ-connector-event-clock-001 (specify-connector-event-clock-and-coverage, #4686)
+Source: bu-h40h2b.14 Slice A (event-time versus ingest-time) and Slice C (unknown); [Observed] roster/relationship/jobs/relationship_jobs.py:887-891 gives outgoing facts a +12 hour offset so they coexist with incoming facts, roster/relationship/tools/dunbar.py reads `metadata->>'direction'`; connector-event-clock REQ-connector-event-clock-001 (specify-connector-event-clock-and-coverage, #4686)
 Scope: v1-reserved
 
 #### Scenario: Reply is the latest event
 
-- **WHEN** a person writes on Monday and the owner replies on Tuesday, both on WhatsApp
+- **WHEN** a person writes on Monday and the owner replies on Tuesday, both on WhatsApp and both held as message evidence (the owner message reported through `owner_sender_id`)
 - **THEN** `whose_turn` is `other`
+
+#### Scenario: Reply seen only as a fact
+
+- **WHEN** the Monday inbound is held as an interaction fact and the Tuesday owner reply has no fact
+- **THEN** `whose_turn` is `unknown`, because a missing owner-side fact is not proof of no reply
 
 #### Scenario: Unanswered inbound
 
@@ -189,6 +205,35 @@ Scope: v1-reserved
 - **WHEN** the newest evidence comes from a sender that does not resolve to a canonical person
 - **THEN** it is attributed to nobody
 - **AND** a person with a merge-pending identity reads `unknown` with basis `identity_unresolved`
+
+### Requirement: A conversation maps to people only when attribution is unambiguous
+
+Evidence SHALL be attributed to a person only through the conversation it occurred in. A direct
+conversation SHALL map to its single non-owner counterpart. A group conversation of 20 or fewer
+participants SHALL map to all of its non-owner members or to none of them; it SHALL NOT map to a
+subset. A conversation that cannot be resolved to a person, or a group over 20 participants, SHALL map
+to nobody. Outbound evidence from a conversation that maps to nobody SHALL NOT be counted for any
+person, so for that person the direction reads `not_tracked` and `whose_turn` is `unknown`.
+
+ID: REQ-relationship-turn-status-009
+Source: bu-toe4ph sec review (bu-pj933z) C2; passive-interaction-sync group handling (20 participants); REQ-relationship-turn-status-002
+Scope: v1-reserved
+
+#### Scenario: Direct message maps to its person
+
+- **WHEN** the owner writes in a direct WhatsApp chat with one resolved person
+- **THEN** that message is outbound evidence for that person only
+
+#### Scenario: Small group maps to all members or none
+
+- **WHEN** the owner writes in a group of 20 or fewer participants
+- **THEN** the message is outbound evidence for every non-owner member, or for none if any attribution is unresolved
+
+#### Scenario: Unresolvable conversation
+
+- **WHEN** the owner's outbound message is in a conversation that resolves to no person
+- **THEN** it is attributed to nobody
+- **AND** the affected person's outbound direction reads `not_tracked` and `whose_turn` is `unknown`
 
 ### Requirement: A turn status grants no outreach authority
 

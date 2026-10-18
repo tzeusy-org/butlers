@@ -51,9 +51,11 @@ Out of scope, stated as `REQ-relationship-turn-status-008`:
 
 The two changes touch different capabilities and do not edit a common requirement block, so they can
 be adopted in either order. One soft dependency: ordering the newest inbound and outbound events
-(REQ-relationship-turn-status-004) uses `occurred_at` when its basis is `source_stated`. Until the
-event-clock change is adopted and implemented, ordering falls back to the day of receipt, which makes
-same-day exchanges `unknown`. That is a correct but conservative degradation, not a blocker. The
+(REQ-relationship-turn-status-004) uses `occurred_at` only when its basis is `source_stated` and its
+precision is `instant`. Until the event-clock change is adopted and implemented, ordering falls back to
+the day of receipt, which makes same-day exchanges `unknown`. Even afterwards, one `occurred_at` per
+envelope cannot order the two directions inside a single batch envelope unless per-message times are
+parseable from stored data (task 2.3). That is a correct but conservative degradation, not a blocker. The
 conventions are shared: the same `source_stated` vocabulary, `unavailable` is never an all-clear,
 and no provider call.
 

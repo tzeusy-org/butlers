@@ -58,6 +58,11 @@ ID: REQ-connector-owner-direction-evidence-003
 Source: bu-whhll.8 privacy contract in src/butlers/connectors/owner_outbound_events.py; bu-h40h2b.14 Slice A
 Scope: v1-mandatory
 
+Known gap: for `telegram_user_client` the unkeyed SHA-256 deduplication key lets the counterpart be
+recovered by enumeration (peer chat id, sequential message ids, narrowed by `occurred_at`;
+bu-szrvwu), so the table is not counterpart-less in practice for Telegram until that key is a keyed
+HMAC. That is a further reason it is never read as turn evidence.
+
 #### Scenario: Point events are not turn evidence
 
 - **WHEN** the relationship projection looks for outbound evidence for a person

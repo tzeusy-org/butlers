@@ -14,8 +14,9 @@ Spec only. No code, migration, provider call or live action is part of this chan
 
 - [ ] 2.1 Retention of `switchboard.message_inbox` (partitioned; `data-retention.md` does not list it):
       it bounds the evidence window in REQ-004 and REQ-007.
-- [ ] 2.2 Whether `interaction_sync` already skips inbound rows with `control.automated_kind`; REQ-002
-      requires it.
+- [x] 2.2 Closed: no, `interaction_sync` does not skip inbound rows with `control.automated_kind`
+      (bu-4q1jpm), so facts cannot be filtered for automated replies and are only a lossy fallback
+      (REQ-002).
 - [ ] 2.3 Whether per-message timestamps inside batch envelopes are parseable from `message_inbox`
       for WhatsApp and Telegram user client, so a same-day order could be established from stored data
       rather than only from `occurred_at`.
