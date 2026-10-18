@@ -55,7 +55,7 @@
   Any semantic edit invalidates that review and requires a fresh pass.
 - [x] 2.3 Resolve the `core-skills`/`k3s-deployment-helm-chart` sequencing (`design.md` D13) before
   either change archives. Resolved 2026-09-26: k3s change abandoned and removed (bu-60pwv6.3).
-- [ ] 2.5 Rebuild the `core-skills` delta without the DB-fallback scenarios copied from the
+- [x] 2.5 Rebuild the `core-skills` delta without the DB-fallback scenarios copied from the
   abandoned k3s change (tracked in bu-60pwv6.27).
 - [ ] 2.4 Keep any implementation, migration, credential, runtime, or live GitHub/PR call blocked
   until this contract is accepted and its own separate authorities (Open Questions) are satisfied.
