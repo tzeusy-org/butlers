@@ -23,7 +23,7 @@
 
 ## 4. Rule ratio copy (independent of 1-3, after adoption)
 
-- [ ] 4.1 Failing test first, then RuleDetailPage renders `No applications yet` at `applied_count = 0` and the stored value otherwise (REQ-dashboard-domain-pages-050).
+- [ ] 4.1 Failing test first, then RuleDetailPage renders `No applications yet` at `applied_count = 0` and the stored value otherwise (REQ-dashboard-domain-pages-053).
 
 ## 5. Documentation
 

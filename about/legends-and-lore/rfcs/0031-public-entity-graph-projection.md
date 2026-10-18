@@ -52,7 +52,7 @@ The projection is source-owned and written in the owning transaction, but a Rela
 - **Ratio rule.** Any dashboard effectiveness ratio renders only with a positive denominator; the Rule detail page shows `No applications yet` at exactly zero applications.
 - **Names.** Fleet-case evidence names and links belong to the situations detail (bu-h40h2b.8), not to Relationship graph surfaces.
 
-Requirements: `REQ-entity-graph-013` through `018` and `REQ-dashboard-domain-pages-050`, in the change above. Figures (retention, cadence, bounds, copy) are owner questions Q1 to Q3 in its proposal. The S2 row of the table above remains accurate for Memory and commitment writers; for Relationship, adoption supersedes its remaining-outcome cell. The table rows are not edited here to avoid colliding with the dossier slices in flight.
+Requirements: `REQ-entity-graph-013` through `018` and `REQ-dashboard-domain-pages-053`, in the change above. Figures (retention, cadence, bounds, copy) are owner questions Q1 to Q3 in its proposal. The S2 row of the table above remains accurate for Memory and commitment writers; for Relationship, adoption supersedes its remaining-outcome cell. The table rows are not edited here to avoid colliding with the dossier slices in flight.
 
 ## Governing Neighbors
 
