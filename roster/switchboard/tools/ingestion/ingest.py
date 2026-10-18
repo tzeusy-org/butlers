@@ -44,7 +44,7 @@ from uuid import UUID
 
 import asyncpg
 from opentelemetry import metrics as otel_metrics
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from butlers.conversation_identity import event_conversation_identity
 from butlers.core.account_security_events import classify_ingest_record, publish_security_event
@@ -646,6 +646,23 @@ def _run_policy_evaluation(
         )
 
 
+def _envelope_error_summary(exc: Exception) -> str:
+    """Content-free description of an envelope validation failure: field paths and error types.
+
+    Never includes pydantic's message, input value or context (they quote envelope content).
+    The key named by an ``extra_forbidden`` error is caller-supplied, so it is not echoed.
+    """
+    if not isinstance(exc, ValidationError):
+        return type(exc).__name__
+    parts = []
+    for error in exc.errors(include_input=False, include_url=False):
+        loc = [str(part) for part in error["loc"]]
+        if error["type"] == "extra_forbidden" and loc:
+            loc[-1] = "<unexpected field>"
+        parts.append(f"{'.'.join(loc) or '<root>'}: {error['type']}")
+    return "; ".join(parts) or "validation failed"
+
+
 async def ingest_v1(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
@@ -707,9 +724,12 @@ async def ingest_v1(
     try:
         envelope = parse_ingest_envelope(payload)
     except Exception as exc:
-        logger.warning("Ingest envelope validation failed: %s", exc)
+        # Pydantic's own text echoes the offending input values, i.e. envelope content, and
+        # connectors re-log the returned error; log and return a content-free summary only.
+        summary = _envelope_error_summary(exc)
+        logger.warning("Ingest envelope validation failed: %s", summary)
         _ingest_metrics.record_ingest_result(source=_source_for_metrics, outcome="validation_error")
-        raise ValueError(f"Invalid ingest.v1 envelope: {exc}") from exc
+        raise ValueError(f"Invalid ingest.v1 envelope: {summary}") from None
 
     # Validate explicit pins before any duplicate early return.  The dedupe keys
     # intentionally ignore control directives, so a repeated payload with a bad
