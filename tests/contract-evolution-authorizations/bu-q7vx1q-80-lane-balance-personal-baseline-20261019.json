@@ -1,0 +1,467 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-q7vx1q-80-lane-balance-personal-baseline-20261019",
+  "bead": "bu-q7vx1q.80",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-4ijka2 for implementation bead bu-q7vx1q.80 (Baselines S5: work and sleep lane balance is judged against the owner personal baseline band from the shared core scorer, with a median baseline, a uniform one-hour minimum band half-width and an inclusive band edge, instead of the 7-day mean ratio). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-q7vx1q.80 (contract-review-lane local verdict CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-q7vx1q.80 head 2582ea61a4c5169583d30a471309f7e2b698b2b4 plus the reviewer-computed clause commit (spec-clause.patch) and request. Governing requirements REQ-chronicler-api-013 (Daily Balance Endpoint) and REQ-chronicler-api-014 (Trends Endpoint) in openspec/specs/chronicler-api/spec.md, whose ID-only headers land in this same change; the PR appends one scenario to each block. The 26 owners in tests/chronicler/test_balance.py, tests/chronicler/test_balance_trends_api.py and roster/chronicler/tests/test_writeback.py move from mean-ratio pins to the baseline band. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_enrichment_is_mcp_proposal_not_a_stored_or_direct_write",
+      "after": "roster/chronicler/tests/test_writeback.py::test_enrichment_is_mcp_proposal_not_a_stored_or_direct_write",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_enrichment_proposals_respect_distinct_day_threshold",
+      "after": "roster/chronicler/tests/test_writeback.py::test_enrichment_proposals_respect_distinct_day_threshold",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_fact_writer_binds_chronicler_schema",
+      "after": "roster/chronicler/tests/test_writeback.py::test_fact_writer_binds_chronicler_schema",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_insights_land_in_own_schema_only",
+      "after": "roster/chronicler/tests/test_writeback.py::test_insights_land_in_own_schema_only",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_lane_skew_insight_fires_on_anomaly",
+      "after": "roster/chronicler/tests/test_writeback.py::test_lane_skew_insight_fires_on_anomaly",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_lane_skew_no_insight_within_baseline",
+      "after": "roster/chronicler/tests/test_writeback.py::test_lane_skew_no_insight_within_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_missing_proposer_skips_enrichment_without_error",
+      "after": "roster/chronicler/tests/test_writeback.py::test_missing_proposer_skips_enrichment_without_error",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_self_reminders_only_for_pending_backfill_flags",
+      "after": "roster/chronicler/tests/test_writeback.py::test_self_reminders_only_for_pending_backfill_flags",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_sleep_debt_insight_accumulates_over_shortfall",
+      "after": "roster/chronicler/tests/test_writeback.py::test_sleep_debt_insight_accumulates_over_shortfall",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_sleep_debt_none_when_rested_or_no_baseline",
+      "after": "roster/chronicler/tests/test_writeback.py::test_sleep_debt_none_when_rested_or_no_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_store_failure_is_counted_not_raised",
+      "after": "roster/chronicler/tests/test_writeback.py::test_store_failure_is_counted_not_raised",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "roster/chronicler/tests/test_writeback.py::test_writeback_sends_no_owner_facing_message",
+      "after": "roster/chronicler/tests/test_writeback.py::test_writeback_sends_no_owner_facing_message",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Test bodies unchanged. The shared _anomalous_work_balance helper now sets state='below', because an anomaly is the band's state rather than a mean-delta threshold, and a LaneBalance without a state reads insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_anomaly_flags_large_absolute_and_relative_delta",
+      "after": "tests/chronicler/test_balance.py::test_anomaly_flags_large_absolute_and_relative_delta",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_anomaly_ignores_small_delta_below_absolute_floor",
+      "after": "tests/chronicler/test_balance.py::test_anomaly_ignores_small_delta_below_absolute_floor",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_anomaly_ignores_small_relative_delta_on_large_baseline",
+      "after": "tests/chronicler/test_balance.py::test_anomaly_ignores_small_relative_delta_on_large_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract exempted an 8 h lane's one-hour swing through a relative floor (half the mean). The band has no relative floor: its half-width is max(3 scaled MADs, one hour), and one hour is the inclusive edge. The case keeps its intent, a small swing on a large flat baseline reads within, with a 30-minute swing."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_anomaly_requires_minimum_sample_days",
+      "after": "tests/chronicler/test_balance.py::test_anomaly_requires_minimum_sample_days",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_anomaly_requires_no_baseline_returns_false",
+      "after": "tests/chronicler/test_balance.py::test_anomaly_requires_no_baseline_returns_false",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Body unchanged. The module imports drop the removed ANOMALY_MIN_* constants and add LANE_BASELINE_MIN_N and the date helpers the rewritten cases use."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_baseline_covers_every_lane",
+      "after": "tests/chronicler/test_balance.py::test_baseline_covers_every_lane",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_baseline_mean_over_samples",
+      "after": "tests/chronicler/test_balance.py::test_baseline_mean_over_samples",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract's center was the trailing mean. The rewritten case keeps the name (a rename would read as removal plus addition) and asserts the median center: seven samples whose median (5400 s) differs from their mean (about 6429 s), plus the observed-day count."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_baseline_no_samples_returns_none_not_zero",
+      "after": "tests/chronicler/test_balance.py::test_baseline_no_samples_returns_none_not_zero",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_daily_balance_covers_every_lane_sorted",
+      "after": "tests/chronicler/test_balance.py::test_daily_balance_covers_every_lane_sorted",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_daily_balance_delta_positive_when_above_baseline",
+      "after": "tests/chronicler/test_balance.py::test_daily_balance_delta_positive_when_above_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_daily_balance_no_baseline_history_yields_null_delta",
+      "after": "tests/chronicler/test_balance.py::test_daily_balance_no_baseline_history_yields_null_delta",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_daily_balance_zero_fills_lane_with_no_activity_but_keeps_baseline",
+      "after": "tests/chronicler/test_balance.py::test_daily_balance_zero_fills_lane_with_no_activity_but_keeps_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The superseded contract made a lane's usual a trailing mean and flagged an anomaly past max(3600 s, half the mean) after seven samples. The rewritten case runs the same intent through compute_daily_balance over dated per-day samples and asserts the personal-baseline band instead: median center, observed-day count, state and insufficient_history."
+    },
+    {
+      "before": "tests/chronicler/test_balance.py::test_streak_counts_trailing_nonzero_run",
+      "after": "tests/chronicler/test_balance.py::test_streak_counts_trailing_nonzero_run",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "Body unchanged. The module imports drop the removed ANOMALY_MIN_* constants and add LANE_BASELINE_MIN_N and the date helpers the rewritten cases use."
+    },
+    {
+      "before": "tests/chronicler/test_balance_trends_api.py::test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline",
+      "after": "tests/chronicler/test_balance_trends_api.py::test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline",
+      "contracts": [
+        "REQ-chronicler-api-013",
+        "REQ-chronicler-api-014"
+      ],
+      "reason": "The /balance fixture gains seven prior sleep days (median 28800 s) in place of two (mean 29700 s), because a lane needs seven observed days for a band. The assertions pin the median center, its delta and the observed-day count."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/chronicler-api/spec.md",
+      "id": "REQ-chronicler-api-013",
+      "before_sha256": "74c6dd9a787ca483e6b0715a7f937718122e3195bf9d985fdc20424c3b238695",
+      "after_sha256": "b67c6de2fdd6ddaea0dfaa4f062a691f446f761f3f97f485f986379e193a854f"
+    },
+    {
+      "path": "openspec/specs/chronicler-api/spec.md",
+      "id": "REQ-chronicler-api-014",
+      "before_sha256": "b83b518ce1a7852ae5d430eba91ae31370a4f82b04820cf18d3528c3d7eef7e5",
+      "after_sha256": "3ca38433799273f67c2e1df40faa25d043c0b4cd90242183fb9d8c5e99fd1b17"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/concepts/personal-baselines.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb91ed587ddcd92d654db8d85796243917a13aa85a266662d5f577410557c424"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a94ce0f56db7f97097ae885bb3991ff81c8bf67695b4adfd7c851b7bb09672e2"
+      }
+    },
+    {
+      "path": "frontend/src/api/types.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "aebaeb525c5bf7540d64dacbc412ac4034840d36547463e970c578a28a53ba18"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0ff63899cf828f20a30afcecf2e2830420c8d3d46dabd9ab484e66a3b9129b30"
+      }
+    },
+    {
+      "path": "openspec/changes/add-personal-baselines/specs/personal-baselines/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "e4a34cc138ab5f14a9930d53915407fedf8b6e3977746655e79f31cba3793c1b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "386ed50588e541294af546046245a06b2ac34eabec93eaa2e74d5f7be9f980a6"
+      }
+    },
+    {
+      "path": "openspec/changes/add-personal-baselines/tasks.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "8aab060ad849d878f32f848d6aca34b9336b0d4e7c06bd92bb00770d09e6fb46"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f70c4a7f1d4a1afdf5618bb407aedbaff5bbf48270dc43b99fcc870c21f1ffe3"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/chronicler/api/models.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a96d4e8e34f20aa038692b68c4da0deb5aba1a9d1b51bec4fb0e4c3a4694aeb3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "11f5a6968a970a0e84d71e049792649e8d53770f82f1643cea61818399fa6ac4"
+      }
+    },
+    {
+      "path": "roster/chronicler/api/router.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "0851022ae625ff8e371e717b4bffba967c0063f63826ddb8eaaa665a794e5cbd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4bf7a528e0d1d5ebda674b983fec413f60ca337c6ed64621a83926f30d0a61ed"
+      }
+    },
+    {
+      "path": "roster/chronicler/tests/test_writeback.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "21bdd3e3524457d5a556742d302cc8b1040b50109c790bcd565bb365c0ca2ffd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f822f6965ee6f22c3b3d05cde4499e5864d6fde72813b2853626711505512613"
+      }
+    },
+    {
+      "path": "roster/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      }
+    },
+    {
+      "path": "src/butlers/chronicler/balance.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c88a30ccdb3073dba6304998e05ee4fe24a0d0e03f7ffc53192f776944a620c1"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "946fbc7d6049849f09ba95e3a59a773bd4a8556376d4ea8c85aeab29512e40b9"
+      }
+    },
+    {
+      "path": "src/butlers/chronicler/writeback.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3d3a75737bd56e004e54e90743f6b4745c6ffd823a910e76a699a29caa8c1cb5"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "bde94182271a347f1c19c3b14e0ab391162fe9dba6c50b6fa4baaec7d98ed1d7"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_balance.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e40eac7dbe2359a6ff728949d584e085b4004e146b431df25daa604ef21cf9e6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4d4f3a22d4af43ebfa35a56babf87a03cd9de5285c1423649dbba1304d0648c9"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_balance_band_width.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "91e95d8de1b37919cb19b377712ce0ed67d3ecd5c293d83cc17da12803bac9d2"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_balance_personal_baseline.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "84d24275a8f064cd46f9701be4af2140bbba573cbf9feec5c5b24d436232b703"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_balance_trends_api.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7e48db4a7aef97cca036648e3744b9fc9e7083d25d666f96df4d61b6127da820"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "57c2c46f3e20a2828b00d4a861410d085ecf955dd5f30e8e9cc70efad458b8aa"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_balance_trends_api_personal_baseline.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "024fa0e984114c6ea74547c0cf5df577bdb71aa5f0154176054f1e4a14944c44"
+      }
+    },
+    {
+      "path": "tests/chronicler/test_writeback_baseline_window.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "a3bae866e7b23d1a187ab47bc23d2165d7c29c9daabc8f6872ed54bc6f7fc898"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-q7vx1q-80-lane-balance-personal-baseline-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "f3c622e40a27e89605b7a0620b1e39dd44c7c2c894f7acca1852a19bca8ac777"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
