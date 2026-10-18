@@ -206,6 +206,40 @@ Switchboard.
 - **AND** `idempotency_key` follows
   `activitywatch:<machine_id>:<bucket_id>:<ts_iso>`
 
+### Requirement: Evidence retention is opt-in
+
+The system SHALL provide an opt-in pruner for `connectors.activitywatch_events`
+that is disabled by default and deletes only rows whose event timestamp `ts` is
+older than a configured TTL of at least 90 days. No deployment configuration
+SHALL enable it by default: enabling it is an owner operation. The pruner SHALL
+NOT delete Chronicler projections.
+
+ID: REQ-connector-activitywatch-retention-001
+Source: bu-60pwv6.14; archived change add-activitywatch-connector task 5.4; docs/operations/data-retention.md
+Scope: v1-mandatory
+
+#### Scenario: Disabled by default
+
+- **WHEN** the pruner job runs without `enabled = true`
+- **THEN** it reads and deletes nothing
+
+#### Scenario: Dry run counts only
+
+- **WHEN** the pruner runs enabled with `dry_run = true`
+- **THEN** it reports the number of rows older than the TTL and deletes none
+
+#### Scenario: TTL floor protects re-projection
+
+- **WHEN** the pruner is invoked enabled with `ttl_days` below 90
+- **THEN** it raises an error before touching any row
+- **AND** the floor exceeds the bounded first-run backfill window so idempotent re-projection keeps its evidence
+
+#### Scenario: Bounded batches delete oldest first
+
+- **WHEN** the pruner runs enabled with `dry_run = false`
+- **THEN** it deletes at most `batch_limit` rows older than the TTL, oldest first
+- **AND** a rerun resumes with the remaining eligible rows
+
 ### Requirement: Bounded First-Run Backfill
 
 The very first poll (no checkpoint yet) MUST NOT flood the system with a
