@@ -181,6 +181,95 @@ async def test_resolver_merges_shared_email_claimants_fail_closed() -> None:
 
     assert _merge_claimants([active, quiet, owner]) == owner  # the owner outranks other blockers
     assert _merge_claimants([quiet, active]) == quiet
-    ambiguous = _merge_claimants([active, {**active, "entity_id": "d"}])
-    assert ambiguous["entity_id"] is None and ambiguous["posture"] == "active"
+    assert _merge_claimants([active, {**active, "entity_id": "d"}]) is None
     assert _merge_claimants([active]) == active
+
+
+class _ResolverPool:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.sql = ""
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        self.sql = sql
+        return self.rows
+
+
+def _fact(entity_id: uuid.UUID, email: str, posture: str = "active") -> dict[str, Any]:
+    return {
+        "entity_id": entity_id,
+        "email": email.lower(),
+        "name": "Dana",
+        "posture": posture,
+        "roles": [],
+    }
+
+
+async def test_one_entity_holding_an_email_in_two_casings_is_one_claimant() -> None:
+    from butlers.jobs.meeting_debrief import _resolve_people
+
+    dana = uuid.uuid4()
+    pool = _ResolverPool([_fact(dana, "Dana@Example.com"), _fact(dana, "dana@example.com")])
+
+    people = await _resolve_people(pool, {"dana@example.com"})
+
+    assert people["dana@example.com"]["entity_id"] == str(dana)
+    assert people["dana@example.com"]["name"] == "Dana"
+
+
+async def test_email_ambiguous_between_distinct_active_entities_is_left_unresolved() -> None:
+    from butlers.jobs.meeting_debrief import _resolve_people
+
+    pool = _ResolverPool(
+        [_fact(uuid.uuid4(), "shared@example.test"), _fact(uuid.uuid4(), "shared@example.test")]
+    )
+
+    assert await _resolve_people(pool, {"shared@example.test"}) == {}
+
+
+async def test_ambiguous_attendee_keeps_the_calendar_display_name_in_the_snapshot() -> None:
+    from butlers.jobs import meeting_debrief as job
+
+    inserted: list[str] = []
+    rows = [_fact(uuid.uuid4(), "shared@example.test"), _fact(uuid.uuid4(), "shared@example.test")]
+    occurrence = {
+        "event_id": uuid.uuid4(),
+        "starts_at": NOW,
+        "ends_at": NOW,
+        "title": "Sync",
+        "metadata": json.dumps(
+            {
+                "attendees": [
+                    {"email": "owner@example.test", "self": True, "response_status": "accepted"},
+                    {
+                        "email": "shared@example.test",
+                        "display_name": "Calendar Name",
+                        "response_status": "accepted",
+                    },
+                ]
+            }
+        ),
+    }
+
+    class _WriterPool:
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            return rows if "relationship.entity_facts" in sql else [occurrence]
+
+        async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
+            inserted.append(args[-1])
+            return uuid.uuid4()
+
+    await job._record_new_debriefs(_WriterPool(), NOW)
+
+    assert json.loads(inserted[0]) == [
+        {"entity_id": None, "name": "Calendar Name", "email": "shared@example.test"}
+    ]
+
+
+async def test_resolver_sql_ignores_merged_and_soft_deleted_entities() -> None:
+    from butlers.jobs.meeting_debrief import _resolve_people
+
+    pool = _ResolverPool([])
+    await _resolve_people(pool, {"x@example.test"})
+
+    assert "merged_into" in pool.sql and "deleted_at" in pool.sql

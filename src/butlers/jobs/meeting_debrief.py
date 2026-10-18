@@ -150,7 +150,13 @@ def _other_attendees(meta: dict[str, Any]) -> list[dict[str, str]]:
 
 
 async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dict[str, Any]]:
-    """Map email -> {entity_id, name, posture, is_owner} for emails that resolve."""
+    """Map email -> {entity_id, name, posture, is_owner} for emails that resolve.
+
+    Mirrors the canonical contact resolver: merged-away and soft-deleted entities are ignored, and
+    one entity holding an address under several casings is one claimant.  An email claimed by
+    several distinct live entities is decided fail-closed (see ``_merge_claimants``); an email
+    that stays ambiguous between active entities is left out, like one that resolves to nothing.
+    """
     if not emails:
         return {}
     rows = await pool.fetch(
@@ -166,29 +172,31 @@ async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dic
           AND ef.object_kind = 'literal'
           AND ef.validity    = 'active'
           AND LOWER(ef.object) = ANY($1::text[])
+          AND (e.metadata->>'merged_into') IS NULL
+          AND (e.metadata->>'deleted_at') IS NULL
+        ORDER BY ef.subject
         """,
         sorted(emails),
     )
-    claimants: dict[str, list[dict[str, Any]]] = {}
+    claimants: dict[str, dict[str, dict[str, Any]]] = {}
     for row in rows:
-        claimants.setdefault(row["email"], []).append(
-            {
-                "entity_id": str(row["entity_id"]),
-                "name": row["name"] or "",
-                "posture": row["posture"],
-                "is_owner": "owner" in list(row["roles"] or []),
-            }
-        )
-    return {email: _merge_claimants(found) for email, found in claimants.items()}
+        claimants.setdefault(row["email"], {})[str(row["entity_id"])] = {
+            "entity_id": str(row["entity_id"]),
+            "name": row["name"] or "",
+            "posture": row["posture"],
+            "is_owner": "owner" in list(row["roles"] or []),
+        }
+    merged = {email: _merge_claimants(list(found.values())) for email, found in claimants.items()}
+    return {email: person for email, person in merged.items() if person is not None}
 
 
-def _merge_claimants(found: list[dict[str, Any]]) -> dict[str, Any]:
+def _merge_claimants(found: list[dict[str, Any]]) -> dict[str, Any] | None:
     """One answer for an email, however many entities hold it as an active ``has-email``.
 
     Two entities can claim one address (a stale duplicate beside the real person, an owner
     alias), and row order must never decide who the attendee is.  Fail closed: if any claimant is
     the owner or not ``active`` the answer is that claimant, so the attendee is withheld; several
-    active claimants are ambiguous and resolve to no entity (``entity_id`` None, no name).
+    distinct active claimants are ambiguous and give ``None`` (no entity, as if unresolved).
     """
     blocked = sorted(
         (c for c in found if c["is_owner"] or c["posture"] != "active"),
@@ -197,7 +205,7 @@ def _merge_claimants(found: list[dict[str, Any]]) -> dict[str, Any]:
     if blocked:
         return blocked[0]
     if len(found) > 1:
-        return {"entity_id": None, "name": "", "posture": "active", "is_owner": False}
+        return None
     return found[0]
 
 
