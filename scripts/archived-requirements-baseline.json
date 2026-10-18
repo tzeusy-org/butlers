@@ -4594,5 +4594,55 @@
       "digest": "46df9085188c",
       "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source"
     }
+  ],
+  "2026-09-27-core-spec-hygiene/home-deterministic-jobs/Energy Digest Job": [
+    {
+      "kind": "clause",
+      "scenario": "Partial cumulative-energy statistics",
+      "digest": "474f8bb6681a",
+      "excerpt": "- **AND** it SHALL NOT read or store an overall energy baseline, though supported per-device baselines and anomalies ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Baseline comparison",
+      "digest": "cbea5d405277",
+      "excerpt": "- **THEN** the job SHALL query memory facts with `predicate=\"energy_baseline\"` for overall and per-device baselines"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Baseline comparison",
+      "digest": "95876c5e164b",
+      "excerpt": "- **AND** it SHALL compute percentage deviation from baseline for total consumption and top individual devices"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Anomaly detection",
+      "digest": "edcb4650a1eb",
+      "excerpt": "- **WHEN** energy thresholds are loaded from state store key `home:thresholds:energy` (default: `{\"anomaly_pct\": 20, ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Anomaly detection",
+      "digest": "99f0c172a28d",
+      "excerpt": "- **AND** a device's weekly consumption exceeds its baseline by the `anomaly_pct` threshold (default 20%) or more"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Anomaly detection",
+      "digest": "618c250f145d",
+      "excerpt": "- **AND** if consumption exceeds baseline by the `high_severity_pct` threshold (default 100%, i.e., 2x) or more, it S..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Baseline memory update",
+      "digest": "247b2df86d19",
+      "excerpt": "- **WHEN** a complete digest is composed with cumulative-energy statistics for every discovered sensor"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Baseline memory update",
+      "digest": "87f4683ced00",
+      "excerpt": "- **THEN** the job SHALL call `store_fact` with `predicate=\"energy_baseline\"`, `permanence=\"standard\"`, containing th..."
+    }
   ]
 }
