@@ -37,6 +37,39 @@ All metrics include `connector_type` and `endpoint_identity` labels.
 | `connector_attachment_skipped_oversized_total` | Counter | `media_type` | Attachments skipped due to per-type or global size cap. |
 | `connector_attachment_type_distribution_total` | Counter | `media_type` | Processed attachments by MIME type. |
 
+## Label Bounds
+
+Every `prometheus_client` label value must come from a closed set, or from a bounded normalization with a fixed fallback, and must not carry account PII (see [RFC 0005](../../about/legends-and-lore/rfcs/0005-observability-and-telemetry.md), Prometheus Client Instruments). Two labels are clamped centrally in `src/butlers/connectors/metrics.py`; the rest are bounded by code or configuration.
+
+### Clamped labels
+
+| Label | Where | Bound |
+|---|---|---|
+| `endpoint_identity` | `ConnectorMetrics` and the Gmail policy counters | `<family>:<8 hex>` from `prometheus_endpoint_identity()`. `family` is the identity's leading lowercase token (else `unknown`); the digest is the first 8 hex characters of SHA-256 of the full identity. Stable across restarts, one value per account, never the raw email, phone number or handle. Pseudonymous, not anonymous: recompute it from a known identity to find the series. Empty identity is `unknown`. |
+| `media_type` | the four attachment metrics | `prometheus_media_type()`: a fixed list of common MIME types, else `<major>/other` for a registered top-level type, else `other`. Case and parameters are dropped first. |
+
+Instruments that label `endpoint_identity` directly instead of through `ConnectorMetrics` (the Google Drive, Home Assistant, Steam, Spotify, OwnTracks and ActivityWatch module-level instruments) still carry the raw value until they adopt `prometheus_endpoint_identity()`.
+
+### Bounded by code or configuration
+
+| Label | Metrics | Bound |
+|---|---|---|
+| `connector_type` | all connector metrics | Connector family names defined in code. |
+| `status`, `result`, `outcome`, `verdict`, `stage`, `operation` | connector and discretion metrics | Fixed literals at each call site. |
+| `api_method` | `connector_source_api_calls_total` | Literal API method names at each call site. |
+| `error_type` | `connector_errors_total`, live listener failures | `get_error_type()` result: five semantic values, else the lowercased exception class name. Exception classes come from code, never from the sender. |
+| `chat_type` | `butlers_interaction_gated_total` | `private`, `group`, `supergroup`, `channel`, derived from the platform chat entity. |
+| `participant_count_bucket` | `butlers_interaction_gated_total` | `participant_count_bucket()`: `1-20`, `21-50`, `51-200`, `201-1000`, `1000+`. |
+| `predicate` | `health_wellness_ingest_total` | Predicates from the health wellness ingest tables (`_RESOURCE_TO_PREDICATES` and `measurement_<metric>`), plus `unknown`. |
+| `app_class` | ActivityWatch window events | `AppClass` literal: `ide`, `terminal`, `browser`, `other`. |
+| `mic` | live listener metrics | Operator-configured microphone names. |
+| `http_status` | Steam API errors | HTTP status codes of the upstream response. |
+| `event_type` | Home Assistant, Google Drive, OwnTracks, Steam | Event-type names defined by the connector. |
+| `source`, `channel`, `kind` | discretion metrics | Connector source names and `classify_ignore_kind()` results, defined in code. |
+| `runtime_type` | `discretion_auth_failures_total` | Configured runtime adapter types. |
+| `error_detail` | `switchboard_runtime_attention_delivery_total` | The `TransportErrorDetail` StrEnum, six fixed codes (`recipient_unavailable`, `policy_denied`, `provider_rejected`, `transport_timeout`, `transport_connection_lost`, `worker_recovery`), plus `none`. `TransportResult` rejects any other value at construction. |
+| `schema`, `kind`, `source_type`, `dedup_reason`, `status`, `action`, `failure_category`, `reason` | approvals, audit, QA, chronicler and person-mapping counters | Butler schema names, and code-defined enums or literals. |
+
 ## ConnectorMetrics Class
 
 Each connector instance creates a `ConnectorMetrics` object at startup:

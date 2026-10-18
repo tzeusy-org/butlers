@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from prometheus_client import Counter
 
 from butlers.connectors.known_contact_state import KnownContactSnapshot
+from butlers.connectors.metrics import prometheus_endpoint_identity
 
 if TYPE_CHECKING:
     import asyncpg
@@ -478,7 +479,7 @@ def evaluate_message_policy(
         )
 
     _gmail_label_filter_counter.labels(
-        endpoint_identity=endpoint_identity,
+        endpoint_identity=prometheus_endpoint_identity(endpoint_identity),
         filter_action="allowed",
         reason=filter_reason,
     ).inc()
@@ -515,13 +516,13 @@ def evaluate_message_policy(
     # --- Step 4: Emit counters ---
     tier_name = INGESTION_TIER_NAME.get(ingestion_tier, str(ingestion_tier))
     _gmail_tier_counter.labels(
-        endpoint_identity=endpoint_identity,
+        endpoint_identity=prometheus_endpoint_identity(endpoint_identity),
         ingestion_tier=tier_name,
         reason=automated_kind or triage_action,
     ).inc()
 
     _gmail_policy_tier_counter.labels(
-        endpoint_identity=endpoint_identity,
+        endpoint_identity=prometheus_endpoint_identity(endpoint_identity),
         policy_tier=policy_tier,
         assignment_rule=assignment_rule,
     ).inc()

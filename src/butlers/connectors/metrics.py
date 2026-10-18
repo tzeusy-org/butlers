@@ -11,12 +11,15 @@ Metrics exported:
 
 All metrics include standard labels:
 - connector_type: telegram_bot, gmail, telegram_user_client, etc.
-- endpoint_identity: Bot/mailbox/client identity
+- endpoint_identity: pseudonymous endpoint identity (``<family>:<8 hex>``); never the raw
+  account identity (see :func:`prometheus_endpoint_identity`)
 - Additional metric-specific labels as needed
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,6 +29,93 @@ from butlers.metrics_registry import get_or_create_counter, get_or_create_histog
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+_IDENTITY_FAMILY_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+
+def prometheus_endpoint_identity(identity: str | None) -> str:
+    """Return the Prometheus-safe form of a connector ``endpoint_identity``.
+
+    Raw identities carry account PII (``gmail:user:<email>``, ``whatsapp:<e164>``,
+    ``telegram:user:@<handle>``) and one series set per account. The label value
+    is ``<family>:<digest>``: ``family`` is the identity's leading segment when it is a
+    plain lowercase token (else ``unknown``), and ``digest`` is the first 8 hex chars of
+    the SHA-256 of the full identity. It is stable across restarts, never contains the
+    account, and is pseudonymous rather than anonymous: anyone holding a candidate
+    identity can recompute it.
+    """
+    raw = (identity or "").strip()
+    if not raw:
+        return "unknown"
+    family = raw.split(":", 1)[0].strip().lower()
+    if not _IDENTITY_FAMILY_RE.fullmatch(family):
+        family = "unknown"
+    return f"{family}:{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
+
+
+_MEDIA_MAJOR_TYPES = frozenset(
+    {
+        "application",
+        "audio",
+        "font",
+        "image",
+        "message",
+        "model",
+        "multipart",
+        "text",
+        "video",
+    }
+)
+_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/msword",
+        "application/octet-stream",
+        "application/pdf",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/wav",
+        "image/gif",
+        "image/heic",
+        "image/jpeg",
+        "image/png",
+        "image/svg+xml",
+        "image/webp",
+        "message/rfc822",
+        "text/calendar",
+        "text/csv",
+        "text/html",
+        "text/markdown",
+        "text/plain",
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+    }
+)
+
+
+def prometheus_media_type(media_type: str | None) -> str:
+    """Clamp an attachment MIME type to a closed label set.
+
+    Senders choose MIME strings, so the raw value is unbounded. The result is one of
+    :data:`_MEDIA_TYPES`, else ``<major>/other`` for a registered top-level type, else
+    ``other``. Parameters (``; charset=...``) and case are dropped first.
+    """
+    value = (media_type or "").split(";", 1)[0].strip().lower()
+    if value in _MEDIA_TYPES:
+        return value
+    major = value.split("/", 1)[0]
+    if "/" in value and major in _MEDIA_MAJOR_TYPES:
+        return f"{major}/other"
+    return "other"
+
 
 # Ingest submission metrics
 ingest_submissions_total = get_or_create_counter(
@@ -113,10 +203,11 @@ class ConnectorMetrics:
 
         Args:
             connector_type: Type of connector (e.g., "telegram_bot", "gmail")
-            endpoint_identity: Identity of the endpoint (bot username, email, etc.)
+            endpoint_identity: Raw identity of the endpoint (bot username, email, etc.);
+                stored only in its pseudonymous Prometheus form.
         """
         self._connector_type = connector_type
-        self._endpoint_identity = endpoint_identity
+        self._endpoint_identity = prometheus_endpoint_identity(endpoint_identity)
 
     def record_ingest_submission(
         self,
@@ -218,14 +309,14 @@ class ConnectorMetrics:
             attachment_fetched_eager_total.labels(
                 connector_type=self._connector_type,
                 endpoint_identity=self._endpoint_identity,
-                media_type=media_type,
+                media_type=prometheus_media_type(media_type),
                 result=result,
             ).inc()
         else:
             attachment_fetched_lazy_total.labels(
                 connector_type=self._connector_type,
                 endpoint_identity=self._endpoint_identity,
-                media_type=media_type,
+                media_type=prometheus_media_type(media_type),
                 result=result,
             ).inc()
 
@@ -238,7 +329,7 @@ class ConnectorMetrics:
         attachment_skipped_oversized_total.labels(
             connector_type=self._connector_type,
             endpoint_identity=self._endpoint_identity,
-            media_type=media_type,
+            media_type=prometheus_media_type(media_type),
         ).inc()
 
     def record_attachment_type_distribution(self, media_type: str) -> None:
@@ -252,7 +343,7 @@ class ConnectorMetrics:
         attachment_type_distribution_total.labels(
             connector_type=self._connector_type,
             endpoint_identity=self._endpoint_identity,
-            media_type=media_type,
+            media_type=prometheus_media_type(media_type),
         ).inc()
 
     def record_interaction_gated(self, chat_type: str, count: int) -> None:
