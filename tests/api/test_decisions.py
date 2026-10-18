@@ -413,3 +413,247 @@ async def test_record_intent_without_switchboard_db_is_503(app):
 
     assert resp.status_code == 503
     assert resp.json()["detail"] == "decision_intents_unavailable"
+
+
+async def test_digest_forwards_reopening_evidence_and_projects_superseded_history(app, tmp_path):
+    from butlers.api.routers import decisions as decisions_router
+
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a", updated_at=_iso(_NOW))])
+    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    latest = AsyncMock(
+        return_value={"bu-a": _intent_row("bu-a", status="superseded", failure_reason=None)}
+    )
+    with patch.object(decisions_router, "latest_intents", latest):
+        response = await _get_decisions(app, export)
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["intent"]["status"] == "superseded"
+    digest = latest.await_args.kwargs["digest"]
+    assert digest.available and digest.open_decisions[0].id == "bu-a"
+    assert digest.open_decisions[0].updated_at == _NOW
+    assert digest.export_as_of is not None
+
+
+# The persistence boundary is synthetic; routing, OwnerAuth and HMAC execute.
+_CALLBACK_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
+_CALLBACK_SECRET = "synthetic-decision-signing-private"
+_CALLBACK_CREDENTIAL = "synthetic-decision-connector-private"
+
+
+def _callback_token(index=0, *, prompt_id=_CALLBACK_ID, created_at=_NOW, secret=_CALLBACK_SECRET):
+    from butlers.core.decision_callbacks import mint_decision_callback_token
+
+    return mint_decision_callback_token(
+        prompt_id=prompt_id, option_index=index, created_at=created_at, secret=secret
+    )
+
+
+def _callback_app(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from butlers.api.app import create_app
+    from butlers.api.routers import decisions
+    from butlers.core import decision_desk
+    from butlers.credential_store import CredentialStore
+    from tests.api.auth_helpers import _DomainOwnerState
+    from tests.decision_desk_helpers import make_bead, make_digest
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    row = dict(
+        id=_CALLBACK_ID,
+        bead_id="bu-test1",
+        options=["Ship it", "Hold"],
+        default_option="Hold",
+        created_at=_NOW,
+        delivery_outcome="delivered",
+        delivered_at=_NOW,
+    )
+    connection = SimpleNamespace(fetchrow=AsyncMock(return_value=row), transaction=transaction)
+    credential_row = AsyncMock(return_value={"secret_value": _CALLBACK_SECRET})
+
+    @asynccontextmanager
+    async def shared_acquire():
+        yield SimpleNamespace(fetchrow=credential_row)
+
+    shared = SimpleNamespace(acquire=shared_acquire)
+    db = SimpleNamespace(pool=lambda name: connection, credential_shared_pool=lambda: shared)
+    app = create_app(api_key="synthetic-owner-key")
+    app.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    app.state.approval_callback_connector_token = _CALLBACK_CREDENTIAL
+    app.dependency_overrides[decisions._get_db_manager] = lambda: db
+    resolve = AsyncMock()
+    real_resolve = CredentialStore.resolve
+
+    async def observed_resolve(store, key, *, env_fallback=False):
+        assert store.pool is shared
+        await resolve(key, env_fallback=env_fallback)
+        return await real_resolve(store, key, env_fallback=env_fallback)
+
+    monkeypatch.setattr(CredentialStore, "resolve", observed_resolve)
+    monkeypatch.setattr(decisions, "compute_decision_digest", lambda: make_digest(make_bead()))
+    reconcile = AsyncMock()
+    recorded = AsyncMock(
+        return_value=decision_desk.RecordResult(
+            _intent_row(
+                "bu-test1",
+                option="Ship it",
+                status="pending",
+                failure_reason=None,
+                actor="owner@telegram",
+                prompt_id=_CALLBACK_ID,
+            ),
+            True,
+        )
+    )
+    monkeypatch.setattr(decision_desk, "_reconcile_reopened", reconcile)
+    monkeypatch.setattr(decision_desk, "_record_locked", recorded)
+    return SimpleNamespace(
+        app=app,
+        db=db,
+        shared=shared,
+        connection=connection,
+        resolve=resolve,
+        credential_row=credential_row,
+        reconcile=reconcile,
+        recorded=recorded,
+    )
+
+
+def _callback_headers():
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
+
+    return {
+        APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CALLBACK_CREDENTIAL,
+        "X-Butlers-Decision-Actor": "owner@telegram",
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "null",
+        "empty",
+        "non-string",
+        "malformed",
+        "oversize",
+        "unencodable",
+        "wrong-prefix",
+        "forged-signature",
+        "wrong-secret",
+        "wrong-prompt",
+        "wrong-index",
+        "old-created-at",
+    ],
+)
+async def test_choose_rejects_unverified_token_before_recording(monkeypatch, case):
+    fixture = _callback_app(monkeypatch)
+    valid = _callback_token()
+    tokens = {
+        "null": None,
+        "empty": "",
+        "non-string": 7,
+        "malformed": "dsk1:bad",
+        "oversize": "x" * 65,
+        "unencodable": "dsk1:\ud800",
+        "wrong-prefix": valid.replace("dsk1:", "apr1:", 1),
+        "forged-signature": valid[:-16] + ("0" * 16 if valid[-16:] != "0" * 16 else "1" * 16),
+        "wrong-secret": _callback_token(secret="different-synthetic-secret"),
+        "wrong-prompt": _callback_token(
+            prompt_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        ),
+        "wrong-index": _callback_token(1),
+        "old-created-at": _callback_token(created_at=_NOW - timedelta(microseconds=1)),
+    }
+    body = {"option_index": 0}
+    if case != "missing":
+        body["token"] = tokens[case]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+            content=json.dumps(body),
+            headers={**_callback_headers(), "Content-Type": "application/json"},
+        )
+        assert response.status_code == 403
+        assert response.json() == {"detail": "invalid_callback_token"}
+        fixture.reconcile.assert_not_awaited()
+        fixture.recorded.assert_not_awaited()
+        assert _CALLBACK_SECRET not in response.text and valid not in response.text
+        positive = await client.post(
+            f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+            json={"option_index": 0, "token": valid},
+            headers=_callback_headers(),
+        )
+    assert positive.status_code == 200
+    assert positive.json()["meta"]["created"] is True
+    assert fixture.recorded.await_args.kwargs["actor"] == "owner@telegram"
+    assert fixture.recorded.await_args.kwargs["option"] == "Ship it"
+
+    if case == "missing":
+        from butlers.core.decision_desk import DecisionIntentError
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+        ) as client:
+            unoffered = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                json={"option_index": 15, "token": _callback_token(15)},
+                headers=_callback_headers(),
+            )
+            assert unoffered.status_code == 422
+            assert unoffered.json()["detail"] == "option_not_offered"
+            fixture.recorded.side_effect = DecisionIntentError("options_changed", kind="conflict")
+            changed = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                json={"option_index": 0, "token": valid},
+                headers=_callback_headers(),
+            )
+            assert changed.status_code == 409 and changed.json()["detail"] == "options_changed"
+            fixture.connection.fetchrow.return_value = None
+            missing = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                json={"option_index": 0, "token": valid},
+                headers=_callback_headers(),
+            )
+            assert missing.status_code == 404 and missing.json()["detail"] == "prompt_not_found"
+
+
+@pytest.mark.parametrize("case", ["missing-pool", "missing-secret", "lookup-error"])
+async def test_choose_secret_unavailable_is_fail_closed(monkeypatch, case):
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+
+    fixture = _callback_app(monkeypatch)
+    monkeypatch.setenv(APPROVAL_CALLBACK_SECRET_KEY, "environment-must-not-rescue-this")
+    if case == "missing-pool":
+
+        def unavailable():
+            raise KeyError("synthetic-private-pool-error")
+
+        fixture.db.credential_shared_pool = unavailable
+    outcomes = [None, ""] if case == "missing-secret" else [RuntimeError("synthetic-private-error")]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+    ) as client:
+        for outcome in outcomes:
+            fixture.credential_row.side_effect = outcome if isinstance(outcome, Exception) else None
+            fixture.credential_row.return_value = (
+                None if outcome is None else {"secret_value": outcome}
+            )
+            response = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                json={"option_index": 0, "token": _callback_token()},
+                headers=_callback_headers(),
+            )
+            assert response.status_code == 503
+            assert response.json() == {"detail": "callback_verification_unavailable"}
+            fixture.reconcile.assert_not_awaited()
+            fixture.recorded.assert_not_awaited()
+    if case != "missing-pool":
+        fixture.resolve.assert_awaited_with(APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False)

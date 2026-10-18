@@ -191,6 +191,10 @@ Scope: v1-mandatory
 
 Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule.
 
+ID: REQ-module-approvals-003
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
+
 #### Scenario: Create a standing rule
 
 - **WHEN** `create_approval_rule` is called with authenticated human actor, tool name, constraints, and description
@@ -264,6 +268,10 @@ persist a declared executable command: the owning daemon, registered original
 tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
+
+ID: REQ-module-approvals-004
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
 
 #### Scenario: Tool execution succeeds
 

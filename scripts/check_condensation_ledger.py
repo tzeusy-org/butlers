@@ -151,8 +151,10 @@ REQUEST_TRACE_OPTIONS = (
     "-xx",
     "-s",
     "0",
+    # This also selects "+++ killed by" terminals: filtering delivery signals
+    # would silently omit actual deaths outside that same filter.
     "-e",
-    "signal=none",
+    "signal=all",
     "-e",
     "trace=%file,%desc,%process,%memory",
 )
@@ -275,6 +277,23 @@ def require_request_observation(access, boundary, requests, records):
         raise EvidenceError("execution-request-runtime-boundary-unproved")
 
 
+def resolve_in(path: Path, directories: dict[Path, Path]) -> Path:
+    """Exactly ``path.resolve()``, reusing resolutions of its directory.
+
+    A non-link entry under a directory the kernel resolves is that directory's
+    resolution plus its name. Files sharing a directory then pay one lstat, not
+    a walk of every component; a traced proof worker observes each of those.
+    """
+    try:
+        if path.name not in {"", ".."} and not stat.S_ISLNK(path.lstat().st_mode):
+            if path.parent not in directories:
+                directories[path.parent] = path.parent.resolve()
+            return directories[path.parent] / path.name
+    except OSError:
+        pass
+    return path.resolve()
+
+
 def tool_record() -> dict:
     """Bind installed proof tools/plugins by actual files, without importing them."""
     names = {"coverage", "pytest"}
@@ -285,24 +304,35 @@ def tool_record() -> dict:
     )
     rows = []
     prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
+    directories = {}
     for name in sorted(names):
         dist = importlib.metadata.distribution(name)
-        if not dist.files:
+        # Each read of ``files`` re-reads RECORD and stats every listed file.
+        files = dist.files
+        if not files:
             raise EvidenceError("installed-tool-files-unknown")
-        for item in sorted(dist.files, key=str):
+        for item in sorted(files, key=str):
             if item.suffix not in {".py", ".so"} and item.name not in {
                 "METADATA",
                 "entry_points.txt",
             }:
                 continue
-            path = Path(dist.locate_file(item)).resolve()
+            path = resolve_in(Path(dist.locate_file(item)), directories)
             if not path.is_file() or not any(prefix in path.parents for prefix in prefixes):
                 raise EvidenceError("installed-tool-source-unknown")
+            # Raw reads: a buffered file object adds four observed syscalls per file.
+            digest = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                while chunk := os.read(descriptor, 1 << 20):
+                    digest.update(chunk)
+            finally:
+                os.close(descriptor)
             rows.append(
                 {
                     "distribution": name,
                     "path": str(item),
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "sha256": digest.hexdigest(),
                     "mode": path.stat().st_mode & 0o777,
                 }
             )
@@ -351,8 +381,8 @@ def git(root: Path, *args: str) -> str:
 
 
 def committed_records(root: Path, ref: str) -> list[dict]:
-    """Read complete original Git bodies/modes without dereferencing old links."""
-    records = []
+    """Read complete Git objects in one batch, preserving original link bodies."""
+    entries = []
     for row in git(root, "ls-tree", "-r", "-z", ref).split("\0"):
         if not row:
             continue
@@ -361,13 +391,29 @@ def committed_records(root: Path, ref: str) -> list[dict]:
         public_path(path)
         if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise EvidenceError("unsupported-before-source-object")
-        body = subprocess.check_output(
-            ["git", "-C", str(root), "cat-file", "blob", blob], env=git_environment()
-        )
+        entries.append((mode, blob, path))
+    carrier = subprocess.check_output(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(blob + "\n" for _, blob, _ in entries).encode(),
+        env=git_environment(),
+    )
+    records, offset = [], 0
+    for mode, blob, path in entries:
+        end = carrier.index(b"\n", offset)
+        actual, kind, length = carrier[offset:end].decode().split()
+        size = int(length)
+        if actual != blob or kind != "blob" or size < 0:
+            raise EvidenceError("invalid-before-source-carrier")
+        body = carrier[end + 1 : end + 1 + size]
+        offset = end + size + 2
+        if len(body) != size or carrier[offset - 1 : offset] != b"\n":
+            raise EvidenceError("incomplete-before-source-carrier")
         record = {"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": mode}
         if mode == "120000":
             record["link"] = body.decode()
         records.append(record)
+    if offset != len(carrier):
+        raise EvidenceError("extra-before-source-carrier")
     return sorted(records, key=lambda r: r["path"])
 
 
@@ -825,7 +871,9 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
-def destructive_changes(root: Path, base: str) -> dict[str, str]:
+def destructive_changes(
+    root: Path, base: str, *, _current_shapes: dict | None = None
+) -> dict[str, str]:
     base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
         raise EvidenceError("invalid-base-commit")
@@ -853,10 +901,11 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             new_source = f.read_text()
             imports_preserved[path] = preserving_import_bindings(old_source, new_source)
             shapes = test_shapes(path, new_source)
+            if _current_shapes is not None:
+                _current_shapes[path, new_source] = shapes
             mode = input_record(root, path)["mode"]
-            for shape in shapes.values():
-                shape["mode"] = mode
-            current.update(shapes)
+            # Classification owns its mode metadata; shared pure shapes stay unchanged.
+            current.update({key: {**shape, "mode": mode} for key, shape in shapes.items()})
     if not before:
         raise EvidenceError("empty-baseline-test-inventory")
     losses = {}
@@ -910,6 +959,21 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
                     or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
                 ):
                     losses.setdefault(node, "ancestral-fixture-context-change")
+    # A conftest.py the candidate adds is new fixture context for every owner below it,
+    # exactly like an edit or deletion of one the base already had.
+    base_paths = set(paths)
+    for path in tracked_paths(root):
+        if PurePosixPath(path).name != "conftest.py" or path in base_paths:
+            continue
+        if (root / path).is_symlink():
+            raise EvidenceError("indirect-fixture-source")
+        ancestor = PurePosixPath(path).parent
+        for node in before:
+            if (
+                ancestor == PurePosixPath(".")
+                or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
+            ):
+                losses.setdefault(node, "ancestral-fixture-context-change")
     return losses
 
 
@@ -921,6 +985,85 @@ def fields(value, expected: set[str]) -> None:
 def integer(value, minimum=0):
     if type(value) is not int or value < minimum:
         raise EvidenceError("nonexact-count")
+
+
+def runtime_directory_identity(path: Path) -> dict:
+    """Read a real canonical directory, rejecting every indirect path component."""
+    try:
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise EvidenceError("indirect-runtime-directory")
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise EvidenceError("non-directory-runtime-root")
+    except (OSError, RuntimeError) as exc:
+        raise EvidenceError("missing-runtime-directory") from exc
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def validate_runtime_directory(value) -> None:
+    fields(value, {"device", "inode"})
+    integer(value["device"])
+    integer(value["inode"], minimum=1)
+
+
+def runtime_request(directory: Path, run: dict, binding: dict, requests: set[str]) -> None:
+    """Reconstruct original launch authority independently of rewritten run carriers."""
+    directory = directory.resolve()
+    side = run["side"]
+    if side not in {"removed", "survivors"}:
+        raise EvidenceError("invalid-runtime-side")
+    temporary = directory / (side + ".runtime-tmp")
+    identity = runtime_directory_identity(temporary)
+    validate_runtime_directory(run["runtime_directory"])
+    environment = {"TMPDIR": str(temporary), "PYTEST_DEBUG_TEMPROOT": str(temporary)}
+    effective = run["runtime_environment"]
+    fields(effective, {"TMPDIR", "PYTEST_DEBUG_TEMPROOT", "tempfile_root"})
+    if effective != {**environment, "tempfile_root": str(temporary)}:
+        raise EvidenceError("runtime-environment-mismatch")
+    if run["runtime_directory"] != identity:
+        raise EvidenceError("runtime-directory-replaced")
+    identifier = run["id"]
+    if (
+        not isinstance(identifier, str)
+        or Path(identifier).name != identifier
+        or identifier in {"", ".", ".."}
+    ):
+        raise EvidenceError("invalid-runtime-id")
+    path = directory / (identifier + ".request.json")
+    journal_path = directory / "journal.json"
+    for original in (path, journal_path):
+        if original.is_symlink() or not original.is_file() or original.resolve() != original:
+            raise EvidenceError("indirect-or-missing-original-request")
+    journal = strict_json(journal_path)
+    fields(journal, {"owned_copy", "status", "mutations", "batches"})
+    owned = Path(journal["owned_copy"])
+    if (
+        journal["status"] != "RESTORED"
+        or owned.parent != directory
+        or not owned.name.startswith("condense-owned-")
+        or owned.resolve() != owned
+    ):
+        raise EvidenceError("invalid-owned-copy-journal")
+    scope = (
+        binding.get("lineage", {}).get("scope", binding["scope"])
+        if side == "removed"
+        else binding["scope"]
+    )
+    expected = {
+        "root": str(owned / side),
+        "selection": binding["selection"][side],
+        "scope": scope,
+        "nonce": binding["nonce"],
+        "output": str(directory / (identifier + ".json")),
+        "id": identifier,
+        "control_inputs": sorted(requests),
+        "runtime_environment": environment,
+        "runtime_directory": identity,
+    }
+    original = strict_json(path)
+    validate_runtime_directory(original.get("runtime_directory"))
+    if run["measurement_root"] != expected["root"] or original != expected:
+        raise EvidenceError("original-runtime-request-mismatch")
 
 
 def identities(rows: list, field: str) -> set:
@@ -1184,7 +1327,8 @@ def executable_proof(
                 raise EvidenceError("mutation-journal-before-mismatch")
             actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
             if (
-                any(
+                any(type(change.get(k)) is not int for k in ("line", "column"))
+                or any(
                     change.get(k) != actual[k] for k in ("id", "path", "line", "column", "operator")
                 )
                 or canonical(change.get("target")) != canonical(actual["target"])
@@ -1484,8 +1628,11 @@ def verify_ledger(
                 "side",
                 "artifact",
                 "coverage_artifact",
+                "runtime_environment",
+                "runtime_directory",
             },
         )
+        runtime_request(directory, run, binding, requests)
         boundary = run["request_boundary"]
         fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
         if (
@@ -1529,10 +1676,20 @@ def verify_ledger(
         ):
             raise EvidenceError("nonexact-timing")
     executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
+    # Preserve the existing causal mutation/SQLite refusals before checking the
+    # additional retained journal account. Both must qualify for admission.
+    # Canonical JSON identity preserves numeric types that Python equality merges.
+    journal = strict_json(directory / "journal.json")
+    if canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"]) or canonical(
+        journal["batches"]
+    ) != canonical(proof["mutation"]["batches"]):
+        raise EvidenceError("invalid-owned-copy-journal")
     return removed
 
 
-def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def _verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     head = git(root, "rev-parse", "HEAD")
     tree = git(root, "rev-parse", "HEAD^{tree}")
     paths = tracked_paths(root)
@@ -1542,11 +1699,16 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if (test_path(p) or Path(p).name == "conftest.py" or p in {"pyproject.toml", "uv.lock"})
         and (root / p).is_file()
     ]
-    losses = destructive_changes(root, base)
+    current_shapes = {}
+    losses = destructive_changes(root, base, _current_shapes=current_shapes)
     current = {}
     for path in tracked_paths(root):
         if test_path(path) and (root / path).is_file():
-            current.update(test_shapes(path, (root / path).read_text()))
+            # Always reread: reuse only this invocation's exact path/text analysis.
+            # Source/mode/link and Git identity are still freshly checked below.
+            text = (root / path).read_text()
+            shapes = current_shapes.get((path, text))
+            current.update(test_shapes(path, text) if shapes is None else shapes)
     admitted = set()
     clusters = set()
     for path in ledgers:
@@ -1558,6 +1720,25 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if members & admitted:
             raise EvidenceError("duplicate-removed-alias")
         admitted |= members
+    contract_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.fresh_accounts(
+            root, base, trusted, losses, contract_directory, reports=contract_reports
+        )
+    retirement_reports = []
+    if set(losses) - admitted:
+        import contract_evolution
+
+        admitted |= contract_evolution.retirement_accounts(
+            root,
+            base,
+            trusted,
+            {key: value for key, value in losses.items() if key not in admitted},
+            current,
+            reports=retirement_reports,
+        )
     if set(losses) - admitted:
         raise EvidenceError("unproven-test-or-assertion-loss")
     if (
@@ -1567,18 +1748,25 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         or any(input_record(root, r["path"]) != r for r in relevant)
     ):
         raise EvidenceError("source-changed-during-admission")
-    return {
+    result = {
         "status": "PASS",
         "losses": len(losses),
         "ledger_clusters": len(clusters),
         "test_definitions": len(current),
         "source_read_only": True,
     }
+    if contract_reports:
+        result["contract_evolution_proofs"] = contract_reports
+    if retirement_reports:
+        result["retirement_accounts"] = retirement_reports
+    return result
 
 
-def verify(root: Path, base: str, ledgers: list[Path]) -> dict:
+def verify(
+    root: Path, base: str, ledgers: list[Path], *, contract_directory=None, trusted=None
+) -> dict:
     try:
-        return _verify(root, base, ledgers)
+        return _verify(root, base, ledgers, contract_directory=contract_directory, trusted=trusted)
     except EvidenceError:
         raise
     except (
@@ -1948,7 +2136,16 @@ def main(argv=None):
         # This directory is not searched on a subsequent admission.
         directory = Path(tempfile.mkdtemp(prefix="run-", dir=home))
         fresh = fresh_plan_ledgers(root, base, directory)
-        result = verify(root, base, [*args.ledger, *fresh])
+        trusted = (
+            git(root, "rev-parse", "HEAD^1")
+            if args.ci_event == "pull_request"
+            else base
+            if args.ci_event
+            else None
+        )
+        result = verify(
+            root, base, [*args.ledger, *fresh], contract_directory=directory, trusted=trusted
+        )
     except EvidenceError as exc:
         print(json.dumps({"status": "REFUSED", "category": str(exc)}))
         return 1
@@ -1960,4 +2157,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # contract_evolution imports this file by name; share one EvidenceError identity
+    # so its refusals keep their real category instead of the structural fallback.
+    sys.modules.setdefault("check_condensation_ledger", sys.modules[__name__])
     sys.exit(main())

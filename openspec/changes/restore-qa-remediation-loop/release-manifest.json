@@ -1,0 +1,169 @@
+{
+  "status": "held; exact adoption and source acceptance required",
+  "artifact_commit": "d5c889e6278cabb4f4aeb5e0d024c6ce1f88e2e5",
+  "artifact_json": "docs/redesigns/2026-10-14-qa-remediation-pursuit-data.json",
+  "source_pr": "https://github.com/tzeusy-org/butlers/pull/4517",
+  "ids": {
+    "HOLD": "bu-gjmx8w",
+    "EPIC": "bu-6a9xxw",
+    "INBOX_SOURCE_ACCEPTANCE": "bu-ratgnb",
+    "A": "bu-6a9xxw.1",
+    "B": "bu-6a9xxw.2",
+    "C": "bu-6a9xxw.3",
+    "D": "bu-6a9xxw.4",
+    "E": "bu-6a9xxw.5",
+    "F": "bu-6a9xxw.6",
+    "G": "bu-6a9xxw.7"
+  },
+  "blocking_edges": [
+    [
+      "bu-ratgnb",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.1",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.1",
+      "bu-2jtfw.5"
+    ],
+    [
+      "bu-6a9xxw.1",
+      "bu-mc01y5.3"
+    ],
+    [
+      "bu-6a9xxw.2",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.2",
+      "bu-6a9xxw.1"
+    ],
+    [
+      "bu-6a9xxw.2",
+      "bu-dss7he.1"
+    ],
+    [
+      "bu-6a9xxw.3",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.3",
+      "bu-6a9xxw.2"
+    ],
+    [
+      "bu-6a9xxw.3",
+      "bu-w24vr3"
+    ],
+    [
+      "bu-6a9xxw.3",
+      "bu-ratgnb"
+    ],
+    [
+      "bu-6a9xxw.4",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.4",
+      "bu-6a9xxw.3"
+    ],
+    [
+      "bu-6a9xxw.4",
+      "bu-dss7he.13"
+    ],
+    [
+      "bu-6a9xxw.5",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.5",
+      "bu-6a9xxw.4"
+    ],
+    [
+      "bu-6a9xxw.5",
+      "bu-mc01y5.4"
+    ],
+    [
+      "bu-6a9xxw.5",
+      "bu-mc01y5.2"
+    ],
+    [
+      "bu-6a9xxw.6",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.6",
+      "bu-6a9xxw.5"
+    ],
+    [
+      "bu-6a9xxw.6",
+      "bu-s11n0s.6"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-gjmx8w"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.1"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.2"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.3"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.4"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.5"
+    ],
+    [
+      "bu-6a9xxw.7",
+      "bu-6a9xxw.6"
+    ]
+  ],
+  "normative_file_sha256": {
+    "openspec/changes/restore-qa-remediation-loop/.openspec.yaml": "cd54fe01555559ffd5cf6f7f1d1b06209492e5ba9147cdc3800201c09e2291d0",
+    "openspec/changes/restore-qa-remediation-loop/allocation-plan.md": "bd011ebbbe40ac1cd7bfe70969fa2a6c6b15d0d9dbc0ae7fe080df074a318657",
+    "openspec/changes/restore-qa-remediation-loop/contract-amendments.md": "fc22421df929b276fb4794f520423596c8b1d2ec5736997b341e8588291877d2",
+    "openspec/changes/restore-qa-remediation-loop/coverage.md": "093848477b3114b9ded64edf9b58439e44bdf7e78fd77c50b38c86d27f381b80",
+    "openspec/changes/restore-qa-remediation-loop/design.md": "a1fda8332950255b6f04b4c5906193b531144dbd2f2c88c92c3175985f21db79",
+    "openspec/changes/restore-qa-remediation-loop/inbox-prerequisite.md": "326b23b448f410e3ff788f9f6f68857f948d824cef1d3c6f973c1b5873e5f768",
+    "openspec/changes/restore-qa-remediation-loop/intentional-replacements.md": "2a41b3a756491481d5195b8d0731f3bcc015c4604a7cce6672bf78d5d1a12a47",
+    "openspec/changes/restore-qa-remediation-loop/proposal.md": "566eab5275822ca8df412e0e28bc45a78722307d10ee6a2896d0f32fa26601a2",
+    "openspec/changes/restore-qa-remediation-loop/specs/qa-dashboard/spec.md": "d57d4882e2e0e8ea08b32fd79bc3f8638fd9ca857a23b4b09fdbf792e77212fd",
+    "openspec/changes/restore-qa-remediation-loop/specs/qa-investigation-dispatch/spec.md": "798e744c2bd74b2dd58538d65160ecb2dd24bdbcccf455ff21597f1a6213886c",
+    "openspec/changes/restore-qa-remediation-loop/specs/qa-log-scanner/spec.md": "0216f8a364547aa67d27e44674cab72492ac659c765ddcce9146476be797445f",
+    "openspec/changes/restore-qa-remediation-loop/specs/qa-triage/spec.md": "71be4d62d8172586b7dd42c5e8f08ecb006b5ccd625ecb6f7570a021dd624e7a",
+    "openspec/changes/restore-qa-remediation-loop/specs/staffer-qa/spec.md": "5b8b81ad90d7f59bf374144ea226a57d239a0da9c219c32483bf733117c52a2a",
+    "openspec/changes/restore-qa-remediation-loop/tasks.md": "df3348444b0ef96dd6503fda2dc2b85112f49a21db9b52e3518e82b15a39ac2f"
+  },
+  "release_conditions": [
+    "Source PR (or exact reviewed equivalent) lands through the protected merge queue; adopted RFC/manifesto payload is carried before affected source implementation.",
+    "Owning coordinator refreshes Beads evidence pins and affected packets to the corrected artifact_commit and normative hashes before exact owner adoption; prior checkpoint review does not attest this correction.",
+    "Owner explicitly adopts the exact manifest and closes HOLD. No automatic close or deployment.",
+    "Each child still waits its own external predecessors, including canonical inbox source acceptance.",
+    "Coordinator refreshes source/doctrine/ownership; material contract changes return to direction reconciliation."
+  ],
+  "runtime_actions_performed": false,
+  "historical_artifact_commit": "62625c30c980b982265f9f7867d9ce11d2dbbe96",
+  "bead_source_pin_refresh": {
+    "status": "required before exact owner adoption; coordinator-owned",
+    "recorded_evidence_commit": "62625c30c980b982265f9f7867d9ce11d2dbbe96",
+    "corrected_source_commit": "d5c889e6278cabb4f4aeb5e0d024c6ce1f88e2e5",
+    "reason": "Review corrections qualify audit evidence, reconcile higher-pillar admission ordering and carry RFC0038 relay/provenance. Prior graph/source reviews remain historical; topology is unchanged."
+  },
+  "rebase_provenance": {
+    "previous_reviewed_head": "ad65618e292ff90530645e4bcb7dbd733781db64",
+    "previous_artifact_commit": "bc1dec80eb5a51dbefc7305c54eebc16e6a8dc7e",
+    "onto_main": "1fe05f13c8f8bb552fd754634e5490efef1044db",
+    "verification": "All 14 normative files and structured artifact are byte-identical to the previously reviewed correction checkpoint. Only commit binding changes; historical evidence and owner holds are retained."
+  }
+}

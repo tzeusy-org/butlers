@@ -51,9 +51,12 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from starlette.responses import JSONResponse
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.models.decision import (
     ChooseDecisionPromptRequest,
     DecisionBeadSummary,
@@ -61,16 +64,20 @@ from butlers.api.models.decision import (
     DecisionPromptDetail,
     RecordDecisionIntentRequest,
 )
+from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
 from butlers.core.decision_desk import (
     DecisionIntent,
     DecisionIntentError,
+    DecisionPromptNotFound,
+    InvalidDecisionCallback,
     RecordResult,
     get_prompt,
     latest_intents,
     live_intent,
     record_decision_intent,
-    record_prompt_choice,
+    record_verified_prompt_choice,
 )
+from butlers.credential_store import CredentialStore
 from butlers.jobs.decision_review import EscalationHit, compute_decision_digest
 
 logger = logging.getLogger(__name__)
@@ -163,7 +170,9 @@ async def list_decisions(request: Request) -> ApiResponse[list[DecisionBeadSumma
         try:
             if pool is None:
                 raise RuntimeError("switchboard pool unavailable")
-            intents = await latest_intents(pool, [bead.id for bead in digest.open_decisions])
+            intents = await latest_intents(
+                pool, [bead.id for bead in digest.open_decisions], digest=digest
+            )
         except Exception:  # noqa: BLE001 - degrade the intent field, never the digest
             logger.warning("decisions: intent lookup failed; serving digest without intents")
             sources_degraded.append(_INTENT_SOURCE)
@@ -200,7 +209,53 @@ async def list_decisions(request: Request) -> ApiResponse[list[DecisionBeadSumma
     )
 
 
-@router.post("/prompts/{prompt_id}/choose", response_model=ApiResponse[DecisionIntentSummary])
+class _ChooseRoute(APIRoute):
+    """Keep private request validation and failures inside this single route."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def private_handler(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                token_only = bool(exc.errors()) and all(
+                    error.get("loc", ())[:2] == ("body", "token") for error in exc.errors()
+                )
+                return JSONResponse(
+                    status_code=403 if token_only else 422,
+                    content={
+                        "detail": "invalid_callback_token"
+                        if token_only
+                        else "invalid_callback_request"
+                    },
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                logger.error("Decision callback choose failed")
+                return JSONResponse(
+                    status_code=500,
+                    content=ErrorResponse(
+                        error=ErrorDetail(code="INTERNAL_ERROR", message="Internal server error")
+                    ).model_dump(),
+                )
+
+        return private_handler
+
+
+async def _callback_secret(db: DatabaseManager) -> str:
+    try:
+        secret = await CredentialStore(pool=db.credential_shared_pool()).resolve(
+            APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="callback_verification_unavailable") from None
+    if not isinstance(secret, str) or not secret:
+        raise HTTPException(status_code=503, detail="callback_verification_unavailable")
+    return secret
+
+
 async def choose_decision_prompt(
     prompt_id: uuid.UUID,
     body: ChooseDecisionPromptRequest,
@@ -218,21 +273,33 @@ async def choose_decision_prompt(
         raise HTTPException(status_code=403, detail="telegram_provenance_required")
     if callback_actor != _TELEGRAM_ACTOR:
         raise HTTPException(status_code=403, detail="telegram_provenance_required")
-    pool = _switchboard_pool(db)
-    prompt = await get_prompt(pool, prompt_id)
-    if prompt is None:
-        raise HTTPException(status_code=404, detail="prompt_not_found")
+    secret = await _callback_secret(db)
     try:
-        result = await record_prompt_choice(
-            pool,
-            prompt=prompt,
+        result = await record_verified_prompt_choice(
+            _switchboard_pool(db),
+            prompt_id=prompt_id,
             option_index=body.option_index,
+            token=body.token.get_secret_value(),
+            secret=secret,
             actor=_TELEGRAM_ACTOR,
             digest=compute_decision_digest(),
         )
+    except InvalidDecisionCallback:
+        raise HTTPException(status_code=403, detail="invalid_callback_token") from None
+    except DecisionPromptNotFound:
+        raise HTTPException(status_code=404, detail="prompt_not_found") from None
     except DecisionIntentError as exc:
         raise _refusal(exc) from exc
     return _intent_response(result)
+
+
+router.add_api_route(
+    "/prompts/{prompt_id}/choose",
+    choose_decision_prompt,
+    methods=["POST"],
+    response_model=ApiResponse[DecisionIntentSummary],
+    route_class_override=_ChooseRoute,
+)
 
 
 @router.get("/prompts/{prompt_id}", response_model=ApiResponse[DecisionPromptDetail])

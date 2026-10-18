@@ -75,7 +75,7 @@ job_name = "eligibility_sweep"
 # (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
 # window instead of a single fixed 08:00 UTC slot: delivery_cycle's
 # daily_hold_mode=True holds the digest until the owner is first not
-# suppressed by dnd/meeting/sleeping/quiet_hours, force-delivers past the
+# suppressed by dnd/focused/meeting/sleeping/quiet_hours, force-delivers past the
 # hard fallback deadline (11:00 UTC — the 11:15/11:45 ticks in this window
 # guarantee at least one attempt after it), and defers the whole digest on
 # a travel day. Idempotent across ticks: once a tick delivers, candidates

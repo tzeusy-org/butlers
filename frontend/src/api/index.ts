@@ -1230,7 +1230,6 @@ export {
   getButlerEffectivePrompt,
   updateButlerPrompt,
   getButlerPromptHistory,
-  getButlerTools,
   getButlerMemoryAccess,
   killButler,
 } from "./client.ts";
@@ -1239,7 +1238,6 @@ export type {
   PromptVersion,
   ButlerEffectivePrompt,
   PromptUpdateRequest,
-  ButlerTool,
   MemoryAccess,
   KillRequest,
   KillResponse,

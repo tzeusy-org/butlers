@@ -435,13 +435,15 @@ class EmailModule(Module):
         on the owner's behalf. A cell flipped to granted=false blocks the send
         outright via :class:`PermissionDenied` (an authorization decision).
         Mirrors the spawn gate: consult the matrix at the decision point before
-        any SMTP traffic. require_permission fails open, so a DB error never
-        wedges delivery. Gating ``_send_email`` covers both the
+        any SMTP traffic. Unavailable permission state raises a transient error before
+        delivery. Gating ``_send_email`` covers both the
         ``email_send_message`` MCP tool and the messenger route.execute path
         (which calls ``module._send_email`` directly).
         """
         _perm_pool = self._pool or self._audit_pool
-        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
+        await require_permission(
+            _perm_pool, self._butler_name, EMAIL_SEND_PERMISSION, fail_closed=True
+        )
         try:
             result = await asyncio.to_thread(self._smtp_send, to, subject, body)
         except Exception as exc:

@@ -700,6 +700,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
 
+- Bearer scrub estimates
+- Loading scrub estimates…
+- Prometheus scrub estimates
 - Every external signal the house received, with end-to-end pipeline detail behind each row.
 
 ## `frontend/src/pages/IssuesPage.tsx`
@@ -1786,7 +1789,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Effective prompt unavailable.
 - edit prompt →
 - Could not load both versions to diff.
-- No tool grants configured for this butler.
 - open audit log →
 - kill switch · 30s grace →
 - sends shutdown signal; butler processes current session before exiting
@@ -1798,7 +1800,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Prompt diff · v{} to v{} · {}
 - Edit system prompt · {}
 - Enter system prompt…
-- Tools & integrations
 - Memory access
 - Namespace · owned
 - Embed model
@@ -4893,4 +4894,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3898*
+*Total strings: 3899*

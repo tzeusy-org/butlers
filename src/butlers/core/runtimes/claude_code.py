@@ -602,7 +602,19 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         Path
             Path to the generated mcp.json file.
         """
-        config = {"mcpServers": mcp_servers}
+        # The CLI treats an entry with no ``type`` as stdio, rejects it for lacking
+        # ``command`` and skips the server, which would drop both the connection and its
+        # ``headers``.  Spawner entries stay runtime-neutral; the butler daemon serves
+        # streamable HTTP, so a url entry without a type is declared ``http`` here.
+        servers = {
+            name: (
+                {"type": "http", **entry}
+                if isinstance(entry, dict) and "url" in entry and "type" not in entry
+                else entry
+            )
+            for name, entry in mcp_servers.items()
+        }
+        config = {"mcpServers": servers}
         mcp_json_path = tmp_dir / "mcp.json"
         mcp_json_path.write_text(json.dumps(config, indent=2))
         return mcp_json_path

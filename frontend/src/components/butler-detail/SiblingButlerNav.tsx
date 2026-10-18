@@ -175,7 +175,7 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
                     "border-b-2 border-transparent",
                     "hover:text-foreground hover:border-border",
                     "focus-visible:text-foreground focus-visible:border-focus",
-                    "transition-colors duration-[120ms] ease-in-out",
+                    "transition-colors duration-fast ease-out-quart",
                   ].join(" "),
               // Focus ring for keyboard nav
               "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",

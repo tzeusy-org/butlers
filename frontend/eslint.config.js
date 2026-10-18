@@ -218,8 +218,8 @@ const HANDROLLED_OVERLAY_SELECTORS = [
 
 // bu-yykif: ban `animate-pulse` (Tailwind's shimmer/pulse loading utility).
 // The Motion Vocabulary in openspec/specs/dashboard-design-language/spec.md §
-// Motion Vocabulary explicitly forbids "skeleton-pulse" — only four named
-// animations exist program-wide, and this is not one of them. All ~55
+// Motion Vocabulary explicitly forbids "skeleton-pulse"; allowed state changes
+// and the exhaustive named exceptions do not include it. All ~55
 // pre-existing sites (loading skeletons, "live" status dots) were migrated to
 // static (non-animating) placeholders in the same change that adds this rule
 // (bu-qvnce.7 slice 5) — see components/ui/skeleton.tsx and the shared
@@ -227,6 +227,28 @@ const HANDROLLED_OVERLAY_SELECTORS = [
 // treatment. A background-refetch dim (as opposed to an initial-load
 // placeholder) should use FetchingDim (components/ui/fetching-dim.tsx)
 // instead of any pulse/shimmer animation.
+
+// The adopted Motion Vocabulary governs complete class tokens. Static template
+// chunks are checked only at known token boundaries: interpolation is not a
+// value-flow evaluator. Both raw and cooked text cover escaped static spellings.
+const MOTION_TOKEN = String.raw`(?:transition(?:-all)?|animate-bounce|transition-(?:fast|base|slow)|transition-\[(?:[^\]\s]*[, _])?(?:width|height|max-height|margin|padding|top|left|right|bottom|inset)(?:[, _][^\]\s]*)?\]|duration-\[(?!(?:150|200|250)ms\])(?:[+-]?(?:\d+(?:\.\d+)?|\.\d+))ms\])`
+const motionPattern = (start, end) => `${start}${MOTION_TOKEN}${end}`
+const MOTION_VOCABULARY_SELECTORS = [
+  {
+    selector: `Literal[value=/${motionPattern(String.raw`(?:^|[\s:!])`, String.raw`(?=$|[\s!])`)}/]`,
+    message: 'Motion Vocabulary: use allowed state-change properties and duration tiers; keep named exceptions scoped to their line.',
+  },
+  ...[
+    [':first-child[tail=true]', String.raw`(?:^|[\s:!])`, String.raw`(?=$|[\s!])`],
+    [':first-child[tail=false]', String.raw`(?:^|[\s:!])`, String.raw`(?=[\s!])`],
+    [':not(:first-child)[tail=true]', String.raw`[\s:!]`, String.raw`(?=$|[\s!])`],
+    [':not(:first-child)[tail=false]', String.raw`[\s:!]`, String.raw`(?=[\s!])`],
+  ].map(([boundary, start, end]) => ({
+    selector: `TemplateElement${boundary}:matches([value.raw=/${motionPattern(start, end)}/], [value.cooked=/${motionPattern(start, end)}/])`,
+    message: 'Motion Vocabulary: use allowed state-change properties and duration tiers; keep named exceptions scoped to their line.',
+  })),
+]
+
 const ANIMATE_PULSE_SELECTORS = [
   {
     selector: 'Literal[value=/\\banimate-pulse\\b/]',
@@ -334,15 +356,64 @@ const TREND_CHART_GRAMMAR_SELECTORS = [
       'Smoothed curve types invent values between readings (bu-q7vx1q.6). Use ' +
       'components/ui/TimeSeriesChart, which draws linear or step joins only.',
   },
-  {
-    selector:
-      'ImportDeclaration[source.value="recharts"] > ImportSpecifier[imported.name=/^(?:LineChart|AreaChart)$/]',
-    message:
-      'Trend charts use components/ui/TimeSeriesChart (time-proportional axis, visible ' +
-      'observations, gap breaks, labelled stale tail), not a raw recharts LineChart/AreaChart ' +
-      '(bu-q7vx1q.6).',
-  },
 ]
+
+// A distinct rule survives later no-restricted-syntax/imports overrides. Inspect
+// original names and statically known module sources; do not evaluate source or
+// infer a runtime-computed specifier's destination.
+const TREND_CHART_GUARD_PLUGIN = {
+  rules: {
+    'no-raw-import': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          rawImport:
+            'Trend charts use components/ui/TimeSeriesChart (time-proportional axis, visible ' +
+            'observations, gap breaks, labelled stale tail), not a raw recharts LineChart/AreaChart ' +
+            '(bu-q7vx1q.6).',
+        },
+      },
+      create(context) {
+        function isRecharts(source) {
+          return source?.type === 'Literal'
+            ? source.value === 'recharts'
+            : source?.type === 'TemplateLiteral' && source.expressions.length === 0 &&
+                source.quasis[0].value.cooked === 'recharts'
+        }
+        function isRawChart(name) {
+          const originalName = name?.name ?? name?.value
+          return originalName === 'LineChart' || originalName === 'AreaChart'
+        }
+        function reject(node) {
+          context.report({ node, messageId: 'rawImport' })
+        }
+        return {
+          ImportDeclaration(node) {
+            if (isRecharts(node.source) && node.specifiers.some((specifier) =>
+              specifier.type === 'ImportNamespaceSpecifier' ||
+              (specifier.type === 'ImportSpecifier' && isRawChart(specifier.imported)))) {
+              reject(node)
+            }
+          },
+          ExportNamedDeclaration(node) {
+            if (isRecharts(node.source) && node.specifiers.some((specifier) =>
+              specifier.type === 'ExportNamespaceSpecifier' ||
+              (specifier.type === 'ExportSpecifier' && isRawChart(specifier.local)))) {
+              reject(node)
+            }
+          },
+          ExportAllDeclaration(node) {
+            if (isRecharts(node.source)) reject(node)
+          },
+          ImportExpression(node) {
+            if (isRecharts(node.source)) reject(node)
+          },
+        }
+      },
+    },
+  },
+}
 
 const KEYDOWN_LISTENER_SELECTORS = [
   {
@@ -2609,6 +2680,12 @@ const RING_RING_SELECTORS = [
 export default defineConfig([
   globalIgnores(['dist']),
   {
+    files: ['**/*.{ts,tsx}'],
+    ignores: ['src/components/ui/**'],
+    plugins: { 'trend-chart': TREND_CHART_GUARD_PLUGIN },
+    rules: { 'trend-chart/no-raw-import': 'error' },
+  },
+  {
     // The identity component is the one canonical owner of this private
     // surface. The lint test itself is a deliberately malicious source
     // fixture; its virtual files remain checked by this rule through ESLint's
@@ -2722,6 +2799,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
@@ -2748,6 +2826,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...TREND_CHART_GRAMMAR_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
@@ -2777,6 +2856,7 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
@@ -2806,6 +2886,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
@@ -2830,6 +2911,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
         ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
@@ -2852,6 +2934,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
@@ -2882,6 +2965,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_CATEGORICAL_STATUS_SELECTORS,
@@ -2910,6 +2994,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...BLUE_PURPLE_STATUS_SELECTORS,
@@ -2919,6 +3004,13 @@ export default defineConfig([
         ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
+    },
+  },
+  {
+    // ButlerMark owns private identity tokens; that exemption does not exempt motion.
+    files: ['src/components/ui/ButlerMark.tsx'],
+    rules: {
+      'no-restricted-syntax': ['error', ...ANIMATE_PULSE_SELECTORS, ...MOTION_VOCABULARY_SELECTORS],
     },
   },
   // ---------------------------------------------------------------------------

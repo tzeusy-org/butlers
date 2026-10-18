@@ -8,6 +8,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import butlers.core.telemetry as _telemetry_mod
+from butlers.core.logging import _butler_context, get_butler_context
 from butlers.core.telemetry import get_tracer, init_telemetry, tag_butler_span, tool_span
 
 pytestmark = pytest.mark.unit
@@ -115,6 +116,21 @@ class TestToolSpanAndTagButlerSpan:
             assert tag_attrs["service.name"] == "butler.switchboard"
         finally:
             provider.shutdown()
+
+
+def test_tool_span_restores_the_callers_butler_context():
+    """The span's butler name lasts only as long as the span, even when the tool raises."""
+    token = _butler_context.set("caller")
+    try:
+        with tool_span("state_get", butler_name="general"):
+            assert get_butler_context() == "general"
+        assert get_butler_context() == "caller"
+        with pytest.raises(RuntimeError, match="tool failed"):
+            with tool_span("state_get", butler_name="general"):
+                raise RuntimeError("tool failed")
+        assert get_butler_context() == "caller"
+    finally:
+        _butler_context.reset(token)
 
 
 class TestGetTracer:

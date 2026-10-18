@@ -169,3 +169,29 @@ Readable positive counts remain lower bounds when classification is unknown. A f
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming
 - `openspec/specs/dashboard-*` --- required per-domain endpoint behavior
 - `src/butlers/api/app.py` and `roster/{butler}/api/router.py` --- the routers and their response models
+
+
+### Independent bearer scrub availability
+
+`GET /api/ingestion/pipeline?window=1h|24h|7d` adds optional-compatible
+`bearer_scrub_counts: {auth_code: number, reset_link: number, magic_link: number} | null`
+and `bearer_scrub_available: boolean`. The endpoint preserves the existing flat
+funnel and backlog fields and their independent availability flags. Scrub counts
+are finite, non-negative estimates of fresh Switchboard scrub operations,
+including attempts, rather than unique messages. Fractional Prometheus
+`increase` values are preserved.
+
+Only a readable source, including an empty vector, sets scrub availability true;
+empty means three measured zeros. Unconfigured, unreadable, negative,
+non-finite or unexpected-kind results return HTTP200 with null scrub counts and
+false availability without discarding independently healthy funnel or backlog
+sections. Prometheus fields share the existing 60-second cache keyed by window;
+backlog reads remain fresh on every request.
+
+The Timeline section follows the selected range through the existing API client
+and query hook. It names Prometheus, acknowledges loading without blocking the
+ledger, and renders a source-unavailable note on request errors, false flags or
+absent legacy fields. Retained stale query data during an error does not certify
+current scrub availability. An unavailable source never becomes a zero or an
+all-clear. No raw metric labels or upstream diagnostic text is exposed in the
+scrub projection.

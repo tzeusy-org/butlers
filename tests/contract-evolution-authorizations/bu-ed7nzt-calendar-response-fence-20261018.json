@@ -1,0 +1,186 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-ed7nzt-calendar-response-fence-20261018",
+  "bead": "bu-ed7nzt",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-6u3ken for implementation bead bu-ed7nzt (PR #4488, Calendar response attempts are fenced across owning schemas). Reviewed before: main eb1bbf3a0 as recorded in bu-t2zehi; approved subject: PR #4488 head 4f04009d391b7880eae4a2e31aa9ab669e23ee6a (a merge of that main). Governing requirement REQ-module-calendar-029 of openspec/specs/module-calendar/spec.md, whose block gains the Physical response fencing scenario in this change. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/integration/test_calendar_response.py::test_migrated_response_atomic_park_committed_attempt_and_guarded_inverse",
+      "after": "tests/integration/test_calendar_response.py::test_migrated_response_atomic_park_committed_attempt_and_guarded_inverse",
+      "contracts": [
+        "REQ-module-calendar-029"
+      ],
+      "reason": "The migrated Messenger carrier now builds two real owning Database pools (messenger and relationship, each on its own role and schema) and routes peer fence probes through the real Switchboard route function and both FastMCP envelopes; the park, committed-attempt and guarded-inverse phases and their assertions are preserved, and the physical-target two-owner cases are added beside them."
+    },
+    {
+      "before": "tests/modules/test_calendar_response.py::test_response_command_admission_execution_fence_replay_and_projection",
+      "after": "tests/modules/test_calendar_response.py::test_response_command_admission_execution_fence_replay_and_projection",
+      "contracts": [
+        "REQ-module-calendar-029"
+      ],
+      "reason": "The local command, approval, replay and projection carrier replaces the physical-target fence claim with a same-pool local transaction and stubs the peer probe, because peer fencing is now proved by the migrated two-owner case; the command digest, execution fence, replay and projection assertions are preserved."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/module-calendar/spec.md",
+      "id": "REQ-module-calendar-029",
+      "before_sha256": "32cd7b2577418dab27ebb83f32b83a9d9108f79c86e3dfcc59eddd0ff7d9dc2e",
+      "after_sha256": "9e7fbff3c7d20dc1ec58f493bd8aa95845e80bc215dc5bdf038eb3d412a668ca"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/modules/calendar.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "9655ce4193063777772645508473a824b1f117ab908d6e058f76733a649020c3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "642adec644746897320920da8ff1761a0b51adc96d049d9c1b125eaa54594feb"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/daemon.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9be8b6d368b3bbb7c103cd348420e61dad00cda0ad60af8309a9ee6abe52d627"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "64fe93de3820a0e8905b1dafe076bc1ba3ef705e2b7651ce22c378d26b48f13c"
+      }
+    },
+    {
+      "path": "src/butlers/modules/calendar.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "12d37164e25d5b589b0314c9f7222d0801d8885653a52d3f7620606d9e97fa5f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c8c010ee1ccdc45ea381f502c4f1b2e01834a95750876b3e40b9b254c1478fe6"
+      }
+    },
+    {
+      "path": "src/butlers/modules/calendar_response.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "51cbf9754146593daceb1926e73318eb3af809ec0dcf96a7ddb76fecc8d3b490"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "99661b6d07ca2ef8e96948a322b348aa1326f6d19d9523f1c39643381c18f760"
+      }
+    },
+    {
+      "path": "src/butlers/modules/calendar_response_fence.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "c6ee4458f7fc63f466a92cc4e0ecd601930653a5dfa5b6ed50436ddcf2e237f8"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-ed7nzt-calendar-response-fence-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "18d597cb7905fc0c90feecc9eb114d9d4b4c9f242d881b535269c0d1bc61acef"
+      }
+    },
+    {
+      "path": "tests/daemon/test_wire_module_runtime.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3448c4ca39a61d4e9729dfb2c6d9743885ea5e051fbd21cb95d9d881d1fde076"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "8cff39e61327d84290816d718b45b4d62e34afba8ccb92c73affa2483bfe5b02"
+      }
+    },
+    {
+      "path": "tests/integration/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      }
+    },
+    {
+      "path": "tests/integration/test_calendar_response.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a18e60a98b2298d50a678329cb47e52ec135e13f197c0f2b3d5ccc56ff4321ba"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "8f9cadb12eb7d417138037b102ededbde293ad081dd0a6b8514c580add34aae5"
+      }
+    },
+    {
+      "path": "tests/modules/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      }
+    },
+    {
+      "path": "tests/modules/test_calendar_response.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b4a9ffffba71d4b0cc9dcf20c444e0fee44ca0908c8a29f7f72b23c800bef247"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f2b9cc7a178040700af0898a1dfa6c533025038001ce34025dc3cf688baf8203"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

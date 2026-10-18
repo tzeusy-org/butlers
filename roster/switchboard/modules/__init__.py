@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.modules.approvals.notifications import dashboard_base_url
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
 from butlers.tools.switchboard.runtime_attention.worker import (
@@ -136,6 +137,7 @@ class SwitchboardModule(Module):
         transport = build_messenger_transport(
             pool,
             resolve_recipient=functools.partial(resolve_owner_telegram_recipient, pool),
+            dashboard_base_url=dashboard_base_url(),
         )
         worker = RuntimeAttentionDeliveryWorker(repository, transport)
         self._runtime_attention_task = asyncio.create_task(

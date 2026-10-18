@@ -22,6 +22,8 @@ from ci_partition import assigned_files, read_json, validate_assignment
 from coverage import CoverageData
 from coverage.exceptions import CoverageException
 
+REPORT_EVENTS = frozenset({"merge_group", "schedule", "workflow_dispatch", "pull_request"})
+
 
 def _source_files(repo_root: Path) -> list[str]:
     return sorted(
@@ -83,8 +85,13 @@ def validate_inputs(
     run_id: str,
     run_attempt: str,
     inventory_dir: Path | None = None,
+    event: str | None = None,
 ) -> list[Path]:
-    """Reject a partial, stale, mixed, unreadable or incompatible ten-file report."""
+    """Reject partial, stale, mixed or incompatible eleven-input reports."""
+    actual_event = os.environ.get("GITHUB_EVENT_NAME")
+    event = actual_event if event is None else event
+    if not isinstance(event, str) or event not in REPORT_EVENTS or event != actual_event:
+        raise ValueError("coverage reporter requires an admitted actual workflow event")
     if not head or not run_id or not run_attempt or _checkout_head(repo_root) != head:
         raise ValueError("coverage reporter requires the exact checkout and workflow attempt")
     if input_root.is_symlink():
@@ -94,6 +101,8 @@ def validate_inputs(
     inventory = read_json(inventory_dir / "inventory.json")
     assignment = read_json(inventory_dir / "assignment.json")
     validate_assignment(inventory, assignment, root=repo_root)
+    if inventory["identity"]["event"] != event:
+        raise ValueError("coverage inventory does not match the actual workflow event")
     specs = [
         (lane, index)
         for lane, config in LANES.items()
@@ -131,7 +140,7 @@ def validate_inputs(
                 "head": head,
                 "run_id": run_id,
                 "run_attempt": run_attempt,
-                "event": "merge_group",
+                "event": event,
                 "lane": lane,
                 "shard": index,
                 "config": asdict(LANES[lane]),
@@ -168,6 +177,7 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--inventory-dir", type=Path, required=True)
+    parser.add_argument("--event", choices=sorted(REPORT_EVENTS))
     args = parser.parse_args()
     try:
         inputs = validate_inputs(
@@ -177,6 +187,7 @@ def main() -> int:
             run_id=args.run_id,
             run_attempt=args.run_attempt,
             inventory_dir=args.inventory_dir,
+            event=args.event,
         )
     except (OSError, ValueError) as exc:
         print(f"check_ci_coverage: {exc}", file=sys.stderr)

@@ -1189,6 +1189,41 @@ Every connector-detail routing-rule row SHALL link to `/ingestion/filters?rule=<
 - **AND** repeated links to the same target, query refetches and archived re-expansion do not steal focus after that move
 - **AND** no filter or server state is changed by navigation
 
+### Requirement: Timeline bearer scrub estimates
+
+The /ingestion Timeline SHALL show a compact optional bearer scrub section
+following its existing selected 1h/24h/7d range. It SHALL read the flat pipeline
+response through the existing getPipelineStats/usePipelineStats path and render
+stable Auth codes, Reset links and Magic links labels with finite non-negative
+operation estimates. A measured zero is valid only when bearer_scrub_available
+is true and all three counts are readable. The section SHALL use Dispatch
+eyebrow styling, tabular numerals and accessible source text naming Prometheus
+and fresh Switchboard scrub estimates, including attempts rather than unique
+accepted messages or false positives. No new route, control or write is required.
+
+Loading SHALL be acknowledged without blocking the ledger or range control.
+Request errors, unavailable scrub fields and absent legacy fields SHALL render
+a named unavailable source state, never zero counts or an all-clear. Existing
+funnel, backlog, verdict, freshness and ledger behavior SHALL remain independent.
+
+#### Scenario: Selected range controls scrub estimates
+
+- **WHEN** the owner changes the Timeline's existing range
+- **THEN** the scrub section requests the matching pipeline window and displays its three estimates
+- **AND** the existing ledger, freshness and verdict behavior remains usable
+
+#### Scenario: Unavailable scrub source is explicit
+
+- **WHEN** loading, request failure, source unavailability or legacy missing fields prevent reading counts
+- **THEN** the section acknowledges loading or names Prometheus scrub metrics as unavailable
+- **AND** it does not substitute zero or an all-clear
+
+#### Scenario: Readable zero is an operation measurement
+
+- **WHEN** the API confirms available zero scrub estimates
+- **THEN** the section renders zero for each closed kind with its operation-estimate explanation
+
+
 ## Source References
 
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication)

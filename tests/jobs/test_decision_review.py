@@ -1551,3 +1551,23 @@ async def test_review_jobs_run_unless_explicitly_opted_out(monkeypatch, value):
         result = await run_decision_escalation_check(MagicMock())
     digest.assert_called_once()
     assert result == {"available": False, "reason": "export_missing"}
+
+
+@pytest.mark.parametrize(
+    ("updated_at", "expected"),
+    [
+        pytest.param("9999-12-31T23:59:59-01:00", None, id="upper-utc-overflow"),
+        pytest.param("0001-01-01T00:00:00+01:00", None, id="lower-utc-overflow"),
+        pytest.param("2026-07-11T13:00:00+01:00", _NOW, id="valid-offset"),
+    ],
+)
+def test_digest_declines_unrepresentable_source_timestamp(tmp_path, updated_at, expected):
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-reopened", updated_at=updated_at)])
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    assert digest.available is True
+    assert digest.unavailable_reason is None
+    assert [bead.id for bead in digest.open_decisions] == ["bu-reopened"]
+    assert digest.open_decisions[0].updated_at == expected

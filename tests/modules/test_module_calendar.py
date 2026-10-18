@@ -85,7 +85,19 @@ from butlers.modules.calendar import (
     classify_sync_error_kind,
 )
 
+# The retained historical permission-test narratives describe the original enforcement.
+# Effects now refuse unavailable state; the real-lookup availability test below covers
+# bu-30sah4's effect stage, before bu-svqpzo.3 changes remaining shared callers.
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _allow_effects_for_provider_tests(request, monkeypatch):
+    """Provider-only unit tests assume an available grant; gate tests use real reads."""
+    if request.cls is not TestCalendarWritePermissionEnforcement:
+        monkeypatch.setattr(
+            "butlers.modules.calendar.require_permission", AsyncMock(return_value=None)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +878,52 @@ class TestCalendarWritePermissionEnforcement:
                 end_at=datetime(2026, 2, 20, 13, 0, tzinfo=UTC),
             )
         assert len(provider.create_calls) == 1
+
+    async def test_real_permission_failures_precede_all_calendar_mutations(self):
+        from butlers.core.permissions import PermissionUnavailable
+
+        mod, provider, mcp = await self._make_module()
+        pool = AsyncMock()
+        start = datetime(2026, 2, 20, 12, 0, tzinfo=UTC)
+        end = start + timedelta(hours=1)
+        with patch.object(mod, "_prepare_workspace_mutation", new_callable=AsyncMock) as prepare:
+            for failure in ("missing", "query", "malformed"):
+                mod._db.pool = None if failure == "missing" else pool
+                pool.fetchrow.side_effect = (
+                    OSError("private-database-error") if failure == "query" else None
+                )
+                pool.fetchrow.return_value = {"granted": "false", "reason": "private-row"}
+                calls = [
+                    mcp.tools["calendar_create_event"](title="Team", start_at=start, end_at=end),
+                    mod.create_user_event(title="Team", start_at=start, end_at=end),
+                ]
+                for scope in ("series", "this", "following"):
+                    calls.extend(
+                        (
+                            mcp.tools["calendar_update_event"](
+                                event_id="evt-1",
+                                title="Updated",
+                                recurrence_scope=scope,
+                                instance_start_at=start,
+                            ),
+                            mcp.tools["calendar_delete_event"](
+                                event_id="evt-1",
+                                recurrence_scope=scope,
+                                instance_start_at=start,
+                            ),
+                        )
+                    )
+                for call in calls:
+                    with pytest.raises(PermissionUnavailable):
+                        await call
+                assert provider.create_calls == []
+                assert provider.update_calls == []
+                assert provider.delete_calls == []
+                assert provider.get_calls == []
+                prepare.assert_not_awaited()
+            for row in (None, {"granted": True, "reason": "granted"}):
+                pool.fetchrow.return_value = row
+                await mod._require_calendar_write_permission()
 
     async def test_create_user_event_branded_and_routed_to_butlers_calendar(self):
         """create_user_event stamps butler branding and defaults to the Butlers calendar.

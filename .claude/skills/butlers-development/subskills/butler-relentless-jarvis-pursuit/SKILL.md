@@ -47,6 +47,14 @@ coarsely; the ranked move list leads with feature/ecosystem moves (see Phase 3).
 epic `bu-86c4c`, 28 subagents). Reuse its shape; treat its dossier as the canonical example of
 the deliverable and the primary dedup source.
 
+## Reasoning Architecture
+
+Ground reasoning-topology ideas in `about/heart-and-soul/architecture.md` and
+RFC 0038: one whole-goal lead, optional focused children at depth one, durable
+domain responsibilities, and grants derived from goal origin. Judge moves by
+whole-goal outcomes and useful proactive care, not by adding reasoning agents
+per domain. Do not propose features on the frozen classify-and-route path.
+
 ## Routing: pursuit vs. QC
 
 Two modes live under this skill. Load **one** body per task:

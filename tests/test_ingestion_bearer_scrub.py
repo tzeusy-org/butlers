@@ -259,3 +259,16 @@ def test_aggressive_mode_keeps_date_shaped_runs_in_content() -> None:
     )
     assert "55123" not in out
     assert "2026-10-03 12:00" in out
+
+
+def test_stored_record_scrubs_legacy_top_level_content() -> None:
+    from butlers.ingestion_bearer_scrub import scrub_stored_record
+
+    record = _service_record()
+    record["content"] = "Your code is 482913"
+    before = json.loads(json.dumps(record))
+    new_raw, _, fresh = scrub_stored_record(record, "")
+
+    assert "482913" not in new_raw["content"] and fresh
+    _assert_metadata_untouched(before, new_raw)
+    assert scrub_stored_record({"content": "Invoice 482913"}, "")[0]["content"] == "Invoice 482913"

@@ -43,7 +43,6 @@ vi.mock("@/hooks/use-butler-management", () => ({
   useButlerPrompt: vi.fn(),
   useUpdateButlerPrompt: vi.fn(),
   useButlerPromptHistory: vi.fn(),
-  useButlerTools: vi.fn(),
   useButlerMemoryAccess: vi.fn(),
   useKillButler: vi.fn(),
 }));
@@ -57,7 +56,6 @@ import {
   useButlerPrompt,
   useUpdateButlerPrompt,
   useButlerPromptHistory,
-  useButlerTools,
   useButlerMemoryAccess,
   useKillButler,
 } from "@/hooks/use-butler-management";
@@ -118,11 +116,6 @@ function setupDefaultHooks(mutateFn = vi.fn()) {
     mutate: mutateFn,
     isPending: false,
   } as unknown as ReturnType<typeof useUpdateButlerPrompt>);
-
-  vi.mocked(useButlerTools).mockReturnValue({
-    data: { data: [] },
-    isLoading: false,
-  } as unknown as ReturnType<typeof useButlerTools>);
 
   vi.mocked(useButlerMemoryAccess).mockReturnValue({
     data: undefined,
@@ -772,5 +765,26 @@ describe("Activity stripe axis semantics", () => {
       expect(axis.getByText(label)).toBeTruthy();
     }
     expect(axis.queryByText("now")).toBeNull();
+  });
+});
+
+describe("retired tool-grant section (bu-svqpzo.4)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+  });
+  afterEach(() => cleanup());
+
+  it("renders no tool-grant section and requests no tool grants", async () => {
+    renderTab();
+
+    expect(screen.queryByRole("heading", { name: "Tools & integrations" })).toBeNull();
+    expect(screen.queryByText("No tool grants configured for this butler.")).toBeNull();
+    expect(screen.queryByText(/\d+\/\d+ allowed/)).toBeNull();
+    expect(screen.queryByText("no tools configured")).toBeNull();
+
+    // The hooks module no longer offers a tool-grant hook for the tab to call.
+    const hooks = await import("@/hooks/use-butler-management");
+    expect(Object.keys(hooks).filter((name) => /Tools?$/.test(name))).toEqual([]);
   });
 });

@@ -110,13 +110,17 @@ Each investigation SHALL run in a dedicated git worktree branched off latest `ma
 - **AND** the local branch is deleted if no PR was created
 
 ### Requirement: Investigation Agent Sandbox
-Investigation agents SHALL operate in a sandboxed environment with minimal credentials and no access to butler runtime secrets.
+Investigation agents SHALL operate in a sandboxed environment without GitHub publication credentials and with no access to publisher or butler runtime secrets.
+
+ID: REQ-qa-investigation-dispatch-001
+Source: owner-adopted QA publication contract 90d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9; RFC0015
+Scope: v1-mandatory
 
 #### Scenario: Agent environment
 - **WHEN** the investigation agent is spawned in a worktree
-- **THEN** the QA staffer resolves `BUTLERS_QA_GH_TOKEN` from `CredentialStore` and injects it as `GH_TOKEN` in the agent's environment (the `gh` CLI requires the env var name `GH_TOKEN` specifically)
+- **THEN** only the trusted deterministic publisher may resolve `BUTLERS_QA_GH_TOKEN`; investigation agents receive no GitHub credential or generic publication capability
 - **AND** if configured, the QA staffer resolves `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` and injects them as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so non-interactive `git commit` does not depend on per-worktree `git config`
-- **AND** the agent's environment contains only: `GH_TOKEN`, `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
+- **AND** the agent's environment contains only: `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
 - **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
 - **AND** its filesystem scope is the worktree directory only
@@ -126,6 +130,17 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 - **THEN** its current working directory is a QA-owned helper subdirectory inside the worktree, not the repository root
 - **AND** that helper directory contains a local `AGENTS.md` override that disables unrelated repo-level workflow instructions such as `bd` usage, generic session-close rules, or self-managed PR/push steps
 - **AND** the helper directory exposes the repo roots needed for normal QA commands (`src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, `uv.lock`) so repo-relative validation commands still work unchanged
+
+#### Scenario: Publication unavailable without an isolated publisher
+- **WHEN** an investigation agent succeeds with commits, or a follow-up agent finishes on an open PR
+- **THEN** no `git push` and no `gh pr create` runs, and there is no fallback that restores token injection
+- **AND** the investigation transitions to `failed` with reason `publication_unavailable`; a follow-up records the same reason in `last_follow_up_error` and the PR is left unchanged
+- **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
+
+#### Scenario: Dispatcher git subprocesses in the shared clone are isolated
+- **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)
+- **THEN** the subprocess runs with an allowlisted environment that carries no butler runtime secret, and command-line git config that neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass` and the `ext::` and `git://` transports
+- **AND** named-remote fetches pin `--upload-pack=git-upload-pack` and the commit diff snapshot passes `--no-ext-diff --no-textconv` and no-op branch detection passes `--no-show-signature`, so agent-planted `.git/config` commands and drivers never execute
 
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR

@@ -254,6 +254,11 @@ is active, precedence is `dnd`, then `meeting`, then `sleeping`, then
 `traveling` — the first of these, in that order, with an active
 non-max-held instance wins and is reported as the suppression signal.
 
+The delivery cycle SHALL also treat an active `focused` signal as a
+suppression input, ranked immediately after `dnd` and before `meeting` in the
+precedence above, with a max-hold TTL of 4 hours, and SHALL report it as
+`context_bus:focused` when it wins.
+
 Each signal type has its own max-hold TTL bounding how long that signal
 alone may suppress routine delivery, independent of the signal's own (often
 much longer) context-bus expiry: `dnd` 4 hours, `meeting` 2 hours, `sleeping`
@@ -279,6 +284,13 @@ silently queue for the length of a trip.
 - **AND** no pending candidate is priority>=90
 - **THEN** the cycle is suppressed with `reason="context_bus:meeting"` (or
   `"context_bus:traveling"`), exactly as `dnd`/`sleeping` suppress today
+
+#### Scenario: focused signal suppresses after dnd within a 4 hour max-hold
+- **WHEN** `public.user_context` has an active `focused` signal whose `set_at`
+  is within 4 hours of the delivery cycle's `now`, and no `dnd` signal is
+  active
+- **AND** no pending candidate is priority>=90
+- **THEN** the cycle is suppressed with `reason="context_bus:focused"`
 
 #### Scenario: A signal beyond its max-hold TTL no longer suppresses
 - **WHEN** `public.user_context` has an active `traveling` signal whose
@@ -392,7 +404,13 @@ Butlers SHALL submit insight candidates exclusively through the Switchboard's `p
 
 #### Scenario: propose_insight_candidate tool signature
 - **WHEN** the insight broker module registers its MCP tools
-- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None, premise: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+
+#### Scenario: Origin is derived by the server, never supplied
+- **WHEN** a session calls the `propose_insight_candidate()` MCP tool
+- **THEN** the tool SHALL have no `origin_butler` parameter, and the staged row's `origin_butler` SHALL be the name of the butler daemon that registered the tool
+- **AND** a four-segment (butler-scoped) `dedup_key` whose first segment is not that butler SHALL be refused with `{"status": "error"}` and no row written, while a three-segment (cross-butler) key is accepted
+- **AND** in-process producers that import the Python function keep passing their own fixed `origin_butler`
 
 #### Scenario: Successful candidate submission
 - **WHEN** a butler calls `propose_insight_candidate()` with valid parameters
@@ -573,7 +591,7 @@ suppressed skip.
 
 #### Scenario: A context-bus signal schedules a catch-up at its max-hold end
 - **WHEN** the delivery cycle is fully suppressed by an active context-bus
-  signal (`dnd`, `meeting`, `sleeping`, or `traveling`), with no urgent
+  signal (`dnd`, `focused`, `meeting`, `sleeping`, or `traveling`), with no urgent
   candidate pending
 - **THEN** a one-shot catch-up task is reconciled for that signal's `set_at`
   plus its own max-hold TTL
@@ -609,6 +627,9 @@ suppressed skip.
   had not been attempted
 
 ### Requirement: Bounded Explicit Insight Feedback
+
+ID: REQ-proactive-insight-engine-034
+
 The broker SHALL expose useful, not-now, and never owner-feedback verbs without
 adding another global verbosity control. Feedback attribution SHALL be derived by
 the server and the persisted evidence SHALL remain content-blind.
@@ -748,7 +769,7 @@ requirement existed.
 The delivery cycle SHALL record a `held_by` key in the `metadata` of any
 `public.attention_ledger` row it writes with `outcome="suppressed"`, naming
 the specific suppression signal — the context-bus signal type (`"dnd"`,
-`"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
+`"focused"`, `"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
 `"quiet_hours"` — so the specific hold is queryable as structured data
 without parsing the free-text `reason` field.
 
@@ -805,7 +826,7 @@ the next scheduled daily cron slot. Instead:
   routine digest entirely for that tick (`reason="travel_day_defer"`),
   regardless of how long `traveling` has been active, and SHALL NOT
   force-deliver it via the hard fallback deadline below;
-- otherwise (an active `dnd`, `meeting`, `sleeping`, or quiet-hours
+- otherwise (an active `dnd`, `focused`, `meeting`, `sleeping`, or quiet-hours
   suppression), the cycle SHALL bypass suppression for the full routine
   pending set once the delivery cycle's `now` reaches the hard fallback
   deadline (11:00 UTC), so a held digest is never silently skipped for an
@@ -824,7 +845,7 @@ consult unconditionally per RFC 0011 Amendment 1).
 
 #### Scenario: The hard fallback deadline force-delivers a held routine digest
 - **WHEN** `daily_hold_mode=True`, the active suppressing signal is `dnd`,
-  `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
+  `focused`, `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
   the delivery cycle's `now` has reached the hard fallback deadline
 - **THEN** the cycle proceeds with the full routine pending candidate set as
   if unsuppressed

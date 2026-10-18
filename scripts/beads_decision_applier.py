@@ -12,7 +12,9 @@ Contract (at most once per intent):
 1. Reconcile ``applying`` rows a previous run left behind, using ``bd show``
    as evidence: our ``decision-intent <id>`` marker on a closed bead is
    ``applied``, another close is ``failed``/``bead_closed_elsewhere``, a still
-   open bead goes back to ``pending``.
+   open bead goes back to ``pending``. An unreadable bead stays ``applying``
+   until its claim is 24 hours old, then fails as ``bead_unreadable_unsettled``
+   without retrying a close whose outcome is unknown.
 2. Claim a bounded batch of ``pending`` rows (oldest first), committed before
    any tracker call.
 3. Re-validate each bead (exists, open, ``decision`` label, option offered),
@@ -21,7 +23,8 @@ Contract (at most once per intent):
    terminal after :data:`MAX_CLOSE_ATTEMPTS`; an unreachable tracker returns
    the batch to ``pending`` without spending attempts and stops the run. A
    bead ``bd`` answers for but cannot describe fails alone (``bead_unreadable``)
-   instead of stalling the queue behind it.
+   instead of stalling the queue behind it. A failed ``show`` is bead-specific
+   only when a separate bounded statistics probe returns a valid summary.
 
 Failure reasons are categorical. Raw ``bd`` output can carry host names, so it
 is never stored or logged.
@@ -43,6 +46,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Protocol
 
 import asyncpg
@@ -52,6 +56,7 @@ logger = logging.getLogger("beads_decision_applier")
 MAX_CLOSE_ATTEMPTS = 3
 DEFAULT_BATCH = 20
 _BD_TIMEOUT_SECONDS = 60
+_UNREADABLE_SETTLE_AFTER = timedelta(hours=24)
 _OPEN_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _DECISION_LABEL = "decision"
 _COLUMNS = "id, bead_id, option, source, attempts"
@@ -97,10 +102,8 @@ class BdTracker:
             raise TrackerUnavailable from exc
         try:
             payload = json.loads(result.stdout)
-        except ValueError as exc:
-            # A clean exit with unparsable output is this bead's problem; a failed
-            # exit with no structured answer is the tracker's.
-            raise (BeadUnreadable if result.returncode == 0 else TrackerUnavailable) from exc
+        except ValueError:
+            payload = None
         if result.returncode == 0:
             issue = payload[0] if isinstance(payload, list) and payload else None
             if isinstance(issue, dict) and issue.get("id") == bead_id:
@@ -108,7 +111,26 @@ class BdTracker:
             raise BeadUnreadable
         if isinstance(payload, dict) and "no issues found" in str(payload.get("error", "")):
             return None
-        raise TrackerUnavailable
+        self._check_health()
+        raise BeadUnreadable
+
+    def _check_health(self) -> None:
+        """Distinguish a bead-specific show failure from an unreachable tracker."""
+        try:
+            # Skip git activity, but retain compatibility with proxied trackers
+            # where the --no-blocked optimization is unsupported.
+            result = self._run("stats", "--json", "--no-activity")
+            payload = json.loads(result.stdout)
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise TrackerUnavailable from exc
+        summary = payload.get("summary") if isinstance(payload, dict) else None
+        counts = ("total_issues", "open_issues", "in_progress_issues", "closed_issues")
+        if (
+            result.returncode != 0
+            or not isinstance(summary, dict)
+            or any(type(summary.get(key)) is not int or summary[key] < 0 for key in counts)
+        ):
+            raise TrackerUnavailable
 
     def close(self, bead_id: str, reason: str) -> None:
         try:
@@ -219,8 +241,24 @@ class Applier:
                 self.tracker_unavailable = True
                 return
             except BeadUnreadable:
-                # Unsettleable without evidence, but it must not block the rest.
-                self.outcomes["applying:bead_unreadable"] += 1
+                # A previous close may have landed: never retry it without evidence.
+                # Bound the unresolved state so it can receive an explicit new choice.
+                settled = await self._conn.fetchval(
+                    """
+                    UPDATE switchboard.decision_intents
+                    SET status = 'failed', failure_reason = 'bead_unreadable_unsettled',
+                        finished_at = now(), updated_at = now()
+                    WHERE id = $1 AND status = 'applying'
+                        AND claimed_at <= now() - $2::interval
+                    RETURNING id
+                    """,
+                    intent.id,
+                    _UNREADABLE_SETTLE_AFTER,
+                )
+                outcome = (
+                    "failed:bead_unreadable_unsettled" if settled else "applying:bead_unreadable"
+                )
+                self.outcomes[outcome] += 1
                 continue
             if issue is None:
                 await self._finish(intent, "failed", "bead_not_found")

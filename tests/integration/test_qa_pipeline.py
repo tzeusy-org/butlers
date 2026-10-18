@@ -192,7 +192,14 @@ class TestFullPatrolCycle:
         # Watchdog was scheduled
         assert len(task_registry) == 1
         assert [call.args for call in mock_exec.await_args_list] == [
-            ("git", "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+            (
+                "git",
+                "fetch",
+                "--upload-pack=git-upload-pack",
+                "--no-tags",
+                "origin",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ),
             ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
         ]
         mock_worktree.assert_awaited_once_with(
@@ -737,10 +744,12 @@ class TestAnonymizationGate:
                 gh_token="ghtoken",
             )
 
-        # Find the final status transition — should be anonymization_failed
-        assert any(status == "anonymization_failed" for _, status in update_calls), (
-            f"Expected anonymization_failed in status transitions: {update_calls}"
+        # Publication fails closed before any PR payload exists: the attempt ends
+        # "failed" (publication_unavailable) and never reaches anonymization_failed.
+        assert any(status == "failed" for _, status in update_calls), (
+            f"Expected failed in status transitions: {update_calls}"
         )
+        assert not any(status == "anonymization_failed" for _, status in update_calls)
 
 
 # ---------------------------------------------------------------------------
