@@ -28,6 +28,7 @@ import type {
   ModelAttentionEpisode,
   ModelCatalogEntry,
 } from "@/api/types.ts";
+import { ModelAllowanceStrip } from "@/components/settings/ModelAllowanceStrip";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Switch } from "@/components/ui/switch";
@@ -59,6 +60,7 @@ import {
 import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
+  useModelAllowance,
   useModelAttention,
   useModelCatalogDeleteImpact,
   useModelCatalog,
@@ -1786,6 +1788,7 @@ export default function SettingsModelsPage() {
 
   const { data, isLoading, isError } = useModelCatalog();
   const attentionQuery = useModelAttention();
+  const allowanceQuery = useModelAllowance();
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const spendSummary = useSpendSummary(
@@ -1944,6 +1947,12 @@ export default function SettingsModelsPage() {
           </div>
         )
       )}
+
+      <ModelAllowanceStrip
+        data={allowanceQuery.data?.data}
+        isError={allowanceQuery.isError}
+        isForbidden={allowanceQuery.isForbidden}
+      />
 
       {/* Add model dialog */}
       <AddModelDialog open={addOpen} onOpenChange={setAddOpen} />

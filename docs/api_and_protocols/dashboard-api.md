@@ -77,6 +77,19 @@ the inventory; the generated OpenAPI schema lists every operation and its respon
 Cross-cutting envelope, pagination, and degraded-source rules are in
 [Response Conventions](response-conventions.md).
 
+### Provider allowance observation
+
+`GET /api/settings/models/allowance` (`src/butlers/api/routers/model_settings.py`) is an
+owner-only, read-only projection of `public.provider_allowance_states`, guarded by the same
+`require_dashboard_owner_control` dependency as `/api/settings/models/attention`. It returns
+`{available, accounts: [{account_key, state, reset_at, reset_source, first_seen_at, updated_at,
+entries: [{id, alias}]}]}`; catalog entries belong to the account named by
+`COALESCE(allowance_account, runtime_type)`. A read failure returns the degraded envelope
+(`available: false`, empty `accounts`) and logs without row content. The Models tab renders it as
+an Allowance strip and the `/system` verdict adds an allowance source (a 403 is silent, an
+unreadable table reads "allowance unknown"). It never writes, resets, or probes. The model-routing
+contract page cross-links this section after the contract-evolution change that owns it lands.
+
 ## Auto-Discovered Butler Routers
 
 Butler-specific API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. The discovery process:
