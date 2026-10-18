@@ -21,31 +21,21 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_db_manager, get_mcp_manager
 from butlers.config import ConfigError, load_config
 from butlers.core.runtime_config import resolve_effective_core_groups
+from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["runtime-config"])
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
 
-# Known core tool groups — PATCH rejects unknown group names to prevent typos.
+# Known core tool groups — PATCH rejects unknown group names to prevent typos. Derived from the
+# checked-in tool presentation inventory, which a contract test pins to the groups the core tool
+# modules register ("direct" marks ungated registrations, not a group), so this set cannot drift
+# from what a daemon can actually gate.
 KNOWN_CORE_GROUPS: frozenset[str] = frozenset(
-    {
-        "infra",
-        "state",
-        "scheduling",
-        "sessions",
-        "notifications",
-        "media",
-        "temporal",
-        "module_mgmt",
-        "switchboard_routing",
-        "switchboard_backfill",
-        "delegation",
-        "domain_events",
-        "fleet_cases",
-        "cost_claims",
-        "graph",
-    }
+    item.group_name
+    for item in TOOL_PRESENTATION_INVENTORY
+    if item.module_name == "core" and item.group_name not in (None, "direct")
 )
 
 # Fields that require a daemon restart to take effect.
