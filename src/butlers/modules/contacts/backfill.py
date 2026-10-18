@@ -19,7 +19,6 @@ matching routes through public.entities and relationship.entity_facts.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
@@ -43,6 +42,11 @@ from butlers.modules.contacts.sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class CandidateNameUnavailable(Exception):
+    """No collision-free name could be generated for a duplicate-candidate entity."""
+
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
@@ -344,6 +348,8 @@ class ContactBackfillWriter:
         else:
             entity_id = await self._ensure_entity(first, last, nickname, company)
 
+        if entity_id is None and duplicate_candidate:
+            raise CandidateNameUnavailable
         if entity_id is None:
             raise ValueError(
                 f"ContactBackfill: could not resolve or create entity for external_id="
@@ -406,11 +412,13 @@ class ContactBackfillWriter:
     ) -> uuid.UUID | None:
         """Insert a brand-new entity on the caller's transaction, never reusing one.
 
-        The first attempt uses the contact's own name. A live entity with the same
-        canonical name and type already exists in the ambiguous case, so a name
-        collision (caught inside a savepoint, which keeps the outer transaction
-        usable) retries once with a deterministic, content-free suffix; the
-        original name stays as an alias so name lookups still find the entity.
+        The entity gets a fresh random uuid (explicit id) and the canonical name
+        ``"<name> [<first 8 hex of that id>]"``; the plain name is kept as an alias so
+        name lookups still find it. The suffix is random, never derived from the
+        provider contact's identifiers, because ``canonical_name`` is readable by every
+        butler role and reaches LLM context. An insert that still collides is caught in
+        a savepoint (which keeps the outer transaction usable) and retried once with a
+        new id; ``None`` means both attempts collided.
         """
         canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
         if not canonical:
@@ -425,20 +433,19 @@ class ContactBackfillWriter:
             for c in (nickname, first_name)
             if c and c.strip() and c.strip().lower() != canonical.lower()
         ]
-        token = hashlib.sha256(
-            f"{self._provider}:{self._account_id}:{contact.external_id}".encode()
-        ).hexdigest()[:8]
-        for name in (canonical, f"{canonical} [{token}]"):
-            entity_aliases = aliases if name == canonical else [*aliases, canonical]
+        aliases.append(canonical)
+        for _attempt in range(2):
+            entity_id = uuid.uuid4()
             try:
                 async with conn.transaction():
                     row = await conn.fetchrow(
-                        "INSERT INTO public.entities (canonical_name, entity_type, "
-                        "aliases, metadata, roles) VALUES ($1, $2, $3, "
+                        "INSERT INTO public.entities (id, canonical_name, entity_type, "
+                        "aliases, metadata, roles) VALUES ($1, $2, $3, $4, "
                         "'{}'::jsonb, '{}') RETURNING id",
-                        name,
+                        entity_id,
+                        f"{canonical} [{entity_id.hex[:8]}]",
                         entity_type,
-                        entity_aliases,
+                        aliases,
                     )
                 return row["id"] if row else None
             except asyncpg.UniqueViolationError:
@@ -1272,19 +1279,29 @@ class ContactBackfillEngine:
             # unit. The remaining child-table upserts are best-effort and stay
             # outside the transaction — their failure must not block the
             # idempotency anchor or strand a half-written entity.
-            async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    create_kwargs = {"duplicate_candidate": True} if ambiguous else {}
-                    local_id = await self._writer.create_contact(
-                        contact, executor=conn, **create_kwargs
-                    )
-                    await self._writer.upsert_source_link(local_id, contact, executor=conn)
+            try:
+                async with self._pool.acquire() as conn:
+                    async with conn.transaction():
+                        create_kwargs = {"duplicate_candidate": True} if ambiguous else {}
+                        local_id = await self._writer.create_contact(
+                            contact, executor=conn, **create_kwargs
+                        )
+                        await self._writer.upsert_source_link(local_id, contact, executor=conn)
+            except CandidateNameUnavailable:
+                # Nothing was written (the transaction rolled back). Skip this contact so
+                # the run and its cursor keep moving instead of wedging the account.
+                self._log_ambiguous(
+                    contact, strategy, entity_id=None, reason="candidate_name_unavailable"
+                )
+                return
             await self._writer.upsert_contact_info(local_id, contact)
             await self._writer.upsert_addresses(local_id, contact)
             await self._writer.upsert_important_dates(local_id, contact)
             await self._writer.upsert_labels(local_id, contact)
             if ambiguous:
-                self._log_ambiguous(strategy)
+                self._log_ambiguous(
+                    contact, strategy, entity_id=local_id, reason="created_as_duplicate_candidate"
+                )
             logger.info(
                 "ContactBackfill: created/updated entity %s from %s/%s external_id=%s",
                 local_id,
@@ -1334,19 +1351,28 @@ class ContactBackfillEngine:
                 contact.external_id,
             )
 
-    def _log_ambiguous(self, strategy: str) -> None:
-        """Warn that an ambiguous match was created as a duplicate candidate.
+    def _log_ambiguous(
+        self,
+        contact: CanonicalContact,
+        strategy: str,
+        *,
+        entity_id: uuid.UUID | None,
+        reason: str,
+    ) -> None:
+        """Warn about an ambiguous match (module-contacts log-record contract).
 
-        Content-free: provider, account, strategy and reason only. No external id,
-        name or other contact data.
+        Carries the entity id (when known), provider, account, external id, strategy and
+        reason. Never the display name or any channel value.
         """
         logger.warning(
             "contact_sync_ambiguous",
             extra={
+                "entity_id": str(entity_id) if entity_id else None,
                 "provider": self._provider,
                 "account_id": self._account_id,
+                "external_id": contact.external_id,
                 "strategy": strategy,
-                "reason": "created_as_duplicate_candidate",
+                "reason": reason,
             },
         )
 
