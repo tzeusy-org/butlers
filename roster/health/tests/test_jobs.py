@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -1720,7 +1721,9 @@ async def _insert_event(
     status: str = "confirmed",
     all_day: bool = False,
     metadata: dict | None = None,
+    booked: bool = False,
 ) -> str:
+    """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row."""
     event_id = str(uuid.uuid4())
     await pool.execute(
         """
@@ -1739,6 +1742,16 @@ async def _insert_event(
         status,
         metadata or {},
     )
+    if booked:
+        await pool.execute(
+            "INSERT INTO calendar_action_log "
+            "(idempotency_key, action_type, action_status, source_id, event_id, origin_ref) "
+            "VALUES ($1, 'workspace_user_create', 'applied', $2::uuid, $3::uuid, $4)",
+            f"book-{event_id}",
+            source_id,
+            event_id,
+            f"ref-{event_id}",
+        )
     return event_id
 
 
@@ -1799,7 +1812,7 @@ def _brief_message(client: _FakeSwitchboard) -> str:
         "no_prior_visit_defaults_to_90_days",
         "second_run_sends_nothing_and_reschedule_re_anchors",
         "events_not_on_health_calendar_trigger_nothing",
-        "health_booked_and_owner_added_appointments_are_briefed",
+        "only_health_bookings_are_briefed_and_pick_the_last_visit",
         "failed_delivery_is_retried_and_sent_once",
         "concurrent_runs_send_once",
         "thin_history_reads_no_baseline_yet",
@@ -1825,17 +1838,20 @@ async def test_visit_brief(provisioned_postgres_pool, case):
             await _setup_health_schema(pool)
             await _setup_visit_brief_tables(pool)
             source = await _insert_source(pool, health=True)
-            booked = {"butler_generated": True, "butler_name": "health"}
+            generated = {"butler_generated": True, "butler_name": "health"}
 
             if case == "since_last_visit_with_traceable_figures":
                 prior_start = now - timedelta(days=10)
-                await _insert_event(pool, source, title="Dr Tan", starts_at=prior_start)
+                await _insert_event(
+                    pool, source, title="Dr Tan", starts_at=prior_start, booked=True
+                )
                 upcoming = await _insert_event(
                     pool,
                     source,
                     title="BUTLER: Dr Tan follow-up https://clinic.example/visit",
                     starts_at=now + timedelta(hours=36),
-                    metadata=booked,
+                    metadata=generated,
+                    booked=True,
                 )
                 prior_end = prior_start + timedelta(hours=1)
                 # Rows before the prior visit are outside the period.
@@ -1905,7 +1921,8 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert (
                     "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
                 ) in text
-                assert "usual 70.3 kg (+/- 0.5), latest is within it" in text
+                assert re.search(r"usual range 69\.[01] to 71\.[56] kg, latest is within it", text)
+                assert "+/-" not in text
                 assert "Blood pressure (systolic): no data since" in text
                 assert "Resting heart rate: no data recorded" in text
                 assert "Hypertension: active to managed" in text
@@ -1927,7 +1944,7 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 )
             elif case == "no_prior_visit_defaults_to_90_days":
                 await _insert_event(
-                    pool, source, title="Dr Lim", starts_at=now + timedelta(hours=30)
+                    pool, source, title="Dr Lim", starts_at=now + timedelta(hours=30), booked=True
                 )
 
                 await brief.run_visit_brief(pool, now=now)
@@ -1939,7 +1956,7 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert "last 90 days" in _brief_message(client)
             elif case == "second_run_sends_nothing_and_reschedule_re_anchors":
                 event = await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
                 )
 
                 assert (await brief.run_visit_brief(pool, now=now))["sent"] == 1
@@ -1964,10 +1981,24 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 butler_lane = await _insert_source(pool, lane="butler")
                 await _insert_event(pool, primary, title="Team meeting", starts_at=soon)
                 await _insert_event(pool, butler_lane, title="Take pills", starts_at=soon)
-                # Health's own scheduled-task and reminder mirrors: generated, no BUTLER: title.
+                # Health's own scheduled-task and reminder mirrors: generated, no booking row,
+                # even when a task or reminder title starts with "BUTLER:".
                 await _insert_event(
-                    pool, source, title="weekly-health-summary", starts_at=soon, metadata=booked
+                    pool, source, title="weekly-health-summary", starts_at=soon, metadata=generated
                 )
+                await _insert_event(
+                    pool, source, title="BUTLER: Mirror", starts_at=soon, metadata=generated
+                )
+                # Another butler's booking on the shared Butlers calendar, and an owner-added
+                # event there: neither is a Health booking.
+                await _insert_event(
+                    pool,
+                    source,
+                    title="BUTLER: Flight SQ12",
+                    starts_at=soon,
+                    metadata={"butler_generated": True, "butler_name": "travel"},
+                )
+                await _insert_event(pool, source, title="Car service", starts_at=soon)
                 await _insert_event(pool, source, title="Later", starts_at=now + timedelta(days=5))
                 await _insert_event(pool, source, title="All day", starts_at=soon, all_day=True)
                 await _insert_event(
@@ -1986,26 +2017,52 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert result["considered"] == 0 and result["sent"] == 0
                 assert client.calls == []
                 assert await pool.fetchval("SELECT count(*) FROM visit_briefs") == 0
-            elif case == "health_booked_and_owner_added_appointments_are_briefed":
+            elif case == "only_health_bookings_are_briefed_and_pick_the_last_visit":
+                prior_start = now - timedelta(days=10)
+                await _insert_event(
+                    pool, source, title="Dr Tan", starts_at=prior_start, booked=True
+                )
+                # Yesterday's other-butler booking and owner event must not become the last visit.
+                await _insert_event(
+                    pool,
+                    source,
+                    title="BUTLER: Dinner with Alex",
+                    starts_at=now - timedelta(hours=26),
+                    metadata={"butler_generated": True, "butler_name": "relationship"},
+                )
+                await _insert_event(
+                    pool, source, title="Car service", starts_at=now - timedelta(hours=30)
+                )
                 booked_event = await _insert_event(
                     pool,
                     source,
                     title="BUTLER: Dr Lee",
                     starts_at=now + timedelta(hours=30),
-                    metadata=booked,
+                    metadata=generated,
+                    booked=True,
                 )
-                added_event = await _insert_event(
-                    pool, source, title="Dr Lim", starts_at=now + timedelta(hours=40)
+                # The owner renamed a Health booking in Google Calendar: still Health's.
+                renamed_event = await _insert_event(
+                    pool,
+                    source,
+                    title="Dr Wong",
+                    starts_at=now + timedelta(hours=40),
+                    metadata=generated,
+                    booked=True,
+                )
+                await _insert_event(
+                    pool, source, title="Car service", starts_at=now + timedelta(hours=35)
                 )
 
                 result = await brief.run_visit_brief(pool, now=now)
 
                 assert result["sent"] == 2
-                rows = await pool.fetch("SELECT event_id FROM visit_briefs")
-                assert {r["event_id"] for r in rows} == {booked_event, added_event}
+                rows = await pool.fetch("SELECT event_id, period_start FROM visit_briefs")
+                assert {r["event_id"] for r in rows} == {booked_event, renamed_event}
+                assert {r["period_start"] for r in rows} == {prior_start + timedelta(hours=1)}
             elif case == "concurrent_runs_send_once":
                 await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
                 )
                 sends: list[str] = []
 
@@ -2029,7 +2086,7 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert again["sent"] == 0 and "skipped_concurrent" not in again
             elif case == "thin_history_reads_no_baseline_yet":
                 await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
                 )
                 earlier = await _insert_measurement(
                     pool,
@@ -2054,7 +2111,7 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert weight["value"]["baseline"]["state"] == "insufficient_history"
             else:
                 await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
                 )
                 outcomes = iter([brief.FAILED, brief.DELIVERED, brief.DELIVERED])
 
