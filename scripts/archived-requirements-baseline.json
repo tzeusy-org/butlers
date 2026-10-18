@@ -391,14 +391,6 @@
       "excerpt": "Health Status"
     }
   ],
-  "2026-02-24-alpha-release-mvp/connector-gmail/[TARGET-STATE] Email Metadata Storage for Tier 2": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9cf1345d9d33",
-      "excerpt": "[TARGET-STATE] Email Metadata Storage for Tier 2"
-    }
-  ],
   "2026-02-24-alpha-release-mvp/core-daemon/Configuration Loading and Validation": [
     {
       "kind": "requirement",
@@ -1013,22 +1005,6 @@
       "scenario": null,
       "digest": "c014e4ec6e6b",
       "excerpt": "Missing channel identifier fallback"
-    }
-  ],
-  "2026-02-24-contacts-identity-model/core-notify/Notify tool registration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0b666cda436a",
-      "excerpt": "Notify tool registration"
-    }
-  ],
-  "2026-02-24-contacts-identity-model/core-notify/Role-based approval gating for notify": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "680d03f3dd53",
-      "excerpt": "Role-based approval gating for notify"
     }
   ],
   "2026-02-24-contacts-identity-model/dashboard-approvals/Approvals queue dashboard page": [
@@ -1943,14 +1919,6 @@
       "excerpt": "Spawner reads hot config fields per-spawn"
     }
   ],
-  "2026-04-25-runtime-config-seed-and-manage/runtime-config-dashboard-ui/Config tab displays runtime config from DB": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1dc232e76d61",
-      "excerpt": "Config tab displays runtime config from DB"
-    }
-  ],
   "2026-04-25-s3-blob-storage/core-daemon/Configuration Loading and Validation": [
     {
       "kind": "requirement",
@@ -2357,14 +2325,6 @@
       "scenario": null,
       "digest": "cb39d4aa0dd4",
       "excerpt": "Sidebar Navigation"
-    }
-  ],
-  "2026-05-13-extend-butler-detail-status-board-chrome/dashboard-butler-management/Butler detail page outer chrome conforms to the status-board archetype": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "11c70e12444c",
-      "excerpt": "Butler detail page outer chrome conforms to the status-board archetype"
     }
   ],
   "2026-05-13-extend-butler-detail-status-board-chrome/dashboard-butler-management/Chrome components SHALL comply with the token policy": [
@@ -2843,14 +2803,6 @@
       "scenario": null,
       "digest": "6d32b47d7ced",
       "excerpt": "Entity Hop view (`/entities/hop`)"
-    }
-  ],
-  "2026-05-20-relationship-tabs-to-entities/dashboard-relationship/Entity index page (`/entities`)": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a75ab859a7f6",
-      "excerpt": "Entity index page (`/entities`)"
     }
   ],
   "2026-05-20-relationship-tabs-to-entities/dashboard-relationship/Social Map preservation": [
@@ -3409,22 +3361,6 @@
       "excerpt": "- **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases i..."
     }
   ],
-  "2026-06-13-redesign-qa-dossier/qa-triage/Journal Event Emission — Triage": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b6764c75949a",
-      "excerpt": "Journal Event Emission — Triage"
-    }
-  ],
-  "2026-06-13-redesign-secrets-passport/core-credentials/Audit Action Enum Extension for Credential Lifecycle": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2077c1fe6c55",
-      "excerpt": "Audit Action Enum Extension for Credential Lifecycle"
-    }
-  ],
   "2026-06-13-redesign-secrets-passport/dashboard-api/Audit Log Filter by Credential Key": [
     {
       "kind": "requirement",
@@ -3433,28 +3369,12 @@
       "excerpt": "Audit Log Filter by Credential Key"
     }
   ],
-  "2026-06-13-redesign-secrets-passport/dashboard-api/Audit-History and Breaks-Catalogue Endpoints": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9b812277d597",
-      "excerpt": "Audit-History and Breaks-Catalogue Endpoints"
-    }
-  ],
   "2026-06-13-redesign-secrets-passport/dashboard-api/Generic Butler Secrets CRUD (compatibility)": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "ab1b31b6545d",
       "excerpt": "Generic Butler Secrets CRUD (compatibility)"
-    }
-  ],
-  "2026-06-13-redesign-secrets-passport/dashboard-api/Response Envelope Conformance for `/api/secrets/*` and `/api/oauth/*`": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d884b013b1a2",
-      "excerpt": "Response Envelope Conformance for `/api/secrets/*` and `/api/oauth/*`"
     }
   ],
   "2026-06-13-redesign-settings-dispatch-console/dashboard-approvals/Approvals Policy (Quiet Hours)": [
@@ -3533,14 +3453,6 @@
       "scenario": null,
       "digest": "ac1544449998",
       "excerpt": "Meeting-Prep Rail Read"
-    }
-  ],
-  "2026-06-24-calendar-prep-rail/calendar-overlay-aggregation/Relationship Prep Contribution Job Registration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7ca8e9b067bb",
-      "excerpt": "Relationship Prep Contribution Job Registration"
     }
   ],
   "2026-06-24-health-dashboard-overview-redesign/butler-health/Health Insight Scan Job": [
@@ -3639,14 +3551,6 @@
       "scenario": null,
       "digest": "288deac98cd0",
       "excerpt": "Context-Bus Gating at the notify() Owner-Default Path"
-    }
-  ],
-  "2026-07-11-attention-ledger-broker/proactive-insight-engine/Attention Ledger Recording of Delivered/Coalesced Candidates": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c0bfd3e20a33",
-      "excerpt": "Attention Ledger Recording of Delivered/Coalesced Candidates"
     }
   ],
   "2026-07-14-entity-keyed-preferred-channel/core-notify/Preferred-channel resolution for contact-targeted notifications": [
@@ -4087,30 +3991,6 @@
       "scenario": null,
       "digest": "1623c1f59e9d",
       "excerpt": "The finance butler SHALL run bill checks, subscription alerts, monthly summaries, and intelligence-driven digests"
-    }
-  ],
-  "home-butler-enhancements/home-deterministic-jobs/Entity State Access and HA REST Fallback for Jobs": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "f26e507d0858",
-      "excerpt": "Entity State Access and HA REST Fallback for Jobs"
-    }
-  ],
-  "memory-spec-alignment/memory-discovery-catalog/Butler roles have narrow grants on shared.memory_catalog": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "df5bb65eaa0a",
-      "excerpt": "Butler roles have narrow grants on shared.memory_catalog"
-    }
-  ],
-  "memory-spec-alignment/memory-discovery-catalog/Shared memory discovery catalog table": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0de661e037d7",
-      "excerpt": "Shared memory discovery catalog table"
     }
   ],
   "memory-spec-alignment/module-memory/Composite scoring for recall": [
