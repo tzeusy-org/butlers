@@ -226,7 +226,7 @@ class GeminiAdapter(RuntimeAdapter):
 
     Invokes the Gemini CLI binary via subprocess. The adapter handles:
     - Locating the ``gemini`` binary on PATH
-    - Passing system prompts via ``--system-prompt`` flag
+    - Delivering system prompts through a private file named by ``GEMINI_SYSTEM_MD``
     - Writing MCP config in Gemini-compatible JSON format
     - Passing through env vars
     - Parsing CLI output into (result_text, tool_calls)
@@ -340,9 +340,13 @@ class GeminiAdapter(RuntimeAdapter):
         config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
         if system_prompt:
             system_md = Path(config_dir.name) / "system.md"
-            fd = os.open(system_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(system_prompt)
+            try:
+                fd = os.open(system_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(system_prompt)
+            except BaseException:
+                config_dir.cleanup()
+                raise
             filtered_env = {
                 **(filtered_env if filtered_env is not None else os.environ),
                 "GEMINI_SYSTEM_MD": str(system_md),

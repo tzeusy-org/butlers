@@ -108,8 +108,44 @@ async def test_prompt_variable_coexists_with_the_mcp_settings_variable() -> None
 
 async def test_directory_is_removed_explicitly_not_by_garbage_collection() -> None:
     """An implicit TemporaryDirectory cleanup would emit a ResourceWarning."""
+    gc.collect()  # finalize garbage other tests left behind before recording
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         await _invoke()
         gc.collect()
-    assert not [w for w in caught if issubclass(w.category, ResourceWarning)]
+    ours = [
+        w
+        for w in caught
+        if issubclass(w.category, ResourceWarning) and "butlers-gemini-" in str(w.message)
+    ]
+    assert not ours
+
+
+async def test_failed_prompt_write_removes_the_directory_and_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+
+    real_open = os.open
+
+    def failing_open(path, *args, **kwargs):
+        if str(path).endswith("system.md"):
+            raise OSError("synthetic write failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("butlers.core.runtimes.gemini.os.open", failing_open)
+    gc.collect()
+    with (
+        warnings.catch_warnings(record=True) as caught,
+        patch("butlers.core.runtimes.gemini.shutil.which", return_value="/synthetic/gemini"),
+        patch(_EXEC) as spawn,
+        pytest.raises(OSError, match="synthetic write failure"),
+    ):
+        warnings.simplefilter("always")
+        await GeminiAdapter().invoke(
+            prompt="p", system_prompt=_PROMPT, mcp_servers={}, env={"PATH": "/bin"}
+        )
+    gc.collect()
+    spawn.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+    assert not [w for w in caught if "butlers-gemini-" in str(w.message)]
