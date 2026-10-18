@@ -24,6 +24,25 @@ A personal baseline SHALL be computed by a pure function from per-day values: th
 - **WHEN** five window days fall inside a deviation episode
 - **THEN** `n_expected` SHALL be reduced by five and those readings SHALL not influence the center
 
+### Requirement: Week-bucket baselines
+
+A metric MAY declare the `week` bucket, whose samples are one value per week keyed by the date the week starts on (the caller chooses the anchor weekday; the scorer does not). A `week` metric SHALL declare `window_days` as a whole number of weeks. Its window SHALL be the `window_days / 7` weekly samples ending `k_consecutive` weeks before the scored week, so `n_expected = window_days / 7` minus any weeks inside a deviation episode, and an episode SHALL open only on `k_consecutive` consecutive scored weeks. The `day` and `dow` buckets SHALL behave exactly as before.
+
+#### Scenario: A week window expects one sample per week
+
+- **WHEN** a `week` metric with `window_days = 56` is scored for the week starting on date D
+- **THEN** its baseline SHALL expect eight samples, keyed D minus 56 days through D minus 7 days in 7-day steps when `k_consecutive = 1`, and SHALL carry `n_expected = 8`
+
+#### Scenario: A week metric must declare whole weeks
+
+- **WHEN** a `week` metric declares `window_days = 60`
+- **THEN** the declaration SHALL be refused
+
+#### Scenario: Day and dow windows do not move
+
+- **WHEN** a `day` or `dow` metric is declared with `window_days = 60` and `k_consecutive = 3`
+- **THEN** its window SHALL be the 60 days ending three days before the scored day
+
 ### Requirement: Scoring never converts absence into normality
 
 Scoring a value SHALL return exactly one of `within`, `above`, `below`, `insufficient_history`, `unmeasurable` or `stale`, with precedence unmeasurable, then stale, then insufficient_history, then the value. A baseline computed longer ago than twice the metric's refresh interval SHALL score `stale`. `within` SHALL be returned only from a ready, fresh, measurable baseline. A deviation SHALL be `concerning` only when its direction is within the metric's declared concern (`above`, `below` or `both`).

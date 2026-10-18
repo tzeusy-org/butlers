@@ -35,4 +35,4 @@ is dead, and none keeps an anomaly out of its own baseline (bu-q7vx1q.15, JARVIS
 - Slice 4: Finance anomaly detection and the briefing on `metric_baselines` with currency-scoped
   keys; removal of the `spending_baseline` facts and the briefing's 2x average.
 - Slice 5: chronicler balance lanes and session spend adopt the scorer.
-- The `week` bucket (needs per-week aggregation); slice 1 ships `day` and `dow`.
+- Slice 1 shipped the `day` and `dow` buckets; the `week` bucket (one caller-aggregated sample per week) was added for slice 3 (bu-q7vx1q.94.2).
