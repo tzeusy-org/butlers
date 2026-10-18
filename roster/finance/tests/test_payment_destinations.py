@@ -1,8 +1,9 @@
 """Unit tests for payment destination normalization, fingerprinting and stamping (bu-s11n0s.21).
 
-No database: the real-Postgres cases through ``track_bill`` live in ``test_tools.py``. These
-cover the pure helpers and the verdict logic of ``_stamp_destination`` against a scripted
-connection. Keys and destinations here are synthetic.
+No database: the real-Postgres cases through ``track_bill`` live in ``test_tools.py`` and pin
+the verdicts. These cover only what those do not: normalization and classification, keyed
+fingerprinting, credential-store key resolution, and the unparseable path. Keys and
+destinations here are synthetic.
 """
 
 from __future__ import annotations
@@ -108,58 +109,17 @@ async def test_missing_key_is_not_configured_and_warns_once(store, caplog):
     assert sum(pd.PAYMENT_DESTINATION_KEY_NAME in r.getMessage() for r in caplog.records) >= 1
 
 
-async def test_first_destination_is_an_unverifiable_baseline():
+async def test_unparseable_destination_stores_nothing():
+    """Not pinned by the Postgres cases: junk input is unverifiable and touches no table."""
     pd.configure_destination_key("synthetic-key-a")
     conn = _ScriptedConn(prior_count=0, inserted=True)
     stamp, unchanged = await _stamp_destination(
-        conn, payee_key="acme", payment_destination="0123456789", existing_fingerprint=None
-    )
-    assert unchanged is False
-    assert (stamp.verdict, stamp.reason) == ("unverifiable", pd.REASON_NO_PRIOR)
-    assert stamp.fingerprint
-
-
-async def test_seen_destination_is_known():
-    pd.configure_destination_key("synthetic-key-a")
-    conn = _ScriptedConn(prior_count=2, inserted=False)
-    stamp, _ = await _stamp_destination(
-        conn, payee_key="acme", payment_destination="0123456789", existing_fingerprint=None
-    )
-    assert (stamp.verdict, stamp.reason) == ("known", None)
-
-
-async def test_different_destination_for_a_payee_with_history_is_new():
-    pd.configure_destination_key("synthetic-key-a")
-    conn = _ScriptedConn(prior_count=1, inserted=True)
-    stamp, _ = await _stamp_destination(
-        conn, payee_key="acme", payment_destination="9876543210", existing_fingerprint=None
-    )
-    assert stamp.verdict == "new_for_counterparty"
-
-
-async def test_same_fingerprint_on_the_bill_is_unchanged_and_counts_nothing():
-    pd.configure_destination_key("synthetic-key-a")
-    fingerprint = pd.fingerprint_destination(pd.normalize_destination("0123456789"))
-    conn = _ScriptedConn(prior_count=1, inserted=False)
-    stamp, unchanged = await _stamp_destination(
-        conn,
-        payee_key="acme",
-        payment_destination="012-345-6789",
-        existing_fingerprint=fingerprint,
-    )
-    assert (stamp, unchanged) == (None, True)
-    assert conn.queries == []
-
-
-async def test_missing_key_and_unparseable_store_nothing():
-    conn = _ScriptedConn(prior_count=0, inserted=True)
-    keyless, _ = await _stamp_destination(
-        conn, payee_key="acme", payment_destination="0123456789", existing_fingerprint=None
-    )
-    assert (keyless.verdict, keyless.reason) == ("unverifiable", pd.REASON_KEY_UNAVAILABLE)
-    pd.configure_destination_key("synthetic-key-a")
-    junk, _ = await _stamp_destination(
         conn, payee_key="acme", payment_destination="--", existing_fingerprint=None
     )
-    assert (junk.verdict, junk.reason) == ("unverifiable", pd.REASON_UNPARSEABLE)
+    assert unchanged is False
+    assert (stamp.verdict, stamp.reason, stamp.fingerprint) == (
+        "unverifiable",
+        pd.REASON_UNPARSEABLE,
+        None,
+    )
     assert conn.queries == []
