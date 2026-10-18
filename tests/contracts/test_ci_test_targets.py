@@ -702,6 +702,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
             filenames = [
                 "junit.xml",
                 "top-durations.txt",
+                "failed-nodes.txt",
                 "shard-observation.json",
                 "runner-observation.json",
             ]
