@@ -65,7 +65,7 @@ Scope: v1-mandatory
 
 ### Requirement: Batch Review Cap — Maximum 20 Pending Schedules Per Mind Map
 
-To prevent schedule proliferation, no mind map SHALL have more than 20 pending review schedules active simultaneously. If the cap would be exceeded, the card reconciler checks the current count before calling `schedule_create()`. When pending reviews exceed 20, all overdue cards are batched into a single "review session" schedule rather than creating individual schedules. A card covered by a batch session remains a durable card and remains pending until it is answered or expires; batching changes how it is scheduled, never whether it exists.
+To prevent schedule proliferation, no mind map SHALL have more than 20 pending review schedules active simultaneously. If the cap would be exceeded, the card reconciler checks the current count before creating a schedule occurrence through the scheduler's internal API. When pending reviews exceed 20, all overdue cards are batched into a single "review session" schedule rather than creating individual schedules. A card covered by a batch session remains a durable card and remains pending until it is answered or expires; batching changes how it is scheduled, never whether it exists.
 
 ID: REQ-module-education-spaced-repetition-007
 Source: bu-h40h2b.4 (education-evidence-honesty); bu-6e8j89
@@ -290,7 +290,7 @@ Scope: v1-mandatory
 #### Scenario: Answer captured but grader failed
 
 - **WHEN** an owner answer is captured and grading fails
-- **THEN** the card SHALL be `answered` with null `quality` and null `quiz_response_id`
+- **THEN** the card SHALL be `answered` with null `quality` and a `quiz_response_id` linking the ungraded `quiz_responses` row (null `quality`) retained at capture
 - **AND** the node's mastery SHALL be unchanged
 
 #### Scenario: Failure before capture invents nothing

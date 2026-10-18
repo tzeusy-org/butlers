@@ -80,6 +80,8 @@ Capabilities touched (see `specs/`): `module-education-curriculum`, `module-educ
 - Requirements this change rewrites that neither change touches were rebuilt against the current
   baseline text in `openspec/specs/`.
 
+**Cutover dependency.** Slice 2's review delivery (tasks 2.3 and 2.4, and the review-delivery acceptance) can land only with or after the RFC 0038 cutover: SR-005 "Schedule Creation" requires an occurrence of a git-declared obligation and bans prompt mode, no obligation runtime exists before the cutover, and prompt mode is the only model-backed scheduled dispatch today.
+
 ## Open owner questions (not settled by RFC 0038)
 
 - Which public writer wins. RFC 0038's delta has the reply-evaluating lead call

@@ -14,7 +14,7 @@ the corresponding piece lands.
       Scheduler` and `Review Delivery via notify()`) on its text. RFC 0038 wins where it decides; resolve
       the open owner questions in `proposal.md` first.
 - [ ] 0.3 Several kept scenario headings no longer describe their bodies (mastery "Response recorded
-      with null user answer" and "Mastered node is not regressed"; spaced-repetition "Schedule name
+      with null user answer", "Response recorded with optional session ID" and "Mastered node is not regressed"; spaced-repetition "Schedule name
       encodes node and repetition", "Failed recall resets repetition counter in schedule name" and
       "Delivery channel defaults to the owner contact's preferred channel"), because OpenSpec 1.9
       refuses a MODIFIED block that drops a baseline scenario name. Archive the doctrine
@@ -45,6 +45,8 @@ Acceptance:
 - Legacy rows stay readable and render unverified.
 
 ### 2. Slice 2: propagation, one writer, review delivery
+
+> Dependency: tasks 2.3 and 2.4 (and the review-delivery acceptance they serve) can land only with or after the RFC 0038 cutover. The Schedule Creation requirement (SR-005) requires an occurrence of a git-declared obligation and bans prompt mode, no obligation runtime exists before the cutover, and prompt mode is the only model-backed scheduled dispatch today.
 
 - [ ] 2.1 Route every evidence-bearing producer through one internal transaction; remove the second public writer and the mastery arguments of `mind_map_node_update`.
 - [ ] 2.2 Review cards created or superseded in the same transaction; pending reviews read cards.
