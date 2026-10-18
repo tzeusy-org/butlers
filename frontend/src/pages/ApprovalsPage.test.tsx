@@ -154,6 +154,13 @@ type AnyMock = any;
 // Fixtures
 // ---------------------------------------------------------------------------
 
+// The origin label as assistive technology reads it (visible text plus the sr-only prefix).
+function originEls(root: ParentNode, label: string, scope = ""): Element[] {
+  return [...root.querySelectorAll(`${scope} span`.trim())].filter(
+    (el) => el.textContent === `Approval origin: ${label}`,
+  );
+}
+
 function makeSummary(id: string, toolName = "send_email") {
   return {
     id,
@@ -680,7 +687,7 @@ describe("ApprovalsPage — load-more", () => {
     // Both the note and the surviving row render.
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).not.toBeNull();
     expect(container.textContent).toContain("send email");
-    expect(container.querySelector('[data-testid="rail-item"] [data-approval-origin="Prepared"]')).not.toBeNull();
+    expect(originEls(container, "Prepared", '[data-testid="rail-item"]')).not.toHaveLength(0);
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')?.getAttribute("role")).toBe("alert");
   });
 
@@ -872,7 +879,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
         await flush();
       });
       const label = origin === "prepared" ? "Prepared" : "Origin unknown";
-      expect(container.querySelectorAll(`[data-approval-origin="${label}"]`)).toHaveLength(2);
+      expect(originEls(container, label)).toHaveLength(2);
       expect(container.querySelector('[data-testid="rail-item"]')?.textContent).toContain("pending");
       expect(container.querySelector('[data-testid="dossier-push-failed"]')).toBeNull();
       expect(container.querySelector('[data-testid="rail-item-push-failed"]')).toBeNull();
@@ -924,7 +931,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
       await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
       await flush();
     });
-    expect(container.querySelectorAll('[data-approval-origin="Prepared"]')).toHaveLength(2);
+    expect(originEls(container, "Prepared")).toHaveLength(2);
     expect(container.querySelector('[data-testid="rail-item-push-failed"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="dossier-push-failed"]')?.getAttribute("role")).toBe("alert");
   });
@@ -2189,9 +2196,9 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
     expect(getApprovalDetail).toHaveBeenCalledWith("a2");
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
-    await flushUntil(() => container.querySelectorAll('[data-approval-origin="Prepared"]').length === 2);
-    expect(container.querySelector('[data-approval-id="a1"] [data-approval-origin="Origin unknown"]')).not.toBeNull();
-    expect(container.querySelector('[data-approval-id="a2"] [data-approval-origin="Prepared"]')).not.toBeNull();
+    await flushUntil(() => originEls(container, "Prepared").length === 2);
+    expect(originEls(container, "Origin unknown", '[data-approval-id="a1"]')).toHaveLength(1);
+    expect(originEls(container, "Prepared", '[data-approval-id="a2"]')).toHaveLength(1);
 
     vi.mocked(getApprovalDetail).mockClear();
     act(() => root.unmount());

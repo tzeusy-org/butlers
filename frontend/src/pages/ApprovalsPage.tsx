@@ -454,10 +454,7 @@ function DeliveryTruth({ delivery }: { delivery: ApprovalDeliveryTruth }) {
 function ApprovalOrigin({ origin }: { origin?: "prepared" | null }) {
   const label = origin === "prepared" ? "Prepared" : "Origin unknown";
   return (
-    <span
-      data-approval-origin={label}
-      className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground"
-    >
+    <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
       <span className="sr-only">Approval origin: </span>
       {label}
     </span>
