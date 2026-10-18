@@ -22,6 +22,7 @@ import {
   useUpdateButlerPrompt,
 } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
+import { useRuntimeConfig } from "@/hooks/use-butlers";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { bucketHourInZone } from "@/lib/hourly-buckets";
@@ -173,6 +174,21 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 // §1 Identity & routing (static from runtime config)
 // ---------------------------------------------------------------------------
 
+// Tiers each memory read ceiling admits (mirrors the server-held read policy).
+const MEMORY_CEILING_ADMITS: Record<string, string> = {
+  normal: "normal only",
+  internal: "normal + pii",
+  confidential: "all tiers",
+};
+
+function memoryCeilingLabel(value: unknown): string {
+  if (typeof value === "string" && Object.hasOwn(MEMORY_CEILING_ADMITS, value)) {
+    return `${value} · ${MEMORY_CEILING_ADMITS[value]}`;
+  }
+  // Missing or unrecognized values fail closed to the lowest ceiling.
+  return `normal · ${MEMORY_CEILING_ADMITS.normal} (default, fail-closed)`;
+}
+
 function IdentitySection({ butlerName }: { butlerName: string }) {
   // Model + per-session timeout are owned by the model catalog (resolved per
   // complexity tier), not runtime_config — core_073 moved session_timeout_s onto
@@ -180,6 +196,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
   // read-only here and defer all model/timeout editing to the Models tab.
   const { data: resolved, isLoading } = useResolveModel(butlerName, DEFAULT_COMPLEXITY);
   const r = resolved?.data;
+  const { data: runtimeConfig, isLoading: runtimeLoading } = useRuntimeConfig(butlerName);
 
   return (
     <Section n={1} title="Identity & routing" hint="model, fallback chain, schedule, ceilings">
@@ -209,6 +226,12 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
                   : r?.resolved && r.session_timeout_s != null
                     ? `${r.session_timeout_s}s`
                     : "—"
+              }
+            />
+            <ConfigRow
+              label="Memory read ceiling"
+              value={
+                runtimeLoading ? "…" : memoryCeilingLabel(runtimeConfig?.catalog_read_sensitivity)
               }
             />
           </div>
