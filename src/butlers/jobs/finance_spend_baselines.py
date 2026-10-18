@@ -16,6 +16,16 @@ with no spend is not a sample (a ledger has no instrument to be silent), so a ca
 bought only now and then stays ``insufficient_history`` instead of being called anomalous.
 
 No LLM and no cross-schema read.
+
+Measurability is deliberately not judged through the expected-signal tri-state. That evaluation
+needs the band's samples to come from stored rows written by one identifiable connector producer
+(``source`` and ``source_endpoint_identity``) and a consumer that could read that producer's
+silence as "normal". Transactions carry neither: they arrive from several sources (bank sync,
+email, manual entry, imports) with no producer identity column, so every band would fail closed
+as ``producer_unknown`` and stay unmeasurable for good. Bands are therefore scored as measurable,
+and the honesty the tri-state would add is carried by what is here instead: ``min_n`` and
+coverage (``insufficient_history``), the 14-day staleness rule, and consumers that surface
+above-band claims only. Nothing here ever says spending is "normal" or "within range".
 """
 
 from __future__ import annotations
@@ -76,6 +86,7 @@ def spend_metric(
         k_consecutive=1,
         concern="above",
         min_dispersion=min_dispersion,
+        # Required by the declaration but deliberately never registered: see the module docstring.
         expected_signal_key=f"finance:baseline:{key}",
         refresh_interval=timedelta(days=7),
     )

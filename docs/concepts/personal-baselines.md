@@ -37,7 +37,9 @@ currency (`spend.category:<category>:<CCY>`; `src/butlers/jobs/finance_spend_bas
 a category needs 4 weeks of spend before it has a band. The `anomaly_scan` tool and the daily
 briefing score the spend of the week so far against the stored band and report only an `above` state
 with the usual range and the weeks it is drawn from; thin, stale or missing history is never called
-an anomaly. Currencies are never mixed. Merchant amount anomalies and new-merchant detection keep
+an anomaly, and nothing ever reports spending as normal or within range. Transactions have no single
+connector producer identity, so Finance does not use the expected-signal measurability check; coverage,
+the 4-week floor and the staleness rule stand in for it. Currencies are never mixed. Merchant amount anomalies and new-merchant detection keep
 their inline computation, and the old write-only `spending_baseline` memory facts are retracted
 (rows kept) by the same job.
 

@@ -485,3 +485,56 @@ async def test_retirement_survives_a_missing_facts_table() -> None:
             raise RuntimeError("no facts")
 
     assert await fsb.retire_spending_baseline_facts(_Broken()) == 0
+
+
+# ---------------------------------------------------------------------------
+# No measurability claim, no "normal" claim
+# ---------------------------------------------------------------------------
+
+
+async def test_refresh_never_consults_the_expected_signal_evaluation() -> None:
+    rows = [
+        {
+            "category": "dining",
+            "currency": "SGD",
+            "posted_at": datetime(2026, 4, 20, 9, tzinfo=UTC) - timedelta(weeks=i),
+            "amount": 100.0,
+        }
+        for i in range(6)
+    ]
+    stored = []
+
+    async def _upsert(pool, baseline):
+        stored.append(baseline)
+        return True
+
+    boom = AsyncMock(side_effect=AssertionError("expected-signal must not be used"))
+    with (
+        patch.object(fsb, "upsert_baseline", _upsert),
+        patch("butlers.core.expected_signals.upsert_expected_signal", boom),
+    ):
+        await fsb.refresh_category_baselines(_FakePool(history=rows), now=_NOW, zone=UTC)
+    boom.assert_not_awaited()
+    (band,) = stored
+    assert band.measurability == "measurable"
+
+
+async def test_no_surface_calls_spending_normal_or_within_range() -> None:
+    recent = datetime.now(UTC) - timedelta(minutes=1)
+    pool = _BriefingPool(
+        week=[
+            _spend_row("dining", "SGD", 310.0, recent),
+            _spend_row("groceries", "SGD", 120.0, recent),
+            _spend_row("travel", "USD", 900.0, recent),
+        ],
+        bands=[
+            _band_row("dining", "SGD", computed_at=datetime.now(UTC)),
+            _band_row("groceries", "SGD", computed_at=datetime.now(UTC)),
+        ],
+    )
+    _, envelope = await _briefing(pool)
+    text = " ".join([envelope["summary"]] + [h["text"] for h in envelope["highlights"]]).lower()
+    assert "dining" in text
+    assert "groceries" not in text and "travel" not in text
+    for banned in ("normal", "within", "as usual", "on track"):
+        assert banned not in text
