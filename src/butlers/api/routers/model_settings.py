@@ -1028,12 +1028,15 @@ async def run_verify_all_models(
     client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    # Rows that draw on one allowance (same runtime and account) are probed one after another,
-    # so a sweep never bursts a single account into a 429.  Rows without an account share
-    # their runtime's group: the safe reading of "unknown" is "the same account".
-    groups: dict[tuple[Any, Any], list[Any]] = {}
+    # Rows that draw on one allowance account are probed one after another, so a sweep never
+    # bursts a single account into a 429.  The account is the repo identity
+    # ``COALESCE(allowance_account, runtime_type)`` (``ALLOWANCE_ACCOUNT_KEY_SQL`` in
+    # ``core.model_routing``): a label reused across runtimes shares one allowance, and a row
+    # without a label belongs to the account named like its runtime.
+    groups: dict[Any, list[Any]] = {}
     for row in rows:
-        key = (_row_value(row, "runtime_type"), _row_value(row, "allowance_account"))
+        account = _row_value(row, "allowance_account")
+        key = account if account is not None else _row_value(row, "runtime_type")
         groups.setdefault(key, []).append(row)
 
     async def _verify_group(group: list[Any]) -> list[ProbeResult]:
