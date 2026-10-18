@@ -490,7 +490,7 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
             ).scalar_one()
 
     # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     command.upgrade(relationship_core, "core_076")
     assert relationship_read_default() is False
     check_bootstrap_database(db_url)
@@ -569,13 +569,16 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
     finally:
         engine.dispose()
 
-    with pytest.raises(ProgrammingError, match="permission denied"):
+    # sw_047 grants the reader as soon as the chain creates message_inbox.
+    assert (
         _execute_as_role(
             db_url,
             RUNTIME_ROLES["relationship"],
             "SELECT COUNT(*) FROM switchboard.message_inbox",
             scalar=True,
         )
+        == 1
+    )
 
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
     # pinned-revision: both genuine schema histories must finish core_083's
@@ -613,13 +616,13 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     check_bootstrap_database(db_url)
     command.upgrade(relationship_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     check_bootstrap_database(db_url)
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     assert (
         _execute_as_role(
             db_url,
