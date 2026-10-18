@@ -135,7 +135,7 @@ async def measurement_log(
             predicate=predicate,
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             entity_id=owner_entity_id,
             valid_at=valid_at,
