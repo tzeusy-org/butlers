@@ -633,6 +633,7 @@ export default function EntityFinder() {
         </DialogDescription>
         <Command
           label="Command menu"
+          value={activeValue}
           onValueChange={setActiveValue}
           className="relative mx-auto flex h-full min-h-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl sm:h-auto"
           onKeyDown={(e) => {

@@ -43,7 +43,6 @@ vi.mock("radix-ui", async (importOriginal) => {
 const setButlersState = setUseButlersState;
 
 const navIntentHandlers = {
-  cancel: vi.fn(),
   onPointerEnter: vi.fn(),
   onPointerLeave: vi.fn(),
   onFocus: vi.fn(),
