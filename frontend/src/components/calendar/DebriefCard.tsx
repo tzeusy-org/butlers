@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router";
 
 import type { PendingDebrief } from "@/api/types.ts";
@@ -31,14 +31,21 @@ function DebriefRow({ debrief }: { debrief: PendingDebrief }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // Stable across retries of the same text so the server can de-duplicate the submission;
+  // a new id is minted once the text changes or the send succeeds.
+  const attempt = useRef<{ text: string; messageId: string } | null>(null);
 
   const send = async () => {
     if (!text.trim() || sending) return;
     setSending(true);
     setError(null);
     try {
-      const id = await sendDebriefReply(debrief.number, text);
-      setConversationId(id);
+      if (attempt.current?.text !== text) {
+        attempt.current = { text, messageId: crypto.randomUUID() };
+      }
+      const id = await sendDebriefReply(debrief, text, attempt.current.messageId);
+      attempt.current = null;
+      setConversationId(id || null);
       setText("");
       await queryClient.invalidateQueries({ queryKey: PENDING_DEBRIEFS_KEY });
     } catch (err) {

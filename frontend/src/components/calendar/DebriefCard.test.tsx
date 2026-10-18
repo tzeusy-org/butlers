@@ -99,7 +99,11 @@ describe("DebriefCard", () => {
     fireEvent.click(screen.getByTestId("debrief-reply-send"));
 
     await waitFor(() =>
-      expect(sendDebriefReply).toHaveBeenCalledWith(3, "send Sam the deck by Friday"),
+      expect(sendDebriefReply).toHaveBeenCalledWith(
+        DEBRIEF,
+        "send Sam the deck by Friday",
+        expect.any(String),
+      ),
     );
     const link = await screen.findByTestId("debrief-reply-conversation");
     expect(link.getAttribute("href")).toBe("/chat/conv-9");
@@ -121,7 +125,35 @@ describe("DebriefCard", () => {
 
     expect((await screen.findByTestId("debrief-reply-error")).textContent).toBe("HTTP 503");
     expect(input.value).toBe("nothing agreed");
+
+    // A retry of the same text reuses the message id; a changed text gets a new one.
+    vi.mocked(sendDebriefReply).mockRejectedValue(new Error("HTTP 503"));
+    fireEvent.click(screen.getByTestId("debrief-reply-send"));
+    await waitFor(() => expect(sendDebriefReply).toHaveBeenCalledTimes(2));
+    const [first, second] = vi.mocked(sendDebriefReply).mock.calls.map((c) => c[2]);
+    expect(second).toBe(first);
+    fireEvent.change(input, { target: { value: "none" } });
+    fireEvent.click(screen.getByTestId("debrief-reply-send"));
+    await waitFor(() => expect(sendDebriefReply).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(sendDebriefReply).mock.calls[2][2]).not.toBe(first);
     expect(screen.getByTestId("debrief-card")).toBeTruthy();
     expect(getPendingMeetingDebriefs).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends each duplicate-numbered debrief with its own record", async () => {
+    const other = { ...DEBRIEF, debrief_id: "d2", event_title: "Other sync" };
+    vi.mocked(getPendingMeetingDebriefs).mockResolvedValue({
+      debriefs: [{ ...DEBRIEF, number: 1 }, { ...other, number: 1 }],
+      debriefs_available: true,
+    });
+    vi.mocked(sendDebriefReply).mockResolvedValue("conv-1");
+    renderCard();
+
+    const inputs = await screen.findAllByTestId("debrief-reply-input");
+    fireEvent.change(inputs[1], { target: { value: "none" } });
+    fireEvent.click(screen.getAllByTestId("debrief-reply-send")[1]);
+
+    await waitFor(() => expect(sendDebriefReply).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(sendDebriefReply).mock.calls[0][0].debrief_id).toBe("d2");
   });
 });

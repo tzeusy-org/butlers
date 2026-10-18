@@ -35,6 +35,12 @@ Scope: v1-mandatory
 - **THEN** the Debrief card shows a degraded note and no empty card
 
 #### Scenario: Reply goes through the pinned conversation
-- **WHEN** the owner sends "send Sam the deck by Friday" on debrief number 3
-- **THEN** the dashboard posts `"3: send Sam the deck by Friday"` to the Relationship pinned conversation
-- **AND** on failure the text is kept with an inline error, and on success the pending list is refetched
+- **WHEN** the owner sends "send Sam the deck by Friday" on a debrief
+- **THEN** the dashboard posts `"[debrief:<debrief_id>] <title> (<date>): send Sam the deck by Friday"` to the Relationship pinned conversation, carrying the debrief's stable id because batch numbers restart at 1 per prompt batch
+- **AND** the reply is reported sent only once the stream yields `dispatch_accepted`; an `error` event or a stream that ends first is a failure
+- **AND** on failure the text is kept with an inline error and a retry reuses the same message id, and on success the pending list is refetched
+
+#### Scenario: Duplicate batch numbers do not misroute a reply
+- **WHEN** two pending debriefs both show number 1
+- **THEN** a reply from each card carries its own `debrief_id`
+- **AND** the `meeting-debrief` skill matches by `debrief_id` when present and by number only otherwise

@@ -1,45 +1,82 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createConversation } from "@/api/index.ts";
+import type { PendingDebrief } from "@/api/types.ts";
 import { debriefReplyMessage, sendDebriefReply } from "@/lib/debrief-reply.ts";
 
 vi.mock("@/api/index.ts", () => ({ createConversation: vi.fn() }));
 
+const DEBRIEF: PendingDebrief = {
+  debrief_id: "11111111-1111-1111-1111-111111111111",
+  number: 1,
+  event_title: "Roadmap\nsync",
+  occurrence_start: "2026-10-18T09:00:00+00:00",
+  prompted_at: "2026-10-18T11:00:00+00:00",
+  attendees: [],
+};
+
 function sse(...events: Array<[string, unknown]>): Response {
-  const body = events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+  const body = events
+    .map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+    .join("");
   return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
 beforeEach(() => vi.mocked(createConversation).mockReset());
 
 describe("debrief reply", () => {
-  it("prefixes the batch number the way the Telegram prompt numbers it", () => {
-    expect(debriefReplyMessage(1, "  send Sam the deck by Fri ")).toBe("1: send Sam the deck by Fri");
-    expect(debriefReplyMessage(null, "nothing agreed")).toBe("nothing agreed");
+  it("carries the stable debrief id, title and date, not the batch number", () => {
+    expect(debriefReplyMessage(DEBRIEF, "  send Sam the deck by Fri ")).toBe(
+      "[debrief:11111111-1111-1111-1111-111111111111] Roadmap sync (2026-10-18): send Sam the deck by Fri",
+    );
   });
 
-  it("posts to the relationship butler and returns the created conversation id", async () => {
+  it("two debriefs sharing a batch number produce distinct messages", () => {
+    const other = { ...DEBRIEF, debrief_id: "22222222-2222-2222-2222-222222222222" };
+
+    expect(debriefReplyMessage(DEBRIEF, "none")).not.toBe(debriefReplyMessage(other, "none"));
+  });
+
+  it("resolves only once dispatch_accepted arrives, with the conversation id", async () => {
+    vi.mocked(createConversation).mockResolvedValue(
+      sse(
+        ["conversation_created", { conversation_id: "conv-1" }],
+        ["dispatch_accepted", { routed_butler: null }],
+      ),
+    );
+
+    await expect(sendDebriefReply(DEBRIEF, "nothing agreed", "msg-1")).resolves.toBe("conv-1");
+
+    const [butler, body] = vi.mocked(createConversation).mock.calls[0];
+    expect(butler).toBe("relationship");
+    expect(body.message_id).toBe("msg-1");
+    expect(body.message).toContain("[debrief:11111111-1111-1111-1111-111111111111]");
+  });
+
+  it("does not count conversation_created alone as sent", async () => {
     vi.mocked(createConversation).mockResolvedValue(
       sse(["conversation_created", { conversation_id: "conv-1" }]),
     );
 
-    await expect(sendDebriefReply(2, "nothing agreed")).resolves.toBe("conv-1");
+    await expect(sendDebriefReply(DEBRIEF, "x", "msg-1")).rejects.toThrow("not confirmed");
+  });
 
-    const [butler, body] = vi.mocked(createConversation).mock.calls[0];
-    expect(butler).toBe("relationship");
-    expect(body.message).toBe("2: nothing agreed");
-    expect(body.message_id).toMatch(/^[0-9a-f-]{36}$/);
+  it("rejects on an error event after the conversation exists", async () => {
+    vi.mocked(createConversation).mockResolvedValue(
+      sse(
+        ["conversation_created", { conversation_id: "conv-1" }],
+        ["error", { code: "SWITCHBOARD_ERROR", message: "Switchboard unreachable" }],
+      ),
+    );
+
+    await expect(sendDebriefReply(DEBRIEF, "x", "msg-1")).rejects.toThrow(
+      "Switchboard unreachable",
+    );
   });
 
   it("rejects on a non-ok response", async () => {
     vi.mocked(createConversation).mockResolvedValue(new Response("no", { status: 503 }));
 
-    await expect(sendDebriefReply(1, "x")).rejects.toThrow("HTTP 503");
-  });
-
-  it("rejects when the stream reports an error before the conversation exists", async () => {
-    vi.mocked(createConversation).mockResolvedValue(sse(["error", { code: "X" }]));
-
-    await expect(sendDebriefReply(1, "x")).rejects.toThrow("not accepted");
+    await expect(sendDebriefReply(DEBRIEF, "x", "msg-1")).rejects.toThrow("HTTP 503");
   });
 });
