@@ -117,6 +117,7 @@ async def test_a_metric_failure_never_escapes_the_closure(monkeypatch, caplog) -
         await _close(conn)
 
     assert "knowledge gap closure failed" in caplog.text
+    assert "metric emission failed" in caplog.text
 
 
 def test_the_butler_label_is_the_logging_context_name(reader) -> None:

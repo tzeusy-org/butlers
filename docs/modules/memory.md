@@ -101,8 +101,9 @@ recording the fact reference, a value excerpt and the fact's server-stamped auth
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
 A closure that raises never fails the fact write: the write commits, the gap stays open, and
-`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, per `butler`) is incremented after a
-warning log; a failure to record the counter is logged and never fails the write.
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, per `butler`) is
+incremented after a warning log; a failure to record the counter is logged and never fails
+the write.
 
 The `memory_knowledge_gap_delivery` maintenance job (every ten minutes, no LLM session) posts one
 notice per origin thread into `public.dashboard_messages` and marks the gap `delivered`. Owner-class
