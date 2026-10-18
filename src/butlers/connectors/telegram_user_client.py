@@ -90,7 +90,11 @@ from butlers.credential_store import (
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env, is_db_unreachable
-from butlers.ingestion_bearer_scrub import is_auth_service_sender, scrub_envelope
+from butlers.ingestion_bearer_scrub import (
+    TELEGRAM_SERVICE_SENDER,
+    is_auth_service_sender,
+    scrub_envelope,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
@@ -834,6 +838,20 @@ class TelegramUserClientConnector:
         logger.info("Flushing all %d chat buffers (%s)", len(chat_ids), reason)
         await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
 
+    def _batch_participants(self, messages: list[Any] | None) -> list[str]:
+        """Sorted sender ids of a batch; the service sender when it took part."""
+        ids: set[str] = set()
+        for m in messages or ():
+            try:
+                sid = self._extract_sender_identity(m)
+            except Exception:
+                continue
+            if sid:
+                ids.add(str(sid))
+        if TELEGRAM_SERVICE_SENDER in ids:
+            return [TELEGRAM_SERVICE_SENDER]
+        return sorted(ids)
+
     def _record_batch_filtered_event(
         self,
         chat_id: str,
@@ -843,6 +861,7 @@ class TelegramUserClientConnector:
         subject_or_preview: str | None = None,
         status: str = "filtered",
         error_detail: str | None = None,
+        messages: list[Any] | None = None,
     ) -> None:
         """Record a filtered or errored batch event in the filtered event buffer.
 
@@ -857,24 +876,31 @@ class TelegramUserClientConnector:
             subject_or_preview: Optional subject or preview text.
             status: Row status; default "filtered", use "error" for processing failures.
             error_detail: Optional exception message or validation error text.
+            messages: The buffered batch messages. Their sender ids are stored as
+                ``sender.participants`` so a 777000 login-code batch is scrubbed
+                like the envelope: preview, payload and ``error_detail``.
         """
+        payload = FilteredEventBuffer.full_payload(
+            channel=self._config.channel,
+            provider=self._config.provider,
+            endpoint_identity=self._config.endpoint_identity,
+            external_event_id=batch_event_id,
+            external_thread_id=None,
+            external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
+            observed_at=datetime.now(UTC).isoformat(),
+            sender_identity=sender_identity,
+            raw={},
+        )
+        participants = self._batch_participants(messages)
+        if participants:
+            payload["sender"]["participants"] = participants
         self._filtered_event_buffer.record(
             external_message_id=batch_event_id,
             source_channel=self._config.channel,
             sender_identity=sender_identity,
             subject_or_preview=subject_or_preview,
             filter_reason=filter_reason,
-            full_payload=FilteredEventBuffer.full_payload(
-                channel=self._config.channel,
-                provider=self._config.provider,
-                endpoint_identity=self._config.endpoint_identity,
-                external_event_id=batch_event_id,
-                external_thread_id=None,
-                external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
-                observed_at=datetime.now(UTC).isoformat(),
-                sender_identity=sender_identity,
-                raw={},
-            ),
+            full_payload=payload,
             status=status,
             error_detail=error_detail,
         )
@@ -964,6 +990,7 @@ class TelegramUserClientConnector:
                         "block",
                         _ip_decision.matched_rule_type or "unknown",
                     ),
+                    messages=buffered_messages,
                 )
                 await self._flush_and_drain()
                 return
@@ -984,6 +1011,7 @@ class TelegramUserClientConnector:
                         "skip",
                         _gp_decision.matched_rule_type or "unknown",
                     ),
+                    messages=buffered_messages,
                 )
                 await self._flush_and_drain()
                 return
@@ -1031,6 +1059,7 @@ class TelegramUserClientConnector:
                             classify_ignore_kind(d_result)
                         ),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
+                        messages=buffered_messages,
                     )
                     await self._flush_and_drain()
                     return
@@ -1063,6 +1092,7 @@ class TelegramUserClientConnector:
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
                 error_detail=str(exc),
+                messages=buffered_messages,
             )
             await self._flush_and_drain()
 
