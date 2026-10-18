@@ -52,6 +52,8 @@ A dose is **missed** when its scheduled time today has already passed (at or bef
 
 The contribution SHALL carry these highlights, each only when it applies: missed doses (category `medication`, priority `high`, text `Missed dose(s) today: <names>`), doses due later today (category `medication`, priority `low`, text `Doses due later today: <names>`), and latest weight (category `weight`, priority `low`, text `Latest weight: <value>`). The summary SHALL combine `Missed N dose(s) today.` (N is the number of medications with at least one missed dose), `Took N dose(s).` (N is the number of non-skipped doses logged today) and `Weight: <value>.` when they apply, and read `No health updates today.` otherwise. `has_updates` SHALL be true exactly when at least one highlight is present, so a day with only taken doses has `has_updates=false`.
 
+ID: REQ-cross-butler-briefing-contribution-004
+
 #### Scenario: Health data available
 - **WHEN** the Health butler has active medications and a weight measurement from the past 7 days
 - **THEN** the contribution includes a missed-doses highlight (priority "high") for medications with an overdue untaken dose, a due-later highlight (priority "low") for medications with a dose still ahead today, and a latest-weight highlight (priority "low")
