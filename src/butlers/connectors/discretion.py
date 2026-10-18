@@ -14,8 +14,10 @@ Design constraints:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
@@ -298,9 +300,10 @@ class ContactWeightResolver:
             contact = await resolve_contact_by_channel(self._pool, channel_type, channel_value)
         except Exception:  # noqa: BLE001
             logger.debug(
-                "ContactWeightResolver DB error for %s:%s — defaulting unknown",
+                "ContactWeightResolver DB error for channel_type=%s value_sha=%s — "
+                "defaulting unknown",
                 channel_type,
-                channel_value,
+                _digest(str(channel_value)),
             )
             return self._tiers.unknown
 
@@ -362,6 +365,31 @@ def _build_user_prompt(context_entries: list[ContextEntry], entry: ContextEntry)
     )
 
 
+# Error-code token the same-tier failover loop in ``discretion_dispatcher`` puts at the start of
+# its terminal message.  It is the only part of an exception message the evaluator logs.
+_FAILOVER_EXHAUSTED_CODE = "same_tier_failover_exhausted"
+
+
+def _digest(text: str) -> str:
+    """Short sha256 prefix: lets two log lines be correlated without carrying the text."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _error_log_fields(exc: BaseException) -> str:
+    """Identifier-only description of ``exc`` for logs: class, error-code token, raise site.
+
+    Never includes the message (it can carry prompt or provider text) or the traceback text.
+    """
+    fields = [f"error_class={type(exc).__name__}"]
+    if str(exc).startswith(_FAILOVER_EXHAUSTED_CODE):
+        fields.append(f"error_code={_FAILOVER_EXHAUSTED_CODE}")
+    frames = traceback.extract_tb(exc.__traceback__)
+    if frames:
+        last = frames[-1]
+        fields.append(f"raised_at={last.filename.rsplit('/', 1)[-1]}:{last.lineno}:{last.name}")
+    return " ".join(fields)
+
+
 def _classify_default_error(exc: Exception) -> str:
     """Classify a discretion-call exception for the fail-open/fail-closed reason string.
 
@@ -388,7 +416,7 @@ def _classify_default_error(exc: Exception) -> str:
     Falls back to the raw exception class name for anything else. Timeouts and
     unparseable responses are classified by their own call sites, not here.
     """
-    if str(exc).startswith("same_tier_failover_exhausted"):
+    if str(exc).startswith(_FAILOVER_EXHAUSTED_CODE):
         return "failover_exhausted"
     decision = classify_failover_eligibility(FailoverContext(exception=exc))
     if decision.reason.startswith("provider_auth_error"):
@@ -692,13 +720,13 @@ class DiscretionEvaluator:
 
         prompt = _build_user_prompt(context_snapshot, entry)
 
-        _MAX_PROMPT_LOG = 500
-        _MAX_RESPONSE_LOG = 200
+        started = time.monotonic()
         logger.info(
-            "Discretion LLM input for source=%s (weight=%.2f):\n%s",
+            "Discretion LLM input for source=%s (weight=%.2f) prompt_chars=%d prompt_sha=%s",
             self._source,
             weight,
-            prompt[:_MAX_PROMPT_LOG] + ("…" if len(prompt) > _MAX_PROMPT_LOG else ""),
+            len(prompt),
+            _digest(prompt),
         )
 
         try:
@@ -707,9 +735,10 @@ class DiscretionEvaluator:
             )
         except TimeoutError:
             logger.warning(
-                "Discretion LLM timed out for source=%s (weight=%.2f) — defaulting %s",
+                "Discretion LLM timed out for source=%s (weight=%.2f) after %.0fms — defaulting %s",
                 self._source,
                 weight,
+                (time.monotonic() - started) * 1000,
                 fail_verdict,
             )
             discretion_evaluations_total.labels(
@@ -723,16 +752,17 @@ class DiscretionEvaluator:
                 is_fail_open=fail_open,
             )
         except Exception as exc:  # noqa: BLE001
-            # Log at ERROR with traceback — these are silent killers that
-            # cause the model to show 0 usage while messages flow through
-            # on the fail-open/closed default.
+            # Log at ERROR — these are silent killers that cause the model to show 0
+            # usage while messages flow through on the fail-open/closed default.  The
+            # message and traceback text can carry prompt or provider text, so only
+            # identifiers are logged (class, error-code token, raise site).
             logger.error(
-                "Discretion LLM error for source=%s (weight=%.2f): %s — defaulting %s",
+                "Discretion LLM error for source=%s (weight=%.2f): %s after %.0fms — defaulting %s",
                 self._source,
                 weight,
-                exc,
+                _error_log_fields(exc),
+                (time.monotonic() - started) * 1000,
                 fail_verdict,
-                exc_info=True,
             )
             discretion_evaluations_total.labels(
                 source=self._source,
@@ -757,19 +787,24 @@ class DiscretionEvaluator:
             )
 
         logger.info(
-            "Discretion LLM result for source=%s (weight=%.2f): %s",
+            "Discretion LLM result for source=%s (weight=%.2f) response_chars=%d "
+            "response_sha=%s latency_ms=%.0f",
             self._source,
             weight,
-            raw[:_MAX_RESPONSE_LOG] + ("…" if len(raw) > _MAX_RESPONSE_LOG else ""),
+            len(raw),
+            _digest(raw),
+            (time.monotonic() - started) * 1000,
         )
 
         try:
             verdict, reason = _parse_verdict(raw)
         except ValueError:
             logger.warning(
-                "Discretion LLM unparseable response for source=%s: %r — defaulting %s",
+                "Discretion LLM unparseable response for source=%s response_chars=%d "
+                "response_sha=%s — defaulting %s",
                 self._source,
-                raw[:200],
+                len(raw),
+                _digest(raw),
                 fail_verdict,
             )
             discretion_evaluations_total.labels(
@@ -833,9 +868,9 @@ class DiscretionEvaluator:
                     "detail": str(exc)[:500],
                 },
             )
-        except Exception:  # noqa: BLE001 — never let ledger trouble touch discretion
+        except Exception as ledger_exc:  # noqa: BLE001 — never let ledger trouble touch discretion
             logger.warning(
-                "Discretion failover-exhausted ledger write failed for source=%s",
+                "Discretion failover-exhausted ledger write failed for source=%s: %s",
                 self._source,
-                exc_info=True,
+                _error_log_fields(ledger_exc),
             )
