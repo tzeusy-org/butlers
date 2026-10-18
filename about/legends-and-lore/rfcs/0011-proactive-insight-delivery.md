@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
+Governing doctrine: [v1.md, Success Criteria](../../heart-and-soul/v1.md#success-criteria) item 9 (proactive insights at a sustainable cadence, ignored categories lowered) and [architecture.md, The Core Loop](../../heart-and-soul/architecture.md#the-core-loop).
 
 ## Summary
 
