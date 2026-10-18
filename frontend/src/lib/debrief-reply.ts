@@ -3,7 +3,7 @@
 //
 // A debrief reply is an ordinary owner message to the Relationship butler's
 // pinned dashboard conversation. Batch numbers restart at 1 for every prompt
-// batch, so the message carries the debrief's stable id; the meeting-debrief
+// batch, so the message carries the debrief's stable id (and nothing from the invite); the meeting-debrief
 // skill matches by id when present and by number only otherwise. No
 // classification, no new route.
 // ---------------------------------------------------------------------------
@@ -12,21 +12,21 @@ import { createConversation } from "@/api/index.ts";
 import type { PendingDebrief } from "@/api/types.ts";
 import { consumeSseStream } from "@/components/chat/sse-utils.ts";
 
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
+/**
+ * The debrief id is the only identity sent. The calendar title and attendees are third-party
+ * text; inside the owner's own turn they would carry owner authority, so they stay out. The
+ * session reads them from `meeting_debrief_pending()` as tool data.
+ */
 export function debriefReplyMessage(debrief: PendingDebrief, text: string): string {
-  const title = oneLine(debrief.event_title || "Untitled meeting");
-  const date = debrief.occurrence_start.slice(0, 10);
-  return `[debrief:${debrief.debrief_id}] ${title} (${date}): ${text.trim()}`;
+  return `[debrief:${debrief.debrief_id}] ${text.trim()}`;
 }
 
 /**
  * Send the reply and resolve with the conversation id once the server has durably
  * accepted it. `conversation_created` is emitted before the ingress claim and the
- * Switchboard submission, so it is not proof of delivery; only `dispatch_accepted` is.
- * An `error` event, or a stream that ends first, rejects. Reuse `messageId` across
+ * Switchboard submission, so it is not proof of delivery; `dispatch_accepted` is, and so is
+ * `message_complete` (a turn already terminal when first observed gets no receipt). An
+ * `error` event, or a stream that ends with neither, rejects. Reuse `messageId` across
  * retries of the same text so the server can de-duplicate the submission.
  */
 export async function sendDebriefReply(
@@ -51,7 +51,7 @@ export async function sendDebriefReply(
       if (event.event === "conversation_created") {
         const data = event.data as { conversation_id?: unknown };
         if (typeof data?.conversation_id === "string") conversationId = data.conversation_id;
-      } else if (event.event === "dispatch_accepted") {
+      } else if (event.event === "dispatch_accepted" || event.event === "message_complete") {
         accepted = true;
         controller.abort();
       } else if (event.event === "error") {
