@@ -91,7 +91,12 @@ async def _ask_about_memorial_claims(db_pool: asyncpg.Pool) -> dict[str, Any]:
     observations: list[OwnerObservation] = []
     for claim in claims:
         fingerprint = owner_condition_fingerprint(
-            _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE, 1, {"claim_id": str(claim["id"])}
+            _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE,
+            1,
+            # An amend, rename or partial repayment supersedes the row under a new id; the
+            # (asserted_by, claim_key) pair is the claim's stable identity, so the owner is
+            # not asked again.
+            {"asserted_by": claim["asserted_by"], "claim_key": claim["claim_key"]},
         )
         by_fingerprint[fingerprint] = claim
         observations.append(
