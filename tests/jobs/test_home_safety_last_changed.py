@@ -109,6 +109,8 @@ async def test_the_module_persists_last_changed_with_each_entity() -> None:
 
     sql, rows = pool.executemany.await_args.args
     assert "last_changed" in sql and "$5::text::timestamptz" in sql
+    # A re-persist must move last_changed forward, or the hold is measured from a stale instant.
+    assert "last_changed = EXCLUDED.last_changed" in sql
     by_id: dict[str, Any] = {row[0]: row for row in rows}
     assert by_id["binary_sensor.kitchen_leak"][3:] == (
         "2026-10-19T11:59:50+00:00",

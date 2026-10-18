@@ -739,17 +739,25 @@ async def _confirm_episode(
             metadata = CASE
                 WHEN $8::text::jsonb IS NULL THEN metadata
                 WHEN $8::text::jsonb ? 'identity_payload' THEN jsonb_set(
-                    COALESCE(
-                        (SELECT jsonb_object_agg(kept.key, kept.value)
-                         FROM jsonb_each(metadata) AS kept
-                         WHERE kept.key = ANY($9::text[])),
-                        '{{}}'::jsonb
-                    ) || $8::text::jsonb,
+                    CASE
+                        WHEN cardinality($9::text[]) = 0
+                            OR jsonb_typeof(metadata) IS DISTINCT FROM 'object'
+                            THEN $8::text::jsonb
+                        ELSE COALESCE(
+                            (SELECT jsonb_object_agg(kept.key, kept.value)
+                             FROM jsonb_each(metadata) AS kept
+                             WHERE kept.key = ANY($9::text[])),
+                            '{{}}'::jsonb
+                        ) || $8::text::jsonb
+                    END,
                     '{{identity_payload}}',
                     COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb)
                         || ($8::text::jsonb -> 'identity_payload'),
                     true
                 )
+                WHEN cardinality($9::text[]) = 0
+                    OR jsonb_typeof(metadata) IS DISTINCT FROM 'object'
+                    THEN $8::text::jsonb
                 ELSE COALESCE(
                     (SELECT jsonb_object_agg(kept.key, kept.value)
                      FROM jsonb_each(metadata) AS kept

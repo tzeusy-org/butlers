@@ -153,3 +153,33 @@ async def test_a_preserved_key_the_confirmation_carries_wins(pool: asyncpg.Pool)
 
     active = await get_active_condition(pool, source=source, fingerprint=fp)
     assert active["metadata"]["notified_at"] == "second"
+
+
+@pytest.mark.parametrize("opt_ins", [{}, {"preserve_metadata_keys": ("notified_at",)}])
+async def test_a_confirmation_replaces_non_object_stored_metadata(
+    pool: asyncpg.Pool, opt_ins: dict
+) -> None:
+    """Double-encoded (string) metadata must not make a confirmation fail (main replaces it)."""
+    source = f"test:string-meta-{uuid.uuid4().hex}"
+    fp = compute_fingerprint(source, 1, {"id": "x"})
+
+    async def check_in() -> None:
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp, summary="s", metadata={"entity_id": "x"})],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+            **opt_ins,
+        )
+
+    await check_in()
+    await pool.execute(
+        "UPDATE public.owner_conditions SET metadata = to_jsonb('double-encoded'::text) "
+        "WHERE source = $1 AND state IN ('open', 'aging')",
+        source,
+    )
+    await check_in()
+
+    active = await get_active_condition(pool, source=source, fingerprint=fp)
+    assert active["metadata"] == {"entity_id": "x"}

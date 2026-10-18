@@ -486,8 +486,8 @@ Home Assistant service, and no LLM tool SHALL expose it.
 - **WHEN** a `home:safety` condition stays open while its sensor stays on
 - **THEN** the owner SHALL be re-sent the alert 15 minutes after it opened, then 1 hour, then 4
   hours after the previous re-send, then every 24 hours
-- **AND** every other `public.owner_conditions` source SHALL keep the shared 15-minute-grace,
-  1-day, 3-day, 7-day ladder, since the faster ladder is an opt-in of the safety producer
+- **AND** every other `public.owner_conditions` source SHALL keep its own grace and the
+  shared 1-day, 3-day, 7-day advance, since the faster ladder is an opt-in of the safety producer
 
 #### Scenario: A concurrent confirmation keeps the delivery marker
 
