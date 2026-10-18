@@ -34,10 +34,9 @@ Scope: v1-mandatory
 ### Requirement: Config tab supports inline editing
 
 The config tab SHALL allow the user to edit runtime config fields and save via
-the PATCH endpoint. For this requirement, the historical “config tab” name
-refers to the editable
-`RuntimeConfigCard` that the preceding requirement places in the butler-detail
-Management tab; this change does not move the card to the raw Config tab.
+the PATCH endpoint. For this requirement, the historical "config tab" name
+refers to the editable `RuntimeConfigCard` that the preceding requirement places in the
+butler-detail Management tab; the card stays in the Management tab.
 
 ID: REQ-runtime-config-dashboard-ui-002
 Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
