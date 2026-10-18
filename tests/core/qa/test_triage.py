@@ -103,6 +103,11 @@ async def test_triage_is_novel_empty_and_novel():
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
         patch(
+            "butlers.core.qa.triage.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),
     ):
@@ -172,6 +177,11 @@ async def test_triage_gate_rejections_and_short_circuit():
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
         patch(
+            "butlers.core.qa.triage.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.triage.get_recent_attempt",
             new_callable=AsyncMock,
             return_value={"id": uuid.uuid4(), "closed_at": datetime.now(UTC)},
@@ -203,6 +213,11 @@ async def test_triage_intra_patrol_dedup_and_sorting():
             "butlers.core.qa.triage.get_active_attempt", new_callable=AsyncMock, return_value=None
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
+        patch(
+            "butlers.core.qa.triage.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch(
             "butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),
@@ -238,6 +253,11 @@ async def test_triage_intra_patrol_dedup_and_sorting():
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
         patch(
+            "butlers.core.qa.triage.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),
     ):
@@ -264,12 +284,13 @@ async def test_triage_holds_a_lineage_with_an_unresolved_publication():
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
         patch(
-            "butlers.core.qa.triage.get_recent_attempt",
-            new_callable=AsyncMock,
-            return_value={"publication_held": True, "fingerprint": "f"},
+            "butlers.core.qa.triage.get_publication_hold", new_callable=AsyncMock, return_value=True
         ),
+        patch("butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock) as mock_rec,
     ):
         result = await triage_findings(pool, uuid.uuid4(), [_make_finding()])
+
+    mock_rec.assert_not_called()
 
     assert result.all_findings[0].dedup_reason == "publication_held"
     assert result.novel_findings == []
