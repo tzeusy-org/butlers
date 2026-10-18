@@ -60,6 +60,8 @@ Scope: v1-mandatory
 ### Requirement: Independent complete-identity execution reconciliation
 Every required matrix child SHALL produce source/run/attempt-bound collected and executed opaque item receipts independently of assignment. Check-preflight SHALL reject missing, duplicate, extra, stale, incomplete or wrong-identity evidence before its success; sanitized per-file JUnit counts alone MUST NOT prove exact-once.
 
+**Failing-node evidence (bu-9qfdlk):** every unit and integration child's uploaded test evidence SHALL also carry `failed-nodes.txt`, listing one pytest node id per line, rebuilt from each case's JUnit classname and name, for the cases that failed or errored, with any parametrize suffix stripped and the ids then sorted and deduplicated, so a listed node reruns the whole test function, or the whole file for a collection error. It SHALL hold no raw parameter string, assertion text or captured output. The file SHALL be empty when no case failed or errored, including on an all-pass shard, and when no readable JUnit report was produced; it is diagnostic only and MUST NOT count as a pass verdict or as reconciliation proof.
+
 ID: REQ-ci-shard-assurance-003
 Source: bu-ly3lv5.6 P5; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
 Scope: v1-mandatory
