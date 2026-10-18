@@ -635,6 +635,24 @@ describe("SettingsModelsPage — untested model row", () => {
   });
 });
 
+/** RFC 0036: capability chips are read-only declarations, never proof. */
+describe("SettingsModelsPage — capability chips", () => {
+  it.each([
+    [undefined, "Vision: Unknown"],
+    [false, "Vision: Declared unsupported"],
+    [true, "Vision: Declared supported"],
+  ])("renders vision=%s as %s without proof marks", (vision, label) => {
+    const capabilities: Record<string, boolean> =
+      vision === undefined ? { tool_use: true, bogus_feature: true } : { vision };
+    setHookState({ entries: [makeModel({ capabilities })] });
+    const html = renderPage();
+    expect(html).toContain(label);
+    expect(html).not.toContain("✓");
+    expect(html).not.toContain("bogus_feature");
+    expect(html.toLowerCase()).not.toContain("verified vision");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Disabled model row visual treatment
 // ---------------------------------------------------------------------------

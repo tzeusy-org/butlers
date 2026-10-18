@@ -994,6 +994,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Reset {} usage for {}
 - Reset {} usage
 - Set {} limit for {}
+- Declared capabilities
 - verification failed
 - Excluded by breaker after {} consecutive dispatch failures
 - insufficient dispatch history
@@ -4899,4 +4900,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3904*
+*Total strings: 3905*
