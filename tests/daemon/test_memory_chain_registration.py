@@ -120,6 +120,7 @@ class TestMemoryChainRegistration:
             "012_rule_retirement.py",
             "013_content_authority.py",
             "014_knowledge_gaps.py",
+            "015_fact_endorsement.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -139,6 +140,7 @@ class TestMemoryChainRegistration:
             ("012_rule_retirement.py", "mem_012", "mem_011"),
             ("013_content_authority.py", "mem_013", "mem_012"),
             ("014_knowledge_gaps.py", "mem_014", "mem_013"),
+            ("015_fact_endorsement.py", "mem_015", "mem_014"),
         ]
 
         def _load_migration(filename: str):

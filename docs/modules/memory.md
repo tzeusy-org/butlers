@@ -78,6 +78,18 @@ memory is gated on that stamp:
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
+- **Facts** from `third_party` or `mixed` authority are *held* while live and not
+  vouched for: they stay recallable as attributed reports (never Profile Facts), and
+  the owner can vouch for one from the dashboard (fact detail, **Vouch**) or with
+  `POST /api/memory/facts/{id}/vouch`; `GET /api/memory/facts?held=true` lists them.
+  Vouching is owner-only and is not an MCP tool, so a session cannot do it. It is
+  additive: `endorsed_at`/`endorsed_by` are set and authority and taint are unchanged,
+  so clearing `endorsed_at` restores the prior state. A retracted or superseded fact
+  returns 409; a repeat returns the same receipt and writes one audit event
+  (`fact_vouched`) in total. Legacy (NULL) and `system` facts are not held. The
+  dashboard Confirm action records `owner` as its actor in `memory_events`; the MCP
+  `memory_confirm` tool records `session`. Not yet built: Telegram vouch cards and
+  vouched facts joining Profile Facts, which wait on the goal-runtime work (RFC 0038).
 - **Profile Facts** admit only owner-class facts. An owner-anchored fact written
   from someone else's session surfaces only as a Task-Relevant Fact labelled
   `reported by <sender>`.

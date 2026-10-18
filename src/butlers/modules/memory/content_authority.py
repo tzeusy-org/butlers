@@ -45,6 +45,14 @@ OWNER_CLASS: frozenset[str] = frozenset({OWNER, OWNER_DEVICE})
 #: NULL authority with no endorsement evaluates to NULL, which excludes the row.
 RULE_ADMITTED_SQL = "(content_authority IN ('owner', 'owner_device') OR endorsed_at IS NOT NULL)"
 
+#: A fact is held while it is an attributed report from a non-owner source: third-party
+#: or mixed authority, no owner vouch, still live.  NULL (legacy) and ``system`` are not
+#: held; they are noise rather than a stranger's claim waiting on the owner.
+HELD_FACT_SQL = (
+    "(content_authority IN ('third_party', 'mixed') AND endorsed_at IS NULL"
+    " AND validity IN ('active', 'fading'))"
+)
+
 _DASHBOARD_CHANNEL = "dashboard"
 
 
@@ -67,6 +75,15 @@ def is_owner_class(authority: str | None) -> bool:
 def is_rule_admitted(authority: str | None, endorsed_at: Any) -> bool:
     """True when a rule may steer sessions: owner-class authority or endorsed."""
     return is_owner_class(authority) or endorsed_at is not None
+
+
+def is_fact_held(authority: str | None, endorsed_at: Any, validity: str | None) -> bool:
+    """True when a live fact is a non-owner report the owner has not vouched for."""
+    return (
+        authority in (THIRD_PARTY, MIXED)
+        and endorsed_at is None
+        and validity in ("active", "fading")
+    )
 
 
 def _parse_uuid(value: object) -> uuid.UUID | None:

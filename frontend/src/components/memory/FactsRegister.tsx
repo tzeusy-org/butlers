@@ -24,6 +24,7 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3a, §4, §6
 // ---------------------------------------------------------------------------
 
+import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
@@ -144,6 +145,11 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
       <span className="flex items-baseline justify-end gap-1.5 whitespace-nowrap font-mono text-[11px] tabular-nums">
         <span>{confidence}</span>
         <span className="text-[var(--mfg)]">{tag}</span>
+        {fact.held && (
+          <span className="text-[var(--mfg)]" title="Reported by someone else; not vouched for">
+            reported
+          </span>
+        )}
         {hasProvenance && (
           <span
             // Provenance is not a separate link in the register — episode
@@ -171,9 +177,13 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
 function ValidityPills({
   validity,
   onSelect,
+  reportedOnly,
+  onToggleReported,
 }: {
   validity: MemoryValidity;
   onSelect: (v: MemoryValidity) => void;
+  reportedOnly: boolean;
+  onToggleReported: () => void;
 }) {
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -182,6 +192,10 @@ function ValidityPills({
           {v}
         </Pill>
       ))}
+      {/* Held facts: reported by someone else, not yet vouched for (bu-jv1moa.14). */}
+      <Pill selected={reportedOnly} onClick={onToggleReported}>
+        reported
+      </Pill>
     </div>
   );
 }
@@ -261,10 +275,12 @@ interface FactsRegisterProps {
 export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) {
   const { state, setState } = useMemoryUrlState();
   const { validity, offset } = state;
+  const [reportedOnly, setReportedOnly] = useState(false);
 
   const { data: response, isError, refetch } = useFacts({
     validity,
     scope: butlerScope,
+    held: reportedOnly ? true : undefined,
     offset,
     limit: FACTS_PAGE_SIZE,
   });
@@ -282,7 +298,15 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
 
   return (
     <div className="flex flex-col gap-4">
-      <ValidityPills validity={validity} onSelect={onSelectValidity} />
+      <ValidityPills
+        validity={validity}
+        onSelect={onSelectValidity}
+        reportedOnly={reportedOnly}
+        onToggleReported={() => {
+          setReportedOnly((on) => !on);
+          setState({ offset: 0 });
+        }}
+      />
 
       {isError && facts.length === 0 ? (
         // An errored fetch must not render "The ledger is empty." — a down
@@ -290,7 +314,9 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
         <MemoryLoadError label="the ledger" onRetry={() => void refetch()} testId="memory-facts-error" />
       ) : facts.length === 0 ? (
         <Voice variant="italic" className="py-6">
-          {validity === "active"
+          {reportedOnly
+            ? "Nothing is waiting on your vouch."
+            : validity === "active"
             ? "The ledger is empty."
             : "No facts answer this."}
         </Voice>

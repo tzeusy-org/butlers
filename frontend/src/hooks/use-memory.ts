@@ -27,6 +27,7 @@ import {
   revealEntitySecret,
   updateEntity,
   updateMemoryRetentionPolicies,
+  vouchFact,
   getDunbarRanking,
   forgetRelationshipEntity,
   getLifestyleTasteSummary,
@@ -41,6 +42,7 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  FactVouch,
   MemoryInspectParams,
   MemoryRule,
   PaginatedResponse,
@@ -200,6 +202,42 @@ export function useConfirmFact() {
       ["memory-stats"],
       ...entityActivityInvalidationKeys(),
     ],
+  });
+}
+
+/**
+ * Vouch for a held fact (POST /facts/:id/vouch, owner only). Optimistically
+ * clears the held flag and stamps the vouch so the badge and the Vouch button
+ * disappear at once; a failure rolls back. bu-jv1moa.14.
+ */
+export function useVouchFact() {
+  return useOptimisticMutation<ApiResponse<FactVouch>, string, ListSnapshot>({
+    mutationFn: (factId: string) => vouchFact(factId),
+    cancelQueryKeys: (factId) => [["memory-fact", factId], ["memory-facts"]],
+    applyOptimisticUpdate: (factId, queryClient) => {
+      const endorsedAt = new Date().toISOString();
+      const vouched = (fact: Fact): Fact => ({ ...fact, held: false, endorsed_at: endorsedAt });
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<Fact>>(
+        queryClient,
+        ["memory-fact", factId],
+        (current) =>
+          current ? { ...current, data: vouched(current.data) } : current,
+      );
+      const listSnapshot = snapshotAndUpdateQueries<PaginatedResponse<Fact>>(
+        queryClient,
+        ["memory-facts"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: current.data.map((fact) => (fact.id === factId ? vouched(fact) : fact)),
+              }
+            : current,
+      );
+      return [...detailSnapshot, ...listSnapshot];
+    },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (factId) => [["memory-fact", factId], ["memory-facts"]],
   });
 }
 

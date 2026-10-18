@@ -589,6 +589,21 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   receipt when repeated. Endorsement uses compare-and-swap against a retired or
   forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
   consolidation of an episode SHALL NOT downgrade an endorsed rule.
+- A fact is *held* when its authority is `third_party` or `mixed`, `endorsed_at` is
+  NULL, and its validity is `active` or `fading`. NULL (legacy) and `system` facts
+  SHALL NOT be held. The owner SHALL be able to vouch for a held fact through the
+  authenticated dashboard owner route `POST /api/memory/facts/{id}/vouch`; a session
+  or any caller without dashboard-owner authority SHALL be refused, and vouching
+  SHALL NOT be exposed as an MCP tool. Vouching sets `endorsed_at` and
+  `endorsed_by` only: it is additive and SHALL NOT change `content_authority`,
+  `authority_entity_id` or any other field, so clearing `endorsed_at` restores the
+  prior state exactly. It uses compare-and-swap against a retracted, superseded or
+  expired fact, which SHALL be refused with a typed 409. It records one
+  `fact_vouched` audit event, re-asserts the fact's discovery-catalog entry
+  (skipped for write-excluded sensitivities), and is a no-op returning the same
+  receipt when repeated or concurrent. `GET /api/memory/facts?held=true` SHALL list
+  held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
+  `memory_events`; the MCP `memory_confirm` tool records `session`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
@@ -632,6 +647,26 @@ Scope: v1-mandatory
 - **THEN** the rule SHALL appear in Active Rules and in the catalog as of the
   same committed transaction, and an audit row SHALL be written
 - **AND** endorsing it again SHALL change nothing and return the same receipt
+
+#### Scenario: Owner vouch for a held fact is additive
+
+- **WHEN** the owner vouches for a live fact with `content_authority = 'third_party'`
+- **THEN** `endorsed_at` and `endorsed_by` SHALL be set, one `fact_vouched` audit row
+  SHALL be written, and `content_authority` SHALL remain `third_party`
+- **AND** the fact SHALL leave `GET /api/memory/facts?held=true`
+- **AND** vouching again, or concurrently, SHALL write no further audit row
+- **AND** the fact endorsement state SHALL live in nullable `endorsed_at` and `endorsed_by`
+  columns on the facts table, added additively, with authority and taint unchanged
+
+#### Scenario: A retracted fact cannot be vouched for
+
+- **WHEN** the owner vouches for a retracted or superseded fact
+- **THEN** the request SHALL be refused with 409 and the fact SHALL be unchanged
+
+#### Scenario: A session cannot vouch
+
+- **WHEN** a request without dashboard-owner authority posts to the vouch route
+- **THEN** it SHALL be refused and no MCP tool SHALL offer the action
 
 #### Scenario: Legacy rules fail closed
 
