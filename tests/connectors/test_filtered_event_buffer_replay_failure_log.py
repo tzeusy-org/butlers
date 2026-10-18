@@ -118,3 +118,34 @@ async def test_replay_parse_failure_logs_no_exception_text(monkeypatch) -> None:
     assert "id=41" in message
     submit.assert_not_awaited()
     assert conn.execute.await_args.args[1] == "replay_failed"
+
+
+@pytest.mark.parametrize("failing_stage", ["submit", "parse"])
+async def test_status_update_failure_after_replay_failure_logs_no_chained_text(
+    monkeypatch, failing_stage: str
+) -> None:
+    """A replay_failed UPDATE that raises chains the replay exception as __context__."""
+    if failing_stage == "parse":
+
+        def failing_loads(_text: str) -> dict:
+            raise ValueError(f"cannot parse input_value='{MARKER}'")
+
+        monkeypatch.setattr(feb, "json", SimpleNamespace(loads=failing_loads))
+        pool, conn = _drain_fixture("{not-json")
+    else:
+        pool, conn = _drain_fixture(
+            {"event": {"external_event_id": "msg-1"}, "payload": {"normalized_text": "hi"}}
+        )
+    conn.execute = AsyncMock(side_effect=ConnectionError("connection dropped"))
+    log, capture = _capturing_logger()
+
+    async def submit(envelope: dict) -> None:
+        raise ValueError(f"Invalid ingest.v1 envelope: input_value='{MARKER}'")
+
+    await feb.drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit, log)
+
+    _assert_nowhere(capture.records, MARKER)
+    for record in capture.records:
+        assert record.exc_info is None
+    outer = capture.records[-1]
+    assert "ConnectionError" in outer.getMessage()

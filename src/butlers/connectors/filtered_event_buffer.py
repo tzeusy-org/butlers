@@ -343,8 +343,14 @@ async def drain_replay_pending(
                             row_id,
                             received_at,
                         )
-    except Exception:
-        _log.warning("replay drain: failed to query replay_pending rows", exc_info=True)
+    except Exception as exc:
+        # No exc_info: an UPDATE failing inside a replay ``except`` chains the replay
+        # exception as __context__, and the formatted traceback would print its text.
+        _log.warning(
+            "replay drain: failed to query replay_pending rows (error_class=%s raised_at=%s)",
+            type(exc).__name__,
+            _raise_site(exc),
+        )
 
 
 # Fixed marker stored in place of text when the bearer detector fails.
