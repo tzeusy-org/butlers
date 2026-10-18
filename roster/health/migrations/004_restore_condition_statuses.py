@@ -17,8 +17,12 @@ its meaning unchanged.
 
 Only rows with ``scope = 'health'``, predicate ``condition``, ``validity`` active or
 fading, no ``metadata.status`` key and a parseable suffix are touched.  Each restored
-row is tagged ``metadata.status_restored_by = 'health_004'`` so the downgrade removes
-exactly the keys this migration added and nothing else.
+row is tagged ``metadata.status_restored_by = 'health_004'`` so the repaired rows can be
+found later.  ``condition_update`` copies metadata forward, so the tag also appears on
+rows that supersede a restored row; it marks "descended from a repaired row", not "status
+restored here".  The downgrade does not touch data (the previous state was the defect, as
+in health_003), because stripping by tag would erase a status the owner set after the
+repair.
 
 Not recoverable, and left alone: relationship gift statuses (idea, purchased, wrapped,
 given, thanked) and goal / deadline facts the LLM wrote from the predicate-registry
@@ -65,17 +69,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("""
-        DO $$
-        BEGIN
-            IF to_regclass('facts') IS NULL THEN
-                RETURN;
-            END IF;
-            UPDATE facts f
-            SET metadata = f.metadata - 'status' - 'status_restored_by'
-            WHERE f.scope = 'health'
-              AND f.predicate = 'condition'
-              AND f.metadata->>'status_restored_by' = 'health_004';
-        END
-        $$
-    """)
+    # The data change is not reversed: the previous state was the defect (as in health_003).
+    # ``status_restored_by`` is deliberately not removed either, because
+    # ``condition_update`` copies a row's metadata forward, so a later row the owner set
+    # (a status chosen after the repair) can carry the tag; stripping by tag would erase
+    # that real status and recreate the defect.
+    pass

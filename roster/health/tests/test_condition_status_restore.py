@@ -3,7 +3,7 @@
 Before bu-pimdvx the nightly decay sweep popped ``metadata.status`` from every decaying
 fact, so Health ``condition`` rows lost ``active`` / ``managed`` / ``resolved`` and read as
 ``active``.  ``health_004`` restores the status from the ``"<name>: <status>"`` content
-suffix, tags each restored row, and its downgrade removes exactly the tagged keys.
+suffix, tags each restored row, and its downgrade leaves every row unchanged.
 
 Real PostgreSQL (Docker), CI only.
 """
@@ -156,13 +156,25 @@ async def test_upgrade_is_idempotent(pool) -> None:
     assert await _metadata(pool, "asthma") == first
 
 
-async def test_downgrade_removes_only_the_tagged_keys(pool) -> None:
+async def test_downgrade_leaves_restored_rows_unchanged(pool) -> None:
     await _condition(pool, "stripped", "Asthma: managed", {"name": "Asthma", "notes": "n"})
-    await _condition(pool, "kept", "Eczema: resolved", {"name": "Eczema", "status": "resolved"})
+    # condition_update copies metadata forward, so a row the owner updated after the repair
+    # carries the tag with a status the owner chose.
+    await _condition(
+        pool,
+        "inherited",
+        "Eczema: resolved",
+        {"name": "Eczema", "status": "resolved", "status_restored_by": "health_004"},
+    )
     await _run(pool, "upgrade")
-    assert (await _metadata(pool, "stripped"))["status"] == "managed"
+    restored = await _metadata(pool, "stripped")
+    assert restored["status"] == "managed"
 
     await _run(pool, "downgrade")
 
-    assert await _metadata(pool, "stripped") == {"name": "Asthma", "notes": "n"}
-    assert await _metadata(pool, "kept") == {"name": "Eczema", "status": "resolved"}
+    assert await _metadata(pool, "stripped") == restored
+    assert await _metadata(pool, "inherited") == {
+        "name": "Eczema",
+        "status": "resolved",
+        "status_restored_by": "health_004",
+    }
