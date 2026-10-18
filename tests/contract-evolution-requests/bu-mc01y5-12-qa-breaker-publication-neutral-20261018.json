@@ -1,0 +1,10 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-mc01y5-12-qa-breaker-publication-neutral-20261018",
+  "owners": [
+    "tests/core/qa/test_circuit_breaker_reset_db.py::test_reset_boundary_retrips_on_new_post_reset_failures",
+    "tests/core/qa/test_circuit_breaker_reset_db.py::test_reset_is_noop_when_not_tripped",
+    "tests/core/qa/test_circuit_breaker_reset_db.py::test_reset_records_ledger_row_and_admits_without_fabrication"
+  ],
+  "timeout_s": 300
+}
