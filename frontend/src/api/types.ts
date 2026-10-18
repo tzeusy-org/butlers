@@ -3766,6 +3766,8 @@ export interface ApprovalRuleParams {
 }
 
 export interface ApprovalRuleCreateRequest {
+  /** Butler whose schema owns the rule (required by POST /approvals/rules). */
+  butler: string;
   tool_name: string;
   arg_constraints: Record<string, unknown>;
   description: string;
@@ -8883,14 +8885,6 @@ export interface ButlerEffectivePrompt {
  */
 export interface PromptUpdateRequest {
   prompt: string;
-}
-
-/** A tool grant entry for a butler. */
-export interface ButlerTool {
-  name: string;
-  description: string | null;
-  allowed: boolean;
-  scope: string | null;
 }
 
 /** Memory tier access metadata for a butler. */

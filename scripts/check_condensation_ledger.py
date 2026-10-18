@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path, PurePosixPath
 
 HEX = re.compile(r"[0-9a-f]{64}")
@@ -871,6 +872,181 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
+#: Module-level conftest names pytest or pluggy read as session behaviour, not as data.
+_CONFTEST_SPECIAL_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
+
+def _special_conftest_name(name: str) -> bool:
+    return name.startswith(("pytest_", "collect_")) or name in _CONFTEST_SPECIAL_NAMES
+
+
+def _is_literal(node: ast.expr | None) -> bool:
+    try:
+        ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False
+    return True
+
+
+_ANNOTATION_NODES = (
+    ast.Name,
+    ast.Attribute,
+    ast.Constant,
+    ast.Subscript,
+    ast.Tuple,
+    ast.BinOp,
+    ast.BitOr,
+    ast.Load,
+)
+
+
+def _inert_annotation(node: ast.expr | None) -> bool:
+    """An annotation evaluated at import that can only name things, never call them."""
+    if node is None:
+        return True
+    for child in ast.walk(node):
+        if not isinstance(child, _ANNOTATION_NODES):
+            return False
+        if isinstance(child, ast.BinOp) and not isinstance(child.op, ast.BitOr):
+            return False
+    return True
+
+
+def _fixture_decorator(node: ast.expr, bound: dict[str, str]) -> bool:
+    """``pytest.fixture`` or ``fixture`` bound by this module's own pytest import, literal args."""
+    target = node
+    if isinstance(node, ast.Call):
+        target = node.func
+        if not all(_is_literal(arg) for arg in node.args) or not all(
+            keyword.arg is not None and _is_literal(keyword.value) for keyword in node.keywords
+        ):
+            return False
+    if isinstance(target, ast.Name):
+        return bound.get(target.id) == "fixture"
+    return (
+        isinstance(target, ast.Attribute)
+        and target.attr == "fixture"
+        and isinstance(target.value, ast.Name)
+        and bound.get(target.value.id) == "pytest"
+    )
+
+
+def _fixture_definition(node: ast.FunctionDef | ast.AsyncFunctionDef, bound: dict[str, str]):
+    arguments = node.args
+    every_argument = [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *([arguments.vararg] if arguments.vararg else []),
+        *([arguments.kwarg] if arguments.kwarg else []),
+    ]
+    return (
+        not _special_conftest_name(node.name)
+        and bool(node.decorator_list)
+        and all(_fixture_decorator(d, bound) for d in node.decorator_list)
+        and all(_is_literal(default) for default in arguments.defaults)
+        and all(default is None or _is_literal(default) for default in arguments.kw_defaults)
+        and all(_inert_annotation(argument.annotation) for argument in every_argument)
+        and _inert_annotation(node.returns)
+    )
+
+
+def conftest_has_session_hooks(source: str | None) -> bool:
+    """Whether a conftest module can change behaviour beyond its own directory subtree.
+
+    A fixture-only conftest reaches the tests below it.  A pytest hook, ``pytest_plugins``,
+    a collection variable, or any expression Python evaluates when the module is imported
+    reaches every co-collected test, wherever the conftest lives.  The classifier is
+    conservative: only imports of ordinary names, docstrings, plain constant assignments and
+    functions decorated by the module's own ``pytest.fixture`` are fixture-only, and only
+    when every decorator argument, default and annotation is inert.  Anything else, any
+    rebinding of the pytest names, and anything unparseable counts as a hook.  A missing
+    module has none.
+    """
+    if source is None:
+        return False
+    try:
+        module = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True
+    #: Names this module binds to pytest itself ("pytest" module or "fixture" function).
+    bound: dict[str, str] = {}
+
+    def binds(name: str, kind: str | None = None) -> bool:
+        """Record a binding; False when it would shadow or rebind a pytest name."""
+        if name in bound:
+            return False
+        if kind:
+            bound[name] = kind
+        return True
+
+    for node in module.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                if name == "*" or _special_conftest_name(name):
+                    return True
+                kind = None
+                if isinstance(node, ast.Import) and alias.name == "pytest":
+                    kind = "pytest"
+                elif (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "pytest"
+                    and node.level == 0
+                    and alias.name == "fixture"
+                ):
+                    kind = "fixture"
+                if not binds(name, kind):
+                    return True
+        elif isinstance(node, ast.Expr):
+            if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+                return True
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if node.value is None or not all(
+                isinstance(t, ast.Name) and not _special_conftest_name(t.id) for t in targets
+            ):
+                return True
+            if isinstance(node, ast.AnnAssign) and not _inert_annotation(node.annotation):
+                return True
+            if not _is_literal(node.value) or not all(binds(t.id) for t in targets):
+                return True
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _fixture_definition(node, bound) or not binds(node.name):
+                return True
+        else:
+            return True
+    return False
+
+
+_PYTEST_INI_SECTIONS = {"tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
+
+
+def _pytest_configuration(path: str, text: str | None):
+    """The pytest-relevant part of a config file, or None when it carries none."""
+    if text is None:
+        return None
+    name = PurePosixPath(path).name
+    if name in {"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini"}:
+        # pytest treats these as the configuration source even when empty.
+        return text
+    if name in _PYTEST_INI_SECTIONS:
+        return text if _PYTEST_INI_SECTIONS[name] in text else None
+    if name == "pyproject.toml":
+        try:
+            pytest_table = tomllib.loads(text).get("tool", {}).get("pytest")
+        except tomllib.TOMLDecodeError:
+            return text
+        return json.dumps(pytest_table, sort_keys=True) if pytest_table is not None else None
+    return None
+
+
+_PYTEST_CONFIG_NAMES = frozenset(
+    {"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"}
+    | {"pyproject.toml"}
+)
+
+
 def destructive_changes(
     root: Path, base: str, *, _current_shapes: dict | None = None
 ) -> dict[str, str]:
@@ -937,28 +1113,61 @@ def destructive_changes(
             losses[key] = "marker-context-change"
         elif not contains_ordered(old["context"], new["context"]):
             losses[key] = "fixture-helper-or-marker-context-loss"
+
+    def attribute_conftest(path: str, old_source: str | None, new_source: str | None) -> None:
+        # Session hooks reach every co-collected owner, wherever the conftest lives (a hook in
+        # tests/zzz/conftest.py can skip tests/test_owner.py); fixtures reach only their subtree.
+        if conftest_has_session_hooks(old_source) or conftest_has_session_hooks(new_source):
+            for node in before:
+                losses.setdefault(node, "session-hook-context-change")
+            return
+        ancestor = PurePosixPath(path).parent
+        for node in before:
+            if (
+                ancestor == PurePosixPath(".")
+                or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
+            ):
+                losses.setdefault(node, "ancestral-fixture-context-change")
+
     for path in paths:
         if PurePosixPath(path).name != "conftest.py":
             continue
-        old_context = ast.dump(
-            ast.parse(git(root, "show", f"{base}:{path}")), include_attributes=False
-        )
+        old_source = git(root, "show", f"{base}:{path}")
+        old_context = ast.dump(ast.parse(old_source), include_attributes=False)
         target = root / path
         if target.is_symlink():
             raise EvidenceError("indirect-fixture-source")
+        new_source = target.read_text() if target.is_file() else None
         new_context = (
-            ast.dump(ast.parse(target.read_text()), include_attributes=False)
-            if target.is_file()
+            ast.dump(ast.parse(new_source), include_attributes=False)
+            if new_source is not None
             else None
         )
         if old_context != new_context:
-            ancestor = PurePosixPath(path).parent
+            attribute_conftest(path, old_source, new_source)
+    # A conftest.py the candidate adds is new context exactly like an edit or deletion of
+    # one the base already had.
+    base_paths = set(paths)
+    current_paths = tracked_paths(root)
+    for path in current_paths:
+        if PurePosixPath(path).name != "conftest.py" or path in base_paths:
+            continue
+        if (root / path).is_symlink():
+            raise EvidenceError("indirect-fixture-source")
+        attribute_conftest(path, None, (root / path).read_text())
+    # A pytest configuration file the candidate adds, edits or deletes changes how every
+    # owner below it runs (addopts, markers, asyncio mode, rootdir), so it reaches all owners.
+    for path in sorted(base_paths | set(current_paths)):
+        if PurePosixPath(path).name not in _PYTEST_CONFIG_NAMES:
+            continue
+        target = root / path
+        if target.is_symlink():
+            raise EvidenceError("indirect-pytest-configuration")
+        old_text = git(root, "show", f"{base}:{path}") if path in base_paths else None
+        new_text = target.read_text() if target.is_file() else None
+        if _pytest_configuration(path, old_text) != _pytest_configuration(path, new_text):
             for node in before:
-                if (
-                    ancestor == PurePosixPath(".")
-                    or ancestor in PurePosixPath(node.split("::", 1)[0]).parents
-                ):
-                    losses.setdefault(node, "ancestral-fixture-context-change")
+                losses.setdefault(node, "pytest-configuration-change")
     return losses
 
 

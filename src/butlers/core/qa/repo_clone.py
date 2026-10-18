@@ -26,6 +26,8 @@ from pathlib import Path
 
 import asyncpg
 
+from butlers.core.git_env import FETCH_COMMAND_ARGS, isolated_git_env
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_REPO_URL = "https://github.com/tzeusy-org/butlers"
@@ -43,6 +45,7 @@ async def _run_git(
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=isolated_git_env(),
     )
     stdout_bytes, stderr_bytes = await proc.communicate()
     stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -165,7 +168,9 @@ class ManagedRepoClone:
             clone = await self._ensure_cloned_unlocked()
 
             # Unshallow if needed so worktree branches can be created
-            rc, _stdout, stderr = await _run_git("fetch", "origin", "main", cwd=clone)
+            rc, _stdout, stderr = await _run_git(
+                "fetch", *FETCH_COMMAND_ARGS, "origin", "main", cwd=clone
+            )
             if rc != 0:
                 error_msg = f"git fetch failed (rc={rc}): {stderr}"
                 logger.warning("Repo refresh fetch failed: %s", error_msg)

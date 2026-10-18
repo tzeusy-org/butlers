@@ -22,6 +22,11 @@ Scope: v1-mandatory
 - **WHEN** a request changes its bound target or payload
 - **THEN** it refuses before egress without altering prior status
 
+#### Scenario: Operation is persisted before egress and duplicates return it
+- **WHEN** a publication operation is requested for an attempt
+- **THEN** its binding digest, payload digest and stage are persisted in `public.qa_publication_operations` before any egress
+- **AND** a duplicate request with the same binding returns the existing operation and two concurrent requests produce one row
+
 ### Requirement: Closed publication operations
 Only validated non-force QA branch publication/update and bound PR create/update/fixed sanitized labels SHALL be available. Merge/review/approval/queue/protected-ref writes and generic provider operations are forbidden.
 
@@ -70,6 +75,10 @@ Scope: v1-mandatory
 #### Scenario: Cooldown and restart cannot bypass ambiguous publication
 - **WHEN** an ambiguous publication is followed by watchdog timeout, cooldown expiry, follow-up or process recovery
 - **THEN** the same unresolved lineage remains held and no fresh publication attempt/ref/PR is allocated until exact bound-resource reconciliation is durably recorded
+
+#### Scenario: Datastore unavailable fails closed
+- **WHEN** the publication operation ledger cannot be read or written
+- **THEN** publication is refused before egress
 
 ### Requirement: Adversarial source and isolated live evidence
 Synthetic transport and actual process-isolation tests SHALL cover malicious exports/config, authority substitutions/races, duplicate requests and ambiguity. Live controlled-resource proof requires separate authority and no forbidden mutation negative.

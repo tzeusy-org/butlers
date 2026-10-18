@@ -24,6 +24,8 @@ Issue: bu-4c1ks
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import asyncpg
@@ -97,6 +99,37 @@ async def _fetch_owner_row(conn: asyncpg.Connection) -> asyncpg.Record | None:
     )
 
 
+@asynccontextmanager
+async def owner_episode_transaction(conn: asyncpg.Connection) -> AsyncIterator[None]:
+    """Make an episode upsert and its owner ``episode_entities`` link one unit.
+
+    Every owner-only adapter writes the episode and then its owner link. If the link
+    write fails after the episode upsert committed, the episode would exist without its
+    owner (or an existing episode would be updated while its link is stale). Wrapping both
+    statements in this block commits or rolls back the pair together
+    (``butler-chronicler`` "Owner-Only Adapter Entity Attribution").
+
+    It opens ``conn.transaction()``, which is a savepoint when the caller is already inside
+    a transaction (comms, sessions, owntracks_ssid), so nesting changes nothing for them.
+    Put the ``upsert_episode`` call and ``upsert_owner_episode_entity`` in the same block;
+    ``tests/chronicler/test_owner_episode_atomicity_guard.py`` fails if a call is outside it.
+    """
+    factory = getattr(conn, "transaction", None)
+    transaction = factory() if callable(factory) else None
+    if transaction is None or not (
+        hasattr(transaction, "__aenter__") and hasattr(transaction, "__aexit__")
+    ):
+        # An asyncpg connection always has a real transaction(). Hand-written stand-ins
+        # that model only fetch/execute have none, and run the pair unwrapped.
+        close = getattr(transaction, "close", None)
+        if callable(close):
+            close()  # an unawaited coroutine from an AsyncMock stand-in
+        yield
+        return
+    async with transaction:
+        yield
+
+
 async def upsert_owner_episode_entity(
     conn: asyncpg.Connection,
     episode_id: UUID | None,
@@ -112,9 +145,8 @@ async def upsert_owner_episode_entity(
     without returning a real DB row).
 
     Uses ``ON CONFLICT DO UPDATE`` so the call is idempotent on replays.
-    Runs as a plain execute (no surrounding transaction) because the caller
-    may already be inside a connection context; callers that need atomicity
-    wrap both the episode upsert and this call inside their own transaction.
+    This is a plain execute and is NOT atomic with the episode upsert on its own: call it
+    inside ``async with owner_episode_transaction(conn):`` together with the episode upsert.
     """
     if owner_id is None or episode_id is None:
         return
@@ -130,4 +162,8 @@ async def upsert_owner_episode_entity(
     )
 
 
-__all__ = ["resolve_owner_entity_id", "upsert_owner_episode_entity"]
+__all__ = [
+    "owner_episode_transaction",
+    "resolve_owner_entity_id",
+    "upsert_owner_episode_entity",
+]

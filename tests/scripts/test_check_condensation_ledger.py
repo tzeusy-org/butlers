@@ -1800,3 +1800,486 @@ def test_retirement_replacements_must_exist_in_the_candidate(tmp_path):
     root, base, trusted, _ = _retirement_repository(tmp_path / "present", mutate=add)
     _retire(root, extra="\n\ndef test_excludes_steam():\n    assert True\n")
     assert ledger.verify(root, base, [], trusted=trusted)["status"] == "PASS"
+
+
+def test_cli_prints_the_real_contract_refusal_category_across_module_identities(tmp_path):
+    """bu-rf37wu: run as a script, an imported consumer's refusal keeps its own category.
+
+    ``python scripts/check_condensation_ledger.py`` loads the ledger as ``__main__`` while
+    ``contract_evolution`` imports it again by name, so without the ``sys.modules`` alias in
+    the ``__main__`` block its ``EvidenceError`` is a different class and collapses to
+    ``invalid-structural-evidence``. In-process tests cannot see that.
+    """
+    root, base, _trusted, _authority, _request, _commit = _contract_repository(tmp_path)
+    # The protected ref predates the authorization, so the candidate request has no authority.
+    ledger.git(root, "update-ref", "refs/remotes/origin/main", base)
+    proc = subprocess.run(
+        [sys.executable, str(Path(ledger.__file__)), "--repo-root", str(root), "--base", base],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout) == {
+        "status": "REFUSED",
+        "category": "missing-protected-contract-authority",
+    }
+
+
+def test_stale_base_pr_is_not_forced_through_an_already_landed_contract_request(tmp_path):
+    """bu-1bxczh: a request the trusted parent already carries is public history."""
+    root, base, authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/test_unrelated.py").write_text("def test_unrelated():\n    assert True\n")
+    (root / "docs.md").write_text("an unrelated pull request change\n")
+    _commit_all(root, "unrelated pull request delta")
+    output = tmp_path / "proofs"
+    output.mkdir()
+
+    result = ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+
+    assert result["status"] == "PASS" and result["losses"] == 1
+    assert "contract_evolution_proofs" not in result
+    # A request only the candidate carries is still consumed as a fresh proof: the unrelated
+    # delta is not covered by the request, so it is still refused exactly as before.
+    with pytest.raises(ledger.EvidenceError, match="unapproved-contract-runtime-input"):
+        ledger.verify(root, base, [], contract_directory=output, trusted=authorized)
+
+
+def test_stale_base_does_not_launder_a_pull_request_change_to_a_landed_request_owner(tmp_path):
+    """bu-1bxczh: touching a covered owner after it landed gets no landed-request shortcut."""
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    owner = root / "tests/test_owner.py"
+    owner.write_text(owner.read_text() + "\n# the pull request edits the covered owner\n")
+    _commit_all(root, "pull request edits a covered owner")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+    # A landed authorization whose bytes the candidate edited is never trusted either.
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path / "edit")
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    authorization = root / "tests/contract-evolution-authorizations/example-change.json"
+    authorization.write_text(authorization.read_text().replace("Owner", "Someone"))
+    _commit_all(root, "candidate edits the landed authorization")
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(root, base, [], contract_directory=output, trusted=landed)
+
+
+def _landed_retirement(tmp_path, *, extra_loss=False):
+    """A retirement the trusted parent already carries, with a base older than its own."""
+    root, base, _manifest_commit, _path = _retirement_repository(
+        tmp_path,
+        mutate=lambda m: m["retired"][0].update(base_sha256="2" * 64),
+    )
+    _retire(root)
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    (root / "docs.md").write_text("an unrelated pull request change\n")
+    if extra_loss:
+        owner = root / "tests/test_owner.py"
+        owner.write_text(owner.read_text().replace("    assert value in (1,2)\n", ""))
+    _commit_all(root, "pull request delta")
+    return root, base, landed
+
+
+def test_stale_base_pr_is_not_forced_through_an_already_landed_retirement(tmp_path):
+    """bu-1bxczh: public-history retirement is not re-litigated against an older base."""
+    root, base, landed = _landed_retirement(tmp_path)
+    result = ledger.verify(root, base, [], trusted=landed)
+    (account,) = result["retirement_accounts"]
+    assert result["status"] == "PASS" and account["admitted_owner_count"] == 2
+
+
+def test_stale_base_still_counts_a_loss_the_pull_request_introduces(tmp_path):
+    """bu-1bxczh: landed authority never covers a loss the candidate adds beside it."""
+    root, base, landed = _landed_retirement(tmp_path, extra_loss=True)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [], trusted=landed)
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+@pytest.mark.parametrize("fresh_base", [False, True])
+def test_landed_request_shortcut_refuses_an_ancestor_conftest_change(
+    tmp_path, monkeypatch, change, fresh_base
+):
+    """bu-1bxczh: a conftest.py change is attributed to every owner below it."""
+    real_repository = _repository
+
+    def repository_with_conftest(path):
+        root = real_repository(path)
+        (root / "tests/conftest.py").write_text("import pytest\n")
+        return root
+
+    monkeypatch.setattr(sys.modules[__name__], "_repository", repository_with_conftest)
+    root, base, _authorized, _authority, _request, _commit = _contract_repository(tmp_path)
+    monkeypatch.undo()
+    landed = ledger.git(root, "rev-parse", "HEAD")
+    conftest = root / "tests/conftest.py"
+    if change == "edit":
+        conftest.write_text(
+            "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip():\n    pytest.skip()\n"
+        )
+    else:
+        conftest.unlink()
+    _commit_all(root, "pull request changes only the ancestor conftest")
+    output = tmp_path / "proofs"
+    output.mkdir()
+    with pytest.raises(ledger.EvidenceError):
+        ledger.verify(
+            root, landed if fresh_base else base, [], contract_directory=output, trusted=landed
+        )
+
+
+_SKIPPING_CONFTEST = (
+    "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef _skip_all():\n    pytest.skip('x')\n"
+)
+
+
+@pytest.mark.parametrize("location", ["conftest.py", "tests/conftest.py"])
+def test_added_ancestor_conftest_is_attributed_to_every_owner_below_it(tmp_path, location):
+    """bu-0jd93j: a conftest.py absent at base but added by the candidate is new fixture context."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / location).write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a skipping ancestor conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert losses
+    assert set(losses.values()) == {"ancestral-fixture-context-change"}
+    assert all(node.startswith("tests/test_owner.py::") for node in losses)
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [])
+
+
+def test_added_conftest_without_owners_below_it_changes_nothing(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "unrelated").mkdir()
+    (root / "unrelated/conftest.py").write_text(_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds a conftest above no owner")
+
+    assert ledger.destructive_changes(root, base) == {}
+
+
+_HOOK_SKIPPING_CONFTEST = (
+    "import pytest\n\n\n"
+    "def pytest_collection_modifyitems(items):\n"
+    "    for item in items:\n"
+    "        item.add_marker(pytest.mark.skip(reason='hook'))\n"
+)
+_HARMLESS_HOOK_CONFTEST = "def pytest_report_header():\n    return 'harmless'\n"
+_FIXTURE_ONLY_CONFTEST = "import pytest\n\n\n@pytest.fixture\ndef helper():\n    return 1\n"
+
+
+def _run_pytest(root):
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stdout
+
+
+def _base_commit(root, *, empty):
+    return ledger.git(root, "rev-parse", "HEAD") if empty else _commit_all(root, "base")
+
+
+def _owner_nodes(losses):
+    return {node for node in losses if node.startswith("tests/test_owner.py::")}
+
+
+def test_non_ancestral_hook_conftest_really_skips_an_owner_without_failing_pytest(tmp_path):
+    """bu-p3phlx: the threat is real, so the guard must attribute it."""
+    root = _repository(tmp_path)
+    (root / "tests/zzz").mkdir()
+    (root / "tests/zzz/conftest.py").write_text(_HOOK_SKIPPING_CONFTEST)
+    (root / "tests/zzz/test_other.py").write_text("def test_other():\n    assert True\n")
+    code, out = _run_pytest(root)
+    assert code == 0 and "skipped" in out and "passed" not in out
+
+
+@pytest.mark.parametrize("change", ["add", "edit", "delete"])
+def test_non_ancestral_hook_conftest_change_is_attributed_to_every_owner(tmp_path, change):
+    root = _repository(tmp_path)
+    (root / "tests/zzz").mkdir()
+    conftest = root / "tests/zzz/conftest.py"
+    if change != "add":
+        conftest.write_text(_HARMLESS_HOOK_CONFTEST)
+    base = _base_commit(root, empty=change == "add")
+    if change == "add":
+        conftest.write_text(_HOOK_SKIPPING_CONFTEST)
+    elif change == "edit":
+        conftest.write_text(_HOOK_SKIPPING_CONFTEST)
+    else:
+        conftest.unlink()
+    _commit_all(root, "candidate changes a sibling hook conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert _owner_nodes(losses)
+    assert set(losses.values()) == {"session-hook-context-change"}
+    with pytest.raises(ledger.EvidenceError, match="unproven-test-or-assertion-loss"):
+        ledger.verify(root, base, [])
+
+
+@pytest.mark.parametrize("change", ["add", "edit", "delete"])
+def test_non_ancestral_fixture_only_conftest_stays_ancestral(tmp_path, change):
+    root = _repository(tmp_path)
+    (root / "tests/zzz").mkdir()
+    conftest = root / "tests/zzz/conftest.py"
+    if change != "add":
+        conftest.write_text("import pytest\n")
+    base = _base_commit(root, empty=change == "add")
+    if change == "delete":
+        conftest.unlink()
+    else:
+        conftest.write_text(_FIXTURE_ONLY_CONFTEST)
+    _commit_all(root, "candidate changes a sibling fixture-only conftest")
+
+    assert ledger.destructive_changes(root, base) == {}
+
+
+def test_ancestral_hook_conftest_is_attributed_as_a_session_hook(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/conftest.py").write_text(_HOOK_SKIPPING_CONFTEST)
+    _commit_all(root, "candidate adds an ancestor hook conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert _owner_nodes(losses) and set(losses.values()) == {"session-hook-context-change"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def pytest_configure(config):\n    pass\n",
+        "pytest_plugins = ['x']\n",
+        "collect_ignore = ['test_owner.py']\n",
+        "from helpers import pytest_collection_modifyitems\n",
+        "from helpers import *\n",
+        "import os\nos.environ['X'] = '1'\n",
+        "import sys\nif sys.platform:\n    pass\n",
+        "def helper():\n    return 1\n",
+        "class Plugin:\n    pass\n",
+        "VALUE = compute()\n",
+        "import pytest\n\n\n@pytest.fixture\ndef pytest_thing():\n    return 1\n",
+        "def broken(:\n",
+    ],
+)
+def test_conftest_classifier_treats_anything_but_plain_fixtures_as_hook_bearing(source):
+    assert ledger.conftest_has_session_hooks(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        None,
+        "",
+        '"""Docstring."""\nimport pytest\nfrom os import path\n',
+        "LIMIT = 3\nNAMES: list[str] = ['a']\n",
+        "import pytest\n\n\n@pytest.fixture(scope='session')\ndef a():\n    return 1\n",
+        "from pytest import fixture\n\n\n@fixture\nasync def b():\n    return 1\n",
+    ],
+)
+def test_conftest_classifier_keeps_fixture_only_modules_ancestral(source):
+    assert not ledger.conftest_has_session_hooks(source)
+
+
+def test_added_symlinked_conftest_is_refused_as_an_indirect_fixture_source(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/zzz").mkdir()
+    (root / "elsewhere.py").write_text(_HOOK_SKIPPING_CONFTEST)
+    (root / "tests/zzz/conftest.py").symlink_to("../../elsewhere.py")
+    _commit_all(root, "candidate adds a symlinked conftest")
+
+    with pytest.raises(ledger.EvidenceError, match="indirect-fixture-source"):
+        ledger.destructive_changes(root, base)
+
+
+_CONFIG_FILES = {
+    "tests/pytest.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
+    "pytest.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
+    "tests/pytest.toml": "[pytest]\naddopts = ['--deselect', 'tests/test_owner.py']\n",
+    ".pytest.toml": "[pytest]\naddopts = ['--deselect', 'tests/test_owner.py']\n",
+    "tox.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
+    "setup.cfg": "[tool:pytest]\naddopts = --deselect tests/test_owner.py\n",
+    "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--deselect tests/test_owner.py'\n",
+}
+
+
+@pytest.mark.parametrize("path", sorted(_CONFIG_FILES))
+@pytest.mark.parametrize("change", ["add", "edit", "delete"])
+def test_pytest_configuration_change_is_attributed_to_every_owner(tmp_path, path, change):
+    root = _repository(tmp_path)
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if change != "add":
+        target.write_text(_CONFIG_FILES[path].replace("tests/test_owner.py", "nothing"))
+    base = _base_commit(root, empty=change == "add")
+    if change == "delete":
+        target.unlink()
+    else:
+        target.write_text(_CONFIG_FILES[path])
+    _commit_all(root, "candidate moves the pytest configuration")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert _owner_nodes(losses)
+    assert set(losses.values()) == {"pytest-configuration-change"}
+
+
+def test_pytest_configuration_that_really_deselects_an_owner_is_attributed(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "pytest.ini").write_text(_CONFIG_FILES["pytest.ini"])
+    _commit_all(root, "candidate adds a deselecting pytest.ini")
+    code, out = _run_pytest(root)
+    assert "deselected" in out and "passed" not in out
+    assert _owner_nodes(ledger.destructive_changes(root, base))
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        ("tox.ini", "[tox]\nenvlist = py\n"),
+        ("setup.cfg", "[metadata]\nname = x\n"),
+        ("pyproject.toml", "[project]\nname = 'x'\n"),
+    ],
+)
+def test_unrelated_changes_to_shared_config_files_are_not_pytest_configuration(
+    tmp_path, path, text
+):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / path).write_text(text)
+    _commit_all(root, "candidate adds a config file with no pytest table")
+
+    assert ledger.destructive_changes(root, base) == {}
+
+
+def test_symlinked_pytest_configuration_is_refused(tmp_path):
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "elsewhere.ini").write_text(_CONFIG_FILES["pytest.ini"])
+    (root / "pytest.ini").symlink_to("elsewhere.ini")
+    _commit_all(root, "candidate adds a symlinked pytest.ini")
+
+    with pytest.raises(ledger.EvidenceError, match="indirect-pytest-configuration"):
+        ledger.destructive_changes(root, base)
+
+
+_IMPORT_TIME_EXECUTION_SHAPES = {
+    "decorator-argument-call": (
+        "import pytest\n\n\n@pytest.fixture(params=[boom()])\ndef a():\n    return 1\n"
+    ),
+    "decorator-keyword-call": (
+        "import pytest\n\n\n@pytest.fixture(scope=boom())\ndef a():\n    return 1\n"
+    ),
+    "parameter-default-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(x=boom()):\n    return 1\n"
+    ),
+    "keyword-only-default-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(*, x=boom()):\n    return 1\n"
+    ),
+    "argument-annotation-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(x: boom()):\n    return 1\n"
+    ),
+    "return-annotation-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a() -> boom():\n    return 1\n"
+    ),
+    "assignment-annotation-call": "X: boom() = 1\n",
+    "annotation-lambda": "X: (lambda: 1) = 1\n",
+    "annotation-walrus": "X: (y := 1) = 1\n",
+    "fixture-from-another-module": (
+        "from helpers import fixture\n\n\n@fixture\ndef a():\n    return 1\n"
+    ),
+    "fixture-attribute-of-another-module": (
+        "import helpers\n\n\n@helpers.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-bound-to-another-module": (
+        "import helpers as pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-rebound": (
+        "import pytest\nimport helpers as pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-shadowed-by-assignment": (
+        "import pytest\npytest = 1\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "fixture-used-before-import": "@pytest.fixture\ndef a():\n    return 1\n",
+    "starred-decorator-keywords": (
+        "import pytest\n\n\n@pytest.fixture(**boom())\ndef a():\n    return 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_IMPORT_TIME_EXECUTION_SHAPES))
+def test_conftest_classifier_rejects_code_that_runs_at_import_inside_a_fixture_shape(name):
+    """bu-p3phlx C1: decorators, defaults and annotations are evaluated at import."""
+    assert ledger.conftest_has_session_hooks(_IMPORT_TIME_EXECUTION_SHAPES[name])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest as pt\n\n\n@pt.fixture(params=[1, 2], ids=['a', 'b'])\ndef a():\n    return 1\n",
+        "from pytest import fixture as make\n\n\n@make\ndef a(x: int = 3, *, y: 'str' = 'z') -> int:\n    return 1\n",
+        "import pytest\n\n\n@pytest.fixture\ndef a(x: list[int] | None = None) -> dict[str, int]:\n    return {}\n",
+        "import pytest\nimport helpers\n\nX: helpers.Kind = 1\n",
+    ],
+)
+def test_conftest_classifier_still_accepts_bound_pytest_fixtures_with_literal_arguments(source):
+    assert not ledger.conftest_has_session_hooks(source)
+
+
+_PROVEN_EVASIONS = {
+    "decorator-argument": (
+        "import pytest\n\n\n"
+        "@pytest.fixture(params=[setattr(__import__('_pytest.python').python.Function,"
+        " 'runtest', lambda self: None)])\n"
+        "def neutral(request):\n    return 1\n"
+    ),
+    "look-alike-fixture": (
+        "from helpers import fixture\n\n\n@fixture\ndef neutral():\n    return 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PROVEN_EVASIONS))
+def test_a_fixture_shaped_conftest_cannot_neutralize_a_failing_owner_unseen(tmp_path, name):
+    """bu-p3phlx C1 end to end: a real failing owner, a real pytest run, a real guard."""
+    root = _repository(tmp_path)
+    (root / "tests/test_owner.py").write_text("def test_owner():\n    assert False\n")
+    (root / "tests/zzz").mkdir()
+    (root / "tests/zzz/helpers.py").write_text("fixture = lambda f: f\n")
+    base = _commit_all(root, "base with a failing owner")
+    (root / "tests/zzz/conftest.py").write_text(_PROVEN_EVASIONS[name])
+    (root / "tests/zzz/test_dummy.py").write_text("def test_dummy():\n    assert True\n")
+    _commit_all(root, "candidate adds a neutralizing conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert set(losses.values()) == {"session-hook-context-change"}
+    assert _owner_nodes(losses)
+
+
+def test_pytest_toml_that_deselects_an_owner_is_attributed_to_every_owner(tmp_path):
+    """bu-p3phlx C2: pytest.toml is authoritative even when empty, ahead of every other file."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/pytest.toml").write_text(
+        '[pytest]\naddopts = ["-p", "no:cacheprovider", "-k", "not owner"]\n'
+    )
+    (root / "tests/test_other.py").write_text("def test_other():\n    assert True\n")
+    _commit_all(root, "candidate adds a tests/pytest.toml")
+
+    code, out = _run_pytest(root)
+    assert "deselected" in out and "failed" not in out and code == 0
+    losses = ledger.destructive_changes(root, base)
+    assert set(losses.values()) == {"pytest-configuration-change"}
+    assert _owner_nodes(losses)

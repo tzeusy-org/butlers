@@ -55,6 +55,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -606,26 +607,27 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             confidence = derive_confidence([EvidenceKind(name="gps")])
 
             async with chronicler_pool.acquire() as conn:
-                episode = await upsert_episode(
-                    conn,
-                    Episode(
-                        source_name=self.source_name,
-                        source_ref=seg_source_ref,
-                        episode_type=EPISODE_TYPE_MOVEMENT,
-                        start_at=effective_start_at,
-                        end_at=end_at,
-                        precision=Precision.EXACT,
-                        title=title,
-                        payload=payload,
-                        privacy=Privacy.NORMAL,
-                        layer=Layer.ACTIVITY,
-                        confidence=confidence,
-                        evidence_refs=evidence_refs,
-                    ),
-                )
-                # Write owner row into episode_entities join table (bu-4c1ks).
-                ep_id = episode.id if episode is not None else None
-                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+                async with owner_episode_transaction(conn):
+                    episode = await upsert_episode(
+                        conn,
+                        Episode(
+                            source_name=self.source_name,
+                            source_ref=seg_source_ref,
+                            episode_type=EPISODE_TYPE_MOVEMENT,
+                            start_at=effective_start_at,
+                            end_at=end_at,
+                            precision=Precision.EXACT,
+                            title=title,
+                            payload=payload,
+                            privacy=Privacy.NORMAL,
+                            layer=Layer.ACTIVITY,
+                            confidence=confidence,
+                            evidence_refs=evidence_refs,
+                        ),
+                    )
+                    # Write owner row into episode_entities join table (bu-4c1ks).
+                    ep_id = episode.id if episode is not None else None
+                    await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
                 # Link each GPS fix into the canonical evidence chain.
                 if ep_id is not None:
                     for event_id in seg_event_ids:

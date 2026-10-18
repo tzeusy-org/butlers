@@ -232,7 +232,7 @@ Scope: v1-mandatory
 
 ### Requirement: Shared Executor Path
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, immutable success audit event, and any auto-approval `use_count` increment. The terminal state and audit append are atomic when the runtime provides a transaction.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, and immutable success audit event. An auto-approval `use_count` increment is not made here: the use is claimed at admission. The terminal state and audit append are atomic when the runtime provides a transaction.
 
 For an action that names a goal, execution SHALL happen only when the control-plane broker forwards the stored call, or the owner's edited version of it, with an assertion whose `approval_ref` names that action and whose argument digest equals the approved arguments, after the broker has re-checked that the goal is not stopped. `dispatch_approved_action` and every other domain-local path SHALL NOT execute such an action on its own. Actions that name no goal, including those with goal origin `legacy`, keep the owning-daemon dispatch path.
 
@@ -242,6 +242,7 @@ tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
 
+ID: REQ-module-approvals-004
 Source: RFC 0038 D12 and D13; RFC 0021
 Scope: v1-mandatory
 

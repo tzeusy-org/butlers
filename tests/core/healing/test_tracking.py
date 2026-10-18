@@ -857,3 +857,84 @@ async def test_get_recent_terminal_statuses_session_id_filter_integration(
     assert str(aid_without) in null_ids
     # And the returned statuses should be >= 1 (our with-row is there)
     assert "failed" in statuses
+
+
+async def _as_qa(pool: asyncpg.Pool, sql: str, *args: Any) -> None:
+    """Run one write as the QA role; forced RLS admits no other writer."""
+    async with pool.acquire() as connection:
+        await connection.execute("SET ROLE butler_qa_rw")
+        try:
+            await connection.execute(sql, *args)
+        finally:
+            await connection.execute("RESET ROLE")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_ambiguous_publication_holds_lineage_past_watchdog_restart_and_cooldown(
+    healing_pool: asyncpg.Pool,
+) -> None:
+    """REQ-qa-publication-authority-006: only a recorded reconciliation releases the hold."""
+    from butlers.core.healing.tracking import (
+        PublicationLineageHeld,
+        create_or_join_attempt,
+        get_active_attempt,
+        get_attempt,
+        get_recent_attempt,
+        recover_stale_attempts,
+    )
+
+    fingerprint = uuid.uuid4().hex * 2
+    attempt_id, _ = await create_or_join_attempt(
+        healing_pool, **_make_attempt_args(fingerprint=fingerprint)
+    )
+    await _as_qa(
+        healing_pool,
+        "INSERT INTO public.qa_publication_operations "
+        "(attempt_id, kind, stage, stage_order, binding_digest, request_digest, "
+        " expected_object_id, result) "
+        "VALUES ($1, 'pr_create', 'ambiguous', 3, $2, $2, 'pr:17', 'ambiguous')",
+        attempt_id,
+        "d" * 64,
+    )
+    # Watchdog/restart recovery closes the attempt, as it would after a lost response.
+    await healing_pool.execute(
+        "UPDATE public.healing_attempts SET healing_session_id = $2, "
+        "workflow_deadline_at = now() - INTERVAL '5 minutes' WHERE id = $1",
+        attempt_id,
+        uuid.uuid4(),
+    )
+    await recover_stale_attempts(healing_pool, timeout_minutes=30)
+    assert (await get_attempt(healing_pool, attempt_id))["status"] == "timeout"
+    assert await get_active_attempt(healing_pool, fingerprint) is None
+
+    # Cooldown expiry (a zero-minute window matches nothing) does not release it.
+    held = await get_recent_attempt(healing_pool, fingerprint, 0)
+    assert held is not None and held["publication_held"] is True
+    with pytest.raises(PublicationLineageHeld):
+        await create_or_join_attempt(
+            healing_pool,
+            **_make_attempt_args(fingerprint=fingerprint),
+            enforce_publication_hold=True,
+        )
+    assert (
+        await healing_pool.fetchval(
+            "SELECT count(*) FROM public.healing_attempts WHERE fingerprint = $1", fingerprint
+        )
+        == 1
+    )
+
+    await _as_qa(
+        healing_pool,
+        "UPDATE public.qa_publication_operations SET stage = 'reconciled', stage_order = 4, "
+        "reconciliation = 'resource_found', reconciled_object_id = 'pr:17', "
+        "reconciled_at = now() WHERE attempt_id = $1",
+        attempt_id,
+    )
+    fresh_id, is_new = await create_or_join_attempt(
+        healing_pool,
+        **_make_attempt_args(fingerprint=fingerprint),
+        enforce_publication_hold=True,
+    )
+    assert is_new and fresh_id != attempt_id
