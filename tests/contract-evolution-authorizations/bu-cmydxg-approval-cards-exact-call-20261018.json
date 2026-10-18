@@ -1,0 +1,300 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-cmydxg-approval-cards-exact-call-20261018",
+  "bead": "bu-jv1moa.2",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-cmydxg for implementation bead bu-jv1moa.2 (PR #4605, exact-call approval cards and args-digest binding). Reviewed before: main e0a9be823 as recorded in bu-mscivp; approved subject: PR #4605 head 8afbee0c1466902ad44038c40df1ea7edb3de86c. Governing requirement REQ-module-approvals-005 (Approval-Request Push on Park) of openspec/changes/decision-loop-one-tap-approvals/specs/module-approvals/spec.md, bound through the masked check; this PR adds its ID/Source/Scope header. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/integration/test_approval_delivery_worker.py::test_confirmed_delivery_renders_current_material_only_in_memory",
+      "after": "tests/integration/test_approval_delivery_worker.py::test_confirmed_delivery_renders_current_material_only_in_memory",
+      "contracts": [
+        "REQ-module-approvals-005"
+      ],
+      "reason": "The card now offers one-tap Approve/Reject, and so mints a callback token, only for a tool with an exact-call preview, so the test parks an email_send_message call; the oracle that the token is never persisted is preserved."
+    },
+    {
+      "before": "tests/modules/test_approval_push_notifications.py::test_build_approval_request_is_templated_and_carries_signed_actions",
+      "after": "tests/modules/test_approval_push_notifications.py::test_build_approval_request_is_templated_and_carries_signed_actions",
+      "contracts": [
+        "REQ-module-approvals-005"
+      ],
+      "reason": "The push now renders the exact stored call (recipient and content from tool_args) instead of the bare tool name, and quotes blast radius and reversibility in code spans; the dossier, expiry and signed approve/reject action assertions are preserved."
+    },
+    {
+      "before": "tests/modules/test_approvals_retention.py::test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_fail_closed",
+      "after": "tests/modules/test_approvals_retention.py::test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_fail_closed",
+      "contracts": [
+        "REQ-module-approvals-005"
+      ],
+      "reason": "The handoff-start path now records the presented args_digest column that migration 018 adds, so the test starts the handoff with the migration-015-era SQL that predates it; the retention upgrade and fail-closed downgrade assertions are preserved."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/changes/decision-loop-one-tap-approvals/specs/module-approvals/spec.md",
+      "id": "REQ-module-approvals-005",
+      "before_sha256": "73a168f9b84d641670f5640147870a7336f1d1cd89353e481f1e392930044e8b",
+      "after_sha256": "cde1d7f0fdad31c86a1b1a9c3aa189d2a0715298adabb1fa95fb8942893072ec"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/modules/approvals.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "dbb990e0cbe6c8c025adaa076a7f388effd7a05a724ea7b9ef7a72fbbc208572"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "da34c50214a6e5a3c2fc22aa4827dc717a9b773172a745ecb9f4f7ca19527b3c"
+      }
+    },
+    {
+      "path": "openspec/changes/decision-loop-one-tap-approvals/specs/core-notify/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "f12ff87db6b10140f200ac190482dc191d28cbf34a1fc3b71446aa040b5de026"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e3314070aa9aab78e7c60755af4d9e65f1415f8d3af260edeeada3b01cb68639"
+      }
+    },
+    {
+      "path": "openspec/changes/decision-loop-one-tap-approvals/specs/module-telegram/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "446eea322a80b028f1c4d3ac464440f98c7dd91f4b2e3db114aefe0091e8827c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b17af2efdaebe4d91ee81ed752d136e65f5959caa87a767362534168957a52c8"
+      }
+    },
+    {
+      "path": "openspec/specs/module-approvals/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "e168339928f34467945ec2f21719c6e123aa91565af054b72b67f28225c82571"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "06e51a7318900bd64e84d031967713e21ef084c9afeaf36621e0d3b1076d0856"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/api/routers/approvals.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "33470110bf3056760de231afd6091d28baa22198b252c3c3af6698b2eca72b25"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c9cce79ce3909fd34ada3438e70d39daf87bfb8839c2c1b93de8373fb9b70295"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/telegram_bot.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b405b4a55c9679d68e92c6fb24b1b3a187715438e72d5dcf53c01fb0f8593776"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "99ab012d4846944c6fa43751a359a62b2fa952dbbda819f7fd0f7deafab2181f"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/delivery_recovery.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b7702e4ed949ed2b9e5bd54fd552451ae0de2c1fcc5a256f22ee420d0516da98"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "13bcc22afaf94b9b864cb485d8849fff35d9ac074b78afa514f63822847b244c"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/migrations/018_presentation_args_digest.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "38efca91dbf6baca33d823d636db442b2f12a6034c26e3f52f4e459250e3f6ee"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/notifications.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7b0c43e16b450c5a8b77c0fbda36288587b33b926b63b0cef27624f25de8b619"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0e5040055d4eeb211bfc5b010a33512828b08dbf39229afd60206ce34bf81312"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/previews.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "2188b7529ee4471d851812b01436b3f1e9e5e7ba22de42b972d5cc0e43bedaad"
+      }
+    },
+    {
+      "path": "src/butlers/testing/approval_delivery_schema.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e238bd4f4ebd3950b5f61f057098e8c280ef3861bdce51ccbec659ba1b97805a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "573347ddb19afe32b124cc7c0d4e44c5c9da4080a71027384c66a36b7506b34f"
+      }
+    },
+    {
+      "path": "tests/api/test_approval_presented_digest.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "679673e79608ce785b08611d21844dc91b3bfbf410b96b8ed86ec5486df00de8"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-cmydxg-approval-cards-exact-call-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "4124beffc0a01f381cc8554349f89a04bb91b23f4eb1bd0f896070697a41a3ef"
+      }
+    },
+    {
+      "path": "tests/integration/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "864ffe978cc34e8e30877ffdbaf66bf060d5e72c108ff257b86e7abd8f174377"
+      }
+    },
+    {
+      "path": "tests/integration/test_approval_delivery_worker.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4006b1f12d6aaac969aad1431c1a9ce286ff452cc6d25175e53085d4578e9371"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "88fd4ebd8c62690c282f588965fe2cbfaa1a4d271a9315820da3dbb8ba94994e"
+      }
+    },
+    {
+      "path": "tests/integration/test_telegram_approval_callback_flow.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7a3007b50aee15db68a51a5c5f1a017c161083586368d75c3ab977d74fa8cfbd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1c7eadb9bfccace3881effd664306af8e8802e664fa8b2d7863010c337177b03"
+      }
+    },
+    {
+      "path": "tests/modules/approvals/test_approval_card_exact_call.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "6e2db3de269114093ba7021c997922954b15c69a4c088ee7b5251246b774fc18"
+      }
+    },
+    {
+      "path": "tests/modules/approvals/test_delivery_digest_binding.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "3b424acf95cd60a3e47f332cea2de813f3dc4b33745db0e5d8962e01d3100398"
+      }
+    },
+    {
+      "path": "tests/modules/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      }
+    },
+    {
+      "path": "tests/modules/test_approval_push_notifications.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "82d025eb3f121fac2565a33bfaba586694ac3425f10046ea93dc99e5d3b42ff4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "37b0251cec913ef66470987edbc8b1c2979300566f95700eaaafb93277b353d3"
+      }
+    },
+    {
+      "path": "tests/modules/test_approvals_018_downgrade.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "dfa5adfdd50a97e8a0bcfabd74387097c6d09e9cf07d03a778e381c542c40f91"
+      }
+    },
+    {
+      "path": "tests/modules/test_approvals_retention.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c6823ee0b68f432a99afa50328f557847b269752b8a904c9a3057b89c833b3aa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4afaccbdb195e59b15804457d538d481a3e38da28b77d2f6ad3ef42a14b4a158"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
