@@ -66,9 +66,12 @@ async def _snapshot(pool, *attendees: dict) -> None:
 
 
 async def _later_person(pool, email: str, posture: str) -> None:
+    # A distinct name per call: uq_entities_canonical_type_live allows one live person per
+    # (canonical_name, entity_type), and the shared-email cases need several live claimants.
     entity_id = await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) "
-        "VALUES ('Resolved Later', 'person') RETURNING id"
+        "VALUES ($1, 'person') RETURNING id",
+        f"Resolved Later {uuid.uuid4().hex[:8]}",
     )
     await pool.execute(
         "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
