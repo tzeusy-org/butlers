@@ -5,6 +5,7 @@
 **Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing
 **Amended:** 2026-05-19 — contacts collapsed to RDF triples per Amendment 2
 **Amended:** 2026-06-18 — declared entity_info/entity_facts seam law; telegram_chat_id mapped to has-handle predicate; write-guard added
+Governing doctrine: [security.md, Identity Resolution](../../heart-and-soul/security.md#identity-resolution) (`relationship.entity_facts` joined to `public.entities` is the source of truth for who a sender is) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (the shared `public` entity registry).
 
 ## Summary
 

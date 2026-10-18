@@ -88,6 +88,26 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **WHEN** an inherited cell is flipped
 - **THEN** the resulting row in `public.permissions` is explicit (not inherited) and the matrix re-fetch shows the cell as foreground.
 
+### Requirement: Runtime Permission Enforcement
+An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`.
+
+ID: REQ-dashboard-permissions-002
+Source: bu-30sah4 effect permission availability; bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D7, D10
+Scope: v1-mandatory
+
+#### Scenario: Explicit grant allows
+- **WHEN** the read returns a row with `granted = true` for the butler and permission
+- **THEN** `check_permission` returns `allowed=True` and `explicit=True`
+
+#### Scenario: Explicit revoke denies
+- **WHEN** the read returns a row with `granted = false`
+- **THEN** `check_permission` returns `allowed=False`, `explicit=True` and the row's reason
+- **AND** `require_permission` raises `PermissionDenied`
+
+#### Scenario: Effect paths refuse an unreadable store
+- **WHEN** an email, calendar or Telegram effect path checks its permission and the pool is missing, the read raises, or the row is malformed
+- **THEN** `require_permission` raises `PermissionUnavailable` before the external effect
+
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.
 
