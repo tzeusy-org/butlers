@@ -39,8 +39,17 @@ Design
   switchboard flusher redelivers at the next batch window; (2) the
   approvals-policy quiet-hours gate (``butlers.core.approvals_policy``); and
   (3) the context-bus dnd/sleeping gate
-  (``butlers.core.attention_ledger.get_suppressing_context_signal``). Gates
-  (2)/(3) SUPPRESS (drop, retry next scan). Every outcome is recorded via
+  (``butlers.core.attention_ledger.get_suppressing_context_signal``). Gate (3)
+  SUPPRESSES (drop, retry next scan). Gate (2) PARKS (bu-kqnum.3.8, "park, never
+  delete"): every credential held by the policy quiet window in one scan is composed
+  into ONE window-scoped aggregate envelope (dedup marker = the window start), enqueued
+  atomically (``replace_pending_deferred_notification``: cancel + insert behind an
+  advisory lock) so repeated and concurrent scans leave exactly one pending envelope,
+  released by the ordinary deferred flush at window end. Each held credential records
+  ``deferred``, and a ``lifecycle_state_parked`` audit row (``state|envelope id``) so a
+  state whose OWN aggregate is pending or delivered, and that no direct delivery has
+  superseded, is not re-alerted after the window. If the policy window cannot
+  be resolved, the legacy ``suppressed`` drop remains. Every outcome is recorded via
   ``record_attention_event`` so it shows up honestly as
   delivered/deferred/suppressed/failed in the attention ledger (bu-hmdqz.3: a
   genuine delivery failure — no recipient, a transport error, an unexpected
@@ -133,6 +142,11 @@ from butlers.api.routers.secrets_v2 import (
     _secrets_schema_absent_at_start,
     _secrets_source_schema,
 )
+from butlers.core.approvals_policy import (
+    get_approvals_policy_quiet_hours,
+    policy_quiet_hours_deliver_at,
+    policy_quiet_hours_window_start,
+)
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
@@ -143,6 +157,8 @@ from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
     get_delivery_preferences,
     insert_deferred_notification,
+    notification_status,
+    replace_pending_deferred_notification,
 )
 from butlers.credential_store import resolve_owner_telegram_recipient
 
@@ -159,6 +175,9 @@ _ATTENTION_STATES = frozenset({"expiring", "failing", "expired"})
 _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES = frozenset({"spotify"})
 
 _LIFECYCLE_NOTIFIED_ACTION = "lifecycle_state_notified"
+# Written when a credential's state is included in a quiet-window envelope (bu-kqnum.3.8).
+# ``note`` is ``<state>|<window marker>``; it is NOT the delivery debounce marker.
+_LIFECYCLE_PARKED_ACTION = "lifecycle_state_parked"
 _LIFECYCLE_ACTOR = "secrets_lifecycle_check"
 
 # [decision] (bu-178v1) The butler identity this job assumes for the per-butler
@@ -448,6 +467,7 @@ async def _enqueue_deferred_envelope(
     recipient: str,
     dedup_marker: str,
     deliver_at: datetime,
+    atomic: bool = False,
 ) -> str | None:
     """Supersede prior pending envelopes for this credential, then enqueue a
     fresh ``notify.v1`` envelope on switchboard's ``deferred_notifications``.
@@ -492,6 +512,11 @@ async def _enqueue_deferred_envelope(
     (``extra="forbid"``) when the flusher redelivers it, so it is matched on the
     already-present deep-link fragment in ``message`` instead.
 
+    ``atomic=True`` (bu-kqnum.3.8, the quiet-window aggregate) runs the supersede and the
+    insert in one transaction behind an advisory lock
+    (``replace_pending_deferred_notification``), so two concurrent scans leave exactly one
+    pending envelope instead of racing past each other's cancel.
+
     Best-effort: a failure to enqueue is logged and returns ``None``. A caller
     MUST record that as an honest ``failed`` attention outcome rather than
     claiming a deferred hold without an envelope reference. For a transport
@@ -513,14 +538,15 @@ async def _enqueue_deferred_envelope(
     # Supersede prior pending envelopes for this credential BEFORE enqueueing
     # the fresh one, so the queue never holds more than a single pending retry
     # per credential regardless of how many ticks the outage spans.
-    superseded = await _supersede_pending_retries(switchboard_pool, dedup_marker)
-    if superseded:
-        logger.info(
-            "secrets_lifecycle_check: superseded %d prior pending retry "
-            "envelope(s) before enqueueing latest state (marker=%s)",
-            superseded,
-            dedup_marker,
-        )
+    if not atomic:
+        superseded = await _supersede_pending_retries(switchboard_pool, dedup_marker)
+        if superseded:
+            logger.info(
+                "secrets_lifecycle_check: superseded %d prior pending retry "
+                "envelope(s) before enqueueing latest state (marker=%s)",
+                superseded,
+                dedup_marker,
+            )
 
     envelope = {
         "schema_version": "notify.v1",
@@ -533,6 +559,17 @@ async def _enqueue_deferred_envelope(
         },
     }
     try:
+        if atomic:
+            return await replace_pending_deferred_notification(
+                switchboard_pool,
+                butler_name="switchboard",
+                line_token=dedup_marker,
+                channel=channel,
+                message=message,
+                priority="medium",
+                envelope=envelope,
+                deliver_at=deliver_at,
+            )
         return await insert_deferred_notification(
             switchboard_pool,
             butler_name="switchboard",
@@ -631,6 +668,185 @@ async def _delivery_preferences_deferral(
     return None
 
 
+@dataclass(frozen=True)
+class _QuietWindow:
+    """The owner-attention policy quiet window the scan is currently inside."""
+
+    start: datetime
+    deliver_at: datetime
+
+
+async def _policy_quiet_window(pool: Any) -> _QuietWindow | None:
+    """The policy quiet window ``now`` falls inside, or ``None`` (fail open).
+
+    ``None`` when the policy is unreadable/incomplete or the window ended between the
+    suppression check and this read; the caller then keeps the legacy record-and-drop.
+    """
+    try:
+        policy = await get_approvals_policy_quiet_hours(pool)
+        now = datetime.now(UTC)
+        deliver_at = policy_quiet_hours_deliver_at(policy, now=now)
+        start = policy_quiet_hours_window_start(policy, now=now)
+    except Exception:
+        logger.debug("secrets_lifecycle_check: quiet-window lookup failed", exc_info=True)
+        return None
+    if deliver_at is None or start is None:
+        return None
+    return _QuietWindow(start=start, deliver_at=deliver_at)
+
+
+def _window_marker(dashboard_url: str, window: _QuietWindow) -> str:
+    """Window-scoped dedup token: the last line of the aggregate message.
+
+    It never contains a per-credential ``_focus_fragment``, so a credential's own retry
+    supersede cannot cancel the aggregate (the supersede match is a substring match).
+    """
+    return f"{dashboard_url}/secrets?quiet_window={window.start.strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _compose_window_message(snapshots: list[CredentialSnapshot], marker: str) -> str:
+    """One owner message for every credential held in a quiet window."""
+    lines = ["Credentials needing attention (held during quiet hours):"]
+    for snapshot in sorted(snapshots, key=lambda item: item.key):
+        description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
+        lines.append(f"- Credential '{snapshot.label}' {description}.")
+    lines.append(marker)
+    return "\n".join(lines)
+
+
+async def _latest_lifecycle_marker(pool: Any, key: str) -> tuple[str, str, str | None] | None:
+    """Newest lifecycle marker for ``key`` as ``(kind, state, envelope_id)``, or ``None``.
+
+    ``kind`` is ``"notified"`` (a confirmed direct delivery) or ``"parked"`` (held in a
+    quiet-window aggregate; ``envelope_id`` names the envelope that carried the credential).
+    One query over both actions, so a parked marker only counts while it is the newest:
+    any later direct delivery supersedes it and the next transition is eligible again.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT action, note FROM public.audit_log
+            WHERE target = $1 AND action = ANY($2::text[])
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            key,
+            [_LIFECYCLE_NOTIFIED_ACTION, _LIFECYCLE_PARKED_ACTION],
+        )
+    except Exception:
+        logger.debug("secrets_lifecycle_check: lifecycle-marker lookup failed", exc_info=True)
+        return None
+    if row is None or not isinstance(row["note"], str):
+        return None
+    if row["action"] == _LIFECYCLE_NOTIFIED_ACTION:
+        return "notified", row["note"], None
+    state, _, envelope_id = row["note"].partition("|")
+    return "parked", state, envelope_id or None
+
+
+async def _parked_envelope_status(db: DatabaseManager, envelope_id: str) -> str | None:
+    """Status of the envelope a credential was parked in, or ``None`` when unknown."""
+    try:
+        return await notification_status(
+            db.pool("switchboard"), butler_name="switchboard", notification_id=envelope_id
+        )
+    except Exception:
+        logger.debug("secrets_lifecycle_check: parked-envelope lookup failed", exc_info=True)
+        return None
+
+
+async def _park_quiet_window_holds(
+    db: DatabaseManager,
+    shared_pool: Any,
+    held: list[CredentialSnapshot],
+    window: _QuietWindow,
+    dashboard_url: str,
+) -> tuple[int, int]:
+    """Park ONE aggregate envelope for the credentials held this scan (bu-kqnum.3.8).
+
+    Returns ``(deferred, errors)`` counted per credential. Never raises. Each scan
+    supersedes the window's pending envelope with the current held set, so the window
+    holds exactly one pending envelope; the ordinary deferred flush delivers it at
+    ``window.deliver_at``.
+    """
+
+    async def record_failed(snapshot: CredentialSnapshot, reason: str) -> None:
+        try:
+            await record_attention_event(
+                shared_pool,
+                origin_butler=_LIFECYCLE_ACTOR,
+                source="notify",
+                outcome="failed",
+                channel="telegram",
+                intent="send",
+                priority="medium",
+                reason=reason,
+                dedup_key=snapshot.key,
+            )
+        except Exception:
+            logger.exception("secrets_lifecycle_check: failed to record %s", reason)
+
+    marker = _window_marker(dashboard_url, window)
+    try:
+        recipient = await resolve_owner_telegram_recipient(shared_pool)
+        if not recipient:
+            logger.warning(
+                "secrets_lifecycle_check: no telegram recipient configured for owner; "
+                "cannot park quiet-window envelope"
+            )
+            failure = "no_recipient_configured"
+            envelope_ref = None
+        else:
+            failure = "quiet_window_queue_failure_retryable"
+            envelope_ref = await _enqueue_deferred_envelope(
+                db,
+                channel="telegram",
+                message=_compose_window_message(held, marker),
+                recipient=recipient,
+                dedup_marker=marker,
+                deliver_at=window.deliver_at,
+                atomic=True,
+            )
+        if envelope_ref is None:
+            for snapshot in held:
+                await record_failed(snapshot, failure)
+            return 0, len(held)
+        for snapshot in held:
+            await record_attention_event(
+                shared_pool,
+                origin_butler=_LIFECYCLE_ACTOR,
+                source="notify",
+                outcome="deferred",
+                channel="telegram",
+                intent="send",
+                priority="medium",
+                reason="owner_attention_quiet_hours",
+                dedup_key=snapshot.key,
+                notification_ref=envelope_ref,
+            )
+            try:
+                await audit_router.append(
+                    shared_pool,
+                    _LIFECYCLE_ACTOR,
+                    _LIFECYCLE_PARKED_ACTION,
+                    target=snapshot.key,
+                    note=f"{snapshot.state}|{envelope_ref}",
+                    result="deferred",
+                )
+            except Exception:
+                # Without the row the credential is simply not skipped later (a possible
+                # duplicate alert, never a lost one); keep parking the rest.
+                logger.exception(
+                    "secrets_lifecycle_check: failed to record parked marker for %s", snapshot.key
+                )
+        return len(held), 0
+    except Exception as exc:
+        logger.exception("secrets_lifecycle_check: unexpected error parking quiet-window holds")
+        for snapshot in held:
+            await record_failed(snapshot, f"unexpected_error:{type(exc).__name__}")
+        return 0, len(held)
+
+
 async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     """Scan every credential and push a debounced owner notification for
     each NEW transition into an attention state.
@@ -663,6 +879,10 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
 
     dashboard_url = _dashboard_url()
     delivered = deferred = suppressed = errors = 0
+    # Credentials held by the owner-attention quiet-window policy this scan; parked as ONE
+    # aggregate envelope after the loop (bu-kqnum.3.8).
+    held: list[CredentialSnapshot] = []
+    quiet_window: _QuietWindow | None = None
 
     for snapshot in attention:
         # Per-iteration resolved state (bu-ziuye). The per-credential try below can
@@ -772,6 +992,14 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 continue
 
             suppress_reason = await _check_suppression(shared_pool)
+            if suppress_reason == "quiet_hours":
+                # Policy hold: park, never drop. If the window cannot be resolved (policy
+                # unreadable, or it ended mid-scan) fall through to the legacy drop; the
+                # next scan retries.
+                quiet_window = quiet_window or await _policy_quiet_window(shared_pool)
+                if quiet_window is not None:
+                    held.append(snapshot)
+                    continue
             if suppress_reason is not None:
                 suppressed += 1
                 await record_attention_event(
@@ -785,6 +1013,23 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     reason=suppress_reason,
                     dedup_key=snapshot.key,
                 )
+                continue
+
+            # Outside the hold: a state already parked in a quiet-window envelope must not be
+            # re-alerted, but only while the parked marker is the NEWEST lifecycle marker
+            # (a later direct delivery supersedes it) and the envelope that carried THIS
+            # credential is pending (the flush will deliver it) or delivered. A credential
+            # dropped from a later aggregate points at a cancelled envelope, and cancelled/
+            # expired/unknown falls through to a direct delivery. The delivery debounce
+            # marker stays direct-delivery-only.
+            marker_row = await _latest_lifecycle_marker(shared_pool, snapshot.key)
+            if (
+                marker_row is not None
+                and marker_row[0] == "parked"
+                and marker_row[1] == snapshot.state
+                and marker_row[2] is not None
+                and await _parked_envelope_status(db, marker_row[2]) in ("pending", "delivered")
+            ):
                 continue
 
             recipient = await resolve_owner_telegram_recipient(shared_pool)
@@ -976,6 +1221,13 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 dedup_key=snapshot.key,
                 notification_ref=retry_ref,
             )
+
+    if held and quiet_window is not None:
+        parked_count, park_errors = await _park_quiet_window_holds(
+            db, shared_pool, held, quiet_window, dashboard_url
+        )
+        deferred += parked_count
+        errors += park_errors
 
     summary: dict[str, Any] = {
         "scanned": len(snapshots),
