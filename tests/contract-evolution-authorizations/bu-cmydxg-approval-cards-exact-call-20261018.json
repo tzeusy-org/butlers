@@ -188,6 +188,14 @@
       }
     },
     {
+      "path": "tests/contract-evolution-requests/bu-cmydxg-approval-cards-exact-call-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "4124beffc0a01f381cc8554349f89a04bb91b23f4eb1bd0f896070697a41a3ef"
+      }
+    },
+    {
       "path": "tests/integration/conftest.py",
       "before": {
         "mode": "100644",
