@@ -42,6 +42,14 @@ pointing to `scripts/init-db.sql`; connectivity/authentication failure remains a
 separate channel. Neither message needs private configuration row contents or
 connection credentials. Offline SQL generation cannot attest a target database.
 
+The profile also refuses any normal role that still has `BYPASSRLS`, because a bypassing
+role skips the forced row-level security that guards the DND boundary. The migration
+login, the `butler_*_rw` roles, `connector_writer`, the optional calendar role,
+`dashboard_auth_api` and the restore-drill roles are all covered. Rerunning
+`scripts/init-db.sql` as the bootstrap identity repairs it: the script normalizes each of
+those roles to `NOBYPASSRLS` (and the other least-privilege attributes), including an
+existing `dashboard_auth_api`.
+
 Fresh installer-ready and correctly finalized protected states are both supported.
 After finalization consumes one-shot installer privileges, repeat migrations,
 second-schema replay and mixed-chain tracking do not demand those grants back.

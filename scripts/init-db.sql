@@ -5831,5 +5831,10 @@ BEGIN
         CREATE ROLE dashboard_auth_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
             NOCREATEDB NOREPLICATION NOBYPASSRLS;
     END IF;
+    -- An existing role may predate this bootstrap. Repair its attributes on every
+    -- run so the online prerequisite refusal (for example BYPASSRLS) is fixable by
+    -- rerunning this script. Memberships stay with host provisioning.
+    ALTER ROLE dashboard_auth_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
+        NOCREATEDB NOREPLICATION NOBYPASSRLS;
 END;
 $$;
