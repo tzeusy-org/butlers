@@ -248,6 +248,16 @@ Its JSON definition lives in `observability/grafana-alerting/`, mounted only
 at Grafana's alerting-provisioning path. It must remain outside the recursive
 dashboard source so Grafana never mistakes the alert rule for a dashboard.
 
+## Knowledge-Gap Closure Failures
+
+`butlers.memory.knowledge_gap_closure_failures_total` is an OTel counter for a
+knowledge-gap closure that failed while a fact write was committing. The fact write
+still succeeds and the gap stays open, so this counter is the operator signal that gap
+bookkeeping is broken (for example a lock or SQL error). It has only a `stage` label
+(`closure`); entity, predicate and fact identifiers are deliberately excluded. The
+butler comes from the OTel resource. No alert rule or dashboard panel ships with it yet;
+query it with `increase(...)`.
+
 ## Related Pages
 
 - [Deployment Posture](deployment-posture.md) -- Dev vs hardened posture, Grafana anon-viewer gating

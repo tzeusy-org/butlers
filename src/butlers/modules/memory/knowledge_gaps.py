@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.core.metrics import record_knowledge_gap_closure_failure
 from butlers.modules.memory.content_authority import OWNER_CLASS, SYSTEM, ContentAuthority
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,6 @@ _DELIVERY_BATCH = 25
 
 #: The only channel whose sender is the owner surface; other channels are a later slice.
 CAPTURE_CHANNEL = "dashboard"
-
-#: Closure failures swallowed since process start (the fact write always wins).
-closure_failures = 0
 
 STATUSES = ("open", "answerable", "delivered", "dismissed", "expired")
 
@@ -107,8 +105,9 @@ async def close_matching_gaps(
 
     Runs on the fact write's connection so the transition commits or rolls back with
     the fact.  A schema without the gap table (a butler that never ran ``mem_014``) is
-    skipped.  A closure failure never fails the fact write (logged and counted in
-    ``closure_failures``).  Only ``open`` gaps move, so a replayed write cannot re-notify.
+    skipped.  A closure failure never fails the fact write (logged and counted in the
+    ``butlers.memory.knowledge_gap_closure_failures_total`` counter).  Only ``open`` gaps
+    move, so a replayed write cannot re-notify.
 
     *value* and *authority* may be coroutine functions; they run only when a gap is open.
     *authority* is the closing fact's server-stamped authority, or a coroutine function
@@ -154,14 +153,12 @@ async def close_matching_gaps(
                 authority.entity_id if authority else None,
             )
     except Exception:
-        global closure_failures
-        closure_failures += 1
+        record_knowledge_gap_closure_failure(stage="closure")
         logger.warning(
-            "knowledge gap closure failed for entity %s predicate %s (count=%d); "
+            "knowledge gap closure failed for entity %s predicate %s; "
             "the fact write is unaffected and the gap stays open",
             entity_id,
             predicate,
-            closure_failures,
             exc_info=True,
         )
 

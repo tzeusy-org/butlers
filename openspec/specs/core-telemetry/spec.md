@@ -153,10 +153,16 @@ Beyond the core spawner, route, and buffer instruments above, the metrics module
 - Switchboard ingest: `butlers.switchboard.ingest_result` (Counter).
 - Recovery (self-healing): `butlers.recovery.active_workflows` (UpDownCounter), `butlers.recovery.phase_duration_ms` (Histogram), `butlers.recovery.dispatch_decisions_total` (Counter), `butlers.recovery.execution_failures_total` (Counter).
 - Domain-event delivery: `butlers.domain_event.delivery_failed_permanent_total` (Counter), with only `source_butler`, `destination_butler`, and closed-set `reason` (`non_retryable` or `attempts_exhausted`) attributes. It SHALL be emitted only after `mark_delivery_failed()` successfully returns `failed_permanent`; a repeated terminal-row update emits nothing, and a metric-export failure MUST NOT alter the durable delivery outcome.
+- Memory knowledge gaps: `butlers.memory.knowledge_gap_closure_failures_total` (Counter), with only a closed-set `stage` attribute (currently `closure`; an unsupported stage raises `ValueError`). It SHALL be emitted once for each knowledge-gap closure failure the memory module swallows so the fact write can commit; a successful closure, or a schema without the gap table, emits nothing, and entity, predicate and fact identifiers and exception text are never attributes.
 
 #### Scenario: Failover suppression recorded
 - **WHEN** the spawner suppresses a failover attempt
 - **THEN** `butlers.spawner.failover_suppressed_total` is incremented
+
+#### Scenario: Knowledge-gap closure failure swallowed
+- **WHEN** closing a knowledge gap raises while a fact write is committing
+- **THEN** the fact write still commits and the gap stays open
+- **AND** `butlers.memory.knowledge_gap_closure_failures_total` is incremented once with only `stage="closure"`
 
 #### Scenario: Domain-event delivery becomes permanently failed
 - **WHEN** a durable domain-event delivery transitions to `failed_permanent` because its route is non-retryable or its attempts are exhausted

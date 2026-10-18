@@ -100,6 +100,9 @@ A later write of a matching active fact -- `store_fact`, or the relationship but
 recording the fact reference, a value excerpt and the fact's server-stamped authority. A gap
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
+A closure that raises never fails the fact write: the write commits, the gap stays open, and
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`) is incremented next to a
+warning log.
 
 The `memory_knowledge_gap_delivery` maintenance job (every ten minutes, no LLM session) posts one
 notice per origin thread into `public.dashboard_messages` and marks the gap `delivered`. Owner-class
