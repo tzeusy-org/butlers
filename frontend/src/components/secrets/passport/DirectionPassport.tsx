@@ -175,7 +175,7 @@ export function DirectionPassport({
   const [enteredWithFocus] = React.useState(() => focusParam !== null);
   const pageRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
-    if (enteredWithFocus) pageRef.current?.focus();
+    if (enteredWithFocus) pageRef.current?.focus({ preventScroll: true });
   }, [enteredWithFocus]);
 
   // Active identity: URL param or first identity (owner).
