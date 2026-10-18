@@ -67,15 +67,18 @@ _GUARD_HEAD = """
                     USING ERRCODE = 'check_violation';
             END IF;
 """
-_GUARD_TAIL = """
+_STAGE_FORWARD = """
             IF NEW.stage_order < OLD.stage_order
                 OR (NEW.stage_order = OLD.stage_order AND NEW.stage IS DISTINCT FROM OLD.stage) THEN
                 RAISE EXCEPTION 'qa_publication_operations: a stage can only move forward'
                     USING ERRCODE = 'check_violation';
             END IF;
-            RETURN NEW;
+"""
+_GUARD_END = """            RETURN NEW;
         END
 """
+# Order matters: the stage-forward refusal runs before the set-once checks so a stage rewrite that
+# also writes a result keeps reporting the stage error (core_267 contract).
 _SET_ONCE = """
             IF OLD.new_object_id IS NOT NULL
                 AND NEW.new_object_id IS DISTINCT FROM OLD.new_object_id THEN
@@ -156,7 +159,7 @@ def upgrade() -> None:
         $$
         """
     )
-    op.execute(_guard_function(_GUARD_HEAD + _SET_ONCE + _GUARD_TAIL))
+    op.execute(_guard_function(_GUARD_HEAD + _STAGE_FORWARD + _SET_ONCE + _GUARD_END))
     op.execute(
         f"""
         CREATE OR REPLACE FUNCTION {_DELETE_FUNCTION}() RETURNS trigger
@@ -191,4 +194,4 @@ def downgrade() -> None:
     op.execute(f"DROP FUNCTION IF EXISTS {_DELETE_FUNCTION}()")
     op.execute(f"ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS {_CONSTRAINT}")
     # Restore the core_267 guard body (core_267 still owns the trigger itself).
-    op.execute(_guard_function(_GUARD_HEAD + _GUARD_TAIL))
+    op.execute(_guard_function(_GUARD_HEAD + _STAGE_FORWARD + _GUARD_END))
