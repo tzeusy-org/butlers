@@ -21,7 +21,7 @@
 
 ## 3. Future Implementation, Outside This Change
 
-- [ ] 3.1 After PR #4042 and `bu-8cdl1.13` are terminal, run a fresh overlap/readiness scan and
+- [x] 3.1 After PR #4042 and `bu-8cdl1.13` are terminal, run a fresh overlap/readiness scan and
       authorize a separate implementation packet.
-- [ ] 3.2 Implement and behavior-test the unified primitive, migrate all named callers atomically,
+- [x] 3.2 Implement and behavior-test the unified primitive, migrate all named callers atomically,
       remove both predecessor hooks, and pass the exact-head frontend gates.

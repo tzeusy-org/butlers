@@ -25,7 +25,7 @@ vi.mock("@/api/index.ts", () => ({
 }))
 
 import { RowLink } from "./RowLink"
-import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent"
+import { NAV_INTENT_DELAY_MS as PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-nav-intent"
 
 afterEach(() => {
   cleanup()

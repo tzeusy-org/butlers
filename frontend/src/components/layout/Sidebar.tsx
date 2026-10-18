@@ -3,8 +3,7 @@ import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
 import { type AvailabilityBadgeState, useBadgeCounts } from '@/hooks/use-qa-badge'
-import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
-import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
+import { useNavIntent } from '@/hooks/use-nav-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import { KbMono } from '@/components/ui/KbMono'
 import { StateDot } from '@/components/ui/StateDot'
@@ -16,7 +15,6 @@ import {
 } from '@/components/ui/tooltip'
 import { navSections, type NavItem, type NavFlatItem, type NavGroupItem, type NavSection } from './nav-config'
 import { NavIcon } from './NavIcon'
-import { composeHandlers } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Type guard
@@ -258,10 +256,8 @@ function FlatNavLink({
   const location = useLocation()
   const isActive = isPathActive(location.pathname, item.path, item.end)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
-  // Hover/focus intent -> route JS-chunk prefetch (bu-ep4ks.15). A no-op for
-  // any path not in lib/route-chunk-registry.ts's map.
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
-  const dataPrefetch = usePrefetchOnIntent(item.path)
+  // Hover/focus intent -> chunk and query warmup. A no-op for unmapped paths.
+  const navIntent = useNavIntent(item.path)
 
   return (
     <Tooltip>
@@ -270,14 +266,13 @@ function FlatNavLink({
           to={item.path}
           end={item.end}
           onClick={() => {
-            chunkPrefetch.onActivate?.()
-            dataPrefetch.onActivate?.()
+            navIntent.onActivate()
             onNavClick?.()
           }}
-          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+          onPointerEnter={navIntent.onPointerEnter}
+          onPointerLeave={navIntent.onPointerLeave}
+          onFocus={navIntent.onFocus}
+          onBlur={navIntent.onBlur}
           className={railItemClassName(isActive)}
           aria-label={item.tooltip ?? item.label}
           data-shortcut={item.chord ? `g ${item.chord}` : undefined}
@@ -394,7 +389,7 @@ function NavGroup({
 }
 
 // One rail-group child link -- split out from NavGroup's `.map()` so
-// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// useNavIntent (bu-ep4ks.15) can be called once per child
 // path rather than once per group (Rules of Hooks forbids calling a hook
 // inside the `.map()` callback directly).
 function NavGroupChildLink({
@@ -412,8 +407,7 @@ function NavGroupChildLink({
   isActive: boolean
   onNavClick?: () => void
 }) {
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
-  const dataPrefetch = usePrefetchOnIntent(path)
+  const navIntent = useNavIntent(path)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -421,14 +415,13 @@ function NavGroupChildLink({
           to={path}
           end={end}
           onClick={() => {
-            chunkPrefetch.onActivate?.()
-            dataPrefetch.onActivate?.()
+            navIntent.onActivate()
             onNavClick?.()
           }}
-          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+          onPointerEnter={navIntent.onPointerEnter}
+          onPointerLeave={navIntent.onPointerLeave}
+          onFocus={navIntent.onFocus}
+          onBlur={navIntent.onBlur}
           className={[railItemClassName(isActive), 'pl-2'].join(' ')}
           aria-label={label}
           data-shortcut={chord ? `g ${chord}` : undefined}
@@ -792,22 +785,20 @@ function MobileFlatLink({
   const { count, unavailableLabel } = resolveSidebarBadge(item, badgeCounts)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
-  const dataPrefetch = usePrefetchOnIntent(item.path)
+  const navIntent = useNavIntent(item.path)
 
   return (
     <NavLink
       to={item.path}
       end={item.end}
       onClick={() => {
-        chunkPrefetch.onActivate?.()
-        dataPrefetch.onActivate?.()
+        navIntent.onActivate()
         onNavClick?.()
       }}
-      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+      onPointerEnter={navIntent.onPointerEnter}
+      onPointerLeave={navIntent.onPointerLeave}
+      onFocus={navIntent.onFocus}
+      onBlur={navIntent.onBlur}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -928,7 +919,7 @@ function MobileNavGroup({
 }
 
 // One mobile-group child link -- split out from MobileNavGroup's `.map()` so
-// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// useNavIntent (bu-ep4ks.15) can be called once per child
 // path rather than once per group (Rules of Hooks forbids calling a hook
 // inside the `.map()` callback directly).
 function MobileNavGroupChildLink({
@@ -944,21 +935,19 @@ function MobileNavGroupChildLink({
   chord?: string
   onNavClick?: () => void
 }) {
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
-  const dataPrefetch = usePrefetchOnIntent(path)
+  const navIntent = useNavIntent(path)
   return (
     <NavLink
       to={path}
       end={end}
       onClick={() => {
-        chunkPrefetch.onActivate?.()
-        dataPrefetch.onActivate?.()
+        navIntent.onActivate()
         onNavClick?.()
       }}
-      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+      onPointerEnter={navIntent.onPointerEnter}
+      onPointerLeave={navIntent.onPointerLeave}
+      onFocus={navIntent.onFocus}
+      onBlur={navIntent.onBlur}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md pl-9 pr-3 py-2 text-sm font-medium transition-colors',

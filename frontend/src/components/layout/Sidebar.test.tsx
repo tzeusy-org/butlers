@@ -7,8 +7,7 @@ import { MemoryRouter } from "react-router";
 import { fireEvent } from "@testing-library/react";
 
 import Sidebar from "@/components/layout/Sidebar";
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
-import { useRouteChunkPrefetchOnIntent } from "@/hooks/use-route-chunk-prefetch-on-intent";
+import { useNavIntent } from "@/hooks/use-nav-intent";
 import { useSpendSummary } from "@/hooks/use-spend";
 import { useBadgeCounts } from "@/hooks/use-qa-badge";
 import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
@@ -25,12 +24,8 @@ vi.mock("@/hooks/use-qa-badge", () => ({
   useBadgeCounts: vi.fn(() => ({})),
 }));
 
-vi.mock("@/hooks/use-prefetch-on-intent", () => ({
-  usePrefetchOnIntent: vi.fn(),
-}));
-
-vi.mock("@/hooks/use-route-chunk-prefetch-on-intent", () => ({
-  useRouteChunkPrefetchOnIntent: vi.fn(),
+vi.mock("@/hooks/use-nav-intent", () => ({
+  useNavIntent: vi.fn(),
 }));
 
 // Radix Tooltip renders content in a portal — skip portal assertions in JSDOM
@@ -47,22 +42,13 @@ vi.mock("radix-ui", async (importOriginal) => {
 
 const setButlersState = setUseButlersState;
 
-const dataPrefetchHandlers = {
-  schedule: vi.fn(),
+const navIntentHandlers = {
   cancel: vi.fn(),
   onPointerEnter: vi.fn(),
   onPointerLeave: vi.fn(),
   onFocus: vi.fn(),
   onBlur: vi.fn(),
-};
-
-const chunkPrefetchHandlers = {
-  schedule: vi.fn(),
-  cancel: vi.fn(),
-  onPointerEnter: vi.fn(),
-  onPointerLeave: vi.fn(),
-  onFocus: vi.fn(),
-  onBlur: vi.fn(),
+  onActivate: vi.fn(),
 };
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -80,8 +66,7 @@ describe("Sidebar", () => {
       data: { data: { total_cost_usd: 26.27 } },
       isLoading: false,
     } as ReturnType<typeof useSpendSummary>);
-    vi.mocked(usePrefetchOnIntent).mockReturnValue(dataPrefetchHandlers);
-    vi.mocked(useRouteChunkPrefetchOnIntent).mockReturnValue(chunkPrefetchHandlers);
+    vi.mocked(useNavIntent).mockReturnValue(navIntentHandlers);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -141,13 +126,12 @@ describe("Sidebar", () => {
       ["desktop group child", () => render("/health"), "/health"],
       ["mobile flat link", () => renderMobile(), "/spend"],
       ["mobile group child", () => renderMobile("/health"), "/health"],
-    ])("composes route-chunk and data prefetch handlers for each %s", (_surface, renderSurface, path) => {
+    ])("attaches the navigation-intent handlers for each %s", (_surface, renderSurface, path) => {
       renderSurface();
 
       const link = container.querySelector(`a[href="${path}"]`);
       expect(link).toBeInstanceOf(HTMLAnchorElement);
-      expect(useRouteChunkPrefetchOnIntent).toHaveBeenCalledWith(path);
-      expect(usePrefetchOnIntent).toHaveBeenCalledWith(path);
+      expect(useNavIntent).toHaveBeenCalledWith(path);
 
       fireEvent.pointerEnter(link!);
       fireEvent.pointerLeave(link!);
@@ -155,8 +139,7 @@ describe("Sidebar", () => {
       fireEvent.blur(link!);
 
       for (const handler of ["onPointerEnter", "onPointerLeave", "onFocus", "onBlur"] as const) {
-        expect(chunkPrefetchHandlers[handler]).toHaveBeenCalledOnce();
-        expect(dataPrefetchHandlers[handler]).toHaveBeenCalledOnce();
+        expect(navIntentHandlers[handler]).toHaveBeenCalledOnce();
       }
     });
   });

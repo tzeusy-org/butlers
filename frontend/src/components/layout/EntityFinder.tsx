@@ -62,8 +62,7 @@ import { fuzzyFilter } from "@/lib/fuzzy-match";
 import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
-import { resolveRouteChunkLoader } from "@/lib/route-chunk-registry";
+import { useNavIntent } from "@/hooks/use-nav-intent";
 import { EntityMark } from "@/components/ui/EntityMark";
 import {
   Dialog,
@@ -511,15 +510,12 @@ export default function EntityFinder() {
     return null;
   }, [activeValue, sessionMatches, stateMatches]);
 
-  const highlightPrefetch = usePrefetchOnIntent(highlightedPath);
+  const highlightPrefetch = useNavIntent(highlightedPath);
   useEffect(() => {
     // Highlighting is command/keyboard intent, so both the lazy chunk and
-    // matching query cache start immediately. A pending pointer timer cannot
-    // be cancelled by activation because `warmNow` clears it first.
-    highlightPrefetch.warmNow?.();
-    const loader = highlightedPath ? resolveRouteChunkLoader(highlightedPath) : null;
-    loader?.().catch(() => {});
-    return highlightPrefetch.cancel;
+    // matching query cache start immediately from one intent cycle.
+    highlightPrefetch.onFocus();
+    return highlightPrefetch.onBlur;
     // highlightPrefetch reads its target via a ref (stable identity across
     // `to` changes) -- only the resolved path itself should retrigger this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
