@@ -4624,6 +4624,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Owner only -- sign in as the owner to view.
 - No external egress recorded yet.
 - Last seen
+- View {} audit events
 
 ## `frontend/src/components/system/InsightDeliveryTile.tsx`
 
@@ -4916,4 +4917,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3919*

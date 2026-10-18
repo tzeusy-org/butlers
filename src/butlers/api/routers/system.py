@@ -275,6 +275,10 @@ class EgressActor(BaseModel):
     last_seen_at: str
     total_calls: int
     data_types: list[str]
+    # The exact audit-log ``action`` this actor stands for (registered actors only; None for
+    # the "other" bucket, which aggregates many unregistered actions). Lets the dashboard link
+    # to GET /api/audit-log?action=<audit_action> without copying the registry client-side.
+    audit_action: str | None = None
 
 
 class EgressCatalog(BaseModel):
@@ -1055,10 +1059,12 @@ async def get_egress_catalog(
             if operation in _ACTOR_REGISTRY:
                 actor_id, display_name = _ACTOR_REGISTRY[operation]
                 data_types = _OPERATION_DATA_TYPES.get(operation, [])
+                audit_action: str | None = operation
             else:
                 actor_id = _UNKNOWN_ACTOR_ID
                 display_name = _UNKNOWN_ACTOR_NAME
                 data_types = []
+                audit_action = None
 
             if actor_id not in actor_buckets:
                 actor_buckets[actor_id] = {
@@ -1067,6 +1073,7 @@ async def get_egress_catalog(
                     "last_seen_at": last_seen,
                     "total_calls": 0,
                     "data_types": set(data_types),
+                    "audit_action": audit_action,
                 }
             else:
                 # Update last_seen_at to the latest across merged operations
@@ -1097,6 +1104,7 @@ async def get_egress_catalog(
                 ),
                 total_calls=a["total_calls"],
                 data_types=sorted(a["data_types"]),
+                audit_action=a["audit_action"],
             )
             for a in actors
             if a["last_seen_at"] is not None

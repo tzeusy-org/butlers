@@ -338,6 +338,9 @@ the "your data has been seen by these endpoints" surface.
     within the audit window
   - `data_types: string[]` -- array of coarse data type labels observed in the
     egress events (e.g., `["session_prompt", "calendar_event", "message_text"]`)
+  - `audit_action: string | null` -- the exact `public.audit_log` `action` the actor
+    stands for (e.g., `"llm_api_call"`) for a registered actor, and `null` for the
+    `"other"` bucket
 - **AND** the response wraps in the standard `ApiResponse<EgressCatalog>` envelope
 
 #### Scenario: Egress catalog is derived from the audit log
@@ -380,6 +383,18 @@ the "your data has been seen by these endpoints" surface.
   `"other"` bucket with a display name of `"Other / Unrecognized"`
 - **AND** the actor registry is the authoritative list of actor identifiers and
   display names; the implementation bead is responsible for populating it
+
+#### Scenario: Egress actors link to their audit log rows
+
+- **WHEN** the System page renders the data-egress tile and an actor carries a non-null
+  `audit_action`
+- **THEN** that actor's row is a link to
+  `/audit-log?action=<audit_action>&noise=all`, with the action URL-encoded, so the
+  audit log opens filtered to exactly the events behind that actor
+- **AND** the client reads the action from the response and never re-derives the actor
+  registry
+- **AND** the `"other"` bucket, whose `audit_action` is `null`, renders as plain text,
+  because it aggregates many unregistered actions with no single predicate
 
 ### Requirement: System Verdict Source Settlement
 
