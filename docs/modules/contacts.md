@@ -133,8 +133,11 @@ None. The contacts module is a leaf module.
   `contacts sync partial: contact apply failed` (a run-level failure stores
   `contacts sync failed: <exception class>`). Each failure logs `contact_sync_apply_failed` with
   provider, account, external id and exception class only. The failed contacts keep no new version, so
-  the poller retries them with a full sync once the last full sync is an hour old; if every attempted
-  contact fails the run fails and keeps its cursor.
+  the poller retries them with a full sync once the last full sync is an hour old. The run fails and
+  keeps its cursor when more than one contact was attempted and none applied, and when a source
+  deletion fails (a deletion is delivered once, so the next incremental run must re-deliver it); one
+  failing contact on its own does not fail the run. The backfill apply wrapper logs the external id
+  and exception class only.
 - Same-account manual/poll cycles serialize. Persistent state and absent-source baseline checks
   refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
   progress independently. Reappearance bypasses an unchanged etag/fingerprint cache when its exact

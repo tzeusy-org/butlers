@@ -1535,6 +1535,11 @@ class ContactsSyncEngine:
                         "error_class": type(exc).__name__,
                     },
                 )
+                if contact.deleted:
+                    # A source deletion is delivered once, incrementally; a later full fetch only
+                    # omits the contact, so a lost tombstone would never be retried. Fail the run
+                    # and keep the cursor so the next incremental run re-delivers it.
+                    raise
                 continue
             versions[contact.external_id] = version
             applied += 1
@@ -1542,8 +1547,9 @@ class ContactsSyncEngine:
                 deleted += 1
 
         if failed > 1 and applied == 0 and last_failure is not None:
-            # Every attempted contact failed: that is systemic (storage down, bad schema), not a
-            # bad contact, so fail the run and keep the cursor rather than advance past them all.
+            # More than one contact was attempted and none applied: that is systemic (storage
+            # down, bad schema), not a bad contact, so fail the run and keep the cursor. A single
+            # failing contact does not, or one poison contact would wedge the account.
             raise last_failure
 
         now_iso = datetime.now(UTC).isoformat()

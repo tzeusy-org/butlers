@@ -259,13 +259,15 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 - **THEN** the run SHALL continue, persist the new sync cursor and the versions of the contacts that applied, and report the number of failed contacts
 - **AND** the failure SHALL be a structured `contact_sync_apply_failed` log record carrying provider, account, external id and the exception class, never the exception message or a display name
 - **AND** `contacts_sync_state.last_error` SHALL hold only the content-free value `contacts sync partial: contact apply failed`; a run-level failure SHALL store `contacts sync failed: <exception class>`, never the exception text
-- **AND** WHEN every attempted contact in a run fails, the run SHALL fail and keep its cursor, since that is a systemic fault rather than a bad contact
+- **AND** WHEN more than one contact was attempted and none applied, the run SHALL fail and keep its cursor, since that is a systemic fault rather than a bad contact; one failing contact on its own, or failures beside at least one applied contact, SHALL NOT fail the run
+- **AND** WHEN a source deletion (tombstone) fails to apply, the run SHALL fail and keep its cursor so the next incremental run re-delivers it, because a deletion is delivered only once and a later full fetch merely omits the contact
+- **AND** the ordinary contact-apply error log SHALL carry the external id and the exception class only, never the exception message or a traceback
 
 #### Scenario: Failed contacts are retried by a bounded full sync
 
 - **WHEN** a run ended with the partial `last_error` above
 - **THEN** the failed contacts keep no (or their previous) recorded version, and an incremental run SHALL NOT clear the marker
-- **AND** the poller SHALL start a full sync once the last full sync is at least one hour old, which re-delivers and retries them; a full run with no failures clears the marker
+- **AND** the poller SHALL start a full sync once the last full sync is at least one hour old, which re-delivers and retries the failed non-deletion contacts; a full run with no failures clears the marker
 
 ### Requirement: CRM Backfill Pipeline
 

@@ -1147,11 +1147,13 @@ class ContactBackfillEngine:
         try:
             await self._apply(contact)
         except Exception as exc:
+            # Content-free: an apply error can carry a display name or address, so log the
+            # exception class only (no message, no traceback). The sync engine records the
+            # per-contact outcome.
             logger.warning(
-                "ContactBackfill: failed to apply contact external_id=%s: %s",
+                "ContactBackfill: failed to apply contact external_id=%s error_class=%s",
                 contact.external_id,
-                exc,
-                exc_info=True,
+                type(exc).__name__,
             )
             raise
 
