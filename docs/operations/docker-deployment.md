@@ -121,8 +121,8 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   from provider inputs. The application rejects an old, malformed, or mismatched asset before
   allocating a sandbox identity, so upgrades and rollbacks use a matched application/base-image
   pair, never runtime dependency discovery or a provider-derived fallback.
-- **Host prerequisite for the dashboard CLI sandbox.** Hosts that run `dashboard-api` on Ubuntu
-  24.04 or newer must allow its Bubblewrap sandbox to create a user namespace, or the sandbox fails
+- **Host prerequisite for the dashboard CLI sandbox.** Hosts that run `dashboard-api` with
+  `kernel.apparmor_restrict_unprivileged_userns = 1` (typical of Ubuntu 24.04 or newer) must allow its Bubblewrap sandbox to create a user namespace, or the sandbox fails
   closed and provider tests and auth-health probes run nothing. See
   [Host prerequisite: unprivileged user namespaces](#host-prerequisite-unprivileged-user-namespaces).
 - **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
@@ -154,10 +154,12 @@ is not affected: Codex runs there with `--dangerously-bypass-approvals-and-sandb
 sysctl kernel.apparmor_restrict_unprivileged_userns
 ```
 
-- Affected: Ubuntu 24.04 or newer and the sysctl prints `= 1`. `apparmor:unconfined` on the
+- The sysctl value decides, not the OS version. `VERSION_ID` is only a hint for where to look.
+- Affected: the sysctl prints `= 1` (typical of Ubuntu 24.04 or newer). `apparmor:unconfined` on the
   container does not help, because the kernel restricts unconfined processes too.
-- Not affected: the sysctl is missing (`cannot stat ...`) or prints `= 0`. The documented k3s nodes
-  run kernel 5.15 (22.04-era) and are in this group.
+- Not affected: the sysctl is missing (`cannot stat ...`) or prints `= 0`. The k3s nodes probed on
+  2026-10-03 ran kernel 5.15 (22.04-era) and were in this group; that is a dated probe, not a current
+  node inventory (see [Kubernetes Deployment](kubernetes-deployment.md)).
 - Symptom when affected: `bwrap: setting up uid map: Permission denied`.
 
 ### Recommended: a scoped AppArmor profile
@@ -181,16 +183,18 @@ sudo apparmor_parser -r /etc/apparmor.d/butlers-dashboard-api
 sudo aa-status | grep butlers-dashboard-api
 ```
 
-Then, in the `dashboard-api` service's `security_opt` in `docker-compose.yml`, replace
+Then, in `docker-compose.yml`, edit the `security_opt` of BOTH the `dashboard-api` and
+`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`): replace
 `apparmor:unconfined` with `apparmor=butlers-dashboard-api` (the other two entries stay). The profile
 is otherwise unconfined, so the container's confinement is the same as today; only user-namespace
-creation is newly allowed, and only for this container. Reload the stack with the launcher or
+creation is newly allowed, and only for these containers. Reload the stack with the launcher or
 `butlers deploy`.
 
-Verify from the container (this proves user-namespace creation only, not the full sandbox):
+Verify from the container that is actually running, `dashboard-api` or `dashboard-api-hotreload`
+(this proves user-namespace creation only, not the full sandbox):
 
 ```bash
-docker compose exec dashboard-api /usr/bin/bwrap --unshare-user --ro-bind / / /usr/bin/true
+docker compose exec <running-service> /usr/bin/bwrap --unshare-user --ro-bind / / /usr/bin/true
 ```
 
 No output and exit status 0 means the host is ready. `setting up uid map: Permission denied` means it
@@ -217,9 +221,10 @@ runners.
 ### Kubernetes
 
 The Helm chart runs `dashboardApi.privileged: true` instead (`deploy/helm/butlers/values.yaml`), and
-the documented k3s nodes predate the restriction, so this page's steps do not apply to them. If a node
-is upgraded to Ubuntu 24.04 or newer, run the detection command above on it and re-check the sandbox
-before assuming it still works; see [Kubernetes Deployment](kubernetes-deployment.md).
+the k3s nodes probed on 2026-10-03 (kernel 5.15) predate the restriction, so this page's steps did not
+apply to them then. That probe is dated, not current: run the detection command above on any node,
+especially after an upgrade to Ubuntu 24.04 or newer, and re-check the sandbox; see
+[Kubernetes Deployment](kubernetes-deployment.md).
 
 ### Provisioning
 
