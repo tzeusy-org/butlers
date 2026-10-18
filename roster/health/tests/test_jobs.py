@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import shutil
 import uuid
@@ -1694,14 +1695,17 @@ async def _setup_visit_brief_tables(pool) -> None:
             await pool.execute(statement)
 
 
-async def _insert_source(pool, *, lane: str = "user") -> str:
+async def _insert_source(pool, *, lane: str = "user", health: bool = False) -> str:
+    """A provider calendar source; ``health`` makes it Health's butler-specific calendar."""
     source_id = str(uuid.uuid4())
     await pool.execute(
-        "INSERT INTO calendar_sources (id, source_key, source_kind, lane) "
-        "VALUES ($1::uuid, $2, 'provider', $3)",
+        "INSERT INTO calendar_sources (id, source_key, source_kind, lane, butler_name, metadata) "
+        "VALUES ($1::uuid, $2, 'provider', $3, $4, $5)",
         source_id,
         f"{lane}-{source_id}",
         lane,
+        "health" if health else None,
+        {"butler_specific": health},
     )
     return source_id
 
@@ -1795,13 +1799,21 @@ def _brief_message(client: _FakeSwitchboard) -> str:
         "no_prior_visit_defaults_to_90_days",
         "second_run_sends_nothing_and_reschedule_re_anchors",
         "events_not_on_health_calendar_trigger_nothing",
+        "health_booked_and_owner_added_appointments_are_briefed",
         "failed_delivery_is_retried_and_sent_once",
+        "concurrent_runs_send_once",
+        "thin_history_reads_no_baseline_yet",
     ],
 )
 async def test_visit_brief(provisioned_postgres_pool, case):
     from butlers.jobs import health_visit_brief as brief
 
-    now = _utcnow()
+    # A fixed instant keeps the day-boundary counts of the figures case deterministic.
+    now = (
+        datetime(2026, 10, 15, 4, tzinfo=UTC)
+        if case == "since_last_visit_with_traceable_figures"
+        else _utcnow()
+    )
     client = _FakeSwitchboard()
     with (
         patch.object(brief, "get_current_switchboard_client", return_value=client),
@@ -1812,13 +1824,18 @@ async def test_visit_brief(provisioned_postgres_pool, case):
         async with provisioned_postgres_pool() as pool:
             await _setup_health_schema(pool)
             await _setup_visit_brief_tables(pool)
-            source = await _insert_source(pool)
+            source = await _insert_source(pool, health=True)
+            booked = {"butler_generated": True, "butler_name": "health"}
 
             if case == "since_last_visit_with_traceable_figures":
                 prior_start = now - timedelta(days=10)
                 await _insert_event(pool, source, title="Dr Tan", starts_at=prior_start)
                 upcoming = await _insert_event(
-                    pool, source, title="Dr Tan follow-up", starts_at=now + timedelta(hours=36)
+                    pool,
+                    source,
+                    title="BUTLER: Dr Tan follow-up https://clinic.example/visit",
+                    starts_at=now + timedelta(hours=36),
+                    metadata=booked,
                 )
                 prior_end = prior_start + timedelta(hours=1)
                 # Rows before the prior visit are outside the period.
@@ -1882,7 +1899,13 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 text = _brief_message(client)
                 assert "since your last visit" in text and "90 days" not in text
                 assert "headache: 3 entries" in text and "highest 6" in text
-                assert "Metformin: 5 doses logged against" in text
+                assert "Covers the 9 days since your last visit on Oct 5" in text
+                assert "Health brief for Dr Tan follow-up," in text
+                assert "BUTLER:" not in text and "https://" not in text
+                assert (
+                    "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
+                ) in text
+                assert "usual 70.3 kg (+/- 0.5), latest is within it" in text
                 assert "Blood pressure (systolic): no data since" in text
                 assert "Resting heart rate: no data recorded" in text
                 assert "Hypertension: active to managed" in text
@@ -1892,6 +1915,12 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert set(figures[("medications", "Metformin")]["fact_ids"]) == set(doses)
                 assert set(figures[("measurements", "Weight")]["fact_ids"]) == {weights[-1]}
                 assert figures[("conditions", "Hypertension")]["fact_ids"] == [cond]
+                assert figures[("medications", "Metformin")]["value"] == {
+                    "scheduled": 11,
+                    "taken": 5,
+                    "missed": 6,
+                }
+                assert figures[("measurements", "Weight")]["value"]["baseline"]["state"] == "within"
                 # A stale feed is a note with no readings, never a zero reading.
                 assert (
                     figures[("measurements", "Blood pressure (systolic)")]["value"]["readings"] == 0
@@ -1930,15 +1959,14 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert row["event_start"] == moved
                 assert await pool.fetchval("SELECT count(*) FROM visit_briefs") == 1
             elif case == "events_not_on_health_calendar_trigger_nothing":
-                butler_lane = await _insert_source(pool, lane="butler")
                 soon = now + timedelta(hours=30)
+                primary = await _insert_source(pool)  # the owner's primary/shared calendars
+                butler_lane = await _insert_source(pool, lane="butler")
+                await _insert_event(pool, primary, title="Team meeting", starts_at=soon)
                 await _insert_event(pool, butler_lane, title="Take pills", starts_at=soon)
+                # Health's own scheduled-task and reminder mirrors: generated, no BUTLER: title.
                 await _insert_event(
-                    pool,
-                    source,
-                    title="Generated",
-                    starts_at=soon,
-                    metadata={"butler_generated": True},
+                    pool, source, title="weekly-health-summary", starts_at=soon, metadata=booked
                 )
                 await _insert_event(pool, source, title="Later", starts_at=now + timedelta(days=5))
                 await _insert_event(pool, source, title="All day", starts_at=soon, all_day=True)
@@ -1958,6 +1986,72 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 assert result["considered"] == 0 and result["sent"] == 0
                 assert client.calls == []
                 assert await pool.fetchval("SELECT count(*) FROM visit_briefs") == 0
+            elif case == "health_booked_and_owner_added_appointments_are_briefed":
+                booked_event = await _insert_event(
+                    pool,
+                    source,
+                    title="BUTLER: Dr Lee",
+                    starts_at=now + timedelta(hours=30),
+                    metadata=booked,
+                )
+                added_event = await _insert_event(
+                    pool, source, title="Dr Lim", starts_at=now + timedelta(hours=40)
+                )
+
+                result = await brief.run_visit_brief(pool, now=now)
+
+                assert result["sent"] == 2
+                rows = await pool.fetch("SELECT event_id FROM visit_briefs")
+                assert {r["event_id"] for r in rows} == {booked_event, added_event}
+            elif case == "concurrent_runs_send_once":
+                await _insert_event(
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                )
+                sends: list[str] = []
+
+                async def slow(message: str) -> str:
+                    sends.append(message)
+                    await asyncio.sleep(0.3)
+                    return brief.DELIVERED
+
+                first, second = await asyncio.gather(
+                    brief.run_visit_brief(pool, notify_fn=slow, now=now),
+                    brief.run_visit_brief(pool, notify_fn=slow, now=now),
+                )
+
+                assert len(sends) == 1
+                assert sorted([first["sent"], second["sent"]]) == [0, 1]
+                assert [first.get("skipped_concurrent"), second.get("skipped_concurrent")].count(
+                    True
+                ) == 1
+                # The lock is released: a later run proceeds and finds the row delivered.
+                again = await brief.run_visit_brief(pool, notify_fn=slow, now=now)
+                assert again["sent"] == 0 and "skipped_concurrent" not in again
+            elif case == "thin_history_reads_no_baseline_yet":
+                await _insert_event(
+                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
+                )
+                earlier = await _insert_measurement(
+                    pool,
+                    mtype="weight",
+                    value={"value": 70.0},
+                    measured_at=now - timedelta(days=40),
+                )
+                latest = await _insert_measurement(
+                    pool,
+                    mtype="weight",
+                    value={"value": 71.0},
+                    measured_at=now - timedelta(days=3),
+                )
+
+                await brief.run_visit_brief(pool, now=now)
+
+                text = _brief_message(client)
+                assert "no baseline yet" in text and "(+/-" not in text
+                row = await pool.fetchrow("SELECT digest FROM visit_briefs")
+                weight = next(f for f in row["digest"]["figures"] if f["label"] == "Weight")
+                assert set(weight["fact_ids"]) == {earlier, latest}
+                assert weight["value"]["baseline"]["state"] == "insufficient_history"
             else:
                 await _insert_event(
                     pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30)
