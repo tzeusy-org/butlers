@@ -75,6 +75,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -1425,7 +1426,7 @@ class OwnTracksConnector:
         start_t = time.perf_counter()
         status = "success"
         try:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
             self._last_ingest_ok = True
             self._health_error = None
             logger.debug(
@@ -1485,7 +1486,7 @@ class OwnTracksConnector:
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # Checkpoint

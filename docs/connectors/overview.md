@@ -18,7 +18,7 @@ A connector is an independent process (or co-located daemon) that:
 
 1. Reads source events or messages from an external system.
 2. Normalizes source payloads into the `ingest.v1` envelope format.
-3. Submits envelopes to the Switchboard via MCP tool call (`ingest`).
+3. Submits envelopes to the Switchboard via MCP tool call (`ingest`), always through `butlers.connectors.ingest_submit.submit_ingest()`, which raises `IngestRejected` for a `status: error`, missing or unknown status, or non-dict reply (a source-scan test forbids calling the tool directly).
 4. Persists a resume cursor so it can restart safely after crashes.
 5. Sends periodic heartbeats to report liveness and operational statistics.
 

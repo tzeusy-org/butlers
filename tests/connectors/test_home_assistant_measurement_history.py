@@ -218,6 +218,7 @@ async def test_history_rows_use_historical_metadata_and_checkpoint_noneligible_t
     from butlers.connectors import home_assistant as ha_connector
 
     mcp_client = AsyncMock()
+    mcp_client.call_tool.return_value = {"status": "accepted"}
 
     async def _emit(event: dict[str, Any]) -> bool:
         return await ha_connector._emit_history_wellness_measurement(
@@ -535,6 +536,7 @@ async def test_history_event_uses_existing_wellness_envelope_with_measurement_ti
     emit_history = getattr(ha_connector, "_emit_history_wellness_measurement", None)
     assert emit_history is not None, "history-to-wellness dispatcher seam is not implemented"
     mcp_client = AsyncMock()
+    mcp_client.call_tool.return_value = {"status": "accepted"}
     measurement_at = "2026-08-27T07:00:00+00:00"
     event = {
         "event_type": "state_changed",
