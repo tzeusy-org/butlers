@@ -122,6 +122,9 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 | `butlers.spawner.session_duration_ms` | Histogram | `butler` | End-to-end session duration |
 | `butlers.spawner.input_tokens` | Counter | `butler`, `model` | LLM input tokens per session |
 | `butlers.spawner.output_tokens` | Counter | `butler`, `model` | LLM output tokens per session |
+| `butlers.spawner.failover_attempts_total` | Counter | `butler`, `from_model`, `to_model`, `reason` | Same-tier failover transitions |
+| `butlers.spawner.failover_suppressed_total` | Counter | `butler`, `reason` (first token only) | Failovers suppressed by the eligibility classifier |
+| `butlers.spawner.failover_exhausted_total` | Counter | `butler`, `tier` | Same-tier failover loops that exhausted every candidate |
 
 #### Recovery Metrics
 
@@ -162,12 +165,53 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 | Instrument | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `butlers.switchboard.ingest_result` | Counter | `source`, `outcome` | Ingest boundary outcomes |
-| `butlers.switchboard.thread_affinity.hit` | Counter | `destination_butler` | Thread affinity routing hit |
-| `butlers.switchboard.thread_affinity.miss` | Counter | `reason` | Thread affinity miss (reason: `no_thread_id`, `no_history`, `conflict`, `disabled`, `error`) |
-| `butlers.switchboard.thread_affinity.stale` | Counter | -- | Historical match outside TTL |
+| `butlers.switchboard.thread_affinity.hit` | Counter | `source` (constant `email`), `destination_butler`, `policy_tier` (constant `affinity`), `schema_version` (constant `thread_affinity.v1`) | Thread affinity routing hit |
+| `butlers.switchboard.thread_affinity.miss` | Counter | `source`, `reason`, `schema_version` | Thread affinity miss (reason: `no_thread_id`, `no_history`, `conflict`, `disabled`, `error`) |
+| `butlers.switchboard.thread_affinity.stale` | Counter | `source`, `schema_version` | Historical match outside TTL |
 | `butlers.switchboard.triage.rule_matched` | Counter | `rule_type`, `action`, `source_channel` | Triage rule match |
 | `butlers.switchboard.triage.pass_through` | Counter | `source_channel`, `reason` | Triage pass-through |
 | `butlers.switchboard.triage.evaluation_latency_ms` | Histogram | `result` | End-to-end triage latency |
+
+#### Switchboard Routing Metrics
+
+`SwitchboardTelemetry` (`roster/switchboard/tools/routing/telemetry.py`) owns these instruments. Its `_ALLOWED_ATTRIBUTE_KEYS` set drops any other key, lowercases values, and truncates them to 64 characters.
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.switchboard.message_received` | Counter | allowed keys | Accepted switchboard messages |
+| `butlers.switchboard.message_deduplicated` | Counter | allowed keys | Messages deduplicated at ingress |
+| `butlers.switchboard.message_overload_rejected` | Counter | allowed keys | Messages rejected by the overload policy |
+| `butlers.switchboard.fallback_to_general` | Counter | allowed keys | Fallback decisions routed to general |
+| `butlers.switchboard.ambiguity_to_general` | Counter | allowed keys | Ambiguous messages routed to general |
+| `butlers.switchboard.router_parse_failure` | Counter | allowed keys | Router parse or validation failures |
+| `butlers.switchboard.subroute_dispatched` | Counter | allowed keys | Subroutes dispatched to downstream butlers |
+| `butlers.switchboard.subroute_result` | Counter | allowed keys | Subroute outcomes |
+| `butlers.switchboard.lifecycle_transition` | Counter | allowed keys | Request lifecycle transitions |
+| `butlers.switchboard.retry_attempt` | Counter | allowed keys | Retry attempts for route operations |
+| `butlers.switchboard.circuit_transition` | Counter | allowed keys | Circuit-breaker state transitions |
+| `butlers.switchboard.ingress_accept_latency_ms` | Histogram | allowed keys | Acceptance to normalized ingress context |
+| `butlers.switchboard.routing_decision_latency_ms` | Histogram | allowed keys | Routing decision and classification latency |
+| `butlers.switchboard.subroute_latency_ms` | Histogram | allowed keys | One subroute dispatch |
+| `butlers.switchboard.fanout_completion_latency_ms` | Histogram | allowed keys | Fanout dispatch and aggregation |
+| `butlers.switchboard.end_to_end_latency_ms` | Histogram | allowed keys | Ingress acceptance to completion |
+| `butlers.switchboard.queue_depth` | Observable gauge | `schema_version` | Ingress and routing queue depth |
+| `butlers.switchboard.inflight_requests` | Observable gauge | `schema_version` | Inflight switchboard requests |
+| `butlers.switchboard.circuit_open_targets` | Observable gauge | `schema_version` | Circuit-open downstream targets |
+
+"Allowed keys" means the subset of `source`, `destination_butler`, `outcome`, `lifecycle_state`, `error_class`, `policy_tier`, `fanout_mode`, `model_family`, `prompt_version` and `schema_version` that the call site supplies. Of these, `model_family`, `prompt_version` and `schema_version` are filled from caller-supplied tool arguments on the ingress path (`src/butlers/modules/pipeline.py`) and are not yet bounded by a closed set, so they are not in the permitted list above.
+
+#### Ingestion Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.ingestion.rule_matched` | Counter | `scope_type`, `rule_type`, `action` (`route_to:<butler>` collapsed to `route_to`), `source_channel` | Ingestion policy rule matched |
+| `butlers.ingestion.rule_pass_through` | Counter | `scope_type`, `source_channel`, `reason` | Ingestion policy evaluation with no rule match |
+| `butlers.ingestion.evaluation_latency_ms` | Histogram | `scope_type`, `result` | Ingestion policy evaluation latency |
+| `butlers.ingestion.read.admission` | Histogram | `operation` | Seconds waiting for Timeline read admission |
+| `butlers.ingestion.read.duration` | Histogram | `operation`, `outcome` | Admitted Timeline read duration in seconds |
+| `butlers.ingestion.read.outcomes` | Counter | `operation`, `outcome` | Timeline read outcomes, including admission refusals |
+| `butlers.ingest.bearer_scrubbed` | Counter | `kind`, `source_channel` | Bearer-material artifacts withheld at the ingest boundary |
+| `butlers.pipeline.decomposition_empty` | Counter | `source_channel`, `connector_type` | Decompositions that returned no signals; `connector_type` is read from the request context and is not yet bounded, so it is not in the permitted list above |
 
 #### Domain-Event Delivery Metrics
 
@@ -187,7 +231,7 @@ The counter is best-effort and recorded after the failure is logged: an emission
 
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, currently `closure`; an unsupported value is rejected before emission).
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, currently `closure`; an unsupported value is rejected before emission). Also permitted, each with the bound that keeps it safe: `operation` (the handler name of an ingestion Timeline GET route, a code-defined set), `scope_type` (`global` or `connector:<connector type>`, endpoint identity stripped), `lifecycle_state` (a closed set of code-defined request lifecycle names), `fanout_mode` (a closed set of code-defined fanout names), `kind` (the three bearer-scrub artifact kinds), `tier` (the closed `Complexity` tier set), and `from_model` / `to_model` (model catalog IDs, bounded like `model`).
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 
