@@ -1523,7 +1523,12 @@ class GmailConnectorRuntime:
                                 )
                             else:
                                 # Ingestion policy gate (backfill path)
-                                _bf_envelope = self._build_ingestion_envelope(message_data)
+                                _bf_envelope = self._build_ingestion_envelope(
+                                    message_data,
+                                    known_contact=self._known_contact_signal(
+                                        self._get_from_header(message_data)
+                                    ),
+                                )
 
                                 # 1. Connector-scope rules
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
@@ -2234,7 +2239,12 @@ class GmailConnectorRuntime:
                     return
 
                 # Ingestion policy gate (runs after label filter, before envelope build)
-                _ip_envelope = self._build_ingestion_envelope(message_data)
+                _ip_envelope = self._build_ingestion_envelope(
+                    message_data,
+                    known_contact=_tier_assigner.is_known_contact(_from_header)
+                    if _snapshot.state == "loaded"
+                    else None,
+                )
 
                 # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
@@ -2464,13 +2474,25 @@ class GmailConnectorRuntime:
             triage_action=action,
         )
 
+    def _known_contact_signal(self, from_header: str) -> bool | None:
+        """Classify a sender against the current snapshot; ``None`` unless it is loaded."""
+        snapshot = self._gmail_policy_evaluator.peek_snapshot()
+        if snapshot.state != "loaded":
+            return None
+        return replace(
+            self._policy_tier_assigner, known_contacts=snapshot.contacts
+        ).is_known_contact(from_header)
+
     @staticmethod
-    def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
+    def _build_ingestion_envelope(
+        message_data: dict[str, Any], known_contact: bool | None = None
+    ) -> IngestionEnvelope:
         """Build an IngestionEnvelope from a Gmail message payload.
 
         Populates sender_address (normalized From header), headers dict,
         labels (Gmail labelIds, for label_match rules), and raw_key (raw From
-        header value) for policy evaluation.
+        header value) for policy evaluation. ``known_contact`` is the loaded-snapshot
+        classification of the sender (``None`` when classification is unknown).
         """
         raw_headers = _message_header_entries(message_data)
         headers_dict: dict[str, str] = {}
@@ -2495,6 +2517,7 @@ class GmailConnectorRuntime:
             headers=headers_dict,
             labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
+            known_contact=known_contact,
         )
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:

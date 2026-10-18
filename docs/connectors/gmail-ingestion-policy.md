@@ -131,6 +131,13 @@ Ingestion rules are user-managed at `/ingestion/filters` (backed by the Switchbo
 `/ingestion-rules` API in `roster/switchboard/api/router.py`): rule priority, enable/disable,
 dry-run testing (`/ingestion-rules/test`), and include/exclude label configuration.
 
+A `block` or `skip` rule can carry the per-rule option "except people I know"
+(`except_known_contacts: true` in the rule's condition, off by default). The Gmail connector then
+passes a sender found in its loaded known-contact snapshot through that rule; later rules still
+apply. If the snapshot is not loaded the rule stays in force and the drop keeps its unknown
+classification. WhatsApp and Drive apply the rule as written until they carry a known-contact
+signal (bu-q7vx1q.42).
+
 ## Metrics
 
 `src/butlers/connectors/gmail_policy.py` emits `butlers_connector_gmail_tier_assigned_total`
