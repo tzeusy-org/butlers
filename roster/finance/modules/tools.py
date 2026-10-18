@@ -290,8 +290,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             any that are tracked out of the actionable list. Omit to leave unchanged.
         payment_destination: The account number, IBAN or payment handle the bill asks
             the owner to pay, exactly as the bill shows it. Pass it whenever the bill
-            states one. It is fingerprinted and never stored, logged or returned; the
-            bill is stamped with destination_verdict: "known", "new_for_counterparty"
+            states one. Finance fingerprints it and keeps the raw value out of its own
+            tables, logs and the result. The bill is stamped with destination_verdict:
+            "known", "new_for_counterparty"
             (a different destination than this payee's earlier bills; tell the owner
             and suggest confirming by phone before paying) or "unverifiable" (first
             destination seen for this payee, or it could not be checked). Omit when

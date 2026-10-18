@@ -75,6 +75,11 @@ def test_fingerprint_depends_on_key_and_kind():
     first = pd.fingerprint_destination(destination)
     pd.configure_destination_key("synthetic-key-b")
     assert pd.fingerprint_destination(destination) != first
+    # The same normalized text under another kind is a different identity.
+    pd.configure_destination_key("synthetic-key-a")
+    assert pd.fingerprint_destination(destination) == first
+    other_kind = pd.Destination(kind="handle", normalized=destination.normalized)
+    assert pd.fingerprint_destination(other_kind) != first
 
 
 def test_fingerprint_is_none_without_a_key():
@@ -101,12 +106,19 @@ async def test_key_resolves_from_the_credential_store_without_env_fallback():
     assert pd.destination_key_configured()
 
 
-@pytest.mark.parametrize("store", [None, _Store(None), _Store("  "), _Store(raises=True)])
-async def test_missing_key_is_not_configured_and_warns_once(store, caplog):
+@pytest.mark.parametrize(
+    ("store", "expected_warnings"),
+    [(None, 1), (_Store(None), 1), (_Store("  "), 1), (_Store(raises=True), 2)],
+)
+async def test_missing_key_is_not_configured_and_warns_once(store, expected_warnings, caplog):
     with caplog.at_level("WARNING"):
         assert await pd.resolve_destination_key(store) is False
     assert not pd.destination_key_configured()
-    assert sum(pd.PAYMENT_DESTINATION_KEY_NAME in r.getMessage() for r in caplog.records) >= 1
+    # A raising store logs its failure and then the single missing-key warning.
+    assert (
+        sum(pd.PAYMENT_DESTINATION_KEY_NAME in r.getMessage() for r in caplog.records)
+        == expected_warnings
+    )
 
 
 async def test_unparseable_destination_stores_nothing():

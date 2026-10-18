@@ -2,7 +2,7 @@
 
 ### Requirement: Bill tracking accepts a payment destination
 
-`track_bill` SHALL accept an optional `payment_destination` (an account number, IBAN or payment handle exactly as the bill shows it) and SHALL stamp the bill with the destination verdict defined by the `finance-payment-destination-integrity` capability. The raw value SHALL never reach the database, logs, return value or SPO mirror. Omitting the parameter SHALL leave existing callers and the return shape unchanged. The `tool-reference` skill and the MCP tool description SHALL document the parameter and tell the owner to confirm a `new_for_counterparty` bill by phone before paying.
+`track_bill` SHALL accept an optional `payment_destination` (an account number, IBAN or payment handle exactly as the bill shows it) and SHALL stamp the bill with the destination verdict defined by the `finance-payment-destination-integrity` capability. Finance SHALL keep the raw value out of its own tables, the SPO mirror, its logs and the tool result (the surfaces listed by REQ-finance-payment-destination-integrity-001); session tool-call records currently keep raw tool arguments, a known exception tracked as bu-4mfhdq. Omitting the parameter SHALL leave existing callers and the return shape unchanged. The `tool-reference` skill and the MCP tool description SHALL document the parameter and tell the owner to confirm a `new_for_counterparty` bill by phone before paying.
 
 ID: REQ-finance-crud-operations-001
 Source: bu-s11n0s.21 payment-redirect guard S1

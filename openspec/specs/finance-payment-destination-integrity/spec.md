@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Finance remembers, per counterparty, which payment destinations (bank account, IBAN, payment handle) its bills have asked the owner to pay, without ever storing the raw value, and stamps each bill with a destination verdict. A changed destination on an otherwise familiar bill is the core signal of invoice-redirect fraud; security doctrine keeps payment initiation out of scope, so detection is what Finance offers. This capability is slice S1 of the payment-redirect guard (bu-s11n0s.9): it is Finance-local, spawns no sessions and sends no notification. The joint sender, destination and verified-channel check, the owner confirmation verb, and sender authentication are separate work.
+Finance remembers, per counterparty, which payment destinations (bank account, IBAN, payment handle) its bills have asked the owner to pay, without storing the raw value in its own tables, and stamps each bill with a destination verdict. A changed destination on an otherwise familiar bill is the core signal of invoice-redirect fraud; security doctrine keeps payment initiation out of scope, so detection is what Finance offers. This capability is slice S1 of the payment-redirect guard (bu-s11n0s.9): it is Finance-local, spawns no sessions and sends no notification. The joint sender, destination and verified-channel check, the owner confirmation verb, and sender authentication are separate work. Known exception: session tool-call records (`sessions.tool_calls`) currently keep a tool call's raw arguments, so the raw destination can persist there outside Finance's control; stripping them to an allowlist is follow-up bu-4mfhdq.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ Scope: v1-mandatory
 
 ### Requirement: Destination verdict per counterparty
 
-`track_bill` SHALL stamp `destination_fingerprint` and `destination_verdict` on the bill, with `destination_verdict` one of `known`, `new_for_counterparty` or `unverifiable`, and SHALL keep one `finance.payment_destinations` row per `(payee_key, fingerprint)` carrying `seen_count`, `first_seen_at` and `last_seen_at`. The first destination ever seen for a payee SHALL become that payee's baseline row and the bill SHALL be stamped `unverifiable`, because there is nothing to compare against and `known` would vouch for an unchecked value. A destination already recorded for the payee SHALL be stamped `known`. A different destination for a payee with history SHALL be stamped `new_for_counterparty`. When no `payment_destination` is passed, both bill columns SHALL stay NULL.
+`track_bill` SHALL stamp `destination_fingerprint` and `destination_verdict` on the bill, with `destination_verdict` one of `known`, `new_for_counterparty` or `unverifiable`, and SHALL keep one `finance.payment_destinations` row per `(payee_key, fingerprint)` carrying `seen_count`, `first_seen_at` and `last_seen_at`. The first destination ever seen for a payee SHALL become that payee's baseline row and the bill SHALL be stamped `unverifiable`, because there is nothing to compare against and `known` would vouch for an unchecked value. A destination already recorded for the payee SHALL be stamped `known`. A different destination for a payee with history SHALL be stamped `new_for_counterparty`. When no `payment_destination` is passed, the bill's destination columns SHALL stay untouched (NULL on a bill never stamped, unchanged on an already-stamped one).
 
 ID: REQ-finance-payment-destination-integrity-002
 Source: bu-s11n0s.21 payment-redirect guard S1 behavior matrix
@@ -57,11 +57,11 @@ Scope: v1-mandatory
 #### Scenario: No destination passed
 
 - **WHEN** `track_bill` is called without `payment_destination`
-- **THEN** `destination_fingerprint` and `destination_verdict` stay NULL and the existing return shape is unchanged
+- **THEN** `destination_fingerprint` and `destination_verdict` stay untouched (NULL on a bill never stamped) and the existing return shape is unchanged
 
 ### Requirement: Destination checking fails closed
 
-When the Finance destination key is not available, or the supplied value has no usable content after normalization, `track_bill` SHALL stamp `unverifiable`, SHALL store nothing about the destination, and SHALL return a `destination_reason` (`fingerprint_key_unavailable` or `unparseable_destination`) that is not persisted. The key SHALL be resolved once at module startup from the shared credential store with `env_fallback=False`, under the name `FINANCE_PAYMENT_DESTINATION_KEY`, and a missing key SHALL produce one startup warning rather than a log line per call. The key name SHALL be listed in the secrets catalog as used by Finance. Provisioning the key value is an owner or operations step.
+When the Finance destination key is not available, or the supplied value has no usable content after normalization, `track_bill` SHALL stamp `unverifiable`, SHALL store nothing about the destination, and SHALL return a `destination_reason` (`fingerprint_key_unavailable` or `unparseable_destination`) that is not persisted; the baseline stamp of a payee's first destination carries `no_prior_destination` in the same way. An `unverifiable` stamp that carries no fingerprint SHALL NOT overwrite a bill that already carries a fingerprint: both the stored fingerprint and verdict stay untouched while the reason is still returned. The key SHALL be resolved once at module startup from the shared credential store with `env_fallback=False`, under the name `FINANCE_PAYMENT_DESTINATION_KEY`, and a missing key SHALL produce one startup warning rather than a log line per call. The key name SHALL be listed in the secrets catalog as used by Finance. Provisioning the key value is an owner or operations step.
 
 ID: REQ-finance-payment-destination-integrity-003
 Source: bu-s11n0s.21 payment-redirect guard S1 fail-closed decision; APPROVAL_CALLBACK_SECRET resolution pattern
@@ -72,6 +72,12 @@ Scope: v1-mandatory
 - **WHEN** the credential store returns no key and a bill with a destination is tracked
 - **THEN** the bill is stamped `unverifiable` with reason `fingerprint_key_unavailable`
 - **AND** `finance.payment_destinations` gains no row and the return payload carries no raw destination
+
+#### Scenario: An unverifiable re-ingest keeps a stamped verdict
+
+- **WHEN** a bill stamped `new_for_counterparty` is re-ingested while the key is unavailable or with an unparseable value, and later again with the same destination once the key is back
+- **THEN** every result still reports `new_for_counterparty` and the stored fingerprint is unchanged
+- **AND** `seen_count` is unchanged and the unavailable or unparseable call returns its `destination_reason`
 
 #### Scenario: Unparseable destination
 

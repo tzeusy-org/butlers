@@ -4,7 +4,7 @@ Finance has `payee`, `payee_key`, `payment_method` and `account_id` on a bill bu
 
 ## What Changes
 
-- `track_bill` gains an optional `payment_destination`, fingerprinted with a keyed HMAC and never stored, logged or returned raw.
+- `track_bill` gains an optional `payment_destination`, fingerprinted with a keyed HMAC; Finance keeps the raw value out of its own tables, the SPO mirror, its logs and the tool result. Known exception: session tool-call records (`sessions.tool_calls`) keep raw tool arguments today; the strip-to-allowlist fix is follow-up bu-4mfhdq.
 - New table `finance.payment_destinations` and two nullable `finance.bills` columns (`destination_fingerprint`, `destination_verdict`), additive (Finance migration `finance_017`).
 - The HMAC key `FINANCE_PAYMENT_DESTINATION_KEY` is resolved once at Finance module startup from the shared credential store (`env_fallback=False`) and registered in the secrets catalog as used by Finance.
 - New capability `finance-payment-destination-integrity` (added directly under `openspec/specs/`) and this change's `finance-crud-operations` delta for the tool parameter.

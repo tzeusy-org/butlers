@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -832,6 +833,13 @@ async def _assert_no_raw_destination(pool, raw_values) -> None:
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
 
+    # The mirror swallows its own errors, so prove it landed before scanning its rows:
+    # five bills were tracked, each a distinct subject, and none may be missing here.
+    mirrored = await pool.fetchval(
+        "SELECT count(*) FROM public.facts WHERE predicate = 'bill' AND subject LIKE 'owner:bill:%'"
+    )
+    assert mirrored >= 4, "SPO mirror rows did not land; the public.facts scan would be vacuous"
+
     needles = set()
     for raw in raw_values:
         needles.add(raw.lower())
@@ -860,6 +868,14 @@ class TestTrackBillPaymentDestination:
             migration_db_name(),
             chains=["core", "memory", "finance"],
         )
+
+    @pytest.fixture(autouse=True)
+    def _mirror_embeddings(self, monkeypatch):
+        """Stub the embedding engine so the SPO mirror write does not load a model."""
+        engine = MagicMock()
+        engine.embed.return_value = [0.1] * 384
+        engine.model_name = "test-model"
+        monkeypatch.setattr("butlers.tools.finance.facts._get_embedding_engine", lambda: engine)
 
     @pytest.fixture(autouse=True)
     async def _clear_destinations(self, pool):
@@ -960,6 +976,33 @@ class TestTrackBillPaymentDestination:
         rows = await _destination_rows(pool, "acme utilities")
         assert len(rows) == 1
         assert rows[0]["seen_count"] == 1
+
+    async def test_unverifiable_reingest_keeps_a_stamped_verdict(self, pool, destination_key):
+        """A key-less or garbled re-ingest never erases a new_for_counterparty warning."""
+        from butlers.tools.finance.payment_destinations import configure_destination_key
+
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        flagged = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        assert flagged["destination_verdict"] == "new_for_counterparty"
+        counts_before = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+
+        configure_destination_key(None)
+        no_key = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        garbled = await self._bill(pool, "Acme Utilities", _days(61), "--")
+        configure_destination_key("synthetic-key-for-tests-only")
+        restored = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+
+        assert no_key["destination_reason"] == "fingerprint_key_unavailable"
+        assert garbled["destination_reason"] == "unparseable_destination"
+        for result in (no_key, garbled, restored):
+            assert result["destination_verdict"] == "new_for_counterparty"
+            assert result["destination_fingerprint"] == flagged["destination_fingerprint"]
+        counts_after = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+        assert counts_after == counts_before
 
     async def test_no_raw_destination_is_stored_anywhere(self, pool, destination_key):
         """After the other cases, no table carries a raw destination string."""
