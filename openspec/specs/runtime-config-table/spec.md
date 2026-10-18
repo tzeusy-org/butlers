@@ -8,7 +8,8 @@ Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor`
 ### Requirement: Runtime config table exists per butler schema
 
 Each butler schema SHALL contain a `runtime_config` table with typed columns for all operational config fields. The table holds exactly one row per butler, keyed by `butler_name`. Its columns SHALL be `butler_name`, nullable `core_groups`, nullable `core_groups_narrowing_reason`, `catalog_read_sensitivity` constrained to `normal|internal|confidential`, `max_concurrent`, `max_queued`, `tool_exposure_policy` constrained to `eager_filtered|auto`, `seeded_at`, and `updated_at`, with the defaults detailed below.
-- Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
+
+Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
 - `butler_name text PRIMARY KEY`
 - `core_groups text[]` (nullable; NULL means all groups enabled)
 - `core_groups_narrowing_reason text` (nullable; non-empty text is required for a DB-owned narrowing to remain effective)

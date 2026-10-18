@@ -39,10 +39,9 @@ Scope: v1-mandatory
 ### Requirement: Config tab supports inline editing
 
 The config tab SHALL allow the user to edit runtime config fields and save via
-the PATCH endpoint. For this requirement, the historical “config tab” name
-refers to the editable
-`RuntimeConfigCard` that the preceding requirement places in the butler-detail
-Management tab; this change does not move the card to the raw Config tab.
+the PATCH endpoint. For this requirement, the historical "config tab" name
+refers to the editable `RuntimeConfigCard` that the preceding requirement places in the
+butler-detail Management tab; the card stays in the Management tab.
 
 ID: REQ-runtime-config-dashboard-ui-002
 Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
@@ -59,7 +58,7 @@ Scope: v1-mandatory
 #### Scenario: Hot policy save does not claim restart
 
 - **WHEN** the user saves only `tool_exposure_policy`
-- **THEN** the UI SHALL confirm the save and state that no daemon restart is needed
+- **THEN** the UI SHALL state that no daemon restart is needed
 - **AND** it SHALL not show a restart-required notification
 
 #### Scenario: Failed policy save preserves confirmed state

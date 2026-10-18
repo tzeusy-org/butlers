@@ -54,7 +54,7 @@ Scope: v1-mandatory
 #### Scenario: Hot policy save does not claim restart
 
 - **WHEN** the user saves only `tool_exposure_policy`
-- **THEN** the UI SHALL confirm the save and state that no daemon restart is needed
+- **THEN** the UI SHALL state that no daemon restart is needed
 - **AND** it SHALL not show a restart-required notification
 
 #### Scenario: Failed policy save preserves confirmed state

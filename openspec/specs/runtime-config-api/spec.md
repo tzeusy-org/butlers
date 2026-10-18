@@ -84,7 +84,7 @@ Scope: v1-mandatory
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
 - **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
-- **AND** the same validation SHALL accept `graph` and `fleet_cases`, completing parity with all fourteen registered group names
+- **AND** the same validation SHALL accept `graph` and `fleet_cases`
 
 #### Scenario: Empty PATCH body
 - **WHEN** a PATCH request has an empty body or no changed fields
@@ -97,7 +97,7 @@ Scope: v1-mandatory
 #### Scenario: Hot exposure policy applies without restart
 
 - **WHEN** a PATCH request changes `tool_exposure_policy` to `auto` or `eager_filtered`
-- **THEN** the DB row and accessor cache are updated and the response excludes that field from `restart_required`
+- **THEN** the DB row is updated and the response excludes that field from `restart_required`
 - **AND** the next accessor read returns the new value without a daemon restart
 
 #### Scenario: Invalid exposure policy is rejected

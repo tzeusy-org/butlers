@@ -1,7 +1,7 @@
 # core-tool-discovery Specification
 
 ## Purpose
-TBD - created by archiving change add-runtime-tool-surface-discovery. Update Purpose after archive.
+Defines the immutable catalog, presentation inventory and skill identity that describe a butler's registered tool surface without changing it.
 
 ## Requirements
 

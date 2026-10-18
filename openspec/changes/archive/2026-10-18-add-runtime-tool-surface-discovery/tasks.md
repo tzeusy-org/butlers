@@ -10,7 +10,7 @@
 - [x] 2.1 Add a fresh core migration for `runtime_config.tool_exposure_policy` with the conservative `eager_filtered` default, closed-value constraint, and forward/backward migration tests across fresh and existing per-butler schemas. _Landed: bu-ondtw.2, PR #4091 (e6170911e), migration `core_224`._
 - [x] 2.2 Extend runtime seed parsing, typed runtime configuration, cached accessor behavior, and cache invalidation for the hot policy; cover missing seed, invalid value, existing-row precedence, and concurrent seed paths. _Landed: bu-ondtw.2, PR #4091._
 - [x] 2.3 Extend the runtime-config GET/PATCH models and routes with field-tier, accepted-value, hot-update, empty-patch, and restart-required regression tests. _Landed: bu-ondtw.2, PR #4091._
-- [x] 2.4 Add the Management-tab exposure-policy control and frontend API types with tests proving accurate `auto` fallback copy, hot-save feedback, and no false restart notification. _Landed: bu-ondtw.2, PR #4091._
+- [x] 2.4 Add the Management-tab exposure-policy control and frontend API types with tests proving accurate `auto` fallback copy and no false restart notification. _Landed: bu-ondtw.2, PR #4091._
 - [ ] 2.5 Add a fresh core migration and storage support for bounded `tool_surface_attempts` receipts under `session_process_logs`; test ordered per-attempt preservation, cap enforcement, existing diagnostics, TTL cleanup, and cascade deletion. _Not done: superseded by RFC 0038 (broker-side discovery, bu-r980fk)._
 
 ## 3. Canonical Catalog and Search Corpus

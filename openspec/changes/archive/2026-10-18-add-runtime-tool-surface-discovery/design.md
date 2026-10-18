@@ -316,6 +316,14 @@ Landed and synced to `openspec/specs/`:
 - Core Tool Surface (`core-daemon`): only the inventory classification of
   `route.execute` and `cancel_session` is synced.
 
+Requirement-to-test map for the synced requirements:
+
+- REQ-core-tool-discovery-001: `tests/core/test_tool_catalog.py`
+- REQ-core-tool-discovery-002: `tests/contracts/test_tool_presentation_inventory.py`
+- REQ-core-tool-discovery-003: `tests/features/test_skills.py`
+- REQ-core-modules-001: `tests/modules/test_module_base.py` and
+  `tests/daemon/test_approval_metadata_wiring.py`
+
 Removed from the deltas and re-homed to RFC 0038 (bu-r980fk): the
 `core-spawner` and `session-process-logs` deltas, and in `core-tool-discovery`
 the per-invocation exposure policy planning, capability negotiation, native Tool
