@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import { ApiError } from "@/api/client";
@@ -451,5 +451,30 @@ describe("ChatPage — owner gate before send (bu-p5umi2.1)", () => {
       vi.mocked(useConversationTurn).mock.calls.at(-1)?.[0].butlerName,
     ).toBe(WIDGET_BUTLER);
     expect(screen.queryByTestId("chat-page-owner-unresolved")).toBeNull();
+  });
+
+  it("does not replay a failed send from the banner while the owner is unresolved", () => {
+    const { sendText } = mockSurroundings(vi.fn(), {
+      sendError: {
+        kind: "generic",
+        message: "Send failed",
+        failedText: "earlier text",
+        messageId: "message-9",
+      },
+    });
+    vi.mocked(useConversationById).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    renderPage("/chat/conversation-1");
+    fireEvent.click(
+      within(screen.getByTestId("chat-widget-error-banner")).getByText("Retry"),
+    );
+
+    expect(sendText).not.toHaveBeenCalled();
   });
 });
