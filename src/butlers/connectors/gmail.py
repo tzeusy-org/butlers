@@ -1608,6 +1608,7 @@ class GmailConnectorRuntime:
                                     envelope = await self._build_ingest_envelope(
                                         message_data,
                                         policy_result=policy_result,
+                                        known_contact=_bf_envelope.known_contact,
                                     )
                                     await self._submit_to_ingest_api(envelope)
                                     rows_processed += 1
@@ -2376,6 +2377,7 @@ class GmailConnectorRuntime:
                 envelope = await self._build_ingest_envelope(
                     message_data,
                     policy_result=policy_result,
+                    known_contact=_ip_envelope.known_contact,
                 )
 
                 # Submit to Switchboard ingest API
@@ -2611,6 +2613,7 @@ class GmailConnectorRuntime:
         self,
         message_data: dict[str, Any],
         policy_result: MessagePolicyResult | None = None,
+        known_contact: bool | None = None,
     ) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data.
 
@@ -2627,6 +2630,11 @@ class GmailConnectorRuntime:
         policy_result:
             Result of policy evaluation (tier + policy_tier). If None, defaults to
             Tier 1 with policy_tier='default' (backward compatible).
+        known_contact:
+            The loaded-snapshot classification of the sender, carried as
+            ``control.known_contact`` so the Switchboard's global rule pass honors
+            "except people I know" too. ``None`` (snapshot not loaded) omits the field,
+            and the rule then applies. Taken from the raw From header, unauthenticated.
         """
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
@@ -2700,6 +2708,8 @@ class GmailConnectorRuntime:
             }
             if policy_result is not None and policy_result.automated_kind:
                 metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
+            if known_contact is not None:
+                metadata_envelope["control"]["known_contact"] = known_contact
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
@@ -2769,6 +2779,8 @@ class GmailConnectorRuntime:
                 "policy_tier": effective_policy_tier,
             },
         }
+        if known_contact is not None:
+            envelope["control"]["known_contact"] = known_contact
         # Bearer material (OTP codes, reset/magic links) never leaves the connector.
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed

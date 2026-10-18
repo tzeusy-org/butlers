@@ -310,6 +310,11 @@ class IngestControlV1(BaseModel):
 
     Such an envelope is Tier 2 (metadata-only); the marker lets later admission logic read
     why without re-parsing headers. Persisted into ``raw_payload.control``."""
+    known_contact: bool | None = None
+    """Connector-asserted: the sender matched the loaded known-contact snapshot.
+
+    Taken from the raw From header (no SPF, DKIM or DMARC check). Absent means unknown, and
+    an "except people I know" rule then applies as if the sender were a stranger."""
     bearer_scrubbed: bool = False
     """True when the connector withheld bearer material (OTP, reset or magic link)
     from the payload before submit. Persisted into ``raw_payload.control``."""
