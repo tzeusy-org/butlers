@@ -77,11 +77,18 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   | `failed` | Definitively not delivered: retries exhausted before transport, or rejected |
   | `uncertain` | Might have arrived. It is never resent automatically |
   | `unavailable` | The projection itself could not be read, which is not an all-clear |
+  | `not_raised` | No marker exists and the condition outlived the attention grace plus one controller pass, so nothing paged the owner. The producer being disabled reads the same way |
+  | `within_grace` | No marker yet, but the producer is not yet due to page. Calm |
+
+  `not_raised` and `within_grace` are derived by the API for rows with no marker, not stored. The
+  bound mirrors the producer's five-minute grace (`CONDITION_ATTENTION_GRACE`, pinned to
+  `scripts/init-db.sql` by a test) plus half the registry TTL for one controller pass. A row
+  resolved inside that bound gets no attention line; one resolved after it keeps `not_raised`.
 
   `safe_reason` maps the stored `(delivery_error_class, delivery_error_detail)` pair to fixed copy
   (`src/butlers/api/runtime_attention_status.py`). The Spend page uses the same mapping. The
   System page Standing Conditions tile renders this status on each row with fixed copy, where
-  only `sent` reads as delivered and `unavailable` marks the tile degraded.
+  only `sent` reads as delivered, and `unavailable` or an active `not_raised` row marks the tile degraded.
 - **Retries.** Only a proven pre-transport failure retries, and only inside the worker's bounded
   backoff. Nothing reissues an uncertain condition episode, and the operator reissue in
   `reissue_runtime_attention_episode` covers model-breaker episodes only.

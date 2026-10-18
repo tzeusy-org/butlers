@@ -4709,6 +4709,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Owner alert not delivered
 - Owner alert may not have arrived; it is not resent automatically
 - Owner alert status unknown
+- No owner alert has been raised for this condition
+- Owner alert waits for the attention grace
 - Owner alert status: {}
 - All
 - Commitments

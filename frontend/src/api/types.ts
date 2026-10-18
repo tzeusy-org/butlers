@@ -7945,7 +7945,7 @@ export interface ConditionEntry {
  * "sending" and "uncertain" never do, and nothing here can resend.
  */
 export interface ConditionAttention {
-  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" */
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
   status: string;
   episode_id: string | null;
   created_at: string | null;

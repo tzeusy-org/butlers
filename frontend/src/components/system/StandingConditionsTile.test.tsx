@@ -920,6 +920,23 @@ describe("StandingConditionsTile -- linked owner-alert status", () => {
     expect(tile !== null).toBe(unavailable)
   })
 
+  it.each([
+    ["not_raised", "No owner alert has been raised for this condition", true],
+    ["within_grace", "Owner alert waits for the attention grace", false],
+  ])("renders markerless %s with its label; only not_raised degrades the tile", (status, label, degraded) => {
+    const { root, line } = renderWith({
+      status,
+      episode_id: null,
+      created_at: null,
+      delivered_at: null,
+      safe_reason: null,
+      outbox_retained: null,
+    })
+    expect(line?.dataset.status).toBe(status)
+    expect(line?.textContent).toBe(label)
+    expect(root.querySelector("[data-degraded]") !== null).toBe(degraded)
+  })
+
   it("appends safe_reason verbatim and nothing when it is null", () => {
     const withReason = renderWith(attention({ status: "failed", safe_reason: "Telegram rejected the message." }))
     expect(withReason.line?.textContent).toContain(" · Telegram rejected the message.")
