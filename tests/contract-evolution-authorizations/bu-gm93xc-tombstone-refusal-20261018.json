@@ -5,7 +5,7 @@
   "decision": {
     "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
     "date": "2026-10-18",
-    "reference": "Authorization bead bu-vcwgbn for implementation bead bu-gm93xc (PR #4666, the central fact writer refuses writes against merge-tombstoned entities). Reviewed before: main 5ea5bd4d95667361e0b4c914a61f71fccd3a4e3e plus the REQ-relationship-facts-002 header lines this change adds; approved subject: PR #4666 head ebc004e65929c355fa97ff5f525f0af52c788d7a (review bu-f9dwbf), merged with that main plus the request file. Governing requirement REQ-relationship-facts-002 (Central writer — relationship_assert_fact()) of openspec/specs/relationship-facts/spec.md, whose pre-change block carried no ID and gains it in this change, byte-identical to the header the open change relationship-fact-effective-time already carries in its MODIFIED copy. One owner changes assertions to the typed refusal; the other eight (every test in roster/relationship/tests/test_resolve_outbound_channel.py) are fixture-context only: their bodies are byte-identical and only the module's hand-rolled public.entities stub gains the nullable metadata JSONB column the production table already has, because the writer now reads it. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+    "reference": "Authorization bead bu-vcwgbn for implementation bead bu-gm93xc (PR #4666, the central fact writer refuses writes against merge-tombstoned entities). Reviewed before: main c36db1b325ec078474adb63c25a57b8d9cde2caf plus the REQ-relationship-facts-002 header lines this change adds; approved subject: PR #4666 head 0c02966c17f5b1582d943c95e4a0a3b0711cd2f6 (review bu-f9dwbf at ebc004e65929c355fa97ff5f525f0af52c788d7a, then merged with main after #4603 with no change to its own delta), merged with that main plus the request file. Governing requirement REQ-relationship-facts-002 (Central writer — relationship_assert_fact()) of openspec/specs/relationship-facts/spec.md, whose pre-change block carried no ID and gains it in this change, byte-identical to the header the open change relationship-fact-effective-time already carries in its MODIFIED copy. One owner changes assertions to the typed refusal; the other eight (every test in roster/relationship/tests/test_resolve_outbound_channel.py) are fixture-context only: their bodies are byte-identical and only the module's hand-rolled public.entities stub gains the nullable metadata JSONB column the production table already has, because the writer now reads it. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
   },
   "owners": [
     {
@@ -198,11 +198,11 @@
       "path": "roster/relationship/tools/fact_authority.py",
       "before": {
         "mode": "100644",
-        "sha256": "3509c350b5b5432c86027f3c91f5da3edf3a9275394bbd2c032d8b2f03d0d559"
+        "sha256": "4097bcff35fe1ee0a1e38571ceb9519810887abbf80dbe33bf24a4b850d767a7"
       },
       "after": {
         "mode": "100644",
-        "sha256": "7b63895928712127ff28ef68a5bfcfffa6de22dca2232f2e81f75f10379822e6"
+        "sha256": "080844060d2df5c39f19718e8880dbf6eb8fafd09df88e2c37faf05f4423673e"
       }
     },
     {
