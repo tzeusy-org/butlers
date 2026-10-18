@@ -182,6 +182,17 @@ class ChatBuffer:
     chat_title: str | None = None
 
 
+def _raise_site(exc: BaseException) -> str:
+    """``file:line:func`` of the innermost frame that raised ``exc`` (no locals, no message)."""
+    tb = exc.__traceback__
+    if tb is None:
+        return "unknown"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    code = tb.tb_frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{tb.tb_lineno}:{code.co_name}"
+
+
 @dataclass
 class TelegramUserClientConnectorConfig:
     """Configuration for Telegram user-client connector runtime."""
@@ -1076,9 +1087,15 @@ class TelegramUserClientConnector:
                 await self._save_checkpoint()
 
         except Exception as exc:
-            logger.exception(
-                "Failed to flush chat buffer for chat %s",
+            # Identifiers only: the exception message and traceback can echo message text,
+            # including a 777000 login code, so neither is logged (no str(exc), no exc_info).
+            logger.error(
+                "Failed to flush chat buffer for chat %s (batch_size=%d, error_class=%s, "
+                "raised_at=%s)",
                 chat_id,
+                len(buffered_messages),
+                type(exc).__name__,
+                _raise_site(exc),
                 extra={"endpoint_identity": self._config.endpoint_identity},
             )
             # i. Record error event for the batch failure.
