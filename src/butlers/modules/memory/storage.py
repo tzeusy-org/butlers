@@ -3505,6 +3505,24 @@ async def invert_to_anti_pattern(
 # ---------------------------------------------------------------------------
 
 
+_LEGACY_FADING_MARKER = "fading"
+
+
+def _clear_legacy_fading_marker(metadata: dict) -> bool:
+    """Drop the sweep's own pre-validity marker; leave every domain key alone.
+
+    Before the ``validity`` column (bu-5ud8p.1) the sweep recorded a fading fact as
+    ``metadata.status = 'fading'`` (mem_008 backfilled and cleared those rows). That exact
+    value is the only thing it ever wrote, so it is the only thing it may remove: a domain
+    status such as a Health condition's ``resolved`` or ``managed`` shares the key and must
+    survive (bu-pimdvx). Returns True when the marker was present and removed.
+    """
+    if metadata.get("status") == _LEGACY_FADING_MARKER:
+        del metadata["status"]
+        return True
+    return False
+
+
 async def run_decay_sweep(pool: Pool) -> dict:
     """Run a confidence decay sweep across all active (and previously-fading) facts
     and rules (excluding permanent ones with decay_rate=0.0).
@@ -3614,9 +3632,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
             )
 
             if eff < expiry_thresh:
-                # Legacy metadata.status bookkeeping is superseded by the
-                # validity column — drop the stale key as part of the transition.
-                metadata.pop("status", None)
+                _clear_legacy_fading_marker(metadata)
                 if archive_first:
                     try:
                         metadata["archived_at"] = now.isoformat()
@@ -3664,7 +3680,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         continue
                 stats["facts_expired"] += 1
             elif eff < fading_thresh:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "fading" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'fading', metadata = $1 WHERE id = $2",
@@ -3673,7 +3689,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     )
                 stats["facts_fading"] += 1
             else:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "active" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'active', metadata = $1 WHERE id = $2",
