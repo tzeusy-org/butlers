@@ -5822,8 +5822,10 @@ async def get_pending_meeting_debriefs(
         )
     except HTTPException:
         raise
-    except Exception:  # noqa: BLE001 -- unreadable debriefs are not an empty all-clear
-        logger.warning("Pending meeting debriefs unavailable", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 -- unreadable debriefs are not an empty all-clear
+        # Class name only: exception text can carry attendee row content (e.g. an email in a
+        # validation error's input_value).
+        logger.warning("Pending meeting debriefs unavailable: %s", type(exc).__name__)
         return PendingDebriefsResponse(debriefs=[], debriefs_available=False)
 
 

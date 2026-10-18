@@ -81,3 +81,17 @@ async def test_read_failure_is_a_degraded_envelope(monkeypatch: pytest.MonkeyPat
     assert response.status_code == 200
     assert response.json() == {"debriefs": [], "debriefs_available": False}
     assert "hunter2" not in response.text
+
+
+async def test_failure_log_carries_the_exception_class_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    pending = AsyncMock(side_effect=ValueError("input_value='sam@example.test' is invalid"))
+
+    with caplog.at_level("WARNING"):
+        await _get(_app(monkeypatch, pending))
+
+    assert "ValueError" in caplog.text
+    assert "sam@example.test" not in caplog.text
+    ours = [r for r in caplog.records if "Pending meeting debriefs" in r.getMessage()]
+    assert ours and all(r.exc_info is None for r in ours)
