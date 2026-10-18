@@ -116,6 +116,7 @@ class _EditPool:
     def __init__(self, row: dict) -> None:
         self.row = dict(row)
         self.sql: list[str] = []
+        self.args: list[tuple] = []
 
     async def fetchval(self, sql: str, *args):
         return "health"
@@ -125,6 +126,7 @@ class _EditPool:
 
     async def execute(self, sql: str, *args):
         self.sql.append(sql)
+        self.args.append(args)
         if sql.startswith("UPDATE facts SET predicate"):
             self.row.update(predicate=args[1], content=args[2])
         return "UPDATE 1"
@@ -179,16 +181,18 @@ async def test_meal_edit_refreshes_the_catalog_from_the_edited_text() -> None:
     _assert_catalog_refreshed_after_edit(pool, engine, f"owner meal_lunch {pool.row['content']}")
 
 
-async def test_an_excluded_edit_never_loads_the_embedding_engine() -> None:
+async def test_an_excluded_edit_never_makes_the_catalog_step_embed() -> None:
     from butlers.tools.health import measurements
 
-    pool = _EditPool(_edit_row(sensitivity="confidential"))
-    loaded = MagicMock()
-    with patch.object(measurements, "_get_embedding_engine", loaded):
+    pool, engine = _EditPool(_edit_row(sensitivity="confidential")), _engine()
+    with patch.object(measurements, "_get_embedding_engine", lambda: engine):
         await measurements.measurement_update(pool, str(_ID), value=72)
 
-    loaded.assert_not_called()
-    assert len([s for s in pool.sql if "public.memory_catalog" in s]) == 1
+    catalog = [(s, a) for s, a in zip(pool.sql, pool.args) if "public.memory_catalog" in s]
+    assert len(catalog) == 1
+    sql, args = catalog[0]
+    assert "confidence = 0" in sql and "embedding" not in sql
+    assert str(engine.embed.return_value) not in args
 
 
 async def test_the_engine_factory_is_not_called_when_the_row_is_staled() -> None:

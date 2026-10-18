@@ -157,7 +157,8 @@ The refresh SHALL touch only the calling butler's own row, scoped by
 `source_schema`, never another schema's row that shares the same `source_id`.
 Loading the embedding model SHALL happen inside the best-effort boundary and
 only when a refresh needs an embedding, so a model-load failure cannot fail
-the edit and a stale-marking edit never loads the model.
+the edit and the catalog step of a stale-marking edit never loads the model or writes
+an embedding.
 
 #### Scenario: A Health measurement or meal edit updates the catalog summary
 

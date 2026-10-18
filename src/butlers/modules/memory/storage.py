@@ -557,7 +557,8 @@ async def refresh_catalog_for_edited_fact(
 
     Pass an ``embedding_engine``, or an ``engine_factory`` to defer loading it: the factory
     is called inside the best-effort boundary and only when a refresh needs an embedding, so
-    a model-load failure cannot fail the edit and a stale-marking edit never loads the model.
+    a model-load failure cannot fail the edit, and the catalog step of a stale-marking edit
+    never loads it.
 
     Returns True when a catalog row was updated or marked stale.
     """
