@@ -1648,6 +1648,13 @@ describe("EntityFinder — owner-pinned lookup failures (bu-ip5c5)", () => {
 
   it("says owner shortcuts are unavailable, with Retry, when the owner status query fails", async () => {
     vi.mocked(getOwnerSetupStatus).mockRejectedValue(new Error("boom"));
+    const neighboursRefetch = vi.fn();
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      refetch: neighboursRefetch,
+    } as unknown as UseEntityNeighboursResult);
 
     await openFinder();
 
@@ -1666,6 +1673,8 @@ describe("EntityFinder — owner-pinned lookup failures (bu-ip5c5)", () => {
       await flush();
     });
     expect(vi.mocked(getOwnerSetupStatus).mock.calls.length).toBeGreaterThan(callsBefore);
+    // Retry refetches only the failed query.
+    expect(neighboursRefetch).not.toHaveBeenCalled();
   });
 
   it("says owner shortcuts are unavailable when the neighbours query fails after status succeeds", async () => {
@@ -1703,6 +1712,7 @@ describe("EntityFinder — owner-pinned lookup failures (bu-ip5c5)", () => {
     expect(note?.textContent).toContain("Owner shortcuts");
     noPinnedRows();
 
+    const statusCallsBefore = vi.mocked(getOwnerSetupStatus).mock.calls.length;
     const retry = Array.from(note?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent === "Retry",
     );
@@ -1711,6 +1721,8 @@ describe("EntityFinder — owner-pinned lookup failures (bu-ip5c5)", () => {
       await flush();
     });
     expect(refetch).toHaveBeenCalledTimes(1);
+    // Retry refetches only the failed query.
+    expect(vi.mocked(getOwnerSetupStatus).mock.calls.length).toBe(statusCallsBefore);
   });
 
   it("keeps a genuine empty owner set free of the unavailable note", async () => {

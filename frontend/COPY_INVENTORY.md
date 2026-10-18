@@ -4901,4 +4901,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3905*
+*Total strings: 3906*
