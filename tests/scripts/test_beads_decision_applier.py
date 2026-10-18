@@ -7,6 +7,7 @@ for ``bd`` and counts every close.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import uuid
@@ -306,3 +307,93 @@ async def test_unreadable_stranded_intent_stays_applying_without_blocking(pool, 
 
     assert (await _state(pool, stranded))["status"] == "applying"
     assert (await _state(pool, fine))["status"] == "applied"
+
+
+async def test_aged_unreadable_claim_settles_without_retrying_unknown_close(pool, tracker) -> None:
+    """REQ-owner-decision-desk-002: the bound settles uncertainty without replay."""
+    aged_at = await pool.fetchval("SELECT now() - interval '24 hours'")
+    recent_at = await pool.fetchval("SELECT now() - interval '23 hours'")
+    aged = await _intent(pool, "bu-aged", status="applying", claimed_at=aged_at, attempts=1)
+    recent = await _intent(pool, "bu-recent", status="applying", claimed_at=recent_at)
+    waiting = await _intent(pool, "bu-ok")
+    tracker.unreadable.update({"bu-aged", "bu-recent"})
+    tracker.add("bu-ok")
+
+    first = await _run(pool, tracker)
+
+    # Read durable outcomes after the applier's connection has been released.
+    async with pool.acquire() as conn:
+        settled = await conn.fetchrow(
+            "SELECT status, failure_reason, attempts, claimed_at, finished_at, updated_at "
+            "FROM switchboard.decision_intents WHERE id = $1",
+            aged,
+        )
+    assert (settled["status"], settled["failure_reason"], settled["attempts"]) == (
+        "failed",
+        "bead_unreadable_unsettled",
+        1,
+    )
+    assert settled["claimed_at"] == aged_at
+    assert settled["finished_at"] > aged_at
+    assert settled["updated_at"] == settled["finished_at"]
+    assert (await _state(pool, recent))["status"] == "applying"
+    assert (await _state(pool, waiting))["status"] == "applied"
+    assert first.outcomes["failed:bead_unreadable_unsettled"] == 1
+    assert first.tracker_unavailable is False
+
+    second = await _run(pool, tracker)
+
+    assert [bead for bead, _ in tracker.closes] == ["bu-ok"]
+    assert second.outcomes == {"applying:bead_unreadable": 1}
+    assert (await _state(pool, aged))["status"] == "failed"
+
+
+async def test_failed_show_with_healthy_cli_probe_fails_only_its_db_intent(pool, tmp_path) -> None:
+    """A real BdTracker subprocess seam drives the migrated-DB batch transition."""
+    binary = tmp_path / "bd"
+    issue = {
+        "id": "bu-ok",
+        "status": "open",
+        "issue_type": "task",
+        "labels": ["decision"],
+        "metadata": {"decision": {"options": ["Hold"]}},
+    }
+    summary = {"total_issues": 2, "open_issues": 2, "in_progress_issues": 0, "closed_issues": 0}
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"with open({str(tmp_path / 'calls')!r}, 'a') as calls:\n"
+        "    calls.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:3] == ['show', 'bu-weird']:\n"
+        "    print('malformed bead on host dolt.internal', file=sys.stderr)\n"
+        "    print('invalid bead')\n"
+        "    sys.exit(1)\n"
+        "if sys.argv[1] == 'stats':\n"
+        f"    print({json.dumps({'summary': summary})!r})\n"
+        "elif sys.argv[1] == 'show':\n"
+        f"    print({json.dumps([issue])!r})\n"
+    )
+    binary.chmod(0o755)
+    broken = await _intent(pool, "bu-weird")
+    good = await _intent(pool, "bu-ok")
+    tracker = applier_mod.BdTracker(str(binary))
+
+    result = await _run(pool, tracker)
+    await _run(pool, tracker)
+
+    assert result.tracker_unavailable is False
+    assert await _state(pool, broken) == {
+        "status": "failed",
+        "attempts": 0,
+        "failure_reason": "bead_unreadable",
+        "last_error": None,
+        "done": True,
+    }
+    assert (await _state(pool, good))["status"] == "applied"
+    calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
+    assert calls == [
+        ["show", "bu-weird", "--json"],
+        ["stats", "--json", "--no-activity"],
+        ["show", "bu-ok", "--json"],
+        ["close", "bu-ok", "--reason", f"Decision: Hold (decision-intent {good}, via telegram)"],
+    ]

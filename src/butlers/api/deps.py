@@ -247,6 +247,28 @@ class MCPClientManager:
         logger.info("MCPClientManager closed (%d clients)", len(names))
 
 
+@dataclass(frozen=True)
+class DiscoveryDiagnostics:
+    """What one roster discovery pass saw, beyond the configs it loaded.
+
+    ``directories`` holds every roster subdirectory name, including ones skipped
+    for lacking ``butler.toml``; ``failed`` holds directories whose config did not
+    parse. A retirement signal needs a found roster and zero failures.
+    """
+
+    roster_found: bool = False
+    directories: frozenset[str] = frozenset()
+    failed: frozenset[str] = frozenset()
+
+    @property
+    def clean(self) -> bool:
+        return self.roster_found and not self.failed
+
+    def is_retired(self, name: str) -> bool:
+        """True only when this clean pass found no ``roster/<name>/`` directory."""
+        return self.clean and name not in self.directories
+
+
 def discover_butlers(
     roster_dir: Path | None = None,
 ) -> list[ButlerConnectionInfo]:
@@ -266,18 +288,28 @@ def discover_butlers(
     list[ButlerConnectionInfo]
         Sorted by butler name for deterministic ordering.
     """
+    return discover_butlers_with_diagnostics(roster_dir)[0]
+
+
+def discover_butlers_with_diagnostics(
+    roster_dir: Path | None = None,
+) -> tuple[list[ButlerConnectionInfo], DiscoveryDiagnostics]:
+    """Like :func:`discover_butlers`, also reporting what the pass saw."""
     if roster_dir is None:
         roster_dir = _DEFAULT_ROSTER_DIR
 
     if not roster_dir.is_dir():
         logger.warning("Roster directory not found: %s", roster_dir)
-        return []
+        return [], DiscoveryDiagnostics()
 
     butlers: list[ButlerConnectionInfo] = []
+    directories: set[str] = set()
+    failed: set[str] = set()
 
     for entry in sorted(roster_dir.iterdir()):
         if not entry.is_dir():
             continue
+        directories.add(entry.name)
         toml_path = entry / "butler.toml"
         if not toml_path.exists():
             continue
@@ -307,10 +339,13 @@ def discover_butlers(
                 )
             )
         except ConfigError as exc:
+            failed.add(entry.name)
             logger.warning("Skipping butler in %s: %s", entry.name, exc)
 
     logger.info("Discovered %d butler(s) from %s", len(butlers), roster_dir)
-    return butlers
+    return butlers, DiscoveryDiagnostics(
+        roster_found=True, directories=frozenset(directories), failed=frozenset(failed)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +371,12 @@ def discover_butlers(
 
 _mcp_manager: MCPClientManager | None = None
 _butler_configs: list[ButlerConnectionInfo] | None = None
+_discovery_diagnostics: DiscoveryDiagnostics = DiscoveryDiagnostics()
+
+
+def get_discovery_diagnostics() -> DiscoveryDiagnostics:
+    """Diagnostics of the startup discovery pass (empty, so never clean, before init)."""
+    return _discovery_diagnostics
 
 
 def init_dependencies(
@@ -348,9 +389,9 @@ def init_dependencies(
 
     Returns the manager and config list for use in the lifespan handler.
     """
-    global _mcp_manager, _butler_configs  # noqa: PLW0603
+    global _mcp_manager, _butler_configs, _discovery_diagnostics  # noqa: PLW0603
 
-    configs = discover_butlers(roster_dir)
+    configs, _discovery_diagnostics = discover_butlers_with_diagnostics(roster_dir)
     manager = MCPClientManager()
 
     for info in configs:

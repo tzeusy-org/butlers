@@ -75,7 +75,7 @@ job_name = "eligibility_sweep"
 # (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
 # window instead of a single fixed 08:00 UTC slot: delivery_cycle's
 # daily_hold_mode=True holds the digest until the owner is first not
-# suppressed by dnd/meeting/sleeping/quiet_hours, force-delivers past the
+# suppressed by dnd/focused/meeting/sleeping/quiet_hours, force-delivers past the
 # hard fallback deadline (11:00 UTC — the 11:15/11:45 ticks in this window
 # guarantee at least one attempt after it), and defers the whole digest on
 # a travel day. Idempotent across ticks: once a tick delivers, candidates
@@ -133,6 +133,16 @@ name = "rule-promotion-trigger"
 cron = "50 * * * *"
 dispatch_mode = "job"
 job_name = "rule_promotion_trigger"
+
+# Dropped-known watch (bu-q7vx1q.88.2) — opens one standing owner condition per
+# (filter_reason, sender) episode of drops from known contacts, every 15 minutes
+# (the Gmail known-contact refresh horizon). Does nothing while classification
+# is unknown.
+[[butler.schedule]]
+name = "dropped-known-watch"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "dropped_known_watch"
 
 # Decision-review digest (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk") —
 # weekly digest of open owner-decision beads ("N decisions waiting, oldest

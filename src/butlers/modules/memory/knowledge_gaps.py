@@ -265,11 +265,20 @@ async def _existing_answer(
     )
     if row is None:
         return None
+    # The closure path stamps this same stored authority; sharing it keeps a born-answerable
+    # gap for an owner-confirmed fact reading "Now known" rather than "Reported by a third party".
+    stored_gap_authority = importlib.import_module(
+        "butlers.tools.relationship.fact_authority"
+    ).stored_gap_authority
+    try:
+        authority = await stored_gap_authority(conn, row["id"])
+    except ValueError:
+        return None  # the row stopped being active; the gap stays open
     return {
         "ref": f"entity_fact:{row['id']}",
         "value": row["object"],
-        "authority": None,
-        "authority_entity_id": None,
+        "authority": authority.authority,
+        "authority_entity_id": authority.entity_id,
     }
 
 

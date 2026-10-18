@@ -653,3 +653,193 @@ async def test_provider_session_scoped_by_butler_name(
         assert (
             await conversation_get_provider_session(pool, conv["id"], butler_name="finance") is None
         )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "completed",
+        "pending",
+        "stop_before",
+        "stop_pending",
+        "stop_during_pending",
+        "reply_sql_failed",
+        "notify_sql_failed",
+    ],
+)
+async def test_system_answer_atomic_publication_with_migrated_role_and_independent_readback(
+    migrated_core_postgres_pool, monkeypatch, case
+):
+    """Execute the real control/sink SQL; every readback uses another acquisition."""
+    from contextlib import asynccontextmanager
+
+    import asyncpg
+
+    from butlers.api.conversations import message_create
+    from butlers.core.dashboard_turns import (
+        claim_invoke,
+        complete_session,
+        open_turn,
+        register_session_and_check_cancel,
+        request_cancel,
+    )
+    from butlers.core_tools._dashboard_system_answer import persist_system_answer
+
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as pool:
+        conversation = await conversation_create(
+            pool, butler_name="switchboard", first_message="Cost?"
+        )
+        request_id, session_id = uuid.uuid4(), uuid.uuid4()
+        user = await message_create(
+            pool, conversation_id=conversation["id"], role="user", content="Fleet cost?"
+        )
+        message_id = user["id"]
+        assert (
+            await open_turn(pool, message_id=message_id, conversation_id=conversation["id"])
+        ).outcome == "ready"
+
+        class RuntimePool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    await connection.execute('SET ROLE "butler_switchboard_rw"')
+                    try:
+                        yield connection
+                    finally:
+                        await connection.execute("RESET ROLE")
+
+        runtime = RuntimePool()
+        has_live_session = case in {"pending", "stop_pending", "stop_during_pending"}
+        if has_live_session:
+            async with runtime.acquire() as connection:
+                assert await connection.fetchval("SELECT current_user") == "butler_switchboard_rw"
+                registered = await register_session_and_check_cancel(
+                    connection,
+                    message_id=message_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    butler_name="switchboard",
+                    phase="classification",
+                )
+                assert registered.outcome == "active"
+                assert (
+                    await claim_invoke(connection, message_id=message_id, session_id=session_id)
+                ).outcome == "active"
+                # A genuine SQL failure at the completion call leaves the current
+                # Spawner failure condition: a durably registered, still-live session.
+                original_fetchrow = asyncpg.Connection.fetchrow
+
+                async def failed_completion(conn, query, *args, **kwargs):
+                    if "dashboard_turn_complete_session" in query:
+                        return await original_fetchrow(conn, "SELECT 1 / 0")
+                    return await original_fetchrow(conn, query, *args, **kwargs)
+
+                with monkeypatch.context() as fault:
+                    fault.setattr(asyncpg.Connection, "fetchrow", failed_completion)
+                    with pytest.raises(asyncpg.DivisionByZeroError):
+                        await complete_session(
+                            connection, message_id=message_id, session_id=session_id, success=True
+                        )
+        if case in {"stop_before", "stop_pending"}:
+            await request_cancel(pool, message_id=message_id)
+
+        if case == "stop_during_pending":
+            original_status_fetchrow = asyncpg.Connection.fetchrow
+            stopped = False
+
+            async def stop_after_active_status(conn, query, *args, **kwargs):
+                nonlocal stopped
+                result = await original_status_fetchrow(conn, query, *args, **kwargs)
+                if "dashboard_turn_dispatch_status" in query and not stopped:
+                    stopped = True
+                    await request_cancel(pool, message_id=message_id)
+                return result
+
+            monkeypatch.setattr(asyncpg.Connection, "fetchrow", stop_after_active_status)
+
+        original_execute = asyncpg.Connection.execute
+        fault_queries = []
+
+        async def execute_with_sql_fault(conn, query, *args, **kwargs):
+            if (case == "notify_sql_failed" and "pg_notify" in query) or (
+                case == "reply_sql_failed" and "INSERT INTO public.dashboard_messages" in query
+            ):
+                fault_queries.append(query)
+                return await original_execute(conn, "SELECT 1 / 0")
+            return await original_execute(conn, query, *args, **kwargs)
+
+        monkeypatch.setattr(asyncpg.Connection, "execute", execute_with_sql_fault)
+        evidence = {
+            "data": {
+                "source": {
+                    "kind": "view",
+                    "ref": "concierge.v_fleet_spend",
+                    "as_of": "2026-10-14T00:00:00+00:00",
+                }
+            }
+        }
+
+        async def publish():
+            return await persist_system_answer(
+                runtime,
+                dashboard_context={"conversation_id": str(conversation["id"])},
+                message_id=message_id,
+                request_id=request_id,
+                answer="Estimated fleet spend: $1.23.",
+                evidence=evidence,
+            )
+
+        if case == "completed":
+            outcomes = await asyncio.gather(publish(), publish())
+            assert sorted(outcomes) == ["completed", "refused"]
+        else:
+            outcomes = [await publish(), await publish()]
+            assert outcomes == (
+                ["pending", "pending"]
+                if case == "pending"
+                else ["cancelled", "cancelled"]
+                if case.startswith("stop")
+                else ["error", "error"]
+                if case == "reply_sql_failed"
+                else ["completed", "refused"]
+            )
+
+        # Read genuine committed state separately from the publisher connection.
+        async with pool.acquire() as reader:
+            turn = await reader.fetchrow(
+                "SELECT terminal_state, terminal_at, pending_terminal_state, cancel_requested_at "
+                "FROM public.dashboard_conversation_turns WHERE message_id=$1",
+                message_id,
+            )
+            replies = await reader.fetch(
+                "SELECT content, request_id, sources, citations FROM public.dashboard_messages "
+                "WHERE conversation_id=$1 AND role='assistant'",
+                conversation["id"],
+            )
+            expected_count = 1 if case in {"completed", "notify_sql_failed"} else 0
+            assert len(replies) == expected_count
+            if expected_count:
+                assert turn["terminal_state"] == "completed" and turn["terminal_at"] is not None
+                assert replies[0]["content"] == "Estimated fleet spend: $1.23."
+                assert replies[0]["request_id"] == request_id
+                label = "concierge.v_fleet_spend (as of 2026-10-14T00:00:00+00:00)"
+                assert replies[0]["sources"] == [label]
+                assert replies[0]["citations"] == [
+                    {"label": label, "target": None, "kind": "unlinked"}
+                ]
+            elif case in {"pending", "reply_sql_failed"}:
+                assert turn["terminal_at"] is None and turn["pending_terminal_state"] is None
+            if case.startswith("stop"):
+                assert turn["cancel_requested_at"] is not None
+            if has_live_session:
+                session = await reader.fetchrow(
+                    "SELECT completed_at, invoke_active FROM public.dashboard_conversation_turn_sessions "
+                    "WHERE message_id=$1 AND session_id=$2",
+                    message_id,
+                    session_id,
+                )
+                assert session["completed_at"] is None and session["invoke_active"] is True
+                assert turn["terminal_at"] is None
+                assert turn["pending_terminal_state"] is None
+            if case in {"reply_sql_failed", "notify_sql_failed"}:
+                assert len(fault_queries) == (2 if case == "reply_sql_failed" else 1)

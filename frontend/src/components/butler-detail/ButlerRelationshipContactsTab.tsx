@@ -266,7 +266,7 @@ function TierDistributionPanel({ ranking, isLoading, isError }: TierDistribution
             {/* Warmth bar */}
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
               <div
-                className="h-full rounded-full bg-primary transition-all"
+                className="h-full rounded-full bg-primary"
                 style={{ width: warmthBarWidth(avgWarmth) }}
                 aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
               />

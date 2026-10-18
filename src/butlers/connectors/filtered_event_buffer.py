@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -83,7 +83,11 @@ from butlers.conversation_identity import (
     telegram_conversation_id,
     whatsapp_conversation_id,
 )
-from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+from butlers.ingestion_bearer_scrub import (
+    scrub_envelope,
+    scrub_filtered_preview,
+    scrub_message_text,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -327,6 +331,56 @@ async def drain_replay_pending(
         _log.warning("replay drain: failed to query replay_pending rows", exc_info=True)
 
 
+# Fixed marker stored in place of text when the bearer detector fails.
+_WITHHELD = "[withheld: bearer scrub unavailable]"
+
+
+def _scrub_stored_event(
+    full_payload: dict[str, Any], error_detail: str | None
+) -> tuple[dict[str, Any], str | None]:
+    """Withhold bearer material from the persisted payload and error detail.
+
+    Uses the shared envelope scrub connectors apply before submit, with the same
+    domain/aggressive hints for ``error_detail``.  A detector failure withholds
+    the text fields (never logging them) and leaves metadata, and so the
+    drop/status decision, untouched.
+    """
+    if not isinstance(full_payload, Mapping):
+        # Callers pass envelope dicts; a legacy string shape has no envelope to scrub.
+        return full_payload, error_detail
+    try:
+        # Normalize to JSON primitives first so non-native leaves (bytes, sets,
+        # objects) are scrubbed as the text they will be persisted as.
+        normalized = json.loads(json.dumps(full_payload, default=str))
+        payload, _ = scrub_envelope(normalized)
+        if "payload" not in full_payload:
+            # scrub_envelope materialises an empty payload; keep the row shape as-is.
+            payload.pop("payload", None)
+        error = error_detail
+        if error is not None:
+            error = scrub_message_text(
+                error,
+                source=full_payload.get("source") or {},
+                sender=full_payload.get("sender") or {},
+            )
+        return payload, error
+    except Exception:
+        logger.warning("filtered event bearer scrub failed; withholding payload text")
+        withheld = dict(full_payload)
+        if "payload" in full_payload:
+            inner = full_payload["payload"]
+            if isinstance(inner, Mapping):
+                # Keep sibling keys; withhold the two text-bearing fields.
+                inner = dict(inner)
+                for key in ("normalized_text", "raw"):
+                    if inner.get(key) is not None:
+                        inner[key] = _WITHHELD if key == "normalized_text" else {}
+                withheld["payload"] = inner
+            elif inner is not None:
+                withheld["payload"] = {}
+        return withheld, (None if error_detail is None else _WITHHELD)
+
+
 # ---------------------------------------------------------------------------
 # FilteredEventBuffer
 # ---------------------------------------------------------------------------
@@ -380,6 +434,7 @@ class FilteredEventBuffer:
             received_at: Override the received timestamp (defaults to now UTC).
         """
         ts = received_at if received_at is not None else datetime.now(UTC)
+        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
         self._rows.append(
             (
                 ts,
@@ -405,8 +460,8 @@ class FilteredEventBuffer:
                 # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
                 # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
                 # path below still tolerates legacy string-shaped rows.
-                json.loads(json.dumps(full_payload, default=str)),
-                error_detail,
+                json.loads(json.dumps(stored_payload, default=str)),
+                stored_error,
             )
         )
 

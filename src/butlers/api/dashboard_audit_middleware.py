@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -136,42 +137,49 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") or any(path.startswith(p) for p in _SKIP_PREFIXES):
             return await call_next(request)
 
-        # Collect the request body (bounded) without consuming it for downstream.
-        raw_body: bytes = b""
-        body_truncated = False
-        try:
-            raw_body = await request.body()
-            if len(raw_body) > _MAX_BODY_BYTES:
-                raw_body = raw_body[:_MAX_BODY_BYTES]
-                body_truncated = True
-        except Exception:
-            logger.debug("DashboardAuditMiddleware: could not read request body", exc_info=True)
-
-        # Parse body as JSON for redaction; fall back to raw string on parse error.
-        # Both dict and list bodies are handled; list items are recursively redacted.
+        # Choose bodies carry bearer material even when invalid JSON or truncated.
+        # Match privacy only; routing and callback credential scope stay unchanged.
         parsed_body: dict | None = None
-        if raw_body:
+        if request.method == "POST" and re.fullmatch(
+            r"/api/decisions/prompts/[^/]+/choose/?", path
+        ):
+            parsed_body = {"redacted": "decision_callback"}
+        else:
+            # Collect the request body (bounded) without consuming it for downstream.
+            raw_body: bytes = b""
+            body_truncated = False
             try:
-                parsed = json.loads(raw_body)
-                if isinstance(parsed, dict):
-                    parsed_body = redact_body(parsed)
+                raw_body = await request.body()
+                if len(raw_body) > _MAX_BODY_BYTES:
+                    raw_body = raw_body[:_MAX_BODY_BYTES]
+                    body_truncated = True
+            except Exception:
+                logger.debug("DashboardAuditMiddleware: could not read request body", exc_info=True)
+
+            # Parse body as JSON for redaction; fall back to raw string on parse error.
+            # Both dict and list bodies are handled; list items are recursively redacted.
+            if raw_body:
+                try:
+                    parsed = json.loads(raw_body)
+                    if isinstance(parsed, dict):
+                        parsed_body = redact_body(parsed)
+                        if body_truncated:
+                            parsed_body["__body_truncated__"] = True
+                    elif isinstance(parsed, list):
+                        redacted_list = [
+                            redact_body(item) if isinstance(item, dict) else item for item in parsed
+                        ]
+                        parsed_body = {"__list__": redacted_list}
+                        if body_truncated:
+                            parsed_body["__body_truncated__"] = True
+                    else:
+                        parsed_body = {"__value__": parsed}
+                        if body_truncated:
+                            parsed_body["__body_truncated__"] = True
+                except json.JSONDecodeError:
+                    parsed_body = {"__raw__": raw_body.decode(errors="replace")}
                     if body_truncated:
                         parsed_body["__body_truncated__"] = True
-                elif isinstance(parsed, list):
-                    redacted_list = [
-                        redact_body(item) if isinstance(item, dict) else item for item in parsed
-                    ]
-                    parsed_body = {"__list__": redacted_list}
-                    if body_truncated:
-                        parsed_body["__body_truncated__"] = True
-                else:
-                    parsed_body = {"__value__": parsed}
-                    if body_truncated:
-                        parsed_body["__body_truncated__"] = True
-            except json.JSONDecodeError:
-                parsed_body = {"__raw__": raw_body.decode(errors="replace")}
-                if body_truncated:
-                    parsed_body["__body_truncated__"] = True
 
         # Trace ID: re-use one from scope if available, otherwise generate.
         trace_id: str | None = request.scope.get("trace_id") or str(uuid.uuid4())

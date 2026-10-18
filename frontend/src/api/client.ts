@@ -435,7 +435,6 @@ import type {
   ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
-  ButlerTool,
   MemoryAccess,
   KillRequest,
   KillResponse,
@@ -4670,7 +4669,7 @@ export async function getConnectorSummaries(): Promise<
 
 /**
  * GET /api/ingestion/pipeline?window=24h
- * Returns pipeline funnel stats from Prometheus (60s TTL cache).
+ * Returns pipeline funnel and independently available scrub estimates (60s TTL cache).
  * Always returns 200; aggregates_available=false when Prometheus is unreachable.
  */
 export async function getPipelineStats(
@@ -6767,11 +6766,6 @@ export function getButlerPromptHistory(
   return apiFetch<PaginatedResponse<PromptVersion>>(
     `/butlers/${name}/prompt/history${qs ? `?${qs}` : ""}`,
   );
-}
-
-/** GET /api/butlers/{name}/tools — list tool grants. */
-export function getButlerTools(name: string): Promise<ApiResponse<ButlerTool[]>> {
-  return apiFetch<ApiResponse<ButlerTool[]>>(`/butlers/${name}/tools`);
 }
 
 /** GET /api/butlers/{name}/memory-access — memory tier access metadata. */

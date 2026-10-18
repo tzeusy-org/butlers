@@ -281,11 +281,16 @@ async def _backoff_state(pool: asyncpg.Pool) -> tuple[int, datetime | None]:
     return int(row["unanswered"] or 0), row["last_prompted"]
 
 
-async def active_entity_ids(pool: asyncpg.Pool, entity_ids: set[str]) -> set[str]:
-    """The subset of *entity_ids* whose posture is ``active`` (all others are never named)."""
+async def active_entity_ids(
+    executor: asyncpg.Pool | asyncpg.Connection, entity_ids: set[str]
+) -> set[str]:
+    """The subset of *entity_ids* whose posture is ``active`` (all others are never named).
+
+    Takes a pool or a connection, so a caller inside a transaction reads posture on it.
+    """
     if not entity_ids:
         return set()
-    rows = await pool.fetch(
+    rows = await executor.fetch(
         """
         SELECT id FROM public.entities
         WHERE id = ANY($1::uuid[]) AND posture = 'active'

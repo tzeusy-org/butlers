@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (triage, LLM classification, thread affinity and `route.execute`'s session dispatch are removed, and `route.execute` survives only as Messenger's service-plane delivery endpoint; ingest envelopes, dedupe and the durable buffer feed goal admission).
+Governing doctrine: [vision.md rule 7, transport is connector responsibility](../../heart-and-soul/vision.md#non-negotiable-rules) and [vision.md rule 3, cross-domain access is MCP-only through the control plane](../../heart-and-soul/vision.md#non-negotiable-rules), with [architecture.md, Why Connectors Are Separate from Butlers](../../heart-and-soul/architecture.md#why-connectors-are-separate-from-butlers); Switchboard is the single ingress and broker.
 
 ## Summary
 

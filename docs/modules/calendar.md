@@ -107,6 +107,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 ## Implementation Notes
 
+- Existing `calendar.write` effect checks refuse a missing permission pool, failed read or malformed row with a typed transient `PermissionUnavailable` before provider writes and workspace mutation preparation. A readable missing row remains default-allow; explicit revocations and approvals still apply. Every fresh or deferred execution rechecks state without a new retry loop. The staged bu-30sah4 fix protects effects first; bu-svqpzo.3 owns the remaining shared callers and final fail-closed policy including spawn.
+
 - `GET /api/calendar/workspace/invitations` reads the current provider projection
   without provider requests or RSVP writes. Only an explicit `self=true`, exact
   `needsAction` status and literal `response_status_explicit=true` marker admit an
@@ -222,6 +224,36 @@ ordinary approval retention clears the physical-target fence. The existing
 action-log record is retained; any future action-log retention must preserve an
 unresolved fence. An attributable provider response is committed before
 projection, so projection failure remains applied-with-projection-unavailable.
+
+Physical-target admission spans the fixed historical response owners Messenger
+and Relationship. Each retains its own command and approval. While holding the
+existing target advisory transaction lock, the claimant checks its own log and
+calls the peer's content-blind `calendar_response_fence_status` through
+Switchboard. The read tool stays registered when response execution is disabled.
+It returns only a protocol-bound clear/unresolved/unavailable verdict. A fresh
+random advisory nonce plus the claimant backend PID lets the peer verify both
+locks in its own database through ordinary-role `pg_locks`; a different database,
+old protocol, incomplete roster, missing peer or malformed unresolved evidence
+cannot authorize egress. No cross-schema SQL or new shared writable table is used.
+
+Coordination uses a separate ordinary-role pool of two connections per daemon,
+one outgoing claim at a time and a ten-second coordination deadline. A peer
+probe only reads its own log and never calls another peer. The transaction uses
+READ COMMITTED, and the marker commits before lock release and provider I/O.
+Normal approval executor row locks remain unchanged. Failed coordination leaves
+the durable command phase intact; retry rechecks that phase, including an
+ambiguous commit, rather than resetting it. Status queries return bounded EXISTS
+results, not historical payloads. A new response owner requires extending the
+historical census on every existing owner before enabling writes.
+
+Deployment must disable new response execution and drain both existing writers
+before activating this protocol on both daemons. Confirm ordinary-role lock
+visibility and both peer tools before re-enabling responses; a partial rollout
+cannot establish the cross-owner invariant while an old writer remains active.
+If rollout fails, keep responses disabled and preserve the owning logs. Rolling
+back to active old writers would restore the bypass. No migration or additional
+database grants are required. Future history retention must preserve all
+unresolved markers and their historical owners.
 
 The mounted controls use the same typed handler for contextual, keyboard and
 palette actions. Receipt state survives inbox-row removal; outcome refresh

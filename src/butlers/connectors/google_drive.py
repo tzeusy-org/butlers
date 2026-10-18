@@ -62,6 +62,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.google_credentials import resolve_google_credentials
+from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.metrics_registry import get_or_create_counter, get_or_create_gauge
 from butlers.oauth_token_payload import (
@@ -427,6 +428,14 @@ class _FileMetadata:
 # ---------------------------------------------------------------------------
 
 
+def _comparable_name(name: str) -> str:
+    """Name as the persisted cache would hold it; raw on detector failure (compare only)."""
+    try:
+        return scrub_text(name, provider_domain="google_drive")[0]
+    except Exception:
+        return name
+
+
 def _detect_change_type(
     change: dict[str, Any],
     cached: _FileMetadata | None,
@@ -460,7 +469,11 @@ def _detect_change_type(
     new_parents = file_data.get("parents", cached.parents) or []
     new_shared = file_data.get("shared", cached.shared)
 
-    name_changed = new_name != cached.name
+    # A raw in-memory cache detects every real rename. A cache restored from the
+    # store holds scrubbed names, so fall back to the scrubbed comparison only when
+    # the raw names differ. The raw name is never persisted. Residue: the first
+    # change after a restart where only a withheld span changed reads as unchanged.
+    name_changed = new_name != cached.name and _comparable_name(new_name) != cached.name
     parents_changed = set(new_parents) != set(cached.parents)
     sharing_changed = new_shared != cached.shared
 
@@ -1280,9 +1293,17 @@ class GDriveAccountLoop:
             return
         try:
             cache_data: dict[str, Any] = {}
+            try:
+                names = {
+                    file_id: scrub_text(entry.name, provider_domain="google_drive")[0]
+                    for file_id, entry in self._metadata_cache.items()
+                }
+            except Exception:
+                logger.warning("Drive: bearer scrub failed; metadata cache write skipped")
+                return
             for file_id, entry in self._metadata_cache.items():
                 cache_data[file_id] = {
-                    "name": entry.name,
+                    "name": names[file_id],
                     "mime_type": entry.mime_type,
                     "parents": entry.parents,
                     "shared": entry.shared,

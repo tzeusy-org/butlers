@@ -4,6 +4,14 @@
 > type scale, components, and motion live in
 > `openspec/specs/dashboard-design-language/spec.md`. Em-dashes in this file
 > appear only inside code spans, which are exempt from the ban.
+>
+> Pending rewrite: [RFC 0038 D19](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+> (owner-signed 2026-10-14) makes the dashboard the surface of one assistant
+> with specialized domain regions, not of separate butler units. Where this
+> file frames the system as multi-agent, keeps per-butler chat lanes and
+> butler-detail tabs (Settled Direction 4), or makes butler sessions the hero
+> metric (Settled Direction 5), D19 governs. The signed D19 dashboard change
+> rewrites this file before the cutover switch.
 
 The Butlers dashboard is the human window into a system that mostly runs
 without humans watching. It is read first, controlled second. The design

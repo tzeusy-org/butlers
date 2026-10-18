@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+# _fj_module() reads this module from sys.modules; importing it here means a
+# test selected alone does not depend on an earlier test having imported it.
+import butlers.jobs._roster.finance_jobs  # noqa: F401
 from butlers.core.owner_conditions import create_owner_conditions_table, get_active_condition
 from butlers.tools.switchboard.insight.broker import create_insight_tables
 

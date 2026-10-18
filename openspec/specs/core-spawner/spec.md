@@ -233,6 +233,8 @@ Scope: v1-mandatory
 ### Requirement: Credential Isolation
 The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
 
+ID: REQ-core-spawner-010
+
 #### Scenario: Only declared credentials are passed
 - **WHEN** the spawner builds the runtime environment
 - **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included

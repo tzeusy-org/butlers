@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session, trigger and per-butler conversation endpoints and butler-unit views, D7 and D19; the API envelope, route discovery and domain surfaces remain).
+Governing doctrine: [v1.md, Dashboard](../../heart-and-soul/v1.md#dashboard) and [v1.md, Success Criteria](../../heart-and-soul/v1.md#success-criteria) item 6 (the dashboard shows goals, domain data, contacts and ingestion flow), with [vision.md rule 5, operational tuning is edited via the dashboard](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 

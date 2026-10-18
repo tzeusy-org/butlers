@@ -174,6 +174,7 @@ class DecisionBead:
     due_at: datetime | None
     structured_details_available: bool
     structured_details_unavailable_reason: str | None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +326,17 @@ def _structured_decision_details(issue: dict[str, Any]) -> StructuredDecisionDet
     return StructuredDecisionDetails(description, options, default, due_at, True, None)
 
 
+def _source_updated_at(value: Any) -> datetime | None:
+    """Keep only an explicit aware source time as reopening evidence."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(UTC) if parsed.utcoffset() is not None else None
+    except (ValueError, OverflowError):
+        return None
+
+
 def _is_p1_bug(issue: dict[str, Any]) -> bool:
     return (
         issue.get("status") in _OPEN_STATUSES
@@ -417,6 +429,7 @@ def compute_decision_digest(
             due_at=details.due_at,
             structured_details_available=details.available,
             structured_details_unavailable_reason=details.unavailable_reason,
+            updated_at=_source_updated_at(issue.get("updated_at")),
         )
 
     escalations: list[EscalationHit] = []

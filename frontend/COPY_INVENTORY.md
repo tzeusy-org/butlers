@@ -700,6 +700,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
 
+- Bearer scrub estimates
+- Loading scrub estimates…
+- Prometheus scrub estimates
 - Every external signal the house received, with end-to-end pipeline detail behind each row.
 
 ## `frontend/src/pages/IssuesPage.tsx`
@@ -1368,6 +1371,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Create standing rule
 - Auto-approve matching tool calls without manual review.
+- Butler
+- Select a butler
+- Loading butlers
+- The butler whose approvals own this rule.
 - Tool Name
 - Description
 - Argument Constraints
@@ -1379,6 +1386,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expires In
 - (days, optional)
 - Cancel
+- Butlers
 - e.g. notify
 - What this rule allows
 - Unlimited
@@ -1786,7 +1794,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Effective prompt unavailable.
 - edit prompt →
 - Could not load both versions to diff.
-- No tool grants configured for this butler.
 - open audit log →
 - kill switch · 30s grace →
 - sends shutdown signal; butler processes current session before exiting
@@ -1798,7 +1805,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Prompt diff · v{} to v{} · {}
 - Edit system prompt · {}
 - Enter system prompt…
-- Tools & integrations
 - Memory access
 - Namespace · owned
 - Embed model
@@ -2110,6 +2116,22 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Mapping request was not applied. Check the values and try again.
 - Home Assistant person ID {}
 - Person entity UUID {}
+
+## `frontend/src/components/butler-detail/HomeSafetyWatchPanel.tsx`
+
+- Loading safety sensors
+- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
+- Reload safety sensors
+- No safety sensors declared yet.
+- Could not remove the sensor. It is still being watched.
+- Remove
+- Sensor entity ID
+- Hazard
+- Name in alerts
+- Could not save the sensor. Check the details and try again.
+- Safety sensors
+- Stop watching {}
+- Kitchen leak sensor
 
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
@@ -4151,6 +4173,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - |c:
 - probe all
 - Probe all {} credentials
+- Credential page
 - Spotify
 - Add credential
 - Probe all credentials
@@ -4893,4 +4916,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3898*
+*Total strings: 3918*

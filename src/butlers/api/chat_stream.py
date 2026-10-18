@@ -93,7 +93,14 @@ async def publish_chat_stream_event(
         return False
 
     try:
-        await pool.execute("SELECT pg_notify($1, $2)", channel, payload)
+        if isinstance(pool, (asyncpg.Connection, asyncpg.pool.PoolConnectionProxy)):
+            # A swallowed SQL error still aborts its PostgreSQL transaction.
+            # An acquired connection may carry canonical reply/terminal writes;
+            # roll back only optional NOTIFY, leaving polling authoritative.
+            async with pool.transaction():
+                await pool.execute("SELECT pg_notify($1, $2)", channel, payload)
+        else:
+            await pool.execute("SELECT pg_notify($1, $2)", channel, payload)
     except Exception:
         logger.debug(
             "publish_chat_stream_event: NOTIFY failed for event_type=%r (non-fatal)",

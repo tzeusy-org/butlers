@@ -47,6 +47,14 @@ coarsely; the ranked move list leads with feature/ecosystem moves (see Phase 3).
 epic `bu-86c4c`, 28 subagents). Reuse its shape; treat its dossier as the canonical example of
 the deliverable and the primary dedup source.
 
+## Reasoning Architecture
+
+Ground reasoning-topology ideas in `about/heart-and-soul/architecture.md` and
+RFC 0038: one whole-goal lead, optional focused children at depth one, durable
+domain responsibilities, and grants derived from goal origin. Judge moves by
+whole-goal outcomes and useful proactive care, not by adding reasoning agents
+per domain. Do not propose features on the frozen classify-and-route path.
+
 ## Routing: pursuit vs. QC
 
 Two modes live under this skill. Load **one** body per task:
@@ -172,6 +180,14 @@ or session context was lost (see Execution discipline §3).
      adds a new pair `git rm`s older JSONs and repoints each pruned run's md to
      `git show <sha>:docs/redesigns/<file>`, pinned to the last commit that held it. Git
      history is the archive; the tree is not.
+   - **Retention of md bodies:** a dated dossier body that nothing cites (recount at the PR base:
+     `git grep -l -F <basename> -- . ':!docs/redesigns/README.md' ':!docs/redesigns/pursuit-ledger.md'
+     ':!<file>'`) and that is older than the three newest runs leaves the tree once its Dropped
+     section is folded into `about/legends-and-lore/ideas-ledger.md`. Repoint its README and
+     pursuit-ledger rows to `git show <sha>:docs/redesigns/<file>`; open and blocked beads that
+     cite the body count as citers to name in the PR body. A body that backs a live program
+     (an active held graph or an active openspec change, such as the 2026-10-14 QA remediation
+     run) stays even with zero citers until that program closes.
 2. **Index-append (same commit as the dossier pair)** — append one row for the new run to the
    "Pursuit / audit dossiers" table in `docs/redesigns/README.md` (newest run first, numbered
    sequentially from the prior top row): `| N (YYYY-MM-DD) | [YYYY-MM-DD-jarvis-pursuit.md](YYYY-MM-DD-jarvis-pursuit.md) |`,

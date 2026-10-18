@@ -356,3 +356,42 @@ class TestContextBusIntegration:
 
         assert await is_user_in_context(pool, "traveling") is True
         assert await is_user_in_context(pool, "traveling", min_confidence=0.95) is False
+
+    async def test_unchanged_reassertion_keeps_set_at(self, pool):
+        """bu-r9mlu3: re-asserting an unchanged ACTIVE signal keeps set_at and refreshes
+        expires_at; a changed value, a superseded row or an expired row restarts set_at."""
+        key = "WHERE signal_type = 'traveling' AND set_by_butler = 'travel'"
+        sql = f"SELECT set_at, expires_at FROM public.user_context {key}"
+        past = datetime.now(UTC) - timedelta(hours=7)
+        restarted = past + timedelta(hours=6)
+
+        async def seed(*, expires_in: timedelta, superseded: bool = False) -> None:
+            await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+            await pool.execute(
+                "UPDATE public.user_context SET set_at = $1, expires_at = now() + $2, "
+                f"superseded_at = CASE WHEN $3 THEN now() END {key}",
+                past,
+                expires_in,
+                superseded,
+            )
+
+        # Active row, same value: set_at kept, expires_at refreshed.
+        await seed(expires_in=timedelta(hours=1))
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+        row = await pool.fetchrow(sql)
+        assert row["set_at"] == past
+        assert row["expires_at"] > datetime.now(UTC) + timedelta(hours=1)
+
+        # Changed value restarts.
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="other")
+        assert (await pool.fetchrow(sql))["set_at"] > restarted
+
+        # Superseded row restarts.
+        await seed(expires_in=timedelta(hours=1), superseded=True)
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+        assert (await pool.fetchrow(sql))["set_at"] > restarted
+
+        # Expired but unsuperseded row, same value, restarts (new activation).
+        await seed(expires_in=timedelta(hours=-1))
+        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
+        assert (await pool.fetchrow(sql))["set_at"] > restarted

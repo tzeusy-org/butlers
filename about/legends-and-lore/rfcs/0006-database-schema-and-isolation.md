@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+Governing doctrine: [security.md, Schema Isolation](../../heart-and-soul/security.md#schema-isolation) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation), implementing [vision.md rule 1, the user owns the database and all data](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 
@@ -175,6 +176,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
 | `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
 | `expected_signals` | SELECT for all roles; INSERT/UPDATE only for the row's originating runtime role through forced RLS. | liveness-qualified gap detectors (RFC 0029) |
+| `qa_publication_operations` | SELECT for all roles; INSERT/UPDATE only for `butler_qa_rw` through forced RLS; rows cannot be deleted because no DELETE policy exists (the bootstrap re-grants DELETE); the owner/runtime login keeps TRUNCATE and ALTER/DROP POLICY (residual). | QA publication operation ledger and lineage hold (core_266) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers

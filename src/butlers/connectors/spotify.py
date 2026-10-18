@@ -390,13 +390,20 @@ class ListeningSessionTracker:
         return events, closed_sessions
 
     def check_digest_due(self, now: datetime | None = None) -> bool:
-        """Return True if a listening_digest should be emitted."""
+        """Return True if a listening_digest should be emitted.
+
+        A digest is due once the interval has elapsed AND tracks were played
+        since the previous digest.  One long track playing on (overnight rain
+        sounds) otherwise yields an hourly "0 tracks" digest, and each one costs
+        a routing session and a butler session for nothing.
+        """
         if self._state != "active" or self._session is None:
             return False
         if now is None:
             now = datetime.now(UTC)
         elapsed = now - self._session.last_digest_at
-        return elapsed >= self._digest_interval and self._session.track_count > 0
+        new_tracks = self._session.track_count - self._session.last_digest_track_index
+        return elapsed >= self._digest_interval and new_tracks > 0
 
     def mark_digest_emitted(self, now: datetime | None = None) -> None:
         """Record that a digest was just emitted, resetting the timer."""
@@ -1027,8 +1034,9 @@ def build_listening_digest_envelope(
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a spotify.listening_digest event.
 
-    Emitted periodically (default every 60 min) during active listening.
-    Shows only tracks played since the last digest (or session start).
+    Emitted periodically (default every 60 min) during active listening, and
+    only when tracks were played since the last digest (or session start).
+    Shows only those tracks.
     """
     context_label = _resolve_context_label(
         context_uri=session.context_uri,

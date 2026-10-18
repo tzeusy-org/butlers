@@ -14,8 +14,8 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 02 | 2026-07-04 | 15 | bu-qvnce | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |
 | 03 | 2026-07-10 | 15 | one epic per move (no umbrella) | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
 | 04 | 2026-07-12 | 15 | bu-hmdqz | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
-| 05 | 2026-07-17 | 15 | bu-kqnum | [2026-07-17-jarvis-pursuit.md](2026-07-17-jarvis-pursuit.md) |
-| 06 | 2026-07-22 | 15 | bu-27dxl | [2026-07-22-jarvis-pursuit.md](2026-07-22-jarvis-pursuit.md) |
+| 05 | 2026-07-17 | 15 | bu-kqnum | `git show 7cfd3b301:docs/redesigns/2026-07-17-jarvis-pursuit.md` |
+| 06 | 2026-07-22 | 15 | bu-27dxl | `git show 7cfd3b301:docs/redesigns/2026-07-22-jarvis-pursuit.md` |
 | 07 | 2026-07-25 | 16 | bu-ep4ks | [2026-07-25-jarvis-pursuit.md](2026-07-25-jarvis-pursuit.md) |
 |: (talk-to-butlers) | 2026-07-28 | (see dossier) |: | [2026-07-28-talk-to-butlers-maturity-pursuit.md](2026-07-28-talk-to-butlers-maturity-pursuit.md) |
 | 08 | 2026-08-09 | 15 | bu-6jv4m | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
@@ -23,12 +23,16 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 10 (dashboard chat) | 2026-09-02 | 15 | bu-0ynlk | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) |
 | 11 | 2026-09-03 | 15 | bu-8cdl1 | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 12 | 2026-09-05 | 15 | bu-2jtfw | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
-| 13 | 2026-09-12 | 15 | bu-h40h2b | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
-| 14 | 2026-09-22 | 4 | bu-p5umi2 | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
+| 13 | 2026-09-12 | 15 | bu-h40h2b | `git show 7cfd3b301:docs/redesigns/2026-09-12-jarvis-pursuit.md` |
+| 14 | 2026-09-22 | 4 | bu-p5umi2 | `git show 7cfd3b301:docs/redesigns/2026-09-22-jarvis-pursuit.md` |
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
-| 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
+| 16 | 2026-10-06 | 15 | bu-s11n0s | `git show 7cfd3b301:docs/redesigns/2026-10-06-jarvis-pursuit.md` |
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
+| 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
+| 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
+| 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
+| 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
 
 ## Tier history
 
@@ -390,3 +394,65 @@ gaps survived to the next run's QC; early runs often shipped behavior before the
 reconciliation and review beads, not outcomes, drove most of the bead count in runs 05-06. The run-09
 gate (bu-xf54r) was closed on 2026-09-15 with no recorded actor; the owner confirmed on 2026-10-08
 that it was their release, and the gate was re-closed to ratify it.
+
+### 19 (QA remediation direction) (2026-10-14) · epic bu-6a9xxw
+
+Scoped project-direction from the accepted monthly audit; no new ecosystem fan-out or runtime delivery. Gate bu-gjmx8w remains owner-held.
+
+1. Restore QA-owned launch capability and durable session lineage (bu-6a9xxw.1)
+2. Bind QA evidence to its invocation and expose truthful outcomes (bu-6a9xxw.2)
+3. Persist incident admission and deferred QA work with finite budgets (bu-6a9xxw.3)
+4. Resume bounded discovery with honest source coverage (bu-6a9xxw.4)
+5. Integrate governed proposals and exact feedback-driven follow-ups (bu-6a9xxw.5)
+6. Verify deployed recovery and report an honest QA outcome and usage funnel (bu-6a9xxw.6)
+7. Reconcile QA remediation delivery and generate epic report (gen-1) (bu-6a9xxw.7)
+
+Canonical inbox source acceptance bu-ratgnb is a separate held prerequisite, not a competing inbox implementation. Tier movement is not comparable to the earlier broad ops cohort.
+
+### 20 (Dots superset) (2026-10-15) · epic bu-jv1moa
+
+Feature-first lens: what Butlers can do that ChatGPT Dots cannot. Gate bu-4ap4ap remains owner-held. Working files call it run 19.
+
+1. Cost governance across the RFC 0038 switch: a fail-closed monthly fleet pool with an owner reserve, plus origin-aware starting rungs (bu-jv1moa.1)
+2. Exact-call approval card: the phone card shows the stored recipients and content, labels model text as claims, binds the args digest, and offers Approve only when the whole call fits (bu-jv1moa.2)
+3. Owner link references: every live link or button on an owner surface comes from a server-held provenance row (a dashboard route, a page the goal's research opened, or an owner-confirmed vendor door) (bu-jv1moa.3)
+4. Read every document the owner receives: paged PDF text, page images for scans, the lazy Gmail attachment fetch, and prompt-free document deadlines classed as record (bu-jv1moa.4)
+5. Finished files: Drive export to PDF, XLSX and DOCX, native Sheet charts, report homes updated in place, research deliverables recorded on the goal, and Butlers-made files attached to owner Gmail drafts (bu-jv1moa.5)
+6. Home safety: a deterministic leak, smoke, CO, freezer and open-door sentinel with an immediate owner alert and an honest 'house is blind' signal, plus owner-marked critical entities that always park (bu-jv1moa.6)
+7. Owner places and confirmed presence edges: one owner-edited place registry, a fused leave and enter log, coordinate-free travel legs, and place-keyed reminders (bu-jv1moa.7)
+8. Timed and immediate delivery lanes, with the departure sweep as first consumer: one Telegram card when the owner leaves home, each open item fixable by one tap (bu-jv1moa.8)
+9. Pre-event cards on Telegram: a just-in-time meeting card from the prep envelope now, then leave-by timing learned from the owner's own trips (bu-jv1moa.9)
+10. Standing replies: owner-authored, recipient-pinned message templates with typed slots, the only standing rule an exposed goal can use (bu-jv1moa.10)
+11. Promise radar: two-way commitments from the owner's own messages and counterparties' promises, confirmed with one Telegram tap (bu-jv1moa.11)
+12. Owner Projects: an owner-only versioned charter with typed links, armed by one approval of an enumerated check-in bundle, with exposure-tolerant check-ins and a Telegram project card (bu-jv1moa.12)
+13. Web watches through pinned research probes: owner-approved fixed questions run by code on the governed research host, alerting on price, availability or page change (bu-jv1moa.13)
+14. Inspectable owner knowledge: an owner-only Vouch for reported, inferred or web-derived facts, and a compiled owner profile page that is exactly what every lead is told (bu-jv1moa.14)
+15. Health visit brief: an owner-only 'since your last appointment' summary delivered before each medical appointment (bu-jv1moa.15)
+
+### 21 (JARVIS architecture) (2026-10-16) · epic bu-dhloi1
+
+Architecture-first lens from the Dots diff matrix. Gate bu-276pli remains owner-held; 16 owner-decision beads and 5 standalone bugs filed alongside.
+
+1. Close memory-laundering paths before the switch: consolidate owner-class and third-party episodes in separate batches, label every non-owner recalled item, and demote facts whose evidence batch cannot be proven (bu-dhloi1.1)
+2. Close situation-poisoning and fail-open paths on the context bus: no third-party calendar text in prompts, owner-only set_context, and fail-closed sleep and DND reads (bu-dhloi1.2)
+3. Interrupt rights are derived, never requested: remove model-chosen priority from notify; urgency comes from origin, deterministic sentinels and owner-made break-through rules (bu-dhloi1.3)
+4. Authorship-carrying transforms: a transcript of the owner's own non-forwarded voice note is owner input, so speaking an ask carries the same authority as typing it (bu-dhloi1.4)
+5. Owner principal strength: high-consequence owner decisions on the phone need a second factor the phone alone cannot supply (bu-dhloi1.5)
+6. Label plane: per-invocation labels (instruction principals, data principals, sensitivity categories) replace the goal-wide exposure bit at the switch, with a slot-principal rule for standing rules; typed boundaries ride the second cutover (bu-dhloi1.6)
+7. One goal lifecycle: a waiting state with no session, owner-approved wait envelopes, one owner thread and inbox per goal and plan versions across epochs at the switch; decision sets and evidence-closed completion at the second cutover (bu-dhloi1.7)
+8. Starting context and recall: a runner-composed, per-item-labelled packet (situation frame, recall envelope, thread digest, open loops) and a contracted context.search, as D15's successor at the switch (bu-dhloi1.8)
+9. Perception spine: one typed kind registry and four stores (situation slots with the owner clock and system health, owner modes, an append-only timeline, typed standing conditions) replace public.user_context; S1 ships dark before the switch (bu-dhloi1.9)
+10. Owner law layer: a tighten-only owner policy overlay (never, always ask) and one ordered grant intersection whose receipt names the term that held a call (bu-dhloi1.10)
+11. One condition evaluator: a closed typed predicate vocabulary over the spine and the goal ledger, run by one deterministic control-plane service, with owner watches ('when X, tell me') as the first owner-facing consumer (bu-dhloi1.11)
+12. Owner-latency lane: an interactive lead role with a reserved owner slot and an owner-set latency SLO, an owner-turn timeline and a turn-minimal prefix at the switch; a streamed reply with Telegram drafts and native Stop, local STT and spoken replies at the second cutover (bu-dhloi1.12)
+13. Owner delivery ledger and surface selector: one subject, many presentations, one acknowledgement and one signed token behind deliver(); a presence-aware deterministic selector; a 'Why?' door on every presentation (bu-dhloi1.13)
+14. Capability self-model with no silent failures: depends_on in the catalog, one health reducer read by broker, runner, admission and /status, a model-free cause line with one-tap retry for failed owner asks, and an outside witness off the cluster (bu-dhloi1.14)
+15. Egress plane: default-deny egress for every workload, one declared egress profile per workload in git, and a shared hostname-allowlisting gateway (bu-dhloi1.15)
+
+### 22 (backlog optimization) (2026-10-16) · epic bu-1mbyoa
+
+Backlog lens, run concurrently with run 21 (working files and bead labels call it run 21): 36 groomer agents worked all 669 live beads so the fleet can dispatch them, with no product surface tiered. Dead claims went from 239 to 0, packet-complete beads from 294 to 549, and claimable packet-complete beads from about 19 to 143. 106 raw owner asks were condensed into 19 convention decision beads. The rules this run learned landed in `AGENTS.md` and `docs/operations/decision-beads.md`. Gate bu-l25s6i remains owner-held.
+
+1. Backlog graph lint: a read-only check for graph states that hide or strand work (bu-1mbyoa.1)
+2. Weekly decision digest raises one attention row when the graph lint finds defects (bu-1mbyoa.2)
+3. Reconcile graph hygiene against the live backlog (gen-1) (bu-1mbyoa.3)

@@ -648,6 +648,23 @@ E2E infrastructure tests SHALL validate the staging environment: PostgreSQL test
 - **THEN** it validates: Docker daemon is running, `ANTHROPIC_API_KEY` is set, `claude` CLI is on PATH, and Python 3.12+ is available
 - **AND** missing prerequisites result in `pytest.skip()` with a clear message, not a confusing traceback
 
+#### Scenario: Missing claude binary skips the whole E2E session
+- **WHEN** the `claude` binary is not found on `PATH` (`shutil.which("claude")` is empty)
+- **THEN** the session-scoped autouse fixture `require_claude_binary` in `tests/e2e/conftest.py` skips every E2E test by raising `pytest.skip(..., allow_module_level=True)` from the fixture
+- **AND** the session is reported as skipped, not failed
+
+#### Scenario: A new roster butler boots with no test edits
+- **WHEN** a directory containing a `butler.toml` is added under `roster/`
+- **THEN** the E2E ecosystem bootstrap discovers it through `list_butlers()` and provisions its schema, runs its migrations, assigns its offset port, starts it and tears it down with the other butlers
+- **AND** no change to the bootstrap code or to existing E2E tests is required to boot it
+- **AND** this covers only the bootstrap: declarative scenarios in `tests/e2e/scenarios.py` and the per-butler pool convenience fixtures are written by hand and are not generated from the roster
+
+#### Scenario: LLM output is asserted loosely and routing exactly
+- **WHEN** a declarative E2E scenario is verified
+- **THEN** assertions on LLM-driven behavior are loose: expected tool calls are checked as a subset of the tool names actually called (set containment, not exact match), and a scenario that exceeds its timeout is recorded as a timeout without failing the whole run
+- **AND** the routing target must equal the expected butler exactly
+- **AND** database assertions are evaluated and logged, not enforced: a failed assertion is logged as a warning and does not fail the scenario, and dict rows are compared on the expected key subset only
+
 #### Scenario: Module degradation during E2E
 - **WHEN** modules lack external service credentials (Telegram, Email, Calendar, Memory)
 - **THEN** they fail gracefully during daemon startup
@@ -853,6 +870,8 @@ authentication and reports a healthy status when the API is up.
   string returned regardless of server state
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
+Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
+
 The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
 and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.
@@ -1261,7 +1280,7 @@ Scope: v1-mandatory
 - **AND** credentials, env values, DSNs, provider content, shared worktree venvs and unrelated cache deletion remain excluded
 
 ### Requirement: Measured Worker and Coverage Core Selection
-Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all ten protected covered shards and fail-closed publisher identity checks SHALL remain mandatory.
+Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all eleven full-source covered assurance shards, the complete protected queue test population and fail-closed publisher identity checks SHALL remain mandatory. Owned scheduled/manual and coverage-pipeline PR validation SHALL retain actual event provenance, complete fresh inventory and eleven-input execution reconciliation before report publication; PR validation MUST NOT publish the main badge. Protected merge-group and ordinary PR executions SHALL preserve their existing required test populations and run untraced with CI_COVERAGE=0; the owned daily scheduled/manual and coverage-pipeline PR assurance workflow SHALL own full eleven-shard coverage with CI_COVERAGE=1. Local covered defaults and every actual worker/tracer comparison remain unchanged.
 
 ID: REQ-testing-049
 Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
@@ -1283,7 +1302,7 @@ Scope: v1-mandatory
 - **AND** a planted covered-line companion proves collection and a forced fallback or unsupported branch/context/concurrency candidate is rejected
 
 #### Scenario: Coverage mode stays exact
-- **WHEN** ordinary PR, standalone or merge_group covered consumers execute
+- **WHEN** ordinary PR, standalone, protected untraced merge_group or owned scheduled/manual/pipeline-validation covered consumers execute
 - **THEN** strict CI_COVERAGE 0/1 selection and governed coverage flags stay exact
 - **AND** a worker/core experiment does not enable partial coverage, append across jobs or skip any protected shard
 
@@ -1370,9 +1389,37 @@ Scope: v1-mandatory
 
 The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
 
+Separately, the same complete consumer MAY admit intentional contract evolution
+for retained owners under an independently reviewed, exact normative amendment
+authorized in the trusted public source before the candidate executes. This
+distinct mode SHALL require fresh actual before/after execution, identical
+complete owner and opaque case populations, successful setup/call/teardown,
+bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
+source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
+reviewer-name string, successful test result or current-branch approval file.
+Every candidate-only input change, including proof machinery and execution
+requests, SHALL have exact protected approval; an unobserved-tooling exemption
+SHALL NOT substitute for that approval. Owned cleanup SHALL include descendants
+that create nested sessions, on success, failure and interruption.
+The initial mode SHALL NOT admit deletions, renames, reduced case populations,
+environment waivers or migration/runtime substitutions. Every other loss SHALL
+retain ordinary survivor-evidence obligations.
+
 ID: REQ-testing-053
 Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
 Scope: v1-mandatory
+
+#### Scenario: Approved contract changes retain fresh complete execution
+- **WHEN** an independently reviewed normative amendment intentionally replaces expectations in retained owners
+- **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
+- **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
+- **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
+- **AND** exact protected input approval includes proof machinery and requests, while bounded cleanup accounts for every owned descendant
+
+#### Scenario: Candidate declarations cannot grant their own exception
+- **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
+- **THEN** the evolution path refuses without a count fallback, cached receipt, attestation-only approval or automatic baseline rewrite
+- **AND** unrelated losses, deletions, renames and genuine condensation retain ordinary survivor proof requirements
 
 #### Scenario: Exact branch contexts and retained mutation kills
 - **WHEN** removed cases and named survivors execute a protected proof

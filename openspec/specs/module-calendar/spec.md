@@ -990,6 +990,16 @@ Scope: v1-mandatory
 - **AND** same or replacement request cannot dispatch a second write for that unresolved target
 - **AND** current-status readback alone cannot attribute the prior effect or clear the fence
 
+#### Scenario: Physical response fencing spans owning schemas
+
+- **WHEN** the same provider/account/calendar/self/occurrence is projected by multiple response-capable butlers
+- **THEN** an unresolved write-start marker in any historical owner prevents a replacement provider attempt through every owner
+- **AND** each command, approval and marker remains in its original owner's schema, with content-blind evidence exchanged only through Switchboard MCP routing
+- **AND** missing, incompatible or unreachable historical owner evidence never counts as clear; disabling execution does not waive probing retained fence evidence
+- **AND** claims prove one shared database lock space, serialize target admission, check all historical owners and commit the owning marker before releasing serialization
+- **AND** coordination has dedicated bounded capacity and a finite deadline so reciprocal probes do not depend on a peer's held work-pool connection
+- **AND** pre-start refusal preserves the command; retry must re-read its durable phase and cannot replace a marker whose commit is uncertain
+
 #### Scenario: Provider rejection preserves honest failure
 
 - **WHEN** a provider explicitly rejects the one conditional request including an ETag conflict
@@ -1015,6 +1025,26 @@ Scope: v1-mandatory
 - **THEN** a newly approved single-use inverse restores only that self status including server-recorded needsAction
 - **AND** all other event fields are preserved
 - **AND** unknown, failed, stale, repeated or missing pre-state requests cause zero write
+
+### Requirement: Calendar Write Permission Availability
+
+Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programmatic `create_user_event` paths SHALL refuse unavailable permission state before provider mutations or workspace idempotency preparation. This requirement refines Calendar Event CRUD Tools, Programmatic Butler-Authored Event Creation and Recurrence-Scoped Occurrence Mutation; it does not add permission gates to other operations or alter approval requirements.
+
+#### Scenario: Readable permission state
+- **WHEN** a guarded calendar operation reads no permission row or `granted=true`
+- **THEN** it MAY proceed through its existing validation, approval and idempotency path
+- **AND** an explicit `granted=false` row SHALL continue to refuse the operation
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** create, update, delete, occurrence mutations and `create_user_event` SHALL raise a typed transient permission-unavailable error before provider mutations or workspace mutation preparation
+- **AND** no applied mutation receipt SHALL be created by that refusal
+- **AND** availability errors and gate logs SHALL exclude effect content, row reasons and raw database exception text
+
+#### Scenario: Fresh execution after recovery
+- **WHEN** a caller retries or deferred execution resumes after permission-store recovery
+- **THEN** the guarded path SHALL read current permission state again
+- **AND** existing request-id idempotency and approval behavior SHALL remain in force
 
 ## Source References
 

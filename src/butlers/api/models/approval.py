@@ -420,6 +420,7 @@ class ApprovalActionRejectRequest(BaseModel):
 class ApprovalRuleCreateRequest(BaseModel):
     """Request body for creating a new approval rule."""
 
+    butler: str
     tool_name: str
     arg_constraints: dict[str, Any]
     description: str

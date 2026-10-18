@@ -21,6 +21,34 @@ the Dashboard Secrets page; neither credential is read from connector environmen
 variables. A failed callback authentication leaves the action pending and never
 claims the decision succeeded.
 
+## Decision Callbacks
+
+Decision buttons use the separate `dsk1` prefix. Before ingestion, the connector verifies the
+sender's primary verified owner channel, loads the prompt, and verifies its HMAC against the
+prompt creation time. It forwards the **original** callback token to
+`POST /api/decisions/prompts/{prompt_id}/choose` as JSON `token` alongside `option_index`, with
+`X-Butlers-Approval-Callback-Token` and `X-Butlers-Decision-Actor: owner@telegram`. These existing
+scoped credentials do not authorize the owner-intent or digest routes; an owner API key cannot
+substitute at choose. Use compatible connector/API versions together; tokenless requests have no
+fallback.
+
+The API independently resolves the shared Tier 1 `APPROVAL_CALLBACK_SECRET` from the database
+with `env_fallback=False`, locks the current prompt until the intent transaction commits, and
+checks its current creation-time signature plus exact URL prompt id and body option index before
+any reconciliation or write. Missing DB custody returns `503 callback_verification_unavailable`.
+Invalid or missing tokens return `403 invalid_callback_token`; malformed whole requests, invalid
+path UUIDs and other field errors return `422 invalid_callback_request` (also for mixed errors).
+Missing prompt remains 404, unoffered index 422, changed options and consumed/conflicting choices
+409, and unavailable decision evidence 503. A repeated identical valid tap returns the existing
+intent with `meta.created=false` and the existing Already handled toast.
+
+Audit events retain request/effect metadata with a fixed redacted body, while response errors,
+logs and telemetry omit raw callback tokens, signing secrets and credentials. A token-bearing
+POST transport error logs only a categorical failure, asks the owner to retry and retains the
+keyboard; it does not ingest or error-buffer the update. Malformed `dsk1` Unicode receives only
+the generic acknowledgement. No token expiry, routing activation or reoffer policy is introduced;
+see [Decision beads](../operations/decision-beads.md) for the transaction and refusal contract.
+
 ## Request Context Mapping
 
 Telegram updates are mapped to the `ingest.v1` envelope as follows:

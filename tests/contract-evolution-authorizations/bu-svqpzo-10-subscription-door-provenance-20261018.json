@@ -1,0 +1,1309 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-svqpzo-10-subscription-door-provenance-20261018",
+  "bead": "bu-svqpzo.10",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-svqpzo.18 for implementation bead bu-svqpzo.10 (PR #4624, renewal warnings treat email-derived cancellation fields as unverified). Reviewed before: main 4ebd17c53 as recorded in bu-xw9s20; approved subject: PR #4624 head c26a36c66f0a483f4ae97aefcce522c16b499fa6. Governing requirement REQ-finance-alerts-001 (Finance proactive recurrence output does not infer missing payment state) of openspec/specs/finance-alerts/spec.md, amended with one AND line deferring cancellation-door wording and unverified cancelled/paused handling to the new REQ-finance-alerts-002; the spec file is bound as an exact input record because REQ-finance-alerts-002 lies outside the bound block. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_daily_owner_windows_drive_status_alert_and_pressure",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_daily_owner_windows_drive_status_alert_and_pressure",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_iso_week",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_iso_week",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_month",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_month",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_quarter",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_insight_scan_dedup_key_uses_the_owners_quarter",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_monthly_window_excludes_the_owners_previous_day",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_monthly_window_excludes_the_owners_previous_day",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_monthly_window_starts_at_owner_midnight_not_utc_midnight",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_monthly_window_starts_at_owner_midnight_not_utc_midnight",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_quarterly_window_excludes_the_owners_last_quarter_night",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_quarterly_window_excludes_the_owners_last_quarter_night",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_quarterly_window_follows_the_owners_quarter",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_quarterly_window_follows_the_owners_quarter",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_utc_owner_keeps_the_utc_window",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_utc_owner_keeps_the_utc_window",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_excludes_the_owners_next_monday",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_excludes_the_owners_next_monday",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_excludes_the_owners_sunday_night",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_excludes_the_owners_sunday_night",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_follows_the_owners_monday",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_weekly_window_follows_the_owners_monday",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_budget_period_timezone.py::test_window_bounds_are_half_open_on_the_exact_instants",
+      "after": "roster/finance/tests/test_budget_period_timezone.py::test_window_bounds_are_half_open_on_the_exact_instants",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The _setup_scan inline finance.subscriptions DDL gains the finance_017 provenance columns (cancellation_url_source, status_source) and the metadata column that the renewal query now reads; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_multiple_bills_same_payee_different_due_dates",
+      "after": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_multiple_bills_same_payee_different_due_dates",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_overdue_bill_appears_then_is_marked_paid",
+      "after": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_overdue_bill_appears_then_is_marked_paid",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_paid_bill_excluded_from_upcoming",
+      "after": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_paid_bill_excluded_from_upcoming",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_upcoming_bills_totals_decrease_when_bill_paid",
+      "after": "roster/finance/tests/test_integration.py::TestBillPaymentWorkflow::test_upcoming_bills_totals_decrease_when_bill_paid",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_at_horizon_boundary_included",
+      "after": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_at_horizon_boundary_included",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_exactly_today_urgency_due_today",
+      "after": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_exactly_today_urgency_due_today",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_one_day_past_horizon_excluded",
+      "after": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_bill_due_one_day_past_horizon_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_subscription_renewal_exactly_today",
+      "after": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_subscription_renewal_exactly_today",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_transaction_posted_at_end_of_day_captured_same_day",
+      "after": "roster/finance/tests/test_integration.py::TestBoundaryDates::test_transaction_posted_at_end_of_day_captured_same_day",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_concurrent_dedupe_same_source_message_id",
+      "after": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_concurrent_dedupe_same_source_message_id",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_concurrent_transaction_inserts_all_succeed",
+      "after": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_concurrent_transaction_inserts_all_succeed",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_rapid_bill_state_transitions",
+      "after": "roster/finance/tests/test_integration.py::TestConcurrentAndRapidOperations::test_rapid_bill_state_transitions",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_list_transactions_multi_currency_coexist",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_list_transactions_multi_currency_coexist",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_record_transaction_lowercase_currency_normalized",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_record_transaction_lowercase_currency_normalized",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_record_transaction_mixed_case_currency_normalized",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_record_transaction_mixed_case_currency_normalized",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_spending_summary_mixed_currency_degrades_to_by_currency",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_spending_summary_mixed_currency_degrades_to_by_currency",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_track_bill_non_usd_currency",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_track_bill_non_usd_currency",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_track_subscription_non_usd_currency",
+      "after": "roster/finance/tests/test_integration.py::TestCurrencyEdgeCases::test_track_subscription_non_usd_currency",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestImportTransactionsMetadataRoundtrip::test_metadata_stored_as_dict_not_string",
+      "after": "roster/finance/tests/test_integration.py::TestImportTransactionsMetadataRoundtrip::test_metadata_stored_as_dict_not_string",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_account_id_filter_combined_with_category",
+      "after": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_account_id_filter_combined_with_category",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_filter_by_account_id_returns_only_matching",
+      "after": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_filter_by_account_id_returns_only_matching",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_filter_by_nonexistent_account_id_returns_empty",
+      "after": "roster/finance/tests/test_integration.py::TestListTransactionsAccountFilter::test_filter_by_nonexistent_account_id_returns_empty",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_bill_metadata_account_info_preserved",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_bill_metadata_account_info_preserved",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_bill_metadata_none_stored_as_empty_dict",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_bill_metadata_none_stored_as_empty_dict",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_subscription_metadata_merged_on_multiple_upserts",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_subscription_metadata_merged_on_multiple_upserts",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_empty_dict_round_trips",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_empty_dict_round_trips",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_nested_dict_round_trips",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_nested_dict_round_trips",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_none_stored_as_empty_dict",
+      "after": "roster/finance/tests/test_integration.py::TestMetadataHandling::test_transaction_metadata_none_stored_as_empty_dict",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestPagination::test_limit_clamped_to_maximum",
+      "after": "roster/finance/tests/test_integration.py::TestPagination::test_limit_clamped_to_maximum",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestPagination::test_limit_minimum_clamped_to_one",
+      "after": "roster/finance/tests/test_integration.py::TestPagination::test_limit_minimum_clamped_to_one",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestPagination::test_offset_beyond_total_returns_empty_items",
+      "after": "roster/finance/tests/test_integration.py::TestPagination::test_offset_beyond_total_returns_empty_items",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestPagination::test_paginate_through_all_transactions",
+      "after": "roster/finance/tests/test_integration.py::TestPagination::test_paginate_through_all_transactions",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestPagination::test_pagination_total_unchanged_across_pages",
+      "after": "roster/finance/tests/test_integration.py::TestPagination::test_pagination_total_unchanged_across_pages",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_accounts_type_check_constraint_enforced",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_accounts_type_check_constraint_enforced",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_all_expected_tables_exist",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_all_expected_tables_exist",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_bills_status_check_constraint_enforced",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_bills_status_check_constraint_enforced",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_subscriptions_frequency_check_constraint_enforced",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_subscriptions_frequency_check_constraint_enforced",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_direction_check_constraint_enforced",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_direction_check_constraint_enforced",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_fk_account_id_on_delete_set_null",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_fk_account_id_on_delete_set_null",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_indexes_exist",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_indexes_exist",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_nullable_optional_columns",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_nullable_optional_columns",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_uuid_dedupe_index_unique",
+      "after": "roster/finance/tests/test_integration.py::TestSchemaValidation::test_transactions_uuid_dedupe_index_unique",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_account_id_filter_via_record_transaction",
+      "after": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_account_id_filter_via_record_transaction",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_group_by_category_sorted_by_amount_desc",
+      "after": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_group_by_category_sorted_by_amount_desc",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_no_group_by_returns_single_total_bucket",
+      "after": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_no_group_by_returns_single_total_bucket",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_start_equals_end_date",
+      "after": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_start_equals_end_date",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_zero_amount_debit_counted",
+      "after": "roster/finance/tests/test_integration.py::TestSpendingSummaryEdgeCases::test_spending_summary_zero_amount_debit_counted",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_cancelled_subscription_transaction_still_tracked",
+      "after": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_cancelled_subscription_transaction_still_tracked",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_subscription_renewal_with_matching_transaction",
+      "after": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_subscription_renewal_with_matching_transaction",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_subscription_upsert_after_price_change_and_new_transaction",
+      "after": "roster/finance/tests/test_integration.py::TestSubscriptionAndTransactionWorkflow::test_subscription_upsert_after_price_change_and_new_transaction",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_date_boundary_exactly_today",
+      "after": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_date_boundary_exactly_today",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_excludes_transaction_before_start_date",
+      "after": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_excludes_transaction_before_start_date",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_group_by_merchant_after_recording",
+      "after": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_group_by_merchant_after_recording",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_reflects_recorded_transactions",
+      "after": "roster/finance/tests/test_integration.py::TestTransactionToSpendingSummary::test_spending_summary_reflects_recorded_transactions",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_as_of_timestamp_is_recent",
+      "after": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_as_of_timestamp_is_recent",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_bill_due_date_as_string_accepted_by_track_bill",
+      "after": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_bill_due_date_as_string_accepted_by_track_bill",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_days_ahead_zero_only_includes_today",
+      "after": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_days_ahead_zero_only_includes_today",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_multiple_overdue_bills_all_included",
+      "after": "roster/finance/tests/test_integration.py::TestUpcomingBillsEdgeCases::test_multiple_overdue_bills_all_included",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance DDL gains the finance_017 subscriptions provenance columns that track_subscription now writes; the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_caps_at_max_per_run",
+      "after": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_caps_at_max_per_run",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_insufficient_data_no_candidates",
+      "after": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_insufficient_data_no_candidates",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_severity_priority_mapping",
+      "after": "roster/finance/tests/test_jobs.py::test_anomaly_insight_scan_severity_priority_mapping",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_auto_settled_generates_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_auto_settled_generates_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_confirm_candidate_priority_55",
+      "after": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_confirm_candidate_priority_55",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_empty_no_candidates",
+      "after": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_empty_no_candidates",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_predicted_untracked_only",
+      "after": "roster/finance/tests/test_jobs.py::test_bill_reconciliation_sweep_predicted_untracked_only",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_iso_week_year_boundary",
+      "after": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_iso_week_year_boundary",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_per_period",
+      "after": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_per_period",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_rejects_unknown_period",
+      "after": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_rejects_unknown_period",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_resets_across_windows",
+      "after": "roster/finance/tests/test_jobs.py::test_budget_period_scope_token_resets_across_windows",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_cooldown_days_is_1",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_cooldown_days_is_1",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_dedup_key_format",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_dedup_key_format",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_beyond_3_days_excluded",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_beyond_3_days_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_within_1_day_priority_92",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_within_1_day_priority_92",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_within_3_days_priority_75",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_due_within_3_days_priority_75",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_paid_excluded",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_bill_paid_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_80_to_90pct_priority_50",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_80_to_90pct_priority_50",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_90pct_priority_70",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_90pct_priority_70",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_below_80pct_no_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_below_80pct_no_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_below_threshold_does_not_publish_pressure_event",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_below_threshold_does_not_publish_pressure_event",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_custom_warn_threshold_respected",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_custom_warn_threshold_respected",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_dedup_key_format",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_dedup_key_format",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_dedup_key_stable_within_window",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_dedup_key_stable_within_window",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_default_thresholds_92pct_is_warning",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_default_thresholds_92pct_is_warning",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_pressure_published_on_crossing",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_pressure_published_on_crossing",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_deadline_candidates_include_event_date_metadata",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_deadline_candidates_include_event_date_metadata",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_empty_db_no_candidates",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_empty_db_no_candidates",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_missing_obligation_ledger_table_does_not_break_scan",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_missing_obligation_ledger_table_does_not_break_scan",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_missing_owner_conditions_table_does_not_break_scan",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_missing_owner_conditions_table_does_not_break_scan",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_monthly_and_yearly_same_category_no_collision",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_monthly_and_yearly_same_category_no_collision",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_monthly_subscription_excluded",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_monthly_subscription_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_multiple_categories_all_submitted",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_multiple_categories_all_submitted",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_overdue_bill_condition_resolves_once_paid",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_overdue_bill_condition_resolves_once_paid",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_overdue_bill_opens_owner_condition",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_overdue_bill_opens_owner_condition",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_below_5pct_no_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_below_5pct_no_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_dedup_key_format",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_dedup_key_format",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_large_increase_priority_75",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_large_increase_priority_75",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_mid_increase_priority_60",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_mid_increase_priority_60",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_no_matching_transaction_no_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_price_change_no_matching_transaction_no_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_registers_obligation_ledger_despite_verbosity_off_early_exit",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_registers_obligation_ledger_despite_verbosity_off_early_exit",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_registers_obligation_ledger_row",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_registers_obligation_ledger_row",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_missing_door_renders_enrichment_prompt",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_missing_door_renders_enrichment_prompt",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_with_known_door_warns_with_days_remaining",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_with_known_door_warns_with_days_remaining",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The known-door renewal case now inserts its door with cancellation_url_source='owner', because only an owner-set door renders as a live link; its URL, notice-period, cancel-by, warn-by and days-remaining assertions are preserved, and it now also asserts door_verified is true."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_with_pre_charge_price_change_flag",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_renewal_with_pre_charge_price_change_flag",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_result_has_expected_keys",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_result_has_expected_keys",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_30_50pct_priority_50",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_30_50pct_priority_50",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_50_100pct_priority_65",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_50_100pct_priority_65",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_below_30pct_no_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_below_30pct_no_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_dedup_key_format",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_dedup_key_format",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_fewer_than_3_months_excluded",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_fewer_than_3_months_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_opens_owner_condition",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_opens_owner_condition",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_over_30pct_generates_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_spending_anomaly_over_30pct_generates_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_beyond_14_days_excluded",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_beyond_14_days_excluded",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_dedup_key_format",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_dedup_key_format",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_renewal_within_14_days_priority_55",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_renewal_within_14_days_priority_55",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_renewal_within_3_days_priority_75",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_subscription_renewal_within_3_days_priority_75",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_upcoming_bill_does_not_open_overdue_condition",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_upcoming_bill_does_not_open_overdue_condition",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_verbosity_off_early_exit",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_verbosity_off_early_exit",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_weekly_budget_fires_with_week_scoped_key",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_weekly_budget_fires_with_week_scoped_key",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_insight_scan_yearly_budget_fires_with_year_scoped_key",
+      "after": "roster/finance/tests/test_jobs.py::test_insight_scan_yearly_budget_fires_with_year_scoped_key",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_degrades_gracefully_on_trend_failure",
+      "after": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_degrades_gracefully_on_trend_failure",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions",
+      "after": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_includes_trend_when_prior_month_data_exists",
+      "after": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_includes_trend_when_prior_month_data_exists",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_omits_trend_when_no_prior_month_data",
+      "after": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_omits_trend_when_no_prior_month_data",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    },
+    {
+      "before": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_proposes_one_candidate",
+      "after": "roster/finance/tests/test_jobs.py::test_monthly_finance_digest_proposes_one_candidate",
+      "contracts": [
+        "REQ-finance-alerts-001"
+      ],
+      "reason": "The module's inline finance.subscriptions DDL and the _insert_subscription helper gain the finance_017 provenance columns (the helper defaults both to 'extracted', the migration default); the test body and its assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/finance-alerts/spec.md",
+      "id": "REQ-finance-alerts-001",
+      "before_sha256": "f9e1b454af9a9c351bffe173e2d1af5e32fb72e24beb48fc9ce08a03678c5361",
+      "after_sha256": "0f172839a24b33c92a3571020188047eeeea8f98377e94f62ce7f6723cf1f3eb"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/butlers/finance.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a454558d3c6d17380670cb10bf1135b5723e4c94fcd2964a947717d3e1f35be"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "7501f9f74acce802dcd12c00d6fb3d0e3dd874f3b5cf9c5b53c97df279a0a0d1"
+      }
+    },
+    {
+      "path": "openspec/specs/finance-alerts/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "7b412f8f56724ef118c36976f0e2d58f46bbb8c10a8cb8913f4093c677611d9c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e833d46dfcdf0b88abdd3ccb85b85ed7156fbe68637b0c2f0d5c1b2a9ce72929"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b4fd7f6683a784d2a9743b86d1a2a252863d7516e0fc06d36641b7d8b3ee5224"
+      }
+    },
+    {
+      "path": "roster/finance/jobs/finance_jobs.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "52660f2fd223010974eae2196a57883bc857487e1fcded6d58d4709f2e51f4af"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "62c2b3b0d0596cb289ac141a58a4e073f238581f2a69c5a5de805930eb599a37"
+      }
+    },
+    {
+      "path": "roster/finance/migrations/017_subscription_cancellation_provenance.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "41c768eabd279d16bb3b11af7ac2f64513722b1f5812365b28a955d859f3968a"
+      }
+    },
+    {
+      "path": "roster/finance/tests/test_budget_period_timezone.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b5c83971655693691f0451069b6ef877caa8129ab48e9e903209836481ea9f35"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fefbd76562d37719a94e7a4187b62307e4f6e5e9bbf031654db5ce162c2a8687"
+      }
+    },
+    {
+      "path": "roster/finance/tests/test_cancellation_door.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "fbef5066e2e2461148d37186fe474f47320af7ea030f6ea37d631cf74e163b71"
+      }
+    },
+    {
+      "path": "roster/finance/tests/test_integration.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "738fd2240ecf618f2c2fe7fb7206f8e4ff5be2047b47b61ab57f5ddef066f53a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "63a75254828b2431070cf908f0abab9cee132fa97ce5fc4a693a4db27fc6e748"
+      }
+    },
+    {
+      "path": "roster/finance/tests/test_jobs.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "40557a0a1ea0cefe976de380de0db07300671c704afb486029ba666e89370d0e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1a73996385c8d5ccff68e9f72152d879769294c5ffc5bb4ed7de20eb39c55c13"
+      }
+    },
+    {
+      "path": "roster/finance/tests/test_tools.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9cfe3194f14d576dc6257a141f00126b70c0afac95d5f0e415e7e616ee73eb2e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3fff97eddc302e44e15972b058f955d45b0cb38426cc4b32d52b65f46b8f8143"
+      }
+    },
+    {
+      "path": "roster/finance/tools/cancellation_door.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "a590096f25e23b572f9f9c058e22ee6e40348553f950076201ac3b4dfe97fffe"
+      }
+    },
+    {
+      "path": "roster/finance/tools/subscriptions.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "e52b440fa08c41ad09e5d4b4dfbf07b6b3727742faec9f82f5dfe3b13ec87395"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "45e6645767ba05b9774d56f4a0a8a28e82dd2206b029e4b4a8e8fc067840861b"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-svqpzo-10-subscription-door-provenance-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "2865fb0f6da8d29311ed423dc4adbf31557138860f9eea0969af33fb55a45282"
+      }
+    },
+    {
+      "path": "tests/migrations/test_finance_migrations.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "88b21e7a9161e7e2f5c6cbfd92004fafeb6893dc5f5785f133083abab7987503"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "892bcd8e9db90e79bc47669f23c17ae2fbf1c194a6c3e1e5f2560a46c36fd912"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

@@ -57,6 +57,7 @@ from butlers.modules.calendar_response import (
     SelfResponseSnapshot,
     verified_response_result,
 )
+from butlers.modules.calendar_response_fence import RESPONSE_FENCE_OWNERS, CalendarResponseFence
 from butlers.oauth_token_payload import OAuthTokenValidationError, validate_oauth_token_payload
 
 logger = logging.getLogger(__name__)
@@ -3185,6 +3186,7 @@ class CalendarModule(Module):
         self._response_ready = False
         self._response_credential_entity_id: uuid.UUID | None = None
         self._response_coordinator = CalendarResponseCoordinator(self)
+        self._response_fence = CalendarResponseFence(self)
         self._butler_name: str = DEFAULT_BUTLER_NAME
         self._approval_enqueuer: ApprovalEnqueuer | None = None
         self._db: Any = None
@@ -3246,28 +3248,48 @@ class CalendarModule(Module):
             return {}
         return {"calendar_respond": self._response_coordinator}
 
+    def wire_runtime(
+        self,
+        spawner: Any,
+        repo_root: Path,
+        *,
+        switchboard_client: Any = None,
+        switchboard_client_getter: Callable[[], Any] | None = None,
+    ) -> None:
+        """Use only the daemon-supplied Switchboard transport for owning fence reads.
+
+        The getter resolves the live client at claim time, so a heartbeat reconnect
+        is picked up without re-wiring; ``switchboard_client`` is the static fallback.
+        """
+        self._response_fence.wire(
+            repo_root, switchboard_client, client_getter=switchboard_client_getter
+        )
+
     def set_response_approval_ready(self, ready: bool) -> None:
         self._response_ready = ready
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
-        if not self.canonical_approval_preparers():
-            return {}
-        return {
-            "calendar_respond": ToolMeta(
-                canonical_name="calendar_respond",
-                module_name="calendar",
-                group_name="core",
-                arg_sensitivities={
-                    "_write": True,
-                    "entry_id": True,
-                    "response_status": True,
-                    "request_id": True,
-                    "send_updates": True,
-                    "_command_id": True,
-                    "_command_digest": True,
-                },
+        # Sensitivities only: presentation fields come from the central inventory,
+        # and a partial declaration fails the daemon's catalog check at startup.
+        metadata: dict[str, ToolMeta] = {}
+        if self._butler_name in RESPONSE_FENCE_OWNERS:
+            metadata["calendar_response_fence_status"] = ToolMeta(
+                arg_sensitivities={"request": True},
             )
-        }
+        if not self.canonical_approval_preparers():
+            return metadata
+        metadata["calendar_respond"] = ToolMeta(
+            arg_sensitivities={
+                "_write": True,
+                "entry_id": True,
+                "response_status": True,
+                "request_id": True,
+                "send_updates": True,
+                "_command_id": True,
+                "_command_digest": True,
+            },
+        )
+        return metadata
 
     async def _verified_response_account(self) -> dict[str, str]:
         from butlers.google_account_registry import get_google_account
@@ -3359,6 +3381,20 @@ class CalendarModule(Module):
             if group_enabled(self._config, group):
                 return mcp.tool()
             return lambda fn: fn
+
+        if butler_name in RESPONSE_FENCE_OWNERS:
+
+            @mcp.tool()
+            async def calendar_response_fence_status(
+                request: dict[str, Any], trace_context: dict[str, str] | None = None
+            ) -> dict[str, Any]:
+                """Read this owner's unresolved response fence under a live same-DB claim.
+
+                Returns clear/unresolved/unavailable with no provider or approval effect.
+                Missing protocol, inventory or live lock proof is unavailable, never clear.
+                Switchboard trace_context is transport metadata, never authority.
+                """
+                return await module._response_fence.status(request)
 
         if self._config.response_enabled:
             if not group_enabled(self._config, "core"):
@@ -6620,6 +6656,7 @@ class CalendarModule(Module):
     async def on_shutdown(self) -> None:
         self._response_ready = False
         self._response_credential_entity_id = None
+        await self._response_fence.close()
         if self._force_sync_queue_task is not None and not self._force_sync_queue_task.done():
             self._force_sync_queue_task.cancel()
             try:
@@ -9435,11 +9472,13 @@ class CalendarModule(Module):
         update, or delete calendar events. A cell flipped to granted=false blocks
         the write outright via :class:`PermissionDenied` (an authorization
         decision). Mirrors the spawn gate: consult the matrix at the decision
-        point, before any provider write. require_permission fails open, so a DB
-        error never wedges calendar writes.
+        point, before any provider write. Unavailable permission state refuses before
+        any calendar write.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
-        await require_permission(pool, self._butler_name, CALENDAR_WRITE_PERMISSION)
+        await require_permission(
+            pool, self._butler_name, CALENDAR_WRITE_PERMISSION, fail_closed=True
+        )
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:
@@ -9673,8 +9712,7 @@ class CalendarModule(Module):
         calendar tools, so it must consult the matrix itself. Reuses the same
         :meth:`_require_calendar_write_permission` helper the MCP tools use, so a
         butler with ``calendar.write`` revoked cannot create events via this
-        sibling path. require_permission fails open, so a DB error never wedges
-        calendar writes.
+        sibling path. Unavailable permission state refuses before calendar writes.
         """
         if self._provider is None:
             return

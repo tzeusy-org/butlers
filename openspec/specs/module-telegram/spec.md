@@ -128,3 +128,22 @@ The Telegram module SHALL support sending a message with an inline keyboard so t
 - **WHEN** Telegram answers HTTP 400
 - **THEN** the tool returns `edited=false` with `error_code=400` so the caller can fold the correction into a later digest
 
+### Requirement: Telegram Effect Permission Availability
+
+Existing `notify`-guarded send, reply, edit-text and inline-keyboard-removal paths SHALL read valid permission state before Telegram HTTP traffic. This requirement refines Telegram Send/Reply Tools and Edit Message Text Tool without changing recipient approval rules or introducing gates on unrelated operations.
+
+#### Scenario: Readable permission state
+- **WHEN** the lookup succeeds with no permission row or `granted=true`
+- **THEN** the operation MAY proceed through existing independent approvals
+- **AND** an explicit `granted=false` row SHALL continue to refuse the operation
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** the guarded operation SHALL raise a typed transient permission-unavailable error before HTTP traffic
+- **AND** the error and gate logs/audit category SHALL exclude recipient, message content, credential URLs, row reasons and raw database exception text
+- **AND** fresh retries and existing deferred native callbacks SHALL re-read permission state rather than reuse a cached grant
+
+#### Scenario: Messenger refusal is proven not attempted
+- **WHEN** a Messenger native Telegram command is refused because permission state is unavailable
+- **THEN** it SHALL report a retryable unavailable error with existing `not_attempted` pre-transport policy evidence
+- **AND** provider effects with uncertain delivery SHALL retain their existing terminal no-replay semantics

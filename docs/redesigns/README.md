@@ -67,20 +67,24 @@ Harvest and state working files are gitignored. The cap and pruning rule live in
 
 | Run | Dossier |
 |---|---|
+| 22 (2026-10-16) | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) — backlog optimization and unblocking lens |
+| 21 (2026-10-16) | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) — JARVIS architecture from the Dots diff matrix |
+| 20 (2026-10-15) | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) — Dots superset lens |
+| 19 (2026-10-14) | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) — scoped QA remediation direction |
 | 18 (2026-10-13) | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) — platform simplification lens |
 | 17 (2026-10-06) | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) — SDLC velocity lens |
-| 16 (2026-10-06) | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
+| 16 (2026-10-06) | `git show 7cfd3b301:docs/redesigns/2026-10-06-jarvis-pursuit.md` |
 | 15 (2026-10-03) | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
-| 14 (2026-09-22) | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
-| 13 (2026-09-12) | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
+| 14 (2026-09-22) | `git show 7cfd3b301:docs/redesigns/2026-09-22-jarvis-pursuit.md` |
+| 13 (2026-09-12) | `git show 7cfd3b301:docs/redesigns/2026-09-12-jarvis-pursuit.md` |
 | 12 (2026-09-05) | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
 | 11 (2026-09-03) | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 10 (2026-09-02) | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) — dashboard chat lens |
 | 09 (2026-09-01) | [2026-09-01-jarvis-pursuit.md](2026-09-01-jarvis-pursuit.md) |
 | 08 (2026-08-09) | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
 | 07 (2026-07-25) | [2026-07-25-jarvis-pursuit.md](2026-07-25-jarvis-pursuit.md) |
-| 06 (2026-07-22) | [2026-07-22-jarvis-pursuit.md](2026-07-22-jarvis-pursuit.md) |
-| 05 (2026-07-17) | [2026-07-17-jarvis-pursuit.md](2026-07-17-jarvis-pursuit.md) |
+| 06 (2026-07-22) | `git show 7cfd3b301:docs/redesigns/2026-07-22-jarvis-pursuit.md` |
+| 05 (2026-07-17) | `git show 7cfd3b301:docs/redesigns/2026-07-17-jarvis-pursuit.md` |
 | — (2026-07-12) | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
 | — (2026-07-10) | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
 | — (2026-07-04) | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |

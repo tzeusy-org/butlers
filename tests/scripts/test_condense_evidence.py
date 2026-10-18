@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -137,6 +138,451 @@ def _config(removed="tests/test_toy.py::test_removed", survivor="tests/test_toy.
             removed: {"survivors": [survivor], "reason": "same branch and status contract"}
         },
     }
+
+
+# BEGIN exact-coordinate helper (bu-kb2l6g)
+def _assert_exact_mutation_coordinates(
+    consumer,
+    root,
+    base,
+    carrier,
+    saved,
+    ledger_bytes,
+    journal_path,
+    journal_bytes,
+    protected_bytes,
+    tmp_path,
+):
+    coordinate_results = []
+    fixed_bytes = {path: body for path, body in protected_bytes.items() if path != carrier}
+    for field, replacement in (
+        ("line", 3.0),
+        ("column", 15.0),
+        ("line", True),
+        ("column", False),
+    ):
+        changed_ledger = copy.deepcopy(saved)
+        changed_journal = json.loads(journal_bytes)
+        original = changed_ledger["proof"]["mutation"]["mutants"][0][field]
+        assert type(original) is int
+        if type(replacement) is float:
+            assert original == replacement
+        changed_ledger["proof"]["mutation"]["mutants"][0][field] = replacement
+        changed_journal["mutations"][0][field] = replacement
+        evidence.publish(carrier, changed_ledger)
+        evidence.publish(journal_path, changed_journal)
+        account_bytes = {path: path.read_bytes() for path in (carrier, journal_path)}
+        attempts = []
+        try:
+            for _ in range(2):
+                try:
+                    result = consumer.verify(root, base, [carrier])
+                except consumer.EvidenceError as refusal:
+                    result = {"status": "REFUSED", "category": str(refusal)}
+                attempts.append({"status": result["status"], "category": result.get("category")})
+                assert all(path.read_bytes() == body for path, body in fixed_bytes.items())
+                assert all(path.read_bytes() == body for path, body in account_bytes.items())
+            coordinate_results.append(
+                {"case": f"{field}:{type(replacement).__name__}", "attempts": attempts}
+            )
+        finally:
+            carrier.write_bytes(ledger_bytes)
+            journal_path.write_bytes(journal_bytes)
+        assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+        assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+    reordered = copy.deepcopy(saved)
+    reordered["proof"]["mutation"]["mutants"][0] = dict(
+        reversed(list(reordered["proof"]["mutation"]["mutants"][0].items()))
+    )
+    reordered_journal = json.loads(journal_bytes)
+    reordered_journal["mutations"][0] = dict(
+        reversed(list(reordered_journal["mutations"][0].items()))
+    )
+    carrier.write_text(json.dumps(reordered, indent=2) + "\n")
+    journal_path.write_text(json.dumps(reordered_journal, indent=2) + "\n")
+    assert carrier.read_bytes() != ledger_bytes and journal_path.read_bytes() != journal_bytes
+    assert list(json.loads(carrier.read_bytes())["proof"]["mutation"]["mutants"][0]) != list(
+        saved["proof"]["mutation"]["mutants"][0]
+    )
+    assert list(json.loads(journal_path.read_bytes())["mutations"][0]) != list(
+        json.loads(journal_bytes)["mutations"][0]
+    )
+    reordered_bytes = {path: path.read_bytes() for path in (carrier, journal_path)}
+    try:
+        for _ in range(2):
+            assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+            assert all(path.read_bytes() == body for path, body in fixed_bytes.items())
+            assert all(path.read_bytes() == body for path, body in reordered_bytes.items())
+    finally:
+        carrier.write_bytes(ledger_bytes)
+        journal_path.write_bytes(journal_bytes)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+    evidence.publish(
+        tmp_path / "coordinate-type-results.json",
+        {"cases": coordinate_results, "key_order_reads": 2, "restored_healthy": "PASS"},
+    )
+    assert all(
+        attempt["status"] == "REFUSED"
+        and attempt["category"] == "changed-paired-mutation-operation"
+        for case in coordinate_results
+        for attempt in case["attempts"]
+    ), coordinate_results
+    return coordinate_results
+
+
+# END exact-coordinate helper (bu-kb2l6g)
+
+
+def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeypatch):
+    """REQ-testing-053: actual retention stays owned and original requests bind runtime roots."""
+    import getpass
+
+    root = _toy(tmp_path)
+    owner = root / "tests/test_toy.py"
+    owner.write_text(
+        "from pathlib import Path\nimport os, tempfile\nfrom toy import reply\n"
+        "def placement(tmp_path):\n"
+        "    expected = Path(os.environ['TMPDIR'])\n"
+        "    assert tempfile.gettempdir() == str(expected)\n"
+        "    assert expected in tmp_path.parents\n"
+        "    (tmp_path / 'placement').write_text(str(tmp_path))\n"
+        "def test_removed(tmp_path):\n    placement(tmp_path)\n"
+        "    assert reply(True) == 'accepted'\n"
+        "def test_survivor(tmp_path):\n    placement(tmp_path)\n"
+        "    assert reply(True) == 'accepted'\n    assert reply(False) == 'error'\n"
+    )
+    request = root / "tests/condensation-plans/ordinary.json"
+    request.parent.mkdir()
+    plan = {**_config(), "base": "event-base"}
+    evidence.publish(request, plan)
+
+    def commit(message):
+        evidence.git(root, "add", ".")
+        return evidence.git(
+            root,
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            message,
+        )
+
+    commit("actual tmp_path owners and tracked request")
+    base = evidence.git(root, "rev-parse", "HEAD")
+    before = owner.read_text()
+    owner.write_text(
+        before[: before.index("def test_removed(")] + before[before.index("def test_survivor(") :]
+    )
+    commit("proposed removed owner")
+    config = {**_config(), "base": base}
+    inherited = [tmp_path / "inherited-tmp", tmp_path / "inherited-debug"]
+    sentinels = []
+    for directory in inherited:
+        directory.mkdir()
+        stale = directory / ("pytest-of-" + getpass.getuser()) / "garbage-owned"
+        stale.mkdir(parents=True)
+        sentinel = stale / "tests/condensation-plans/ordinary.json"
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_bytes(request.read_bytes())
+        sentinels.append(sentinel)
+    control = tmp_path / "unrelated-sentinel"
+    control.write_bytes(b"untouched parent control")
+    sentinels.append(control)
+    snapshots = [
+        (p.read_bytes(), p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in sentinels
+    ]
+    monkeypatch.setenv("TMPDIR", str(inherited[0]))
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(inherited[1]))
+    inherited_identities = [(p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in inherited]
+    parent_cwd = Path.cwd()
+    output = tmp_path / "isolated-proof"
+    try:
+        proof = evidence.prove(root, config, output)
+    except evidence.EvidenceError:
+        observations = [evidence.strict_json(p) for p in output.glob("*.access.json")]
+        evidence.publish(
+            tmp_path / "retention-red.json",
+            {
+                "sentinels_present": [p.exists() for p in sentinels],
+                "observations": observations,
+                "receipt": evidence.strict_json(output / "receipt.json"),
+            },
+        )
+        raise
+    assert proof["status"] == "PASS"
+    assert [
+        (p.read_bytes(), p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in sentinels
+    ] == snapshots
+    assert Path.cwd() == parent_cwd
+    assert [os.environ[k] for k in ("TMPDIR", "PYTEST_DEBUG_TEMPROOT")] == list(map(str, inherited))
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    carrier = output / "ledger.json"
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+
+    saved = evidence.strict_json(carrier)
+    first = saved["proof"]["runs"][0]
+    original_request = output / (first["id"] + ".request.json")
+    request_bytes = original_request.read_bytes()
+    run_path = output / first["artifact"]["path"]
+    run_bytes = run_path.read_bytes()
+    ledger_bytes = carrier.read_bytes()
+    refusals = []
+
+    def reject(label, change_run=None, change_request=None):
+        value = copy.deepcopy(saved)
+        run = value["proof"]["runs"][0]
+        if change_run:
+            change_run(run)
+        if change_request:
+            request_value = json.loads(request_bytes)
+            change_request(request_value)
+            evidence.publish(original_request, request_value)
+        evidence.publish(
+            run_path, {k: v for k, v in run.items() if k not in {"artifact", "coverage_artifact"}}
+        )
+        run["artifact"] = evidence.artifact(run_path, output)
+        evidence.publish(carrier, value)
+        try:
+            with pytest.raises(consumer.EvidenceError) as refusal:
+                consumer.verify(root, base, [carrier])
+            refusals.append({"case": label, "category": str(refusal.value)})
+        finally:
+            run_path.write_bytes(run_bytes)
+            carrier.write_bytes(ledger_bytes)
+            if not original_request.is_symlink():
+                original_request.write_bytes(request_bytes)
+
+    for label, change in (
+        ("missing environment", lambda r: r.pop("runtime_environment")),
+        ("extra environment", lambda r: r["runtime_environment"].update(extra="invalid")),
+        ("non-object environment", lambda r: r.update(runtime_environment=[])),
+        ("wrong-type environment value", lambda r: r["runtime_environment"].update(TMPDIR=False)),
+        (
+            "changed tempfile root",
+            lambda r: r["runtime_environment"].update(tempfile_root=str(inherited[0])),
+        ),
+        (
+            "shared side root",
+            lambda r: r["runtime_environment"].update(TMPDIR=str(output / "survivors.runtime-tmp")),
+        ),
+        ("swapped side", lambda r: r.update(side="survivors")),
+        ("missing identity", lambda r: r.pop("runtime_directory")),
+        ("boolean identity", lambda r: r["runtime_directory"].update(device=True)),
+        ("negative identity", lambda r: r["runtime_directory"].update(inode=-1)),
+        ("zero inode", lambda r: r["runtime_directory"].update(inode=0)),
+        ("floating identity", lambda r: r["runtime_directory"].update(inode=1.0)),
+        ("extra identity", lambda r: r["runtime_directory"].update(extra=0)),
+    ):
+        reject(label, change_run=change)
+    for key, wrong in (
+        ("output", str(tmp_path / "borrowed.json")),
+        ("nonce", "0" * 64),
+        ("root", str(root)),
+        ("selection", []),
+        ("scope", []),
+        ("id", "old-request"),
+        ("control_inputs", []),
+        (
+            "runtime_environment",
+            {"TMPDIR": str(inherited[0]), "PYTEST_DEBUG_TEMPROOT": str(inherited[1])},
+        ),
+        ("runtime_directory", {"device": True, "inode": 1}),
+    ):
+        reject("original request " + key, change_request=lambda r, k=key, v=wrong: r.update({k: v}))
+
+    reject(
+        "borrowed original output",
+        change_request=lambda r: r.update(output=str(output / "survivors-baseline.json")),
+    )
+
+    temporary = output / "removed.runtime-tmp"
+    held = output / "held-original-directory"
+    for kind in ("missing", "file", "internal-link", "escaping-link", "replacement"):
+        temporary.rename(held)
+        try:
+            if kind == "file":
+                temporary.write_bytes(b"not a directory")
+            elif kind.endswith("link"):
+                temporary.symlink_to(
+                    held if kind == "internal-link" else inherited[0], target_is_directory=True
+                )
+            elif kind == "replacement":
+                temporary.mkdir()
+            # Even rewriting the run and its digest with the new real identity
+            # cannot replace the original request's historical identity.
+            change = None
+            if kind == "replacement":
+                changed_identity = consumer.runtime_directory_identity(temporary)
+                assert changed_identity != first["runtime_directory"]
+
+                def change(r):
+                    r.update(runtime_directory=changed_identity)
+
+            reject("directory " + kind, change_run=change)
+        finally:
+            if temporary.is_symlink() or temporary.is_file():
+                temporary.unlink()
+            elif temporary.exists():
+                temporary.rmdir()
+            held.rename(temporary)
+    request_held = output / "held-original-request"
+    for target in (request_held, request):
+        original_request.rename(request_held)
+        original_request.symlink_to(target)
+        try:
+            reject("indirect request " + target.name)
+        finally:
+            original_request.unlink()
+            request_held.rename(original_request)
+    journal_path = output / "journal.json"
+    journal_bytes = journal_path.read_bytes()
+    for key in ("mutations", "batches"):
+        changed_journal = json.loads(journal_bytes)
+        changed_journal[key] = []
+        evidence.publish(journal_path, changed_journal)
+        try:
+            reject("journal " + key)
+            assert refusals[-1]["category"] == "invalid-owned-copy-journal"
+        finally:
+            journal_path.write_bytes(journal_bytes)
+    # Change only the retained journal: genuine request/run/SQLite bytes remain
+    # fixed, and Python-equal numeric representations must still refuse.
+    protected_paths = {carrier}
+    for run in saved["proof"]["runs"]:
+        protected_paths.add(output / (run["id"] + ".request.json"))
+        protected_paths.add(output / run["artifact"]["path"])
+        protected_paths.add(output / run["coverage_artifact"]["path"])
+    protected_bytes = {path: path.read_bytes() for path in protected_paths}
+    journal_type_results = []
+    for account, field, replacement in (
+        ("batches", "index", 0.0),
+        ("batches", "index", False),
+        ("mutations", "line", 3.0),
+    ):
+        changed_journal = json.loads(journal_bytes)
+        original = changed_journal[account][0][field]
+        assert type(original) is int and original == replacement
+        changed_journal[account][0][field] = replacement
+        evidence.publish(journal_path, changed_journal)
+        try:
+            try:
+                result = consumer.verify(root, base, [carrier])
+            except consumer.EvidenceError as refusal:
+                result = {"status": "REFUSED", "category": str(refusal)}
+            journal_type_results.append(
+                {
+                    "case": f"{account}.{field}:{type(replacement).__name__}",
+                    "status": result["status"],
+                    "category": result.get("category"),
+                }
+            )
+            assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+        finally:
+            journal_path.write_bytes(journal_bytes)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    evidence.publish(tmp_path / "journal-type-results.json", {"cases": journal_type_results})
+    assert all(
+        case["status"] == "REFUSED" and case["category"] == "invalid-owned-copy-journal"
+        for case in journal_type_results
+    ), journal_type_results
+    # BEGIN exact-coordinate caller (bu-kb2l6g)
+    assert _assert_exact_mutation_coordinates(
+        consumer,
+        root,
+        base,
+        carrier,
+        saved,
+        ledger_bytes,
+        journal_path,
+        journal_bytes,
+        protected_bytes,
+        tmp_path,
+    )
+    # END exact-coordinate caller (bu-kb2l6g)
+    evidence.publish(tmp_path / "runtime-forgery-results.json", {"refusals": refusals})
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    with pytest.raises(evidence.EvidenceError, match="output-already-exists"):
+        evidence.prove(root, config, output)
+
+    actual_suite = evidence.suite
+    replaced_output = tmp_path / "replaced-before-phase"
+
+    def replace_after_baseline(*args, **kwargs):
+        run = actual_suite(*args, **kwargs)
+        if args[5] == "removed-baseline":
+            temporary = kwargs["temporary_root"]
+            temporary.rename(temporary.with_name("held-prelaunch-directory"))
+            temporary.mkdir()
+        return run
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence, "suite", replace_after_baseline)
+        with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, config, replaced_output)
+    replaced_receipt = evidence.strict_json(replaced_output / "receipt.json")
+    assert replaced_receipt["status"] == "UNKNOWN"
+    assert replaced_receipt["category"] == "runtime-directory-replaced"
+    assert evidence.strict_json(replaced_output / "removed-baseline.json")["complete"] is True
+
+    current_owner = owner.read_bytes()
+    owner.write_text(
+        owner.read_text().replace(
+            "    placement(tmp_path)\n",
+            "    placement(tmp_path)\n"
+            "    try:\n        (Path(__file__).parents[1] / 'tests/condensation-plans/ordinary.json').read_bytes()\n"
+            "    except RuntimeError:\n        pass\n",
+        )
+    )
+    commit("actual caught request access")
+    refused = tmp_path / "caught-access"
+    try:
+        with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, config, refused)
+        receipt = evidence.strict_json(refused / "receipt.json")
+        assert receipt["status"] == "UNKNOWN" and receipt["category"] == "worker-incomplete"
+        observed = [evidence.strict_json(p) for p in refused.glob("*.access.json")]
+        assert observed and any(r["accesses"] > 0 for r in observed)
+        caught = evidence.strict_json(refused / "survivors-baseline.json")
+        assert caught["request_boundary"]["runtime_read"] is True
+        assert all(c["phases"]["call"] == "passed" for c in caught["cases"])
+        with pytest.raises(consumer.EvidenceError):
+            consumer.verify(root, base, [refused / "ledger.json"])
+    finally:
+        owner.write_bytes(current_owner)
+        commit("restore exact healthy subject")
+    # Restore the exact original Git identity as well as body; no historical
+    # admission is inferred from merely equal paths or equal source bodies.
+    evidence.git(root, "reset", "--soft", saved["binding"]["head"])
+    fresh_output = tmp_path / "fresh-proof"
+    fresh = evidence.prove(root, config, fresh_output)
+    assert fresh["status"] == "PASS"
+    assert consumer.verify(root, base, [fresh_output / "ledger.json"])["status"] == "PASS"
+    fresh_ledger = evidence.strict_json(fresh_output / "ledger.json")
+    assert fresh_ledger["binding"]["nonce"] != saved["binding"]["nonce"]
+    for proof_output, account in ((output, saved), (fresh_output, fresh_ledger)):
+        for run in account["proof"]["runs"]:
+            temporary = proof_output / (run["side"] + ".runtime-tmp")
+            assert run["runtime_environment"] == {
+                "TMPDIR": str(temporary),
+                "PYTEST_DEBUG_TEMPROOT": str(temporary),
+                "tempfile_root": str(temporary),
+            }
+            assert run["runtime_directory"] == consumer.runtime_directory_identity(temporary)
+        assert (proof_output / "removed.runtime-tmp").stat().st_ino != (
+            proof_output / "survivors.runtime-tmp"
+        ).stat().st_ino
+    assert carrier.read_bytes() == ledger_bytes and original_request.read_bytes() == request_bytes
+    assert [
+        (p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in inherited
+    ] == inherited_identities
+    assert [
+        (p.read_bytes(), p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in sentinels
+    ] == snapshots
 
 
 def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch):
@@ -2189,6 +2635,56 @@ def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
             child.wait(timeout=5)
+
+
+def test_interrupt_while_a_side_worker_starts_still_settles_it_before_the_receipt(
+    tmp_path, monkeypatch
+):
+    """REQ-testing-053: cancellation never writes the receipt beside a live owned worker.
+
+    The signal lands after the pool started the mutation's second worker thread
+    but before the pool registered it, which is where a hosted SIGTERM landed in
+    merge_group run 38606517087. Leaving the pool then joins only registered
+    workers, so the durable receipt was written while that worker still owned a
+    process group and reported cleanup False. That worker's group cleanup waits
+    (at most 1 s) for the receipt, standing in for a contended runner.
+    """
+    root = _toy(tmp_path)
+    started, alive_at_receipt = [], []
+    receipt_written = threading.Event()
+    original_start = threading.Thread.start
+    original_publish = evidence.publish
+    original_await = evidence.await_owned_group_exit
+
+    def start(thread):
+        original_start(thread)
+        if thread.name.startswith("ThreadPoolExecutor"):
+            started.append(thread)
+            if len(started) == 4:
+                signal.raise_signal(signal.SIGTERM)
+
+    def publish(path, value):
+        if path.name == "receipt.json" and value.get("category") == "InterruptedError":
+            alive_at_receipt.extend(thread.name for thread in started if thread.is_alive())
+            receipt_written.set()
+        original_publish(path, value)
+
+    def await_owned_group_exit(group):
+        if len(started) >= 4 and threading.current_thread() is started[3]:
+            receipt_written.wait(timeout=1)
+        original_await(group)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(evidence, "publish", publish)
+    monkeypatch.setattr(evidence, "await_owned_group_exit", await_owned_group_exit)
+    with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, _config(), tmp_path / "interrupted")
+
+    assert len(started) >= 4
+    receipt = evidence.strict_json(tmp_path / "interrupted/receipt.json")
+    assert receipt["category"] == "InterruptedError"
+    assert alive_at_receipt == []
+    assert receipt["restored"] and receipt["cleanup"]
 
 
 def _assert_either_side_failure_cancels(tmp_path):

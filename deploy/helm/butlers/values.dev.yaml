@@ -31,6 +31,7 @@ dashboardAuth:
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
   # Decision Desk prompts send real Telegram messages to the owner; stays off
   # until the owner consents to live prompts (bu-ckkpz.3).
   BUTLERS_DECISION_ROUTING_ENABLED: "0"

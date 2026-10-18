@@ -74,6 +74,21 @@ Slim envelope that preserves identity and threading while minimizing payload siz
 - Switchboard MUST bypass LLM classification. It persists the event in `switchboard.message_inbox`
   like any other ingress, with `lifecycle_state = 'metadata_ref'` instead of `accepted`.
 
+Automated replies and bounces are assigned Tier 2 from headers alone, before any global rule
+(`detect_automated_reply` in `src/butlers/connectors/gmail_policy.py`):
+
+- Bounce: `Content-Type: multipart/report` with `report-type=delivery-status`, or a
+  `mailer-daemon`/`postmaster` sender with a `message/delivery-status` part.
+- Auto-reply: `Auto-Submitted: auto-replied`, `X-Autoreply`, `X-Autorespond`, or
+  `Precedence: auto_reply`. `Auto-Submitted: auto-generated` (alerts, receipts), `Precedence: bulk`
+  and `list`, and list mail are not automated replies; the owner's ingestion rules route them.
+- The slim envelope carries `control.automated_kind` (`auto_reply` or `bounce`), and the tier
+  counter reason is the same value. A global `skip` still wins; `route_to`,
+  `low_priority_queue` and `pass_through` do not raise the message to Tier 1. Missing or
+  malformed headers are ordinary mail.
+- `automated_kind` is asserted by the sender's headers: a hint for admission, not evidence.
+  Anything that acts on it must authenticate and bind the message first.
+
 ### Tier 3
 
 Never submitted to Switchboard ingest.
@@ -119,7 +134,8 @@ dry-run testing (`/ingestion-rules/test`), and include/exclude label configurati
 ## Metrics
 
 `src/butlers/connectors/gmail_policy.py` emits `butlers_connector_gmail_tier_assigned_total`
-(labels `endpoint_identity`, `ingestion_tier`, `reason`) alongside the priority-tier and
+(labels `endpoint_identity`, `ingestion_tier`, `reason`; `reason` is the triage action, or
+`auto_reply`/`bounce` for automated messages) alongside the priority-tier and
 label-filter counters. Rule evaluation itself emits the `butlers.ingestion.rule_*` counters from
 `src/butlers/ingestion_policy_metrics.py`.
 

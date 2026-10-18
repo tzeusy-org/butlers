@@ -3766,6 +3766,8 @@ export interface ApprovalRuleParams {
 }
 
 export interface ApprovalRuleCreateRequest {
+  /** Butler whose schema owns the rule (required by POST /approvals/rules). */
+  butler: string;
   tool_name: string;
   arg_constraints: Record<string, unknown>;
   description: string;
@@ -4212,9 +4214,13 @@ export interface ConnectorStats {
  * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
  * Sourced from Prometheus via PromQL with 60s TTL cache.
  * aggregates_available=false means Prometheus is unreachable — all numeric
- * fields are zero in that case.
+ * funnel fields are zero in that case; scrub and backlog flags are independent.
  */
 export interface PipelineStats {
+  /** Fresh Switchboard scrub-operation estimates, including attempts; absent on older servers. */
+  bearer_scrub_counts?: { auth_code: number; reset_link: number; magic_link: number } | null;
+  /** Independent Prometheus availability; only true makes scrub zeros measured values. */
+  bearer_scrub_available?: boolean;
   window: string;
   aggregates_available: boolean;
   ingested: number;
@@ -8881,14 +8887,6 @@ export interface PromptUpdateRequest {
   prompt: string;
 }
 
-/** A tool grant entry for a butler. */
-export interface ButlerTool {
-  name: string;
-  description: string | null;
-  allowed: boolean;
-  scope: string | null;
-}
-
 /** Memory tier access metadata for a butler. */
 export interface MemoryAccess {
   read: ("short" | "mid" | "long")[];
@@ -10235,7 +10233,7 @@ export interface DecisionIntentSummary {
   id: string;
   bead_id: string;
   option: string;
-  status: "pending" | "applying" | "applied" | "failed";
+  status: "pending" | "applying" | "applied" | "failed" | "superseded";
   source: "dashboard" | "telegram";
   created_at: string;
   /** Categorical reason, set exactly when `status` is `failed`. */

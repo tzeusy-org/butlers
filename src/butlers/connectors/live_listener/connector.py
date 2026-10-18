@@ -44,7 +44,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Thread
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -99,6 +99,24 @@ from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
 
 logger = logging.getLogger(__name__)
+
+
+def wall_clock_observed_at(
+    offset_ts: float,
+    *,
+    wall_now: datetime | None = None,
+    monotonic_now: float | None = None,
+) -> datetime:
+    """Return the UTC wall-clock time of a speech offset taken on the monotonic clock.
+
+    ``offset_ts`` is a ``time.monotonic()`` reading, which has no relation to the Unix epoch, so it
+    is never converted directly. The segment's age on the monotonic clock is subtracted from the
+    current wall time instead; the result is connector-derived, not source-stated. A reading from
+    the future is treated as age zero.
+    """
+    age_s = max(0.0, (time.monotonic() if monotonic_now is None else monotonic_now) - offset_ts)
+    return (wall_now or datetime.now(UTC)) - timedelta(seconds=age_s)
+
 
 # Default health server port for the live-listener connector
 DEFAULT_HEALTH_PORT = 40091
@@ -538,16 +556,16 @@ class LiveListenerConnector:
 
         self._mic_states[mic].transcription_healthy = True
         logger.info(
-            "live-listener: transcription mic=%s confidence=%.2f text=%r",
+            "live-listener: transcription mic=%s confidence=%.2f chars=%d",
             mic,
             result.confidence,
-            result.text,
+            len(result.text),
         )
 
         # Computed once here (from the immutable speech segment) and reused by
         # both the discretion-IGNORE filtered_events path and the FORWARD
         # envelope-construction path below.
-        observed_at = datetime.fromtimestamp(segment.offset_ts, tz=UTC)
+        observed_at = wall_clock_observed_at(segment.offset_ts)
         unix_ms = unix_ms_from_datetime(observed_at)
 
         # --- Filter gate ---
@@ -686,9 +704,9 @@ class LiveListenerConnector:
         ll_metrics.observe_e2e_latency(e2e_elapsed)
 
         logger.debug(
-            "live-listener: submitted utterance mic=%s text=%r e2e=%.3fs",
+            "live-listener: submitted utterance mic=%s chars=%d e2e=%.3fs",
             mic,
-            result.text[:60],
+            len(result.text),
             e2e_elapsed,
         )
 

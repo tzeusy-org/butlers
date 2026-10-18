@@ -113,6 +113,38 @@ async def _run_switchboard_rule_promotion_trigger_job(
     return await run_rule_promotion_trigger_job(pool, job_args)
 
 
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_dropped_known_watch_job() -> Callable[
+    [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
+]:
+    """Load the switchboard dropped-known watch job from roster/ by file path."""
+    import importlib.util as _ilu
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "switchboard"
+        / "jobs"
+        / "dropped_known_watch.py"
+    )
+    module_name = "roster_switchboard_dropped_known_watch_job"
+    spec = _ilu.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load switchboard dropped-known watch job from {module_path}")
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_dropped_known_watch_job
+
+
+async def _run_switchboard_dropped_known_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the switchboard dropped-known watch deterministic schedule job."""
+    run_dropped_known_watch_job = _load_switchboard_dropped_known_watch_job()
+    return await run_dropped_known_watch_job(pool, job_args)
+
+
 async def _run_switchboard_domain_event_reconciliation_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1624,6 +1656,16 @@ async def _run_home_atmosphere_preconditioning_job(
     return await run_home_atmosphere_preconditioning(pool, job_args)
 
 
+async def _run_home_safety_sentinel_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile owner-declared leak/smoke/CO/gas sensors and alert without a model."""
+    from butlers.jobs.home_safety import run_safety_sentinel
+
+    return await run_safety_sentinel(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1632,6 +1674,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "context_producer_home_presence": _run_context_producer_home_presence_job,
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
+    "home_safety_sentinel": _run_home_safety_sentinel_job,
 }
 
 
@@ -2223,6 +2266,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
+            "dropped_known_watch": _run_switchboard_dropped_known_watch_job,
             "decision_review_digest": _run_switchboard_decision_review_digest_job,
             "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
             "decision_routing": _run_switchboard_decision_routing_job,
