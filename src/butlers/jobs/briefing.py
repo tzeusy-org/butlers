@@ -274,7 +274,8 @@ async def run_health_briefing_contribution(
     - Medication adherence today (overdue doses as missed, later doses as "due later";
       as-needed medications never; see ``dose_status_today``)
     - Latest weight measurement
-    - Next upcoming appointment (from state or calendar notes — calendar not queried here)
+    - Medication adherence percentage (doses already due that were taken)
+    - Next upcoming appointment (``predicate='appointment'`` temporal facts, scope ``health``)
 
     State key: ``briefing/daily/<YYYY-MM-DD>``
     """
@@ -331,11 +332,21 @@ async def run_health_briefing_contribution(
         today_end,
     )
 
-    from butlers.tools.health._medication_utils import dose_status_today
+    from butlers.tools.health._medication_utils import dose_plan_today, dose_status_today
 
     missed_names: list[str] = []
     due_later_names: list[str] = []
+    # Adherence counts only doses already due (taken or missed); doses still ahead are neither.
+    doses_due_so_far = 0
+    doses_taken_on_time = 0
     for row in med_rows:
+        due_so_far, _ = dose_plan_today(
+            frequency=row["frequency"],
+            schedule=_schedule_list(row["schedule"]),
+            now_local=now_local,
+        )
+        doses_due_so_far += due_so_far
+        doses_taken_on_time += min(max(int(row.get("doses_taken") or 0), 0), due_so_far)
         status = dose_status_today(
             frequency=row["frequency"],
             schedule=_schedule_list(row["schedule"]),
@@ -365,6 +376,23 @@ async def run_health_briefing_contribution(
             }
         )
 
+    # --- Adherence: taken vs already-due doses today (owner-local) ---
+    # Shown only when something is missed: a fully adherent day has nothing to flag, so it
+    # keeps ``has_updates=false`` (priority "medium" -- the missed-dose highlight carries "high").
+    adherence_pct: int | None = None
+    if doses_due_so_far > 0 and doses_taken_on_time < doses_due_so_far:
+        adherence_pct = round(100 * doses_taken_on_time / doses_due_so_far)
+        highlights.append(
+            {
+                "category": "medication",
+                "text": (
+                    f"Medication adherence today: {adherence_pct}% "
+                    f"({doses_taken_on_time} of {doses_due_so_far} due doses taken)"
+                ),
+                "priority": "medium",
+            }
+        )
+
     # --- Taken doses today (for adherence context) ---
     # Count non-skipped dose facts (predicate='took_dose', scope='health') whose
     # valid_at (taken_at) falls within today's owner-local window.
@@ -383,6 +411,35 @@ async def run_health_briefing_contribution(
         today_end,
     )
     taken_count = taken_rows[0]["cnt"] if taken_rows else 0
+
+    # --- Next upcoming appointment (temporal fact, predicate='appointment') ---
+    # Same store as the calendar overlay job. Emitted only when one exists at or after now.
+    appointment_row = await pool.fetchrow(
+        """
+        SELECT content, valid_at, metadata
+        FROM facts
+        WHERE predicate = 'appointment'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at >= $1
+        ORDER BY valid_at ASC
+        LIMIT 1
+        """,
+        now_local.astimezone(UTC),
+    )
+    if appointment_row and appointment_row["valid_at"] is not None:
+        starts_local = appointment_row["valid_at"].astimezone(owner_zone)
+        meta = dict(appointment_row["metadata"] or {})
+        title = meta.get("title") or meta.get("name") or appointment_row["content"] or "Appointment"
+        days_until = (starts_local.date() - now_local.date()).days
+        highlights.append(
+            {
+                "category": "appointment",
+                "text": f"Next appointment: {title} on {starts_local:%a %d %b %H:%M}",
+                # Same urgency ladder as the calendar overlay: today/tomorrow high, 3 days medium.
+                "priority": "high" if days_until <= 1 else "medium" if days_until <= 3 else "low",
+            }
+        )
 
     # --- Latest weight measurement (past 7 days) ---
     weight_row = await pool.fetchrow(
@@ -423,6 +480,8 @@ async def run_health_briefing_contribution(
     parts: list[str] = []
     if missed_count > 0:
         parts.append(f"Missed {missed_count} dose(s) today.")
+    if adherence_pct is not None:
+        parts.append(f"Adherence {adherence_pct}%.")
     if taken_count > 0:
         parts.append(f"Took {taken_count} dose(s).")
     if latest_weight_text:

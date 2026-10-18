@@ -171,6 +171,46 @@ def _parse_dose_time(text: str) -> time | None:
     return time(hour, minute)
 
 
+def dose_plan_today(
+    *,
+    frequency: str | None,
+    schedule: list[str] | None,
+    now_local: datetime,
+) -> tuple[int, int]:
+    """Return ``(due_so_far, due_later)``: today's scheduled doses by owner-local time.
+
+    ``due_so_far`` counts scheduled doses whose time is at or before *now_local* (to the
+    minute) plus doses with no derivable time; ``due_later`` those still ahead. Medications
+    with no derivable schedule (as-needed, phase-unknown, off-weekday) plan ``(0, 0)``.
+    """
+    normalized = (frequency or "").strip().lower()
+    if not normalized or is_as_needed(normalized) or normalized in _PHASE_UNKNOWN_FREQUENCIES:
+        return 0, 0
+
+    entries = [str(s) for s in (schedule or [])]
+    if normalized in _WEEKLY_FREQUENCIES:
+        days = {_WEEKDAYS[e.strip().lower()] for e in entries if e.strip().lower() in _WEEKDAYS}
+        if now_local.weekday() not in days:
+            return 0, 0
+        count = 1
+    elif normalized in _FREQUENCY_DOSES_PER_DAY and _FREQUENCY_DOSES_PER_DAY[normalized] >= 1:
+        count = round(_FREQUENCY_DOSES_PER_DAY[normalized])
+    else:
+        # Day-part daily frequencies like "every evening" / "at bedtime".
+        part = next((w for w in _DAY_PART_TIMES if w in normalized.split()), None)
+        if part is None and "bedtime" not in normalized:
+            return 0, 0
+        entries = entries or [part or "bedtime"]
+        count = 1
+
+    times = sorted(t for t in (_parse_dose_time(e) for e in entries) if t is not None)[:count]
+    now_time = now_local.time().replace(second=0, microsecond=0)
+    undated = count - len(times)
+    due_now = sum(1 for t in times if t <= now_time) + undated
+    later = len(times) - sum(1 for t in times if t <= now_time)
+    return due_now, later
+
+
 def dose_status_today(
     *,
     frequency: str | None,
@@ -196,31 +236,7 @@ def dose_status_today(
     - A dose with no known time keeps the legacy behaviour and counts as missed if
       untaken (the briefing cannot tell it is not yet due).
     """
-    normalized = (frequency or "").strip().lower()
-    if not normalized or is_as_needed(normalized) or normalized in _PHASE_UNKNOWN_FREQUENCIES:
-        return DoseStatus()
-
-    entries = [str(s) for s in (schedule or [])]
-    if normalized in _WEEKLY_FREQUENCIES:
-        days = {_WEEKDAYS[e.strip().lower()] for e in entries if e.strip().lower() in _WEEKDAYS}
-        if now_local.weekday() not in days:
-            return DoseStatus()
-        count = 1
-    elif normalized in _FREQUENCY_DOSES_PER_DAY and _FREQUENCY_DOSES_PER_DAY[normalized] >= 1:
-        count = round(_FREQUENCY_DOSES_PER_DAY[normalized])
-    else:
-        # Day-part daily frequencies like "every evening" / "at bedtime".
-        part = next((w for w in _DAY_PART_TIMES if w in normalized.split()), None)
-        if part is None and "bedtime" not in normalized:
-            return DoseStatus()
-        entries = entries or [part or "bedtime"]
-        count = 1
-
-    times = sorted(t for t in (_parse_dose_time(e) for e in entries) if t is not None)[:count]
-    now_time = now_local.time().replace(second=0, microsecond=0)
-    undated = count - len(times)
-    due_now = sum(1 for t in times if t <= now_time) + undated
-    later = len(times) - sum(1 for t in times if t <= now_time)
+    due_now, later = dose_plan_today(frequency=frequency, schedule=schedule, now_local=now_local)
     taken = max(doses_taken, 0)
     missed = max(due_now - taken, 0)
     later = max(later - max(taken - due_now, 0), 0)

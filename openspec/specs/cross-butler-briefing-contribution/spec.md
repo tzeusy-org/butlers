@@ -44,18 +44,20 @@ Each specialist butler's `daily_briefing_contribution` job SHALL delete contribu
 - **THEN** the cleanup step completes without error (no-op)
 
 ### Requirement: Health Butler Contribution
-The Health butler's `daily_briefing_contribution` job SHALL query its own `facts` rows (scope `health`) to extract: today's missed doses, today's doses due later, the number of non-skipped doses taken today, and the latest weight measurement from the window running from 7 days before owner-local midnight up to now.
+The Health butler's `daily_briefing_contribution` job SHALL query its own `facts` rows (scope `health`) to extract: today's missed doses, today's doses due later, the number of non-skipped doses taken today, today's medication adherence, the next upcoming appointment, and the latest weight measurement from the window running from 7 days before owner-local midnight up to now.
 
 "Today" and the current time SHALL be taken in the owner's configured timezone (the shared `settings.general` timezone), falling back to SGT (UTC+8) only when the owner has no usable timezone configured. The day window runs from owner-local midnight to the next owner-local midnight, and the missed / due-later split uses the owner-local current time. The contribution key and envelope `date` remain the fleet-wide SGT briefing date.
 
 A dose is **missed** when its scheduled time today has already passed (at or before now, to the minute) in owner-local time and no non-skipped dose has been logged to cover it; a dose is **due later today** when its scheduled time is still ahead in owner-local time. A medication's scheduled doses come from its `frequency` and `schedule`: as-needed medications and frequencies whose phase cannot be derived never produce a missed or due-later dose, a weekly medication counts only on a weekday named in its schedule (with no time, it counts as missed all day on that weekday), and a daily-type dose with no derivable time counts as missed while untaken. Logged non-skipped doses cover the earliest due doses first. A medication with no dose logged since midnight is therefore NOT automatically missed.
 
-The contribution SHALL carry these highlights, each only when it applies: missed doses (category `medication`, priority `high`, text `Missed dose(s) today: <names>`), doses due later today (category `medication`, priority `low`, text `Doses due later today: <names>`), and latest weight (category `weight`, priority `low`, text `Latest weight: <value>`). The summary SHALL combine `Missed N dose(s) today.` (N is the number of medications with at least one missed dose), `Took N dose(s).` (N is the number of non-skipped doses logged today) and `Weight: <value>.` when they apply, and read `No health updates today.` otherwise. `has_updates` SHALL be true exactly when at least one highlight is present, so a day with only taken doses has `has_updates=false`.
+**Adherence** is the share of today's scheduled doses that are already due and were taken: the denominator is the doses due so far (a dose whose time has passed, or has no derivable time), the numerator is each medication's non-skipped doses logged today capped at that medication's own doses due so far, so a surplus on one medication never offsets a miss on another. Doses still ahead, as-needed medications, frequencies whose phase cannot be derived and weekly medications off their weekday are not counted. The **next appointment** is the earliest active Health `appointment` fact whose time is at or after now; its date and time are rendered in the owner's timezone.
+
+The contribution SHALL carry these highlights, each only when it applies: missed doses (category `medication`, priority `high`, text `Missed dose(s) today: <names>`), doses due later today (category `medication`, priority `low`, text `Doses due later today: <names>`), medication adherence (category `medication`, priority `medium`, text `Medication adherence today: <P>% (<T> of <D> due doses taken)`, present only when some due dose was not taken), next appointment (category `appointment`, text `Next appointment: <title> on <Day DD Mon HH:MM>`, priority `high` when it falls today or tomorrow in owner-local dates, `medium` within 3 days, otherwise `low`), and latest weight (category `weight`, priority `low`, text `Latest weight: <value>`). The summary SHALL combine `Missed N dose(s) today.` (N is the number of medications with at least one missed dose), `Adherence P%.` (when the adherence highlight is present), `Took N dose(s).` (N is the number of non-skipped doses logged today) and `Weight: <value>.` when they apply, and read `No health updates today.` otherwise. `has_updates` SHALL be true exactly when at least one highlight is present, so a day with only taken doses has `has_updates=false`.
 
 #### Scenario: Health data available
 - **WHEN** the Health butler has active medications and a weight measurement from the past 7 days
 - **THEN** the contribution includes a missed-doses highlight (priority "high") for medications with an overdue untaken dose, a due-later highlight (priority "low") for medications with a dose still ahead today, and a latest-weight highlight (priority "low")
-- **AND** its highlights are exactly the missed-doses, due-later and latest-weight highlights that apply
+- **AND** its highlights are exactly the missed-doses, due-later, adherence, next-appointment and latest-weight highlights that apply
 
 #### Scenario: A dose is missed only after its time has passed
 - **WHEN** a daily medication is scheduled for 06:00 and 20:00, no dose is logged today, and the owner-local time is 06:55
@@ -65,13 +67,30 @@ The contribution SHALL carry these highlights, each only when it applies: missed
 - **WHEN** an active medication is taken as needed and no dose is logged today
 - **THEN** it appears in neither the missed nor the due-later highlight
 
+#### Scenario: Adherence percentage reflects the doses already due
+- **WHEN** two medications each have a dose due at 06:00, only one has a non-skipped dose logged, a third has a dose at 20:00, and the owner-local time is 06:55
+- **THEN** the contribution includes a medication highlight with priority "medium" and text `Medication adherence today: 50% (1 of 2 due doses taken)`
+- **AND** the summary includes `Adherence 50%.`
+
+#### Scenario: Nothing scheduled or nothing missed
+- **WHEN** every dose already due has been taken, or no medication has a dose due so far today (only as-needed, phase-unknown, off-weekday or later-today medications)
+- **THEN** the contribution has no adherence highlight and the summary has no `Adherence` part
+
+#### Scenario: Next appointment is highlighted
+- **WHEN** an active Health appointment fact starts tomorrow at 14:30 owner-local time and no earlier one is still ahead
+- **THEN** the contribution includes an `appointment` highlight with priority "high" and text `Next appointment: <title> on Thu 26 Mar 14:30`
+
+#### Scenario: No upcoming appointment
+- **WHEN** the Health butler has no active appointment fact at or after the current time
+- **THEN** the contribution has no `appointment` highlight
+
 #### Scenario: Day window follows the owner timezone
 - **WHEN** the owner's configured timezone is not SGT
 - **THEN** doses are counted between owner-local midnight and the next owner-local midnight, and the missed / due-later split uses the owner-local current time
 - **AND** when no usable owner timezone is configured, the same computation uses SGT
 
 #### Scenario: No health data
-- **WHEN** the Health butler has no missed or due-later doses and no weight measurement in the past 7 days
+- **WHEN** the Health butler has no missed or due-later doses, no upcoming appointment and no weight measurement in the past 7 days
 - **THEN** the contribution has `has_updates=false` and the summary reads `No health updates today.`
 
 ### Requirement: Finance Butler Contribution
