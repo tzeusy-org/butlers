@@ -790,6 +790,181 @@ class TestTrackBill:
 
 
 # ---------------------------------------------------------------------------
+# track_bill payment destination fingerprint tests (bu-s11n0s.21)
+# ---------------------------------------------------------------------------
+
+# Synthetic destinations and keys only: nothing here is a real account or secret.
+_DEST_F1 = "GB82 WEST 1234 5698 7654 32"
+_DEST_F2 = "012-345-6789"
+_DEST_HANDLE = "$SyntheticPayee"
+_RAW_DESTINATIONS = (_DEST_F1, _DEST_F2, _DEST_HANDLE)
+
+
+@pytest.fixture
+def destination_key():
+    """Configure a synthetic fingerprint key for the test and clear it afterwards."""
+    from butlers.tools.finance.payment_destinations import configure_destination_key
+
+    configure_destination_key("synthetic-key-for-tests-only")
+    yield
+    configure_destination_key(None)
+
+
+def _days(offset: int) -> date:
+    return datetime.now(UTC).date() + timedelta(days=offset)
+
+
+async def _destination_rows(pool, payee_key: str) -> list[asyncpg.Record]:
+    return await pool.fetch(
+        "SELECT * FROM payment_destinations WHERE payee_key = $1 ORDER BY first_seen_at",
+        payee_key,
+    )
+
+
+async def _assert_no_raw_destination(pool, raw_values) -> None:
+    """Scan every text/jsonb-bearing row of bills, payment_destinations and the SPO mirror."""
+    import asyncio
+
+    from butlers.tools.finance import bills as bills_module
+
+    # The SPO mirror is a fire-and-forget background task; let it land before scanning.
+    pending = list(bills_module._background_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    needles = set()
+    for raw in raw_values:
+        needles.add(raw.lower())
+        needles.add("".join(ch for ch in raw if ch.isalnum() or ch in "$@").lower())
+    scanned = 0
+    for table in ("bills", "payment_destinations", "public.facts"):
+        rows = await pool.fetch(f"SELECT row_to_json(t)::text AS doc FROM {table} t")
+        for row in rows:
+            scanned += 1
+            doc = row["doc"].lower()
+            doc_compact = "".join(ch for ch in doc if ch.isalnum() or ch in "$@")
+            for needle in needles:
+                assert needle not in doc, f"raw destination found in {table}"
+                assert needle not in doc_compact, f"raw destination found in {table}"
+    assert scanned > 0
+
+
+class TestTrackBillPaymentDestination:
+    """track_bill fingerprints payment destinations per counterparty."""
+
+    @pytest.fixture(autouse=True)
+    async def _clear_destinations(self, pool):
+        """The shared ``pool`` fixture does not truncate payment_destinations."""
+        await pool.execute("TRUNCATE TABLE payment_destinations")
+
+    async def _bill(self, pool, payee, due, destination, **kwargs):
+        from butlers.tools.finance import track_bill
+
+        return await track_bill(
+            pool=pool,
+            payee=payee,
+            amount=100.00,
+            currency="USD",
+            due_date=due,
+            payment_destination=destination,
+            **kwargs,
+        )
+
+    async def test_changed_destination_is_new_for_counterparty(self, pool, destination_key):
+        """Three bills to F1 build a baseline; a bill to F2 is new_for_counterparty."""
+        first = await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        assert first["destination_verdict"] == "unverifiable"
+        for offset in (31, 61):
+            again = await self._bill(pool, "Acme Utilities", _days(offset), _DEST_F1)
+            assert again["destination_verdict"] == "known"
+
+        changed = await self._bill(pool, "Acme Utilities", _days(91), _DEST_F2)
+
+        assert changed["destination_verdict"] == "new_for_counterparty"
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 2
+        assert {r["kind"] for r in rows} == {"iban", "account"}
+
+    async def test_known_destination_increments_seen_count(self, pool, destination_key):
+        """A bill to an already-seen destination is known and adds no row."""
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(31), _DEST_F2)
+        before = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+
+        result = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F1)
+
+        assert result["destination_verdict"] == "known"
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 2
+        after = {r["kind"]: r["seen_count"] for r in rows}
+        assert after["iban"] == before["iban"] + 1
+        assert after["account"] == before["account"]
+
+    async def test_first_destination_for_a_payee_is_unverifiable_baseline(
+        self, pool, destination_key
+    ):
+        """The first destination ever seen for a payee is stored as its baseline."""
+        result = await self._bill(pool, "Brand New Payee", _days(5), _DEST_HANDLE)
+
+        assert result["destination_verdict"] == "unverifiable"
+        assert result["destination_reason"] == "no_prior_destination"
+        rows = await _destination_rows(pool, "brand new payee")
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "handle"
+        assert rows[0]["last4"] == "payee"[-4:]
+        assert rows[0]["seen_count"] == 1
+
+    async def test_no_destination_leaves_columns_null(self, pool, destination_key):
+        """Existing callers are unchanged: no destination, no columns, no rows."""
+        result = await self._bill(pool, "Plain Payee", _days(5), None)
+
+        assert result["destination_fingerprint"] is None
+        assert result["destination_verdict"] is None
+        assert "destination_reason" not in result
+        assert result["payee"] == "Plain Payee"
+        assert await pool.fetchval("SELECT count(*) FROM payment_destinations") == 0
+
+    async def test_missing_key_fails_closed_and_stores_nothing(self, pool):
+        """With no fingerprint key the verdict is unverifiable and nothing is stored."""
+        from butlers.tools.finance.payment_destinations import configure_destination_key
+
+        configure_destination_key(None)
+
+        result = await self._bill(pool, "Keyless Payee", _days(5), _DEST_F1)
+
+        assert result["destination_verdict"] == "unverifiable"
+        assert result["destination_reason"] == "fingerprint_key_unavailable"
+        assert result["destination_fingerprint"] is None
+        assert await pool.fetchval("SELECT count(*) FROM payment_destinations") == 0
+        assert _DEST_F1 not in repr(result)
+        assert "GB82" not in repr(result)
+
+    async def test_reingesting_the_same_bill_does_not_double_count(self, pool, destination_key):
+        """Same payee, due date and destination: seen_count is unchanged on re-ingest."""
+        first = await self._bill(pool, "Acme Utilities", _days(10), _DEST_F1)
+        again = await self._bill(pool, "Acme Utilities", _days(10), _DEST_F1)
+
+        assert again["id"] == first["id"]
+        assert again["destination_verdict"] == first["destination_verdict"]
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 1
+        assert rows[0]["seen_count"] == 1
+
+    async def test_no_raw_destination_is_stored_anywhere(self, pool, destination_key):
+        """After the other cases, no table carries a raw destination string."""
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(31), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        await self._bill(pool, "Handle Payee", _days(5), _DEST_HANDLE)
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)  # re-ingest
+        await self._bill(pool, "Plain Payee", _days(7), None)
+
+        await _assert_no_raw_destination(pool, _RAW_DESTINATIONS)
+
+
+# ---------------------------------------------------------------------------
 # upcoming_bills tests
 # ---------------------------------------------------------------------------
 

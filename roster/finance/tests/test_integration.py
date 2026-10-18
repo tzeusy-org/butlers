@@ -137,10 +137,30 @@ CREATE TABLE IF NOT EXISTS bills (
     autopay                BOOLEAN NOT NULL DEFAULT false,
     predicted              BOOLEAN NOT NULL DEFAULT false,
     payee_key              TEXT,
+    destination_fingerprint TEXT,
+    destination_verdict    TEXT
+                               CHECK (destination_verdict IS NULL OR destination_verdict IN (
+                                   'known', 'new_for_counterparty', 'unverifiable'
+                               )),
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT bills_zero_amount_not_overdue
         CHECK (NOT (amount = 0 AND status = 'overdue'))
+)
+"""
+
+
+_DDL_PAYMENT_DESTINATIONS = """
+CREATE TABLE IF NOT EXISTS payment_destinations (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payee_key     TEXT NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('iban', 'account', 'handle')),
+    fingerprint   TEXT NOT NULL,
+    last4         TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    seen_count    INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT uq_payment_destinations_payee_fingerprint UNIQUE (payee_key, fingerprint)
 )
 """
 
@@ -153,6 +173,7 @@ async def _provision_all_tables(pool) -> None:
         await pool.execute(idx_sql)
     await pool.execute(_DDL_SUBSCRIPTIONS)
     await pool.execute(_DDL_BILLS)
+    await pool.execute(_DDL_PAYMENT_DESTINATIONS)
 
 
 # ---------------------------------------------------------------------------

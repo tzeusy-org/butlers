@@ -1983,6 +1983,9 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
     "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
     "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
+    # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
+    # once at FinanceModule startup; absent means bill destinations read as unverifiable.
+    "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),
