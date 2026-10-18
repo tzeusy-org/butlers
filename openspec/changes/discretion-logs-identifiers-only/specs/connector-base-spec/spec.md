@@ -51,6 +51,6 @@ Scope: v1-mandatory
 
 #### Scenario: Discretion evaluator logs carry identifiers, not content
 - **WHEN** the `DiscretionEvaluator` logs an evaluation (input, result, timeout, error, unparseable response, contact-weight resolution or ledger-write failure)
-- **THEN** the log record carries only identifiers: source, channel, weight, prompt and response lengths, short sha256 prefixes, latency, the exception class, the dispatcher's error-code token and the raise site
+- **THEN** the log record carries only identifiers: source, channel, weight, prompt and response lengths, short keyed sha256 prefixes, latency, the exception class, the dispatcher's error-code token and the raise site
 - **AND** it SHALL NOT carry prompt or message text, raw model output, exception messages, tracebacks (`exc_info`) or channel values such as phone numbers or handles
 
