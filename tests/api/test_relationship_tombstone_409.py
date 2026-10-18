@@ -1,6 +1,6 @@
 """The merge-tombstone refusal maps to HTTP 409 on the fact-writing routes. [bu-gm93xc]
 
-REQ-relationship-facts-009: HTTP surfaces map ``entity_tombstoned`` to 409 with the
+REQ-relationship-facts-002: HTTP surfaces map ``entity_tombstoned`` to 409 with the
 same code, naming the survivor. One route per mapping style: the inline mapping in
 ``set_entity_preferred_channel`` and the shared ``_assert_fact_http`` wrapper used by
 ``add_entity_contact``.
