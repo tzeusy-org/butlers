@@ -23,6 +23,12 @@ TARGET_SECONDS = 420
 MIN_SAMPLES = 20
 HORIZON = 100
 SAMPLE_LIMIT = 30
+#: Runs created this long before a shard was created are still candidates for being in flight.
+CONCURRENCY_WINDOW = 2 * 3600
+RUN_INDEX_PAGES = 3
+#: Job reads beyond the sample runs' own (already fetched) jobs; the rest are unattributable.
+CONCURRENT_RUN_READS = 40
+NOT_ON_A_RUNNER = {"queued", "waiting", "pending", "requested"}
 
 
 def timestamp(value):
@@ -127,6 +133,175 @@ def sample(run, response):
     }
 
 
+def event_class(event):
+    if event in {"pull_request", "pull_request_target"}:
+        return "pull_request"
+    return "merge_group" if event == "merge_group" else "other"
+
+
+def concurrency(at, runs):
+    """Jobs executing on a runner at ``at``, split by the event that triggered their run.
+
+    ``runs`` is ``[(event, jobs_or_None)]``; ``None`` means the run's jobs could not be read.
+    A job that ran but lacks usable timestamps makes the whole sample unattributable rather
+    than letting it silently count as zero.
+    """
+    counts = {"pull_request": 0, "merge_group": 0, "other": 0}
+    for event, jobs in runs:
+        if jobs is None:
+            return unattributable()
+        for job in jobs:
+            try:
+                status, conclusion = job["status"], job["conclusion"]
+                if status in NOT_ON_A_RUNNER or conclusion == "skipped":
+                    continue
+                if conclusion == "cancelled" and job["started_at"] is None:
+                    continue  # cancelled before it ever started
+                start = timestamp(job["started_at"])
+                end = None if status == "in_progress" else timestamp(job["completed_at"])
+            except (KeyError, TypeError, ValueError):
+                return unattributable()
+            if start <= at and (end is None or at < end):
+                counts[event_class(event)] += 1
+    present = [name for name, value in counts.items() if value]
+    return {
+        "concurrent_pull_request_jobs": counts["pull_request"],
+        "concurrent_merge_group_jobs": counts["merge_group"],
+        "concurrent_other_jobs": counts["other"],
+        "attribution": "none" if not present else present[0] if len(present) == 1 else "mixed",
+    }
+
+
+def unattributable():
+    return {
+        "concurrent_pull_request_jobs": None,
+        "concurrent_merge_group_jobs": None,
+        "concurrent_other_jobs": None,
+        "attribution": "unattributable",
+    }
+
+
+def hourly(samples):
+    rows = {}
+    for row in samples:
+        hour = row["created_at"][:13] + ":00:00Z"
+        entry = rows.setdefault(
+            hour,
+            {
+                "hour": hour,
+                "samples": 0,
+                "none": 0,
+                "pull_request": 0,
+                "merge_group": 0,
+                "other": 0,
+                "mixed": 0,
+                "unattributable": 0,
+                "max_shard_scheduling_s": 0,
+                "_pr": [],
+                "_mg": [],
+            },
+        )
+        entry["samples"] += 1
+        entry[row["attribution"]] += 1
+        entry["max_shard_scheduling_s"] = max(
+            entry["max_shard_scheduling_s"], row["max_shard_scheduling_s"]
+        )
+        if row["attribution"] != "unattributable":
+            entry["_pr"].append(row["concurrent_pull_request_jobs"])
+            entry["_mg"].append(row["concurrent_merge_group_jobs"])
+    result = []
+    for hour in sorted(rows):
+        entry = rows[hour]
+        pr, mg = entry.pop("_pr"), entry.pop("_mg")
+        entry["mean_concurrent_pull_request_jobs"] = round(sum(pr) / len(pr), 2) if pr else None
+        entry["mean_concurrent_merge_group_jobs"] = round(sum(mg) / len(mg), 2) if mg else None
+        result.append(entry)
+    return result
+
+
+def attribute(read, repository, samples, sample_jobs):
+    """Attach in-flight job counts at shard creation to each sample; never raises.
+
+    Reads one all-workflow run index (at most RUN_INDEX_PAGES pages) and at most
+    CONCURRENT_RUN_READS job lists of other runs; the sample runs' own jobs are reused.
+    """
+    summary = {
+        "window_s": CONCURRENCY_WINDOW,
+        "run_index_pages": 0,
+        "run_index_truncated": False,
+        "job_reads": 0,
+        "job_read_budget": CONCURRENT_RUN_READS,
+        "failure": None,
+    }
+    created = {
+        row["run"]: min(
+            timestamp(job["created_at"])
+            for job in sample_jobs[row["run"]]
+            if re.fullmatch(r"check-(?:unit|integration) \([1-9][0-9]*\)", job["name"])
+        )
+        for row in samples
+    }
+    try:
+        floor = min(created.values()) - CONCURRENCY_WINDOW
+        window = datetime.fromtimestamp(floor, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        indexed, total = [], 0
+        for page in range(1, RUN_INDEX_PAGES + 1):
+            query = urlencode({"created": ">=" + window, "per_page": 100, "page": page})
+            response = read(f"repos/{repository}/actions/runs?{query}")
+            summary["run_index_pages"] += 1
+            total = response["total_count"]
+            rows = response["workflow_runs"]
+            indexed.extend(rows)
+            if not rows or len(indexed) >= total:
+                break
+        summary["run_index_truncated"] = len(indexed) < total
+        # The index is newest-first, so truncation loses the oldest runs.
+        covered_from = (
+            min(timestamp(run["created_at"]) for run in indexed)
+            if summary["run_index_truncated"]
+            else None
+        )
+        cache = {row["run"]: sample_jobs[row["run"]] for row in samples}
+
+        def jobs_of(run):
+            key = run["id"]
+            if key not in cache:
+                cache[key] = None
+                if summary["job_reads"] < CONCURRENT_RUN_READS:
+                    summary["job_reads"] += 1
+                    try:
+                        endpoint = (
+                            f"repos/{repository}/actions/runs/{key}/attempts/"
+                            f"{run['run_attempt']}/jobs?per_page=100"
+                        )
+                        response = read(endpoint)
+                        if response["total_count"] <= 100 and isinstance(response["jobs"], list):
+                            cache[key] = response["jobs"]
+                    except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
+                        pass
+            return cache[key]
+
+        for row in samples:
+            at = created[row["run"]]
+            if covered_from is not None and at - CONCURRENCY_WINDOW < covered_from:
+                row.update(unattributable())
+                continue
+            candidates = [
+                run
+                for run in indexed
+                if run["id"] != row["run"]
+                and timestamp(run["created_at"]) <= at
+                and (run["status"] != "completed" or timestamp(run["updated_at"]) >= at)
+            ]
+            row.update(concurrency(at, [(run["event"], jobs_of(run)) for run in candidates]))
+    except (ValueError, TypeError, KeyError, OSError, TimeoutError, subprocess.SubprocessError):
+        summary["failure"] = "read-unavailable"
+        for row in samples:
+            row.update(unattributable())
+    summary["hourly"] = hourly(samples)
+    return summary
+
+
 def statistics(values):
     ordered = sorted(values)
     return {
@@ -137,7 +312,7 @@ def statistics(values):
     }
 
 
-def observe(*, repository, since=None, target=TARGET_SECONDS, fetch=api):
+def observe(*, repository, since=None, target=TARGET_SECONDS, fetch=api, attribution=False):
     report = {
         "schema": "ci-latency.v1",
         "observed_at": datetime.now(UTC).isoformat(),
@@ -166,7 +341,7 @@ def observe(*, repository, since=None, target=TARGET_SECONDS, fetch=api):
         "statistics": {},
         "failure": None,
     }
-    stage, selected = "configuration", None
+    stage, selected, sample_jobs = "configuration", None, {}
     deadline = time.monotonic() + 240
 
     def read(endpoint):
@@ -246,7 +421,11 @@ def observe(*, repository, since=None, target=TARGET_SECONDS, fetch=api):
                 f"repos/{repository}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100"
             )
             report["samples"].append(sample(run, response))
+            sample_jobs[run["id"]] = response["jobs"]
             report["counts"]["clean_samples"] += 1
+        if attribution and report["samples"]:
+            stage, selected = "concurrency-attribution", None
+            report["attribution"] = attribute(read, repository, report["samples"], sample_jobs)
         if report["samples"]:
             report["statistics"] = {
                 name: statistics([row[name] for row in report["samples"]])
@@ -319,6 +498,31 @@ def write_report(report, output):
         ),
         "",
     ]
+    attribution = report.get("attribution")
+    if attribution:
+        lines += [
+            "Shard scheduling wait attribution: jobs executing on a runner when each merge_group "
+            "run's shards were created, by triggering event (own run excluded). Unattributable "
+            "samples (an unreadable run or a job without usable timestamps) are counted, not "
+            f"dropped. Extra job reads: {attribution['job_reads']} of "
+            f"{attribution['job_read_budget']}; run-index pages: {attribution['run_index_pages']}"
+            + ("; run index truncated" if attribution["run_index_truncated"] else "")
+            + (f"; failure: {attribution['failure']}" if attribution["failure"] else "")
+            + ".",
+            "",
+            "| Hour (UTC) | Samples | None | PR | merge_group | Other | Mixed | Unattributable "
+            "| Max shard wait (s) | Mean PR jobs | Mean merge_group jobs |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            *(
+                f"| {row['hour']} | {row['samples']} | {row['none']} | {row['pull_request']} "
+                f"| {row['merge_group']} | {row['other']} | {row['mixed']} "
+                f"| {row['unattributable']} | {row['max_shard_scheduling_s']:g} "
+                f"| {row['mean_concurrent_pull_request_jobs']} "
+                f"| {row['mean_concurrent_merge_group_jobs']} |"
+                for row in attribution["hourly"]
+            ),
+            "",
+        ]
     if report["failure"]:
         lines.append(
             "Collection error: " + json.dumps(report["failure"]) + ". Partial samples cannot pass."
@@ -345,7 +549,9 @@ def main():
     parser.add_argument("--target", type=int, default=TARGET_SECONDS)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = observe(repository=args.repository, since=args.since, target=args.target)
+    report = observe(
+        repository=args.repository, since=args.since, target=args.target, attribution=True
+    )
     write_report(report, args.output)
     print(f"CI latency: {report['verdict']} ({report['counts']['clean_samples']} clean samples)")
     return {"PASS": 0, "BREACH": 1, "INSUFFICIENT_SAMPLES": 2, "ERROR": 3}[report["verdict"]]
