@@ -41,6 +41,11 @@ ContactsSyncMode = Literal["incremental", "full"]
 
 
 DEFAULT_FAILURE_ERROR = "contacts sync failed"
+#: Content-free ``last_error`` for a run that finished but could not apply some contacts. The
+#: failed contacts keep their previous (or no) recorded version, so the next full sync retries
+#: them; the runtime forces that full sync once per ``CONTACT_APPLY_RETRY_FULL_INTERVAL``.
+CONTACT_APPLY_FAILED_ERROR = "contacts sync partial: contact apply failed"
+CONTACT_APPLY_RETRY_FULL_INTERVAL = timedelta(hours=1)
 ANCHOR_STALL_ERROR = "contacts source anchor unavailable"
 
 
@@ -280,6 +285,7 @@ class ContactsSyncResult(BaseModel):
     deleted_contacts: int
     next_sync_cursor: str
     provider_total: int | None = None
+    failed_contacts: int = 0
 
 
 class ContactsProvider(abc.ABC):
@@ -1366,6 +1372,7 @@ class ContactsSyncEngine:
                 )
 
             result = await self._apply_changes(
+                account_id=account_id,
                 contacts=contacts,
                 state=state,
                 next_cursor=next_cursor,
@@ -1401,7 +1408,8 @@ class ContactsSyncEngine:
                     expired_cursor=expired_cursor,
                 )
             else:
-                state.last_error = str(exc)[:300]
+                # Content-free: an exception message can carry contact ids or names.
+                state.last_error = f"{DEFAULT_FAILURE_ERROR}: {type(exc).__name__}"
                 await self._state_store.save(
                     provider=provider_name, account_id=account_id, state=state
                 )
@@ -1486,6 +1494,7 @@ class ContactsSyncEngine:
     async def _apply_changes(
         self,
         *,
+        account_id: str,
         contacts: list[CanonicalContact],
         state: ContactsSyncState,
         next_cursor: str,
@@ -1497,6 +1506,9 @@ class ContactsSyncEngine:
         applied = 0
         skipped = 0
         deleted = 0
+        failed = 0
+        last_failure: Exception | None = None
+        pending_retry = state.last_error == CONTACT_APPLY_FAILED_ERROR
 
         for contact in contacts:
             version = _contact_version(contact)
@@ -1505,17 +1517,47 @@ class ContactsSyncEngine:
                 skipped += 1
                 continue
 
-            await self._apply_contact(contact)
+            try:
+                await self._apply_contact(contact)
+            except Exception as exc:
+                # One bad contact must not wedge the account: record a content-free outcome
+                # (never the message or a display name), keep its recorded version so a later
+                # full sync retries it, and carry on.
+                failed += 1
+                last_failure = exc
+                logger.warning(
+                    "contact_sync_apply_failed",
+                    extra={
+                        "provider": self._provider.name,
+                        "account_id": account_id,
+                        "external_id": contact.external_id,
+                        "entity_id": None,
+                        "error_class": type(exc).__name__,
+                    },
+                )
+                continue
             versions[contact.external_id] = version
             applied += 1
             if contact.deleted:
                 deleted += 1
 
+        if failed > 1 and applied == 0 and last_failure is not None:
+            # Every attempted contact failed: that is systemic (storage down, bad schema), not a
+            # bad contact, so fail the run and keep the cursor rather than advance past them all.
+            raise last_failure
+
         now_iso = datetime.now(UTC).isoformat()
         state.sync_cursor = next_cursor
         state.cursor_issued_at = now_iso
         state.last_success_at = now_iso
-        state.last_error = None
+        if failed:
+            state.last_error = CONTACT_APPLY_FAILED_ERROR
+        elif pending_retry and mode != "full":
+            # An incremental run cannot re-fetch the failed contacts, so it must not clear the
+            # marker that makes the runtime schedule a full sync for them.
+            state.last_error = CONTACT_APPLY_FAILED_ERROR
+        else:
+            state.last_error = None
         state.contact_versions = versions
         if mode == "full":
             state.last_full_sync_at = now_iso
@@ -1530,6 +1572,7 @@ class ContactsSyncEngine:
             deleted_contacts=deleted,
             next_sync_cursor=next_cursor,
             provider_total=provider_total,
+            failed_contacts=failed,
         )
 
 
@@ -1663,6 +1706,14 @@ class ContactsSyncRuntime:
 
         if self._now_utc() - reference_time >= self._forced_full_interval:
             return "full"
+
+        if state.last_error == CONTACT_APPLY_FAILED_ERROR:
+            # Contacts that failed to apply are only re-delivered by a full fetch.
+            last_full = _parse_iso_utc(state.last_full_sync_at)
+            if last_full is None or (
+                self._now_utc() - last_full >= CONTACT_APPLY_RETRY_FULL_INTERVAL
+            ):
+                return "full"
 
         return "incremental"
 

@@ -253,6 +253,20 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 - **WHEN** `contacts_source_reconcile` triggers an immediate sync
 - **THEN** the runtime's poller wakes up and runs a sync cycle
 
+#### Scenario: One failing contact does not wedge the account
+
+- **WHEN** applying one fetched contact raises while the others in the same run apply
+- **THEN** the run SHALL continue, persist the new sync cursor and the versions of the contacts that applied, and report the number of failed contacts
+- **AND** the failure SHALL be a structured `contact_sync_apply_failed` log record carrying provider, account, external id and the exception class, never the exception message or a display name
+- **AND** `contacts_sync_state.last_error` SHALL hold only the content-free value `contacts sync partial: contact apply failed`; a run-level failure SHALL store `contacts sync failed: <exception class>`, never the exception text
+- **AND** WHEN every attempted contact in a run fails, the run SHALL fail and keep its cursor, since that is a systemic fault rather than a bad contact
+
+#### Scenario: Failed contacts are retried by a bounded full sync
+
+- **WHEN** a run ended with the partial `last_error` above
+- **THEN** the failed contacts keep no (or their previous) recorded version, and an incremental run SHALL NOT clear the marker
+- **AND** the poller SHALL start a full sync once the last full sync is at least one hour old, which re-delivers and retries them; a full run with no failures clears the marker
+
 ### Requirement: CRM Backfill Pipeline
 
 `ContactBackfillEngine` SHALL orchestrate identity resolution, table writing, and structured logging for each synced contact. The legacy `activity_feed` table was retired (relationship migration `010_drop_legacy_contact_tables`); the engine SHALL NOT write feed rows. Sync events (created, updated, conflict, source-deleted, ambiguous match) SHALL be emitted as structured log records carrying the entity id (when known), provider, account, and external id. Wherever this spec says an event is "logged" it means such a log record.

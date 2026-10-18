@@ -128,6 +128,13 @@ None. The contacts module is a leaf module.
   cursor/state save share one hosting transaction. Earlier per-contact positive commits survive a
   later failure and are replayable; remote owner calls remain outside that transaction. Ordinary
   logs are not a durable outbox and do not promise exactly-once emission after a crash.
+- One contact that fails to apply does not wedge the account: the run continues, the cursor and the
+  versions of the applied contacts are saved, and `last_error` holds the content-free
+  `contacts sync partial: contact apply failed` (a run-level failure stores
+  `contacts sync failed: <exception class>`). Each failure logs `contact_sync_apply_failed` with
+  provider, account, external id and exception class only. The failed contacts keep no new version, so
+  the poller retries them with a full sync once the last full sync is an hour old; if every attempted
+  contact fails the run fails and keeps its cursor.
 - Same-account manual/poll cycles serialize. Persistent state and absent-source baseline checks
   refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
   progress independently. Reappearance bypasses an unchanged etag/fingerprint cache when its exact
