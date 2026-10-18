@@ -1,0 +1,492 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-s11n0s-17-rule-max-uses-20261018",
+  "bead": "bu-s11n0s.17",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the bu-s11n0s coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-gtytt8 for implementation bead bu-s11n0s.17 (PR #4603, standing-rule max_uses is claimed atomically and REST rule creation is validated). Reviewed before: main d54670d49; approved subject: PR #4603 head 29a034e63 updated from main. Governing requirements REQ-module-approvals-003 (Standing Rules CRUD and Matching) and REQ-module-approvals-004 (Shared Executor Path) of openspec/specs/module-approvals/spec.md, whose pre-change blocks carried no ID; the open change generalist-lead-focused-delegation carries the same -004 ID in its MODIFIED copy and is bound as an exact input record. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/api/test_api_approvals.py::test_approvals_error_paths",
+      "after": "tests/api/test_api_approvals.py::test_approvals_error_paths",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "POST /rules now requires and validates a butler name like the MCP tool, so the error-path payload names one; the max_uses validation expectation is preserved."
+    },
+    {
+      "before": "tests/contracts/test_relationship_pending_actions_choke_point.py::test_gate_direct_inserts_are_only_explicit_auto_approvals",
+      "after": "tests/contracts/test_relationship_pending_actions_choke_point.py::test_gate_direct_inserts_are_only_explicit_auto_approvals",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The rule-claim INSERT is composed around the claim statement, so the scanner inspects every string constant of its first argument; the assertion that only explicit auto-approvals insert directly into pending_actions is preserved."
+    },
+    {
+      "before": "tests/daemon/test_daemon.py::test_route_execute_revalidates_notify_decision_dossier",
+      "after": "tests/daemon/test_daemon.py::test_route_execute_revalidates_notify_decision_dossier",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "Auto-approval now claims the rule use before executing, so the test supplies and asserts the claim; the existing dossier and quiet-hours assertions are preserved."
+    },
+    {
+      "before": "tests/daemon/test_notify_entity_id.py::TestNotifyDecisionDossierBoundary::test_quiet_hours_preserves_valid_dossier_in_deferred_envelope",
+      "after": "tests/daemon/test_notify_entity_id.py::TestNotifyDecisionDossierBoundary::test_quiet_hours_preserves_valid_dossier_in_deferred_envelope",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "Auto-approval now claims the rule use before executing, so the test supplies and asserts the claim; the existing dossier and quiet-hours assertions are preserved."
+    },
+    {
+      "before": "tests/modules/test_email_guard.py::TestCheckEmailRecipient::test_non_owner_with_rule_approves",
+      "after": "tests/modules/test_email_guard.py::TestCheckEmailRecipient::test_non_owner_with_rule_approves",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The use_count bump is claimed through the shared single-statement helper, so the assertion moves from execute to fetchrow; the allow decision is preserved and an exhausted-rule park case is added."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_advertises_non_owner_dossier_metadata",
+      "after": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_advertises_non_owner_dossier_metadata",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_metadata_threaded_parks_unpinned",
+      "after": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_metadata_threaded_parks_unpinned",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_without_metadata_auto_approves",
+      "after": "tests/modules/test_gate_safety_critical.py::TestApplyApprovalGatesThreadsMetadata::test_without_metadata_auto_approves",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestEmailModuleDeclaration::test_email_module_declares_to_safety_critical",
+      "after": "tests/modules/test_gate_safety_critical.py::TestEmailModuleDeclaration::test_email_module_declares_to_safety_critical",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestGateArgumentSerialization::test_non_json_native_args_are_serialized_before_pending_summary_and_storage",
+      "after": "tests/modules/test_gate_safety_critical.py::TestGateArgumentSerialization::test_non_json_native_args_are_serialized_before_pending_summary_and_storage",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_no_metadata_unaffected",
+      "after": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_no_metadata_unaffected",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_non_critical_declaration_unaffected",
+      "after": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_non_critical_declaration_unaffected",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_pinned_safety_critical_arg_auto_approves",
+      "after": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_pinned_safety_critical_arg_auto_approves",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_unpinned_safety_critical_arg_parks",
+      "after": "tests/modules/test_gate_safety_critical.py::TestGateHonorsSafetyCriticalArgs::test_unpinned_safety_critical_arg_parks",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_arg_absent_from_call_not_flagged",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_arg_absent_from_call_not_flagged",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_malformed_constraints_fail_closed",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_malformed_constraints_fail_closed",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_no_meta_returns_empty",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_no_meta_returns_empty",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_non_critical_flag_ignored",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_non_critical_flag_ignored",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_non_dict_constraints_fail_closed",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_non_dict_constraints_fail_closed",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_pinned_when_constraint_is_exact",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_pinned_when_constraint_is_exact",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_pinned_when_constraint_is_pattern",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_pinned_when_constraint_is_pattern",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_unpinned_when_constraint_absent",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_unpinned_when_constraint_absent",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_unpinned_when_constraint_is_any",
+      "after": "tests/modules/test_gate_safety_critical.py::TestUnpinnedSafetyCriticalArgs::test_unpinned_when_constraint_is_any",
+      "contracts": [
+        "REQ-module-approvals-003"
+      ],
+      "reason": "The _make_pool helper now models a successful rule-use claim (fetchrow returns a claimed row); this case's assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/module-approvals/spec.md",
+      "id": "REQ-module-approvals-003",
+      "before_sha256": "857bae039949c889a9d4152dbf994139867886dbdffc0c77b0bf13bcbd45d4a0",
+      "after_sha256": "307347f27d829eb049a04fd313d7018cfbd28961c5913a5ac6a6d4e5eef7e5bc"
+    },
+    {
+      "path": "openspec/specs/module-approvals/spec.md",
+      "id": "REQ-module-approvals-004",
+      "before_sha256": "bff149ed04decc3f6dfdf73ead847255f19a3dd5ff60bdf78a3f2953257d8228",
+      "after_sha256": "212ad821b71dea4057e606b95d99bf7615cfa14648301fd8100f47d393b02a33"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "frontend/src/api/types.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "6a429f61700d2273eab075ff5a85a71c1e6d3a7fe6401a45873687991bada3df"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "aebaeb525c5bf7540d64dacbc412ac4034840d36547463e970c578a28a53ba18"
+      }
+    },
+    {
+      "path": "openspec/changes/generalist-lead-focused-delegation/specs/module-approvals/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "4ff7f0d9c3ec3625dae23229dd4f2c314b68782b219a7f695b5da7037e4b3c54"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9639993dd1dd9ddc417fd404547509fa0ee2ba1ffe15ef4627723b8acaa1e517"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "roster/relationship/tools/fact_authority.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3509c350b5b5432c86027f3c91f5da3edf3a9275394bbd2c032d8b2f03d0d559"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4097bcff35fe1ee0a1e38571ceb9519810887abbf80dbe33bf24a4b850d767a7"
+      }
+    },
+    {
+      "path": "src/butlers/api/models/approval.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "27a3fb17e52e4329051cfc4bb720bbd811e69bd8e3cc6e55a0bb2b0b26610cde"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "054061f87202b24c9dc2ae8cef6ced9b592225741b5cc1ae447177080045c4a0"
+      }
+    },
+    {
+      "path": "src/butlers/api/routers/approvals.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9cc6fd14f621a344c2eed1afcdbcf99da294d1abe8c78c907b52b5103d4fa60c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "33470110bf3056760de231afd6091d28baa22198b252c3c3af6698b2eca72b25"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/email_guard.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9a8165bd9c452d95fff62f9e9f23a81db31ce85d05cd6cf75908b1efd459ddd9"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "26682102b0a1c46cfcaa471e58407258d81d739c5e21c9e59b0082b17330bcd9"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/executor.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "9f2add9550b71ae42cf9926528894e7b05c2a09b77a5f2fc9370c5f699331a66"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5d5f1aee15ff2b8fb690aedc6669d66b0575ff9ed19cc2382c455bd0d3a4e0f0"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/gate.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "903dca20f1de401217746dc897a954ebdf5c09820dc61edfe6a84b0c5a69cbfd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b3507851bf1a7bc236d859c6454f67bbbcd46d6fe1d802e665035b494b0e3eba"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/module.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "00b7773bcf2c9a93d0eb59acde3268cfdf158cb0973bdbf929635de603317c89"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "372a8d995cf8265f74af55b0fa82552c67e82d3e5c0356a22c6bb8b65c621713"
+      }
+    },
+    {
+      "path": "src/butlers/modules/approvals/rules.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "1340b7b958ca14525527122e91c699930d578c27b04b4c7c34d0cc7a48774113"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1d5ad84bb58516c8bb1d052f92f6dc7b0fa51fb2f60fac065e706d2ceffa4320"
+      }
+    },
+    {
+      "path": "tests/api/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      }
+    },
+    {
+      "path": "tests/api/test_api_approvals.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b03fed5f56671a99c6e0579df32cc4e8465bb60c602ae9a0549e97da7d52c2ac"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "c8fca95dd70852dd9ada29ef024e4bec9a8859fdf14e3de9947792eeb6db105c"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-s11n0s-17-rule-max-uses-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "6825c986680ee990d16ab7bae5a225c2b03abafd27fb5756aec6c6e37979e3ce"
+      }
+    },
+    {
+      "path": "tests/contracts/test_relationship_pending_actions_choke_point.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "099b147e9025641ecb9abd1cd5a46492b17b4d01d0ce60f2344ded7b8bc78220"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "932841389a68df951b89239c179bb7b7dc5db8fadd08e801a6249edd7b768bb3"
+      }
+    },
+    {
+      "path": "tests/daemon/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "2ecbe3427c9f25ad4700b6293139f62b816d44ca2f059f2495386faea0a3a68e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2ecbe3427c9f25ad4700b6293139f62b816d44ca2f059f2495386faea0a3a68e"
+      }
+    },
+    {
+      "path": "tests/daemon/test_daemon.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "87b2c24ec8d6d43afc2f1cf0b00286ba8f67b906f260dc0f471f6b71094a9366"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "bd337beb74246b0162c4916e005c451ea29f1c834abe0f40387fb22bdda42b08"
+      }
+    },
+    {
+      "path": "tests/daemon/test_notify_entity_id.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "0cd13be29a22a4e1849fd8172e7b7f79868121b97ab604186c6ffb5a2797da15"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4a6b3de121b504c4c67ce9c271b4155881008fa57a8de9555724ab8b9e60f8ef"
+      }
+    },
+    {
+      "path": "tests/integration/test_relationship_fact_content_authority.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "853ba5a18bfedab36a8351e4bdc5821b6201d1fe4aed4eda12a2183e61f76122"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f4e86d305d735c7b671de2caeeb8cee86f1edb7a5f02bb17a5a9a0de0f817a0d"
+      }
+    },
+    {
+      "path": "tests/modules/approvals/test_rule_use_claim.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "32535662ba86399216c78ffc7ea8355d4fe86c11a409668965cce23bd84a8bfb"
+      }
+    },
+    {
+      "path": "tests/modules/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      }
+    },
+    {
+      "path": "tests/modules/test_email_guard.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c49713b9d10bf9981e5960b5cd6d9b14614e7e0c5481986439fdaf974260b5c9"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "64026f52738b035eca2cffecdaa96d2bbe90c5def47a55b70067cbbe2b974e10"
+      }
+    },
+    {
+      "path": "tests/modules/test_gate.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "bf2ba24599510cbbef1aec66e9f2188bfe0a35f9b1f1164b614e124e007017a9"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "33167131da39be407cedeac0037c8c6b522d71623c028bf4efb436971aa30007"
+      }
+    },
+    {
+      "path": "tests/modules/test_gate_safety_critical.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "eea6575bc27c2355b18b849472f884df854c7a9f509f0fbebe366ce3c38821a0"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0ba793dc0d28a19183d557d685e3137eb96d8c5eec98d5c6e265cd972eb8aba7"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

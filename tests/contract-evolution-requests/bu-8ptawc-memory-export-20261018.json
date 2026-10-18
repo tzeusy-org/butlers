@@ -1,0 +1,13 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-8ptawc-memory-export-20261018",
+  "owners": [
+    "tests/api/test_data_ops.py::test_download_memory_scope_returns_encrypted_zip_with_memory_tables",
+    "tests/api/test_data_ops.py::test_download_all_scope_includes_all_tables",
+    "tests/api/test_data_ops.py::test_download_full_alias_same_as_all",
+    "tests/api/test_data_ops.py::test_download_skip_columns_excludes_embeddings",
+    "tests/api/test_data_ops.py::test_download_bytes_are_encrypted_not_plaintext",
+    "tests/integration/test_data_ops_memory_export_schema_faithful.py::test_memory_export_reads_memory_schema_under_public_search_path"
+  ],
+  "timeout_s": 300
+}

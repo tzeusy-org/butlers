@@ -109,6 +109,9 @@ Scope: v1-mandatory
   - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
   - `all` → the union of every scope above
 - **AND** a scope that resolves to zero rows is reported as such (explicit empty marker), but a *known* scope MUST NOT silently map to "no tables" — the export must cover the data the scope name promises.
+- **AND** the `memory` scope reads the own memory schema of every butler that runs the memory module, one file per butler and table named `<butler>_memory_<table>.ndjson`.
+- **AND** when a butler configured with the memory module has no available database pool, the `memory` and `all` exports fail with HTTP 503 naming the unavailable butlers instead of returning a partial archive.
+- **AND** when no registered butler has a memory schema, the `memory` and `all` exports fail with HTTP 500 and an explicit message instead of returning an archive without memory data.
 
 #### Scenario: Wipe feature disabled
 - **WHEN** the `/settings/permissions` page renders
