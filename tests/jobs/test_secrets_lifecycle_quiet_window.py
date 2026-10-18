@@ -29,6 +29,12 @@ _WINDOW = _QuietWindow(
     start=datetime(2026, 10, 18, 22, 0, tzinfo=UTC),
     deliver_at=datetime(2026, 10, 19, 7, 0, tzinfo=UTC),
 )
+
+
+def _cred(state):
+    return CredentialSnapshot(key="s:A", family="system", label="Alpha", state=state)
+
+
 _A = CredentialSnapshot(key="s:A", family="system", label="Alpha", state="expired")
 _B = CredentialSnapshot(key="s:B", family="system", label="Beta", state="expiring")
 
@@ -304,6 +310,29 @@ async def test_a_direct_delivery_after_the_park_supersedes_the_parked_marker():
     await harness.scan()
 
     assert harness.deliver.await_count == 2
+
+
+async def test_a_newer_park_supersedes_an_older_notified_marker():
+    harness = _Harness(suppression=None)
+    harness.snapshots = [_cred("expiring")]
+    await harness.scan()  # expiring delivered directly
+    assert harness.deliver.await_count == 1
+
+    harness.suppression = "quiet_hours"
+    harness.snapshots = [_cred("expired")]
+    await harness.scan()  # expired parked overnight, then flushed
+    harness.queue.flush()
+    harness.suppression = None
+    await harness.scan()  # the parked expired state is not re-alerted
+    assert harness.deliver.await_count == 1
+
+    harness.snapshots = [_cred("expiring")]  # renewed; the next cycle must not be debounced
+    await harness.scan()
+    assert harness.deliver.await_count == 2
+
+    harness.snapshots = [_cred("expired")]
+    await harness.scan()
+    assert harness.deliver.await_count == 3
 
 
 async def test_a_failing_parked_marker_write_does_not_stop_the_other_credentials():
