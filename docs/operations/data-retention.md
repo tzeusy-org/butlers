@@ -140,15 +140,14 @@ separate export step before enabling it.
 
 ### `connectors.activitywatch_events`
 
-**Decision: 90+ DAYS, OPT-IN — pruner [E], disabled by default**
+**Decision: 14 DAYS BY DEFAULT — connector-owned purge, no scheduled job**
 
-Durable ActivityWatch window-focus evidence, including raw window titles, which
-are sensitive.  ActivityWatch stays the upstream source of truth, so the owner may
-bound how long this local copy is kept.  The 90-day floor exceeds the connector's
-bounded backfill (`ACTIVITYWATCH_MAX_BACKFILL_DAYS`, default 30) and the
-Chronicler projection's replay window; a shorter TTL would make idempotent
-re-projection lose evidence.  Chronicler projections are not pruned, and no
-`butler.toml` enables the job: turning it on is an owner operation.
+Durable ActivityWatch window-focus evidence, including raw window titles, which are sensitive.
+ActivityWatch stays the upstream source of truth. The connector itself purges rows whose event
+timestamp `ts` is older than `ACTIVITYWATCH_RETENTION_DAYS` (default 14, minimum 1; a lower value
+refuses to start) every 6 hours while it has a database pool
+(`ActivityWatchRetention` in `src/butlers/connectors/activitywatch.py`). It is not one of the
+scheduled pruners below, and Chronicler projections are not pruned.
 
 ---
 
@@ -164,7 +163,7 @@ that framework.
 
 ## Pruners
 
-All five live in `src/butlers/jobs/retention.py` and are wired as deterministic
+All four live in `src/butlers/jobs/retention.py` and are wired as deterministic
 scheduled jobs on the `general` butler (`src/butlers/scheduled_jobs.py`).  Each is a
 no-op unless `enabled = true`, and each defaults to `dry_run = true`, which only
 reports what it would delete.  Enable one by adding a scheduled task in
@@ -191,9 +190,3 @@ terminal-status rows older than `ttl_days` (default 90).
 `recorded_at` is older than `ttl_days`.  It enforces the 90-day floor:
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
-
-**[E] `activitywatch_events_prune`** — `prune_activitywatch_events()` deletes the
-oldest rows whose event timestamp `ts` is older than `ttl_days`, at most
-`batch_limit` per run (a rerun resumes).  It enforces the same 90-day floor:
-`ttl_days < 90` raises `ValueError`.
-`job_args = {enabled = true, dry_run = false, ttl_days = 90, batch_limit = 500}`.
