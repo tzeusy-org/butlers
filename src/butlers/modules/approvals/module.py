@@ -66,6 +66,7 @@ from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
+from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
@@ -347,18 +348,7 @@ class ApprovalsModule(Module):
     @staticmethod
     def _has_narrow_constraints(arg_constraints: dict[str, Any]) -> bool:
         """Return whether any constraint is exact/pattern (or legacy exact)."""
-        if not arg_constraints:
-            return False
-
-        for constraint in arg_constraints.values():
-            if isinstance(constraint, dict):
-                ctype = str(constraint.get("type", "")).lower()
-                if ctype in {"exact", "pattern"}:
-                    return True
-                continue
-            if constraint != "*":
-                return True
-        return False
+        return has_narrow_constraints(arg_constraints)
 
     def _validate_rule_constraints(
         self,
@@ -369,22 +359,13 @@ class ApprovalsModule(Module):
         max_uses: int | None,
     ) -> str | None:
         """Validate rule safety constraints against configured risk tier."""
-        if max_uses is not None and max_uses <= 0:
-            return "max_uses must be greater than 0"
-
-        risk_tier = self._risk_tier_for_tool(tool_name)
-        if risk_tier in _HIGH_RISK_TIERS:
-            if not self._has_narrow_constraints(arg_constraints):
-                return (
-                    f"High-risk tool '{tool_name}' requires at least one exact or pattern "
-                    "arg constraint"
-                )
-            if expires_at is None and max_uses is None:
-                return (
-                    f"High-risk tool '{tool_name}' requires bounded scope via "
-                    "'expires_at' or 'max_uses'"
-                )
-        return None
+        return validate_rule_constraints(
+            tool_name=tool_name,
+            risk_tier=self._risk_tier_for_tool(tool_name),
+            arg_constraints=arg_constraints,
+            expires_at=expires_at,
+            max_uses=max_uses,
+        )
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all 17 approval MCP tools (8 queue + 6 rules + 3 suggestion tools)."""

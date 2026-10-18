@@ -990,6 +990,16 @@ Scope: v1-mandatory
 - **AND** same or replacement request cannot dispatch a second write for that unresolved target
 - **AND** current-status readback alone cannot attribute the prior effect or clear the fence
 
+#### Scenario: Physical response fencing spans owning schemas
+
+- **WHEN** the same provider/account/calendar/self/occurrence is projected by multiple response-capable butlers
+- **THEN** an unresolved write-start marker in any historical owner prevents a replacement provider attempt through every owner
+- **AND** each command, approval and marker remains in its original owner's schema, with content-blind evidence exchanged only through Switchboard MCP routing
+- **AND** missing, incompatible or unreachable historical owner evidence never counts as clear; disabling execution does not waive probing retained fence evidence
+- **AND** claims prove one shared database lock space, serialize target admission, check all historical owners and commit the owning marker before releasing serialization
+- **AND** coordination has dedicated bounded capacity and a finite deadline so reciprocal probes do not depend on a peer's held work-pool connection
+- **AND** pre-start refusal preserves the command; retry must re-read its durable phase and cannot replace a marker whose commit is uncertain
+
 #### Scenario: Provider rejection preserves honest failure
 
 - **WHEN** a provider explicitly rejects the one conditional request including an ETag conflict
