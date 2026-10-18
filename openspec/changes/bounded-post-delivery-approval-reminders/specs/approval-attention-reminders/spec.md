@@ -107,8 +107,8 @@ Scope: proposed
 #### Scenario: Owner-authenticated activity is reachable
 
 - **WHEN** an accepted owner-resolved ingress, successful owner authentication
-  ceremony, or successful authenticated owner mutation occurred within 24
-  hours
+  ceremony, or successful authenticated owner mutation is younger than 24
+  hours on database time
 - **THEN** reachability is `reachable`
 - **AND** background reads, polling, probes, connectors, schedules, and
   unresolved/non-owner ingress do not satisfy the rule
@@ -117,7 +117,7 @@ Scope: proposed
 
 - **WHEN** no qualifying owner activity is fresh and a channel in the
   reachability observation inventory has a provider-confirmed presentation
-  within 24 hours, even if that episode already used the channel
+  younger than 24 hours, even if that episode already used the channel
 - **THEN** reachability is `degraded`, not `reachable` or `unreachable`
 - **AND** that label does not imply acknowledgement or disengagement
 
@@ -132,7 +132,7 @@ Scope: proposed
 #### Scenario: Missing, stale, or ambiguous evidence is unknown
 
 - **WHEN** the reachability observation inventory or required evidence is
-  incomplete, older than 24 hours, contradictory, or includes an unresolved
+  incomplete, 24 hours old or older, contradictory, or includes an unresolved
   ambiguous provider effect without a higher-priority fresh confirmation
 - **THEN** reachability is `unknown`
 - **AND** passage of time never converts unknown evidence into unreachable
@@ -163,7 +163,8 @@ resolved only at egress from the owner's own active reachability fact, SHALL
 NOT be stored in policy state, and SHALL NOT be accepted from a caller, a
 stored action argument, or any non-owner identity. Egress SHALL re-verify
 eligibility and fail with a no-effect result, never fall back to another
-channel, when the channel or fact is no longer eligible. The first four
+channel, when the channel or fact is no longer eligible; a supplied non-owner
+destination is a hard no-effect refusal and is never retried. The first four
 predicates SHALL form the reachability observation inventory; the episode-
 unused predicate SHALL apply only to reminder/homecoming channel selection and
 SHALL NOT filter observational reachability evidence.
@@ -208,8 +209,10 @@ Scope: proposed
   supplied
 - **THEN** egress fails with a pre-provider no-effect result on the same
   presentation key and selects no other channel or recipient
-- **AND** exhausted safe retries leave the episode in
-  `safe_hold(channel_inventory_unavailable)`
+- **AND** a channel or fact that is no longer eligible leaves the episode in
+  `safe_hold(no_eligible_reminder_channel)`, `channel_inventory_unavailable`
+  being reserved for an inventory that cannot be read completely
+- **AND** a supplied non-owner destination is refused outright and is not retried
 
 #### Scenario: Admission snapshot is replay-stable
 
@@ -379,7 +382,7 @@ this closed reason vocabulary: `reminder_budget_exhausted`,
 `no_eligible_reminder_channel`, `ack_evidence_unavailable`,
 `channel_inventory_unavailable`, `burst_digest_channel_incompatible`,
 `ambiguous_delivery`, `expiry_fence`. A new reason requires an adopted
-amendment. When every allowlisted channel has been used by the episode, or both
+amendment. When every allowlisted channel (REQ-003's first three predicates: `telegram` or `email`, in the registry, adapter enabled) has been used by the episode, or both
 ordinals are spent, the episode SHALL enter safe hold at that confirmation
 rather than waiting for the next due instant. `safe_hold` SHALL NOT be added to `ActionStatus` and
 SHALL NOT approve, reject, expire, execute, abandon, defer, extend, or revive
@@ -446,7 +449,7 @@ Scope: proposed
 ### Requirement: Bounded homecoming summary
 
 The system SHALL create an owner-presence epoch only when qualifying owner
-activity follows at least 24 hours without qualifying activity, serialized
+activity follows at least 24 hours (on database time) without qualifying activity, serialized
 under one singleton record. It SHALL admit at most one homecoming summary per
 epoch. The summary SHALL contain no more than 20 pending safe-held actions and
 safe-held actions expired within 7 days, plus an overflow count; ambiguous
@@ -605,8 +608,9 @@ Scope: proposed
 
 Attention episodes, acknowledgement records, reminder ordinals, presence
 epochs, hold records, logs, metrics, and audit payloads SHALL store only
-identifiers, closed enumerations, generations, ordinals, channel names, and
-timestamps. They SHALL NOT store tool names, arguments, lineage content,
+identifiers, closed enumerations, generations, ordinals, channel names,
+timestamps, and bounded counts (the homecoming overflow count and aggregate
+metric values). They SHALL NOT store tool names, arguments, lineage content,
 destinations, callback material, or raw provider payloads. A reminder or
 homecoming presentation SHALL be a fixed content-blind template that identifies
 itself as a reminder, states the pending-since and expiry times, and links to

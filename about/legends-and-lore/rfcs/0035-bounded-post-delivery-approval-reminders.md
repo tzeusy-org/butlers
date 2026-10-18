@@ -1,9 +1,8 @@
 # RFC 0035: Bounded Post-Delivery Approval Reminders
 
 **Status:** Proposed - owner selected Direction B on 2026-09-15; independent
-security/product review findings resolved in bu-8cdl1.23 (see the review
-record); exact-artifact owner adoption of the post-resolution text remains
-required
+security/product review findings resolved in bu-8cdl1.23 and re-reviewed
+(see the review record); exact-artifact owner adoption remains required
 **Date:** 2026-09-16
 **Related:** RFC 0011 (proactive insight engagement), RFC 0017 (owner-routing
 safety), RFC 0021 (one-tap approvals), RFC 0023 (durable approval delivery),
@@ -171,8 +170,11 @@ owner's own active reachability fact, and are never taken from a caller, a
 stored action argument, or a non-owner identity. Eligibility stores the channel
 name and safe reason, never the identifier. Egress re-verifies the channel and
 fact; if either is no longer eligible the handoff fails with a pre-provider
-no-effect result on the same key, never a channel or recipient switch, and
-exhausted safe retries enter `safe_hold(channel_inventory_unavailable)`.
+no-effect result on the same key, never a channel or recipient switch, and the
+episode enters `safe_hold(no_eligible_reminder_channel)`
+(`channel_inventory_unavailable` is reserved for an inventory that cannot be
+read completely). A supplied non-owner destination is a hard no-effect refusal
+and is never retried.
 
 Eligible channels are ordered once under the action/intent lock:
 
@@ -280,7 +282,7 @@ Entering safe hold:
   `ambiguous_delivery`, `expiry_fence` (a new reason needs an adopted
   amendment);
 - happens at confirmation, not at the next slot, when every allowlisted channel
-  has been used by the episode or both ordinals are spent, so a returning owner
+  (the first three predicates of section 3) has been used by the episode or both ordinals are spent, so a returning owner
   is told early; a merely transient missing reachability fact is judged at the
   due instant;
 - never changes `pending_actions.status`, arguments, `expires_at`, decision
@@ -301,7 +303,7 @@ be generated for it.
 
 The system maintains a content-blind owner-presence epoch. Under a singleton
 database lock, a qualifying owner-activity event starts a new epoch only when
-the preceding qualifying activity is at least 24 hours old; otherwise it
+the preceding qualifying activity is at least 24 hours old on database time; otherwise it
 updates the current epoch. Concurrent events therefore resolve to one epoch.
 
 At most one homecoming summary is admitted per epoch, enforced by a unique
@@ -382,7 +384,8 @@ does not infer that authority.
 ### 10. Content, authority, and keying
 
 - Attention state, logs, metrics, and audit payloads hold only identifiers,
-  closed enumerations, generations, ordinals, channel names, and timestamps:
+  closed enumerations, generations, ordinals, channel names, timestamps, and
+  bounded counts (homecoming overflow, aggregate metric values):
   no tool names, arguments, lineage content, destinations, or callback material.
 - A reminder or homecoming presentation is a fixed content-blind template that
   identifies itself as a reminder, states pending-since and expiry, and links to
@@ -402,13 +405,24 @@ does not infer that authority.
 
 ## Independent review record
 
-Reviewed artifact: RFC 0035 and OpenSpec change
+First pass (bu-8cdl1.23): RFC 0035 and OpenSpec change
 `bounded-post-delivery-approval-reminders` at commit
-`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (main `8f75653ed89f87ab9c0845d64618982c68ee5695`).
-Findings S1-S7 (security) and P1-P7 (product) were raised and resolved in
-bu-8cdl1.23; the resolutions are sections 1, 3, 4, 6, 7, 8, and 10 above. The
-edits are semantic, so owner adoption must target the post-resolution commit,
-not the reviewed SHA.
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (main
+`8f75653ed89f87ab9c0845d64618982c68ee5695`) produced security findings S1-S7 and
+product findings P1-P7, resolved in the same PR (sections 1, 3, 4, 6, 7, 8, 10).
+Topic coverage in that pass:
+
+- Channel order (preferred, then `telegram`, then `email`; initial channel
+  excluded): no finding on the order itself; the egress and early-hold edges
+  became S4 and P1.
+- T+4h/T+24h cadence (independent of RFC 0023 backoff): no finding on the
+  constants; boundary clock and cancelled-ordinal edges became P3 and P6.
+
+Second pass (bu-ijsbde) re-reviewed the post-resolution text at the exact head of
+the resolution PR; the exact SHA is recorded in the bead and the PR, since a
+commit cannot name itself. The owner adopts the merged commit whose RFC 0035 and
+change-directory contents equal that reviewed head. Any later semantic edit
+invalidates it.
 
 ## Required review and verification
 
