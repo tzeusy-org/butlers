@@ -22,12 +22,6 @@ _INSTANT = datetime(2026, 3, 25, 13, 55, tzinfo=UTC)
 _DAY = date(2026, 3, 25)
 
 
-class _FrozenDatetime(datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return _INSTANT.astimezone(tz) if tz else _INSTANT
-
-
 def _pool(stored, rows=()):
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=stored)
@@ -36,11 +30,16 @@ def _pool(stored, rows=()):
     return pool
 
 
-async def _run(pool):
+async def _run(pool, instant=_INSTANT):
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant
+
     write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DAY),
-        patch("butlers.jobs.briefing.datetime", _FrozenDatetime),
+        patch("butlers.jobs.briefing.datetime", _Frozen),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):
         result = await run_health_briefing_contribution(pool, None)
@@ -127,3 +126,63 @@ async def test_owner_zone_is_the_stored_iana_zone():
 
     assert isinstance(zone, ZoneInfo)
     assert zone.key == "Europe/Berlin"
+
+
+@pytest.mark.parametrize(
+    ("instant", "start", "end", "hours"),
+    [
+        # US spring forward: 02:00 PST jumps to 03:00 PDT, so the local day is 23 hours.
+        (
+            datetime(2026, 3, 8, 20, 0, tzinfo=UTC),
+            datetime(2026, 3, 8, 8, 0, tzinfo=UTC),
+            datetime(2026, 3, 9, 7, 0, tzinfo=UTC),
+            23,
+        ),
+        # US fall back: the local day is 25 hours.
+        (
+            datetime(2026, 11, 1, 20, 0, tzinfo=UTC),
+            datetime(2026, 11, 1, 7, 0, tzinfo=UTC),
+            datetime(2026, 11, 2, 8, 0, tzinfo=UTC),
+            25,
+        ),
+    ],
+    ids=["spring-forward-23h", "fall-back-25h"],
+)
+async def test_dst_transition_day_window_is_the_actual_local_day(instant, start, end, hours):
+    pool = _pool({"timezone": "America/Los_Angeles"})
+
+    await _run(pool, instant)
+
+    got_start, got_end = pool.fetch.call_args_list[0][0][1:3]
+    assert (got_start, got_end) == (start, end)
+    assert got_end - got_start == timedelta(hours=hours)
+
+
+async def test_owner_zone_comes_from_public_state_not_the_butlers_own_state_table(
+    provisioned_postgres_pool,
+) -> None:
+    """The job's pool resolves an unqualified ``state`` to ``health.state``.
+
+    Both tables hold a ``settings.general`` row with a different timezone; only the
+    shared ``public.state`` row is the owner's setting.
+    """
+    create = (
+        "CREATE TABLE IF NOT EXISTS {}.state (key TEXT PRIMARY KEY, value JSONB NOT NULL, "
+        "updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
+    )
+    async with provisioned_postgres_pool(schema="health") as pool:
+        await pool.execute(create.format("public"))
+        await pool.execute(create.format("health"))
+        await pool.execute(
+            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1::jsonb)",
+            '{"timezone": "Europe/Berlin"}',
+        )
+        await pool.execute(
+            "INSERT INTO health.state (key, value) VALUES ('settings.general', $1::jsonb)",
+            '{"timezone": "America/Los_Angeles"}',
+        )
+
+        zone = await owner_briefing_zone(pool)
+
+        assert isinstance(zone, ZoneInfo)
+        assert zone.key == "Europe/Berlin"

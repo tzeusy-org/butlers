@@ -28,8 +28,8 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.config import ButlerType, list_butlers
-from butlers.core.general_settings import GENERAL_SETTINGS_STATE_KEY
-from butlers.core.state import state_delete, state_get, state_list, state_set
+from butlers.core.general_settings import load_configured_general_timezone
+from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
@@ -113,17 +113,17 @@ def today_sgt() -> date_cls:
 async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
     """Return the owner's configured timezone for day-window math, else SGT.
 
-    Reads the shared ``settings.general`` timezone (the single source the scheduler,
-    the dashboard and the session filters use).  The documented fallback is SGT: it
-    applies when the owner never saved a timezone, when the shared settings cannot be
+    Reads the shared ``settings.general`` timezone from ``public.state`` (the single source the
+    scheduler, the dashboard and the session filters use), schema-qualified because the
+    job's pool resolves an unqualified ``state`` to ``health.state``.  The documented fallback
+    is SGT: it applies when the owner never saved a timezone, when the shared settings cannot be
     read, and when the stored name is not a valid IANA zone, so the briefing keeps its
     historical day window instead of silently switching to UTC.
     """
     try:
-        stored = await state_get(pool, GENERAL_SETTINGS_STATE_KEY)
-        name = stored.get("timezone") if isinstance(stored, dict) else None
-        if isinstance(name, str) and name.strip():
-            return ZoneInfo(name.strip())
+        name = await load_configured_general_timezone(pool)
+        if name is not None:
+            return ZoneInfo(name)
     except Exception:
         logger.warning("Could not resolve owner timezone for briefing; using SGT", exc_info=True)
     return SGT
