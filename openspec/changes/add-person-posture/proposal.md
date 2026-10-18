@@ -23,7 +23,7 @@ or nudges the owner to reconnect with them is the clearest trust failure the sys
 
 ## Deferred
 
-- Finance cost-claim reconciliation raising one owner question for an open loan claim against a
+- (Delivered by bu-q7vx1q.45, REQ-butler-finance-002.) Finance cost-claim reconciliation raising one owner question for an open loan claim against a
   memorial counterparty.
 - The anniversary-of-passing occasion (waits for the occasion engine's loss tone).
 - A dashboard surface for posture (`dashboard-relationship`).
