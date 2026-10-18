@@ -64,8 +64,8 @@ Scope: v1-mandatory
   a dashboard bug-report or dead-letter action
 - **THEN** it SHALL include `id`, `conversation_id`, `role`, `content`,
   `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`,
-  `duration_ms`, `tool_calls`, `error`, `request_id`, and
-  `terminal_action: null`
+  `duration_ms`, `tool_calls`, `error`, `request_id`, `page_context`,
+  `captured_at`, and `terminal_action: null`
 - **AND** `dashboard_turn` SHALL be `null` unless the message has a durable
   dashboard-turn control record
 - **AND** `page_context`/`captured_at` are both `null` for assistant-role rows and for any user row sent without a page context
