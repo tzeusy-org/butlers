@@ -24,9 +24,12 @@ Covers:
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -532,11 +535,11 @@ class TestAnomalyScan:
         """Spending in a category well above weekly baseline is flagged."""
         from butlers.tools.finance.anomaly_detection import anomaly_scan
 
-        # Pin "now" to a fixed Monday so DATE_TRUNC('week', ...) buckets the
-        # seeded baseline transactions and the recent anomalous week cleanly
-        # regardless of the calendar day the suite runs on.
-        now = datetime(2026, 4, 27, 12, 0, tzinfo=UTC)  # Monday
-        base = now - timedelta(days=140)  # Monday, 20 weeks earlier
+        # Pin "now" to the Sunday that ends a fixed Monday-start week so the seeded
+        # baseline weeks and the recent anomalous week bucket cleanly regardless of
+        # the calendar day the suite runs on.
+        now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)  # Sunday
+        base = datetime(2026, 4, 27, 12, 0, tzinfo=UTC) - timedelta(days=140)  # 20 weeks earlier
         for week in range(4):
             for day in range(2):
                 await _insert_txn(
@@ -564,8 +567,25 @@ class TestAnomalyScan:
                 merchant="BigDinnerPlace",
                 amount="75.00",
                 category="dining",
-                posted_at=now - timedelta(days=7) + timedelta(days=day),
+                posted_at=now - timedelta(days=6) + timedelta(days=day),
             )
+
+        # Category bands are the stored personal baselines (bu-q7vx1q.79): the daily
+        # job produces them, so the test produces them the same way.
+        from butlers.jobs.finance_spend_baselines import refresh_category_baselines
+
+        path = Path(__file__).resolve().parents[3] / "alembic/versions/core"
+        spec = importlib.util.spec_from_file_location(
+            "core_258", path / "core_258_personal_baselines.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        statements: list[str] = []
+        with patch.object(module, "op", MagicMock(execute=statements.append)):
+            module.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
+        await refresh_category_baselines(pool, now=now, zone=UTC)
 
         result = await anomaly_scan(pool, days_back=7, sensitivity="medium", now=now)
 
