@@ -121,7 +121,7 @@ the "Open questions" command-palette verb). It lists open and answerable gaps wi
 in words ("never looked", "looked, nothing there", "unavailable", "answered"), asked date and
 thread count, and offers dismiss with a confirm. Above the rows, a per-predicate demand summary
 reads `GET /api/memory/gaps/demand`: open gaps and asking threads per predicate, open gaps only,
-summed across memory pools in SQL so the count is right whatever the page size, with failing pools
+aggregated per pool in SQL and summed across memory pools, so the count is right whatever the page size, with failing pools
 named in `meta.sources_degraded`.
 
 ## Tools Provided

@@ -87,8 +87,20 @@ function DismissAction({ gap }: { gap: MemoryGap }) {
   if (dismiss.isError) {
     // The refetch on settle shows the gap's real state; the failure stays named.
     return (
-      <span role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
-        dismiss failed, try again
+      <span className="flex items-baseline gap-2 font-mono text-[11px]">
+        <span role="alert" className="text-[var(--red-text)]">
+          dismiss failed
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            dismiss.reset();
+            setConfirming(true);
+          }}
+          className="underline [text-underline-offset:4px] hover:text-fg"
+        >
+          try again
+        </button>
       </span>
     );
   }

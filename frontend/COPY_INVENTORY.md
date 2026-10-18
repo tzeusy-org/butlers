@@ -3601,7 +3601,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/memory/QuestionsRegister.tsx`
 
 - asked most
-- dismiss failed, try again
+- dismiss failed
+- try again
 - confirm dismiss
 - delivery failed
 - Couldn&rsquo;t load which questions are asked most.
@@ -4932,4 +4933,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3928*
+*Total strings: 3929*
