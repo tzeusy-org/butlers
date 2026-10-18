@@ -10,7 +10,6 @@ asserts counts only, not the missed / due-later classification.
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import uuid
 from datetime import UTC, date, datetime
@@ -61,6 +60,8 @@ class _RecordingPool:
         return rows
 
 
+# The pool registers the JSONB codec, which json-encodes the Python object itself: pass dicts, not
+# pre-dumped strings, or the column holds a JSON string scalar and every ``metadata->>'k'`` is null.
 async def _medication(pool: asyncpg.Pool, name: str, *, active: bool = True) -> uuid.UUID:
     fact_id = uuid.uuid4()
     await pool.execute(
@@ -69,7 +70,7 @@ async def _medication(pool: asyncpg.Pool, name: str, *, active: bool = True) -> 
         fact_id,
         f"med-{name.lower()}",
         f"{name} 10mg",
-        json.dumps({"name": name, "frequency": "daily", "schedule": ["08:00"], "active": active}),
+        {"name": name, "frequency": "daily", "schedule": ["08:00"], "active": active},
     )
     return fact_id
 
@@ -88,7 +89,7 @@ async def _dose(
         f"dose-{uuid.uuid4().hex[:8]}",
         validity,
         taken_at,
-        json.dumps({"medication_id": str(medication_id), "skipped": skipped}),
+        {"medication_id": str(medication_id), "skipped": skipped},
     )
 
 
