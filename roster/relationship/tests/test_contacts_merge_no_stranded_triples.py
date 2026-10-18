@@ -1146,10 +1146,7 @@ class TestFactEntityLockOrder:
         import asyncio
 
         from butlers.tools.relationship.entity_merge import merge_entity_pair
-        from butlers.tools.relationship.relationship_assert_fact import (
-            AssertOutcome,
-            relationship_assert_fact,
-        )
+        from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
         await simulate_temporal_cutover(pool)
         target, source, value, fact_id = await _merge_pair_with_fact(pool, "ac1a-sup")
@@ -1187,23 +1184,18 @@ class TestFactEntityLockOrder:
             merged, reasserted = await asyncio.gather(merge, reassert, return_exceptions=True)
 
         assert not isinstance(merged, BaseException), merged
-        assert not isinstance(reasserted, BaseException), reasserted
         # The merge moved the original row intact before the writer re-read.
         row = await pool.fetchrow(
             "SELECT subject, validity, src FROM relationship.entity_facts WHERE id = $1",
             fact_id,
         )
         assert (row["subject"], row["validity"], row["src"]) == (target, "active", "test")
-        # Known gap, pinned so its fix is visible: finding nothing left on the
-        # source, the writer inserts there, onto the tombstoned entity. Whether
-        # it should refuse or follow merged_into instead is bu-gm93xc.
-        assert reasserted.outcome == AssertOutcome.inserted
-        assert (
-            await pool.fetchval(
-                "SELECT subject FROM relationship.entity_facts WHERE id = $1", reasserted.fact_id
-            )
-            == source
-        )
+        # The re-assertion waited on the merge, then saw the tombstone: a typed refusal
+        # naming the survivor, with nothing written on the source (bu-gm93xc).
+        assert isinstance(reasserted, TemporalError), reasserted
+        assert reasserted.code == "entity_tombstoned"
+        assert str(target) in str(reasserted)
+        assert await _active_on(pool, source) == 0
 
     async def test_merge_waits_on_a_correction_holding_the_entity(self, pool, monkeypatch):
         """AC1b: a correction paused after its entity lock makes the merge queue
