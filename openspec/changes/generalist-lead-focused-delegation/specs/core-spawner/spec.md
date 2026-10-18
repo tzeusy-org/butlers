@@ -10,6 +10,8 @@ The launcher (the goal runner or the Spawner) SHALL maintain a lazy adapter pool
 Source: RFC 0038 D3, D10, D16 and D18
 Scope: v1-mandatory
 
+ID: REQ-core-spawner-012
+
 #### Scenario: Claude Code adapter invocation via subprocess
 - **WHEN** the selected runtime type is `claude`
 - **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")` and invokes it as an async subprocess with the flags `-p`, `--output-format stream-json`, `--bare`, `--no-session-persistence` and `--strict-mcp-config`, adding `--permission-mode bypassPermissions` only for an engineering executor and never for a goal invocation

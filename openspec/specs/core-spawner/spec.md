@@ -10,6 +10,8 @@ The spawner SHALL delegate to a `RuntimeAdapter` abstract base class. Four concr
 
 The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) keyed by runtime type. When model resolution selects a runtime type different from the TOML-configured adapter, the spawner instantiates the required adapter on demand via `get_adapter(type).create_worker()` and caches it for reuse.
 
+ID: REQ-core-spawner-012
+
 #### Scenario: Claude Code adapter invocation via subprocess
 - **WHEN** the butler's runtime type is `claude`
 - **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")`

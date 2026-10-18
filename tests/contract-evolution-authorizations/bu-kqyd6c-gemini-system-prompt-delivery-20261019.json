@@ -1,0 +1,123 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-kqyd6c-gemini-system-prompt-delivery-20261019",
+  "bead": "bu-kqyd6c",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-avisfu for implementation bead bu-kqyd6c (PR #4738, the Gemini adapter stops passing --system-prompt, which Gemini CLI does not define and whose strict parser rejects, and delivers the system prompt through the documented GEMINI_SYSTEM_MD file override). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-llip14; approved subject: PR #4738 head bdf3189a92ff09aabe3cec27b233c1e1e861f585 plus the reviewer-computed request. Governing requirement REQ-core-spawner-012 (Multi-Runtime Adapter Support) in openspec/specs/core-spawner/spec.md, whose ID-only header lands in this same change in the canonical spec and the active generalist-lead-focused-delegation delta; the PR amends the Gemini scenario inside the block. The one owner, tests/adapters/test_gemini_adapter.py::test_invoke, inverts its assertion to pin the absence of the undefined flag. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/adapters/test_gemini_adapter.py::test_invoke",
+      "after": "tests/adapters/test_gemini_adapter.py::test_invoke",
+      "contracts": [
+        "REQ-core-spawner-012"
+      ],
+      "reason": "The retained assertion pinned `--system-prompt` on the Gemini argv. Gemini CLI defines no such option, and its yargs parser is `.strict()` (packages/cli/src/config/config.ts at v0.64.0), so every invocation with a system prompt exited 1. The assertion is inverted to pin the flag's absence. The prompt now reaches the CLI through the documented GEMINI_SYSTEM_MD file override, as the amended Gemini scenario of REQ-core-spawner-012 states."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/core-spawner/spec.md",
+      "id": "REQ-core-spawner-012",
+      "before_sha256": "7b1bd40d7f477ce9ba55a0b68fe96de3bc164eb722a52100069023fe0340485d",
+      "after_sha256": "0c85e83887608f827011ea060f57c7af785d1b826dff76abdb08c0fae5dd57c4"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "openspec/changes/generalist-lead-focused-delegation/specs/core-spawner/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "897649a426034ca63942b2933ca139662f769e7288f1f6853ca20cc102d17a2c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5bde68089f8ae4bfa5df4eeb2c10a25b7388462e8ab187fb3b84a7810ad49d3b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/core/runtimes/gemini.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "061192f6bd016518da5b37733bb3cde91ebd31a94916924d1f1cfef0db4f5be3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5d5adea2355660d42b54711c283fc2453ab8bb5a5b318ba92a53b898b71b8f6d"
+      }
+    },
+    {
+      "path": "tests/adapters/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "da235aa874768e3c7defd3847572d400d642042ad934b08db82f2d7c39571820"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "da235aa874768e3c7defd3847572d400d642042ad934b08db82f2d7c39571820"
+      }
+    },
+    {
+      "path": "tests/adapters/test_gemini_adapter.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "2f168a80f0f84d6efcb090ffc85bada043e01b023abf1f6fafd6c5e33f071f9b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f2462aa5da07928c6297ab073f356d43bb0425b9b780f27ba71560b91ebdbfe2"
+      }
+    },
+    {
+      "path": "tests/adapters/test_gemini_system_prompt_delivery.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "1fa40d8921eb9fd1023e57ba808a617caacdd9f46aa109ad6758e9739f8853ee"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-kqyd6c-gemini-system-prompt-delivery-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "93d6e28e5bd994661b8dcf481e3997dd97e85c728b1f615485620dc191f168d5"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
