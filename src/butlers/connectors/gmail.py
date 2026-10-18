@@ -2444,6 +2444,9 @@ class GmailConnectorRuntime:
         - ``metadata_only`` -> Tier 2 (slim, metadata-only envelope)
         - ``route_to`` / ``low_priority_queue`` / ``pass_through`` -> Tier 1
 
+        An automated reply or bounce (``automated_kind``) is never upgraded: it stays
+        Tier 2 under every non-skip action.
+
         ``skip`` is handled by the caller before this point and never reaches
         here.  Returns a new ``MessagePolicyResult`` (the input is not mutated).
         """
@@ -2452,9 +2455,12 @@ class GmailConnectorRuntime:
         # pipeline's default tier untouched.
         if action == "pass_through":
             return policy_result
+        ingestion_tier = classify_ingestion_tier(action)
+        if policy_result.automated_kind and ingestion_tier == INGESTION_TIER_FULL:
+            ingestion_tier = INGESTION_TIER_METADATA
         return dataclasses.replace(
             policy_result,
-            ingestion_tier=classify_ingestion_tier(action),
+            ingestion_tier=ingestion_tier,
             triage_action=action,
         )
 
@@ -2616,6 +2622,8 @@ class GmailConnectorRuntime:
                     "policy_tier": effective_policy_tier,
                 },
             }
+            if policy_result is not None and policy_result.automated_kind:
+                metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---

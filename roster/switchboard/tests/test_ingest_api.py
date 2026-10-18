@@ -1195,3 +1195,42 @@ class TestDashboardConversationEnvelope:
 
         assert retry_result.duplicate is True
         assert retry_result.request_id == first_result.request_id
+
+
+class TestAutomatedKindPersistence:
+    """A connector's automated_kind marker is persisted under control (bu-s11n0s.18)."""
+
+    @staticmethod
+    def _tier2_envelope(message_id: str, **control: object) -> dict:
+        envelope = _make_email_envelope(message_id=message_id, subject="Out of office")
+        envelope["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
+        envelope["control"] = {
+            "policy_tier": "default",
+            "ingestion_tier": "metadata",
+            **control,
+        }
+        return envelope
+
+    async def _control(self, pool: asyncpg.Pool, envelope: dict) -> dict:
+        result = await ingest_v1(pool, envelope)
+        row = await pool.fetchrow(
+            "SELECT raw_payload FROM message_inbox WHERE id = $1", result.request_id
+        )
+        assert row is not None
+        return _decode_jsonb(row["raw_payload"])["control"]
+
+    @pytest.mark.parametrize("kind", ["auto_reply", "bounce"])
+    async def test_automated_kind_is_stored_under_control(
+        self, pool: asyncpg.Pool, kind: str
+    ) -> None:
+        control = await self._control(
+            pool, self._tier2_envelope(f"<auto-{kind}@example.com>", automated_kind=kind)
+        )
+
+        assert control["automated_kind"] == kind
+        assert control["ingestion_tier"] == "metadata"
+
+    async def test_an_envelope_without_the_marker_stores_none(self, pool: asyncpg.Pool) -> None:
+        control = await self._control(pool, self._tier2_envelope("<no-marker@example.com>"))
+
+        assert "automated_kind" not in control

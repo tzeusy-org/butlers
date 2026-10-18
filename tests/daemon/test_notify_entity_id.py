@@ -1110,6 +1110,7 @@ class TestNotifyDecisionDossierBoundary:
         ]
         standing_rule = MagicMock(id=uuid.uuid4())
         match_rules = AsyncMock(return_value=standing_rule)
+        claim_rule_use = AsyncMock(return_value=True)
 
         with (
             patch(
@@ -1137,6 +1138,10 @@ class TestNotifyDecisionDossierBoundary:
                 new=AsyncMock(return_value=_non_owner_contact()),
             ),
             patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+            patch(
+                "butlers.modules.approvals.rules.claim_rule_use",
+                new=claim_rule_use,
+            ),
         ):
             result = await notify_fn(
                 channel="telegram",
@@ -1151,6 +1156,7 @@ class TestNotifyDecisionDossierBoundary:
 
         assert result["status"] == "deferred"
         match_rules.assert_awaited_once()
+        claim_rule_use.assert_awaited_once()
         envelope = deferred_insert.await_args.kwargs["envelope"]
         assert envelope["delivery"]["recipient"] == "900800700"
         assert envelope["decision_dossier"] == {

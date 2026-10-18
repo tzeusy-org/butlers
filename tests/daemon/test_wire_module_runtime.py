@@ -645,3 +645,40 @@ def test_qa_wire_runtime_without_switchboard_client() -> None:
     mod.wire_runtime(MagicMock(), "/repo")
 
     assert mod._switchboard_client is None
+
+
+def test_wire_runtime_getter_follows_switchboard_client_replacement(tmp_path: Path) -> None:
+    """A module that accepts a getter sees heartbeat reconnects without re-wiring."""
+    captured: dict[str, Any] = {}
+
+    class GetterModule:
+        name = "getter_mod"
+
+        def wire_runtime(
+            self,
+            spawner,
+            repo_root,
+            *,
+            switchboard_client=None,
+            switchboard_client_getter=None,
+        ) -> None:
+            captured["static"] = switchboard_client
+            captured["getter"] = switchboard_client_getter
+
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.spawner = MagicMock()
+    daemon.config_dir = tmp_path
+    daemon.config = MagicMock()
+    daemon.config.name = "messenger"
+    daemon._modules = [GetterModule()]
+    daemon._module_statuses = {}
+    daemon.switchboard_client = None
+    with patch("butlers.core.spawn_hooks.register_spawner"):
+        daemon._wire_module_runtime()
+
+    assert captured["static"] is None
+    getter = captured["getter"]
+    assert getter() is None
+    replacement = object()
+    daemon.switchboard_client = replacement
+    assert getter() is replacement
