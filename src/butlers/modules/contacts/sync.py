@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -1272,7 +1273,7 @@ class ContactApplyFn(Protocol):
         ...
 
 
-ContactEntityLookup = Callable[[CanonicalContact], Awaitable[Any]]
+ContactEntityLookup = Callable[[CanonicalContact], Awaitable[uuid.UUID | None]]
 """Best-effort lookup of the entity a contact is already linked to (None when unlinked)."""
 
 

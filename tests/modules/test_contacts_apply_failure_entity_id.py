@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from types import SimpleNamespace
@@ -118,6 +119,16 @@ async def test_a_failing_lookup_never_masks_the_apply_failure(caplog) -> None:
 
     assert [r.entity_id for r in records] == [None]
     assert _SECRET not in repr([r.__dict__ for r in records])
+    # The lookup's own error text must reach no log record at all, not only the failure record.
+    assert _SECRET not in caplog.text
+
+
+async def test_a_cancelled_lookup_stops_the_sync(caplog) -> None:
+    async def lookup(contact):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _failure_records([_contact("people/1")], lookup, caplog)
 
 
 async def test_no_lookup_configured_logs_no_entity_id(caplog) -> None:

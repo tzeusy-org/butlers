@@ -219,6 +219,9 @@ class _FullFinalizer:
         self.store, self.events = store, events
         self.calls = []
 
+    async def known_entity_id(self, contact):
+        return None
+
     async def begin_sync(self, **kwargs):
         self.events.append("baseline")
         return {}
