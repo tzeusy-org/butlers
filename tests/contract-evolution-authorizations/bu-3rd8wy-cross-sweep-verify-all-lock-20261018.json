@@ -1,0 +1,399 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-3rd8wy-cross-sweep-verify-all-lock-20261018",
+  "bead": "bu-3rd8wy",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-ybgja6 for implementation bead bu-3rd8wy (PR #4730, verify-all sweeps hold a cross-sweep lock so a second concurrent sweep is refused instead of overlapping, and the frontend verify-all timeout covers the seeded catalog serial probes: 8 x 50s = 400s). Reviewed before: main 0a4f5f29b6d590952c5a79d00df0f71829ced647; approved subject: PR #4730 head 3ea90e69d38ff186b2f0ea3b5288ace0c549af8f (review bu-tkhu13). Governing requirement REQ-dashboard-model-settings-003 (Catalog Verify-All API) of openspec/specs/dashboard-model-settings/spec.md, which gains its ID in this change because the pre-change block carries none. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_a_control_failure_is_never_rendered_as_a_model_verdict",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_a_control_failure_is_never_rendered_as_a_model_verdict",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_a_genuinely_failed_probe_is_a_model_verdict",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_a_genuinely_failed_probe_is_a_model_verdict",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_an_unknown_entry_is_refused_before_any_capability_is_signed",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_an_unknown_entry_is_refused_before_any_capability_is_signed",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_each_control_failure_keeps_its_own_status",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_each_control_failure_keeps_its_own_status",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_no_control_failure_detail_carries_a_provider_or_capability_value",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_no_control_failure_detail_carries_a_provider_or_capability_value",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_no_statement_in_the_module_writes_a_verification_column",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_no_statement_in_the_module_writes_a_verification_column",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_test_route_asks_the_control_plane_about_exactly_one_entry",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_test_route_asks_the_control_plane_about_exactly_one_entry",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_test_route_owner_gate_precedes_probe",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_test_route_owner_gate_precedes_probe",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_the_test_route_carries_no_provider_reply",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_the_test_route_carries_no_provider_reply",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_the_test_route_writes_no_verification_evidence",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_the_test_route_writes_no_verification_evidence",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_asks_nothing_when_no_model_is_enabled",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_asks_nothing_when_no_model_is_enabled",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_audits_the_actor_that_actually_ran_it",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_audits_the_actor_that_actually_ran_it",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_keeps_unavailable_apart_from_failed",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_keeps_unavailable_apart_from_failed",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_probes_every_enabled_entry_once",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_probes_every_enabled_entry_once",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_writes_no_verification_evidence",
+      "after": "tests/api/test_model_settings_signed_probe_cutover.py::test_verify_all_writes_no_verification_evidence",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _pool helper therefore gains pool.acquire(), an async context manager whose connection answers the lock and unlock fetchval with True, so a verify-all sweep proceeds exactly as before; tests that never run a sweep never call acquire(). The ledger attributes every test in this module to the changed helper. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_a_failed_probe_does_not_stop_the_rest_of_its_account",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_a_failed_probe_does_not_stop_the_rest_of_its_account",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_a_label_shared_across_runtimes_is_one_account",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_a_label_shared_across_runtimes_is_one_account",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_different_accounts_still_run_concurrently",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_different_accounts_still_run_concurrently",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_every_enabled_row_is_still_probed_once",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_every_enabled_row_is_still_probed_once",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_overall_concurrency_is_capped_across_many_accounts",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_overall_concurrency_is_capped_across_many_accounts",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_python_grouping_mirrors_the_canonical_account_key",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_python_grouping_mirrors_the_canonical_account_key",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_rows_without_an_allowance_account_serialize_per_runtime",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_rows_without_an_allowance_account_serialize_per_runtime",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_same_account_rows_are_never_in_flight_together",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_same_account_rows_are_never_in_flight_together",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    },
+    {
+      "before": "tests/api/test_model_verify_all_account_serialization.py::test_unlabelled_rows_share_the_account_named_like_their_runtime",
+      "after": "tests/api/test_model_verify_all_account_serialization.py::test_unlabelled_rows_share_the_account_named_like_their_runtime",
+      "contracts": [
+        "REQ-dashboard-model-settings-003"
+      ],
+      "reason": "REQ-dashboard-model-settings-003 now requires run_verify_all_models to hold a non-blocking Postgres advisory lock on one acquired connection for the whole sweep (Cross-sweep exclusion). The module's shared _run helper therefore gives its pool mock an acquire() async context manager whose connection answers the lock and unlock fetchval with True, and the module imports MagicMock for it; the per-account serialization behaviour under test is unchanged. The ledger attributes every test in this module to the changed import line. Fixture-only: no assertion, case, parametrization or expected value changes in any test here."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/dashboard-model-settings/spec.md",
+      "id": "REQ-dashboard-model-settings-003",
+      "before_sha256": "9af564b8deebd6f8f7cd581835aa488ca074de12c160efce3f7a06506f09f05c",
+      "after_sha256": "db55e2a22372e1063c1b0027b9e431b20808ebd5c9815fa5284b1bd794215d41"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/runtime/model-routing.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "5d8b1bb36b0105b6c68e9bbc94529db552497019d5ff0109ff30900034519d98"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "53b384d504e8f8dc43c7e9d3612d269128c92cc617cafa0149d28c1f3776a32b"
+      }
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "ea2baa9feceb03d3190fcfe2169d57a141e792707508f64cbd7c4ebb39f14061"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4b55ef011685013ea58fb4c5f2034b53d853aa87e22fd5b897e837afad3528e9"
+      }
+    },
+    {
+      "path": "frontend/src/api/client.verify-all.test.ts",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "688d7cae2df5bfe6a9e224d245fdf2eb943990837193cb9bd878c4a669b29e70"
+      }
+    },
+    {
+      "path": "openspec/changes/cross-sweep-verify-all-lock/.openspec.yaml",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "1a6bead0b2d84fa39bc4dba1a954aeeb197ca1b2859994f0a9c4dc2b0597f5e2"
+      }
+    },
+    {
+      "path": "openspec/changes/cross-sweep-verify-all-lock/proposal.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "d75c25ed0a707eeedc7e2bceaf234116d35d4865eab1330b813b8f855f990b07"
+      }
+    },
+    {
+      "path": "openspec/changes/cross-sweep-verify-all-lock/specs/dashboard-model-settings/spec.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "46934a06bfa919afec9799e435f938dbb2e8623dd66d18950c8c33cce583200f"
+      }
+    },
+    {
+      "path": "openspec/changes/cross-sweep-verify-all-lock/tasks.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "7da7cc5700445b39c1958861a40b6df33fb237a51946cb7f6dc24bbe909da8b9"
+      }
+    },
+    {
+      "path": "openspec/changes/harden-runtime-auth-and-breaker-attention/specs/dashboard-model-settings/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "ea0a92880e075956eb309b0f35f2af6efbaa3f48b88850b50a211648836c0acd"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ce40ba58ca8d747fc7c36554b96c04a2bd1ce7527ee6cc1def615476d58237bc"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/api/routers/model_settings.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "37ef38d075202a3591bebffdc7566482c98c3ea30dd17c768fd1435f34e82998"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ae584c608c7fb1b32c53758cf04aa3a792fe412a9ba1f3f958b94fad96b402d0"
+      }
+    },
+    {
+      "path": "src/butlers/jobs/model_verify.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "ad76d0a7e6992aa508add631a585ceb96782014a32bf080404641868ebb83fbe"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d32715ca1fbc376076cfef3dfe1157be1f2ab4faef408b5a839249263955fb70"
+      }
+    },
+    {
+      "path": "tests/api/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      }
+    },
+    {
+      "path": "tests/api/test_model_settings_signed_probe_cutover.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "17048bce0947585bb977199de7e57e47f4213c58cd6053bfc8a8220d5b7d8d6d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ebdd0e810a92f862eb01f85c34f286c4b1bcd6668aa818828f62b32ccc983c1e"
+      }
+    },
+    {
+      "path": "tests/api/test_model_verify_all_account_serialization.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c3f9ec2c8c699748b9c475946f9ed564170f8d13a4420bc81cecc5b933d077b8"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "52d13ed273ba6b8fc27755d0678f218007bede49b8e09d6df9abf2f72607a535"
+      }
+    },
+    {
+      "path": "tests/api/test_model_verify_all_cross_sweep_lock.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "cbf50f45cb3af87ff7c8a7b9411b1d536cb61f8ad876c5b644377531f918a2f0"
+      }
+    },
+    {
+      "path": "tests/api/test_verify_all_timeout_covers_seed_catalog.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "c6d404efc57bbf96aaad49b53964e5a1668e43ab027da858b036387b1eb8bf82"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-3rd8wy-cross-sweep-verify-all-lock-20261018.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "cf03d65aadb7e6db4e3485345a942d34932015188036a7e8dcfd4824f2dd39ec"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
