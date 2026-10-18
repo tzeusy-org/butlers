@@ -136,8 +136,18 @@ as undeclared proof inputs.
 
 The stdlib source consumer examines `tests/` and `roster/*/tests/`, including
 assertions within retained names and their execution structure, parameters, local fixture/helper/marker
-context, class inheritance and ancestral conftests (an edited, deleted or newly added
-`conftest.py` is context change for every owner below it). Renames, moves and deleted
+context, class inheritance and ancestral conftests. An edited, deleted or newly added
+`conftest.py` is context change for every owner below it
+(`ancestral-fixture-context-change`). A conftest whose module, before or after, holds
+anything beyond imports, docstrings, plain constant assignments and `@pytest.fixture`
+functions (any `pytest_*` hook, `pytest_plugins`, `collect_*`, module-level calls,
+conditionals, undecorated helpers, unparseable source) can change co-collected tests
+anywhere in the tree, so its change is attributed to every owner
+(`session-hook-context-change`), whatever directory it lives in. An added, edited or
+deleted pytest configuration (`pytest.ini`, `.pytest.ini`, `tox.ini` with `[pytest]`,
+`setup.cfg` with `[tool:pytest]`, or a `pyproject.toml` `[tool.pytest]` table) is likewise
+attributed to every owner (`pytest-configuration-change`); a symlinked one is refused
+(`indirect-pytest-configuration`). Renames, moves and deleted
 production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
