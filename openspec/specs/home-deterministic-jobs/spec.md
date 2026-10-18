@@ -425,6 +425,8 @@ hook for the declared entities, and the `home_safety_sentinel` job scheduled wit
 `dispatch_mode = "job"`, cron `*/5 * * * *`. The sentinel SHALL be read-only: it SHALL NOT call any
 Home Assistant service, and no LLM tool SHALL expose it.
 
+ID: REQ-home-deterministic-jobs-001
+
 #### Scenario: A held alarm opens one owner condition and alerts at high priority
 
 - **WHEN** a declared sensor has held `on` for at least 60 seconds
