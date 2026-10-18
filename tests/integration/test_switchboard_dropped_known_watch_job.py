@@ -53,8 +53,10 @@ async def pool(migrated_db_url: str):
         init=register_jsonb_codec,
         server_settings={"search_path": "switchboard,public"},
     )
-    for table in ("connectors.filtered_events", "public.owner_conditions", "insight_candidates"):
-        await p.execute(f"TRUNCATE TABLE {table}")
+    # insight_candidates is referenced by insight_engagement, insight_feedback and the premise
+    # binding table, so it truncates with CASCADE; nothing else here has a referencing table.
+    await p.execute("TRUNCATE TABLE connectors.filtered_events, public.owner_conditions")
+    await p.execute("TRUNCATE TABLE insight_candidates CASCADE")
     yield p
     await p.close()
 
