@@ -1,0 +1,13 @@
+## 1. Zone support
+
+- [x] 1.1 Parse and validate `timezone` on `[[butler.schedule]]` and pass it to sync.
+- [x] 1.2 Sync computes `next_run_at` in the declared zone and stores it on the row.
+
+## 2. Roster anchoring
+
+- [x] 2.1 Anchor `eod-tomorrow-prep` (23:00) and `upcoming-travel-check` (08:00) to owner-local.
+- [x] 2.2 Pin `Etc/UTC` on the infrastructure schedules commented in UTC.
+
+## 3. Always-quiet warning
+
+- [x] 3.1 Warn once per sync for a notifying prompt-mode schedule that only fires inside the quiet window.
