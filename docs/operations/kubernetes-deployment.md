@@ -302,10 +302,16 @@ is not the current deployment or rollback procedure.
 Compose remains a supported production/off-cluster deployment path and a local
 path for a non-live database. `scripts/compose.sh --prod` retains the production
 Compose configuration; it does not authorize starting a fleet against a database
-already owned by Kubernetes. The launcher checks `butlers-up` replicas in the
-matching namespace (`butlers-dev` for dev, `butlers` for prod) and refuses a
-competing fleet. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
+already owned by Kubernetes. In dev the launcher checks both `butlers-up` and
+`butlers-control`, including observed replicas while scaled-down pods remain;
+either active role refuses a competing fleet. Production retains the unsplit
+`butlers-up` replica check in `butlers`. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
 non-live database, never a live-fleet cutover shortcut.
+With a selected local Kubernetes context, a failed or malformed ownership query
+refuses all Compose lifecycle actions. Only successful absent/zero responses
+permit startup. Standalone hosts without kubectl or a selected context remain
+supported; local configuration is inspected without contacting a cluster, and
+invalid configuration refuses rather than being treated as standalone.
 
 The protected restore-drill executor remains Docker-only: it attests Docker
 cgroups and host iptables. Production Compose includes the protected fragment;
@@ -319,7 +325,11 @@ the cluster LGTM stack instead.
 Normal dev image rollback redeploys an already-pushed tag through
 `scripts/k8s/deploy-dev.sh <sha>`. Returning database ownership to Compose is a
 separate, coordinated cutover: never run two sets of schedulers and connector
-sessions against the same database.
+sessions against the same database. Stop both dev runtime Deployments and
+confirm their pods terminate before returning ownership to Compose or an
+unsplit release. For the reverse cutover, stop the complete Compose project
+before either Kubernetes role starts. A source preflight is not an atomic lock;
+the live aggregate cap and exclusive transition still need operational proof.
 
 ## Security posture differences from compose
 

@@ -69,7 +69,7 @@ x-postgres-env: &postgres-env
 
 x-connector-env: &connector-env
   <<: *postgres-env
-  SWITCHBOARD_MCP_URL: http://butlers-up:41100/sse
+  SWITCHBOARD_MCP_URL: http://${BUTLERS_SWITCHBOARD_SERVICE:-butlers-up}:41100/sse
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 # Note: runtime volume mounts (runtime_claude, etc.) are repeated per service
@@ -250,6 +250,7 @@ services:
       OWNTRACKS_WEBHOOK_BASE_PATH: ${OWNTRACKS_WEBHOOK_BASE_PATH:-/owntracks}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
+      SWITCHBOARD_MCP_URL: http://${BUTLERS_SWITCHBOARD_SERVICE:-butlers-up}:41100/sse
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
       BUTLERS_BACKUP_DIR: /backups
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
@@ -622,6 +623,82 @@ services:
   # health, etc.) in a single process via `butlers up`. Each butler's MCP
   # server listens on its configured port (switchboard on 41100, etc.).
   # LLM runtime CLIs are spawned as subprocesses.
+  butlers-control:
+    profiles: [control-stage]
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    command: []
+    ports:
+      - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
+    # All Butler MCP listeners use 41100-41112, which overlaps Linux's
+    # default ephemeral range. Exclude it from outbound source-port selection
+    # so a database connection cannot race a later listener bind at startup.
+    sysctls:
+      net.ipv4.ip_local_reserved_ports: "41100,41199"
+    # Allow bubblewrap (bwrap) sandbox inside the container — Codex CLI uses
+    # bwrap for command isolation, which requires user-namespace creation.
+    # Docker's default AppArmor profile blocks this; unconfined lifts that
+    # restriction while the bwrap sandbox itself remains fully functional.
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      <<: *postgres-env
+      BUTLERS_HOST: butlers-up
+      SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
+      BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
+      # the configured public frontend origin (including any path prefix) so a
+      # Telegram deep link never falls back to the daemon host's localhost.
+      DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      HOME: /root
+      # Owner fleet cap5: control reserves1, the sole domain process gets4.
+      # This variable bounds this process; canonical launcher runs one of each.
+      BUTLERS_MAX_GLOBAL_SESSIONS: "1"
+    volumes:
+      - ./roster:/app/roster:ro
+      - ./logs:/app/logs
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
+      # bu-ckkpz.4: read-only mount of ONLY the bd JSONL export (never the
+      # whole .beads/ dir -- that also holds .beads-credential-key, which
+      # must never enter a container). Feeds Switchboard's
+      # decision-review-digest / decision-escalation-check jobs; see
+      # butlers.jobs.decision_review's module docstring for why this is the
+      # only path from beads issue data into the running system today.
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+    # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
+    # here, so all-butlers receives the public keyring and deliberately declares
+    # no `secrets:` at all -- there is no private file for this stack to hold.
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    networks:
+      db:
+      backend:
+      egress:
+      control-session:
+        aliases: [butlers-control-session]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+
   butlers-up:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
@@ -782,8 +859,72 @@ services:
     restart: unless-stopped
 
   # ── Hotreload profile ─────────────────────────────────────────────────
-  # Volume-mount source for live code changes. Use --scale butlers-up=0
-  # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).
+  # Volume-mount source for live code changes. The canonical scripts/compose.sh
+  # scales replaced services to zero, including dev's baked control service.
+
+  butlers-control-hotreload:
+    profiles: [control-stage-hotreload]
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    command: []
+    # Keep the same MCP port reservation as the baked daemon service above.
+    sysctls:
+      net.ipv4.ip_local_reserved_ports: "41100,41199"
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      <<: *postgres-env
+      BUTLERS_HOST: butlers-up
+      SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
+      BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      HOME: /root
+      BUTLERS_MAX_GLOBAL_SESSIONS: "1"
+    volumes:
+      - ./src:/app/src
+      - ./roster:/app/roster:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./logs:/app/logs
+      - uv_cache:/root/.cache/uv
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
+      # bu-ckkpz.4: see butlers-up's own volumes block above for why only
+      # this one file is mounted, never the whole .beads/ dir.
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+    # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
+    # here, so all-butlers receives the public keyring and deliberately declares
+    # no `secrets:` at all -- there is no private file for this stack to hold.
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
+    networks:
+      db:
+      backend:
+        aliases:
+          - butlers-control
+      egress:
+      control-session:
+        aliases: [butlers-control-session]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
 
   butlers-up-hotreload:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
@@ -859,6 +1000,7 @@ services:
       OWNTRACKS_WEBHOOK_BASE_PATH: ${OWNTRACKS_WEBHOOK_BASE_PATH:-/owntracks}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
+      SWITCHBOARD_MCP_URL: http://${BUTLERS_SWITCHBOARD_SERVICE:-butlers-up}:41100/sse
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
       BUTLERS_BACKUP_DIR: /backups
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
@@ -921,6 +1063,17 @@ services:
       egress:
     restart: unless-stopped
 
+  # Operator/test caller on the session-only network; no message or deploy effect.
+  control-session-health:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    profiles: [control-health]
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        test "$$(curl --max-time 5 -sS -w '%{http_code}' http://butlers-control-session:41199/health)"
+        = '{"status":"unavailable"}503'
+    networks: [control-session]
+
 # ── Runtime-probe control keys ──────────────────────────────────────────
 # REQ-core-credentials-002.  A host path is configuration, not key material;
 # neither document is ever committed.  Both default to a tracked placeholder
@@ -934,6 +1087,7 @@ services:
 secrets:
   runtime_probe_control_signing_key:
     file: "${RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE:-./deploy/runtime-probe-control/signing-key-unprovisioned.json}"
+
 
 configs:
   # Public keys only. Every verifying process reads this; nobody but the
@@ -958,12 +1112,16 @@ volumes:
 # ── Networks ────────────────────────────────────────────────────────────
 
 networks:
-  # NOTE: The ordinary application stack intentionally uses no `internal: true`
+  # The refusal-only control interface uses its own internal network.
+  # The ordinary service plane otherwise intentionally uses no `internal: true`
   # network: Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal
   # networks interfere with its normal inter-container communication. The
   # protected restore-drill fragment is the deliberate exception: its
   # credentialed executor has one internal-only relay network, while the relay
   # egress bridge remains fenced by scripts/restore-drill-firewall.sh.
+  control-session:
+    driver: bridge
+    internal: true
   db:
     driver: bridge
   backend:

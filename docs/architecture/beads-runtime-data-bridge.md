@@ -30,3 +30,7 @@ can pin a replaced file inode. Their planned multi-host successor, a tracker-hos
 projection exporter, is owned by
 [RFC 0025](../../about/legends-and-lore/rfcs/0025-tracker-host-beads-projection-exporter.md) and
 the [`beads-projection-exporter`](../../openspec/changes/beads-projection-exporter/) change.
+
+In dev KEY_ABSENT_STAGE the Switchboard review jobs run in `butlers-control`,
+which retains the same read-only export mount. The exporter and its write
+authority are unchanged. Unsplit production retains the `butlers-up` consumer.

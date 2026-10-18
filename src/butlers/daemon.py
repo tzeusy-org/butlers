@@ -217,6 +217,7 @@ class ButlerDaemon:
         *,
         butler_name: str | None = None,
         db: Database | None = None,
+        control_profile: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
@@ -229,6 +230,7 @@ class ButlerDaemon:
         else:
             self.config_dir = config_dir  # type: ignore
 
+        self._control_profile = control_profile
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing

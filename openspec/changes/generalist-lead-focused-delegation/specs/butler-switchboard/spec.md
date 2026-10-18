@@ -2,20 +2,30 @@
 
 ### Requirement: Cross-Container MCP Endpoint Resolution
 
-Switchboard's outbound MCP calls to registered agents (brokered capability forwarding, notification `deliver()` and the service-plane relay) and every other caller that runs outside `butlers-up` SHALL resolve a target agent's registered MCP endpoint to a host reachable from the CALLER's own container, not only from `butlers-up` (the container every domain daemon self-registers itself into via `http://localhost:<port>`). Switchboard itself runs in its own container, `butlers-control` (REQ-butler-switchboard-006). When the `BUTLERS_HOST` environment variable is set to a value other than `localhost` (as on `butlers-control`, and on the `dashboard-api` / `dashboard-api-hotreload` containers, which host processes such as `butlers.jobs.secrets_lifecycle` that are NOT part of `butlers-up`), an exact `localhost` host in the resolved endpoint SHALL be rewritten to that value before the MCP connection is attempted. When `BUTLERS_HOST` is unset or equals `localhost`, resolution SHALL be unchanged (a no-op).
+`route()` (and everything built on it, including `switchboard.notification.deliver.deliver()`) SHALL resolve a target butler's registered MCP endpoint to a host reachable from the CALLER's own container, not only from `butlers-up` (the container every butler daemon self-registers itself into via `http://localhost:<port>`). When the `BUTLERS_HOST` environment variable is set to a value other than `localhost` (Docker Compose sets this on the `dashboard-api` / `dashboard-api-hotreload` containers, which host processes — e.g. `butlers.jobs.secrets_lifecycle` — that are NOT part of `butlers-up`), an exact `localhost` host in the resolved endpoint SHALL be rewritten to that value before the MCP connection is attempted. When `BUTLERS_HOST` is unset or equals `localhost` (the case inside `butlers-up` itself), resolution SHALL be unchanged (a no-op). When `SWITCHBOARD_MCP_URL` is configured, an exact registered `localhost:41100` Switchboard endpoint SHALL use that HTTP(S) URL's network destination instead of `BUTLERS_HOST`, preserving the registered path and query. This applies to dashboard, notify, relay and runtime MCP callers; domain endpoints SHALL continue to use `BUTLERS_HOST`. An invalid configured Switchboard URL SHALL refuse resolution.
 
-Source: RFC 0038 D1 and D7
-Scope: v1-mandatory
+Configuration loading SHALL apply this canonical Switchboard destination resolution to an explicit `[butler.switchboard].url` on `localhost:41100` before notify/connect, heartbeat reconnect, fact-authority admission/recovery and runtime source-endpoint consumers receive the config. It SHALL preserve the configured path/query, explicit remote or noncanonical endpoints, and unsplit localhost behavior when cross-container settings are absent.
 
 #### Scenario: In-container caller reaches the registered endpoint unchanged
-- **WHEN** a process running inside `butlers-up` resolves a sibling's registered endpoint
+- **WHEN** a butler daemon running inside `butlers-up` calls `route()` to reach a sibling butler
 - **AND** `BUTLERS_HOST` is unset
 - **THEN** the MCP connection targets the sibling's self-registered `http://localhost:<port>/mcp` endpoint unchanged
 
 #### Scenario: Cross-container caller is rewritten to the container-DNS host
-- **WHEN** Switchboard in `butlers-control` forwards a capability call, delivers a notification or relays a service-plane call to a domain daemon, or a process in the `dashboard-api` container (for example `secrets_lifecycle`'s scheduled scan) delivers a notification, with `BUTLERS_HOST=butlers-up` set on that container
+- **WHEN** a process running in the `dashboard-api` container (e.g. `secrets_lifecycle`'s scheduled scan) calls `route()` to reach a butler
+- **AND** `BUTLERS_HOST=butlers-up` is set (as Docker Compose configures on this container)
 - **THEN** the MCP connection targets `http://butlers-up:<port>/mcp`, not `http://localhost:<port>/mcp`
-- **AND** the call SHALL succeed rather than failing to connect
+- **AND** the delivery SHALL succeed rather than failing to connect
+
+#### Scenario: A separated Switchboard remains reachable from domain and dashboard callers
+- **WHEN** a caller resolves `http://localhost:41100/mcp` with `SWITCHBOARD_MCP_URL=http://butlers-control:41100/sse` and `BUTLERS_HOST=butlers-up`
+- **THEN** its destination SHALL be `http://butlers-control:41100/mcp`
+- **AND** a registered domain endpoint on port 41104 SHALL resolve to `butlers-up:41104` and remote registered hosts SHALL remain unchanged
+
+In ISOLATED_CANDIDATE and SWITCHED_RELEASE the same endpoint-resolution contract SHALL apply to brokered capability forwarding and the service-plane relay in `butlers-control`, preserving registered-agent reachability after the separate cutover of classification and route dispatch. KEY_ABSENT_STAGE SHALL retain the current route and delivery callers above.
+
+Source: RFC 0038 D1 and D7
+Scope: v1-mandatory
 
 ### Requirement: Wellness Source Channel and Google Health Provider Registration
 
@@ -128,7 +138,9 @@ Scope: v1-mandatory
 
 ### Requirement: Switchboard Runs as the Control Plane in Its Own Process
 
-Switchboard SHALL run as the control plane in its own process and container, `butlers-control`, separate from the domain daemons in `butlers-up` and from the session host. It SHALL host ingress, goal admission, the goal ledger, the goal runner, the capability broker, and approval and insight brokerage, and SHALL NOT classify messages or dispatch routes. It SHALL expose a service listener for service-plane callers and a session listener that serves only the broker's goal endpoint; the session listener SHALL be the only Switchboard port reachable from the session host.
+In ISOLATED_CANDIDATE and SWITCHED_RELEASE, Switchboard SHALL run as the control plane in its own process and container, `butlers-control`, separate from the domain daemons in `butlers-up` and from the session host. It SHALL host ingress, goal admission, the goal ledger, the goal runner, the capability broker, and approval and insight brokerage, and SHALL NOT classify messages or dispatch routes. It SHALL expose a service listener for service-plane callers and a session listener that serves only the broker's goal endpoint; the session listener SHALL be the only Switchboard port reachable from the session host. KEY_ABSENT_STAGE SHALL instead run today's Switchboard service separately in butlers-control, preserve current classification, routing, notify and deliver, provision/mount/resolve no GOAL private key, and expose only a session-port GET /health that returns fixed unavailable (503); all goal calls and other session routes SHALL be refused. Its existing service listener and service health SHALL keep serving current callers. Only the documented operator/test health caller and the session-host network identity SHALL reach the stage session port. In ISOLATED_CANDIDATE and SWITCHED_RELEASE, the session listener SHALL serve only the broker goal endpoint to the session-host network identity and SHALL refuse GET /health and every other non-goal route; operational liveness SHALL use the service listener. A missing/mismatched key, ledger, catalog or custody precondition SHALL refuse broker calls as unavailable while deterministic service traffic continues. ISOLATED_CANDIDATE SHALL have no live ingress, schedules or dashboard wiring, no reachable legacy classification/route/spawner launcher, and goal admission SHALL be exercised only by a closed trusted test harness. SWITCHED_RELEASE SHALL wire actual ingress and declared obligations to goals, delete the old paths, enable domain verification and archive the complete change only after the one-release owner gates. Both profiles SHALL include the actual retained D18/adapter/helper/descendant custody boundary before any private-key mount. Stage evidence SHALL NOT close the original seven-criterion process-split task; stage current-routing and candidate valid-key evidence SHALL be separately identified, adopted and refreshed after affected source/profile changes. Effective profile SHALL be an immutable server startup/deployment selection, never caller or model input; stage selection with private material SHALL refuse startup/activation. Stage workload liveness/readiness SHALL use the service listener independently of deliberately unavailable session health, and candidate signer readiness SHALL require custody separately from service liveness.
+
+KEY_ABSENT_STAGE SHALL preserve the already adopted fleet maximum of five simultaneous sessions through a deployment partition: exactly one control process with capacity one and one domain process with capacity four. Reservations SHALL be positive and their aggregate SHALL NOT exceed five. Baked and hotreload launchers SHALL select one process per role; activation and rollback SHALL stop the prior topology before starting its replacement. Unsplit production SHALL retain capacity five. This partition SHALL NOT change the process-local spawner semaphore or establish live aggregate-cap evidence by source inspection alone.
 
 ID: REQ-butler-switchboard-006
 Source: RFC 0038 D1, D3 and D7
@@ -140,33 +152,58 @@ Scope: v1-mandatory
 - **AND** no domain handler SHALL share a process with the broker's signing key
 
 #### Scenario: The session listener serves only the goal endpoint
-- **WHEN** a session-host process sends a request to the session listener for anything other than the broker's goal endpoint
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE a session-host process sends a request to the session listener for anything other than the broker's goal endpoint
 - **THEN** Switchboard SHALL refuse it
 - **AND** ingest, service-plane tools, the service-plane relay and dashboard management SHALL NOT be served on the session listener
 
+#### Scenario: A topology stage preserves current service traffic without a private signer
+- **WHEN** KEY_ABSENT_STAGE is deployed for current callers
+- **THEN** current classification, routing, notify and deliver retain their existing behavior and no GOAL private key is provisioned, mounted or resolvable
+- **AND** GET /health on the separate session port returns unavailable (503), goal and other session calls are refused, and service health and traffic remain available
+- **AND** neither valid-key acceptance nor cutover is recorded
+
+#### Scenario: Valid-key activation does not wait for the production switch
+- **WHEN** the adopted staging amendment and complete launcher/concurrent-custody proofs allow an ISOLATED_CANDIDATE dev activation
+- **THEN** only that separate candidate may mount its control-only private key and exercise goal admission through the closed test harness
+- **AND** its broker endpoint is reachable only from the session host, GET /health and non-goal routes are refused, and no legacy classifier or local untrusted launcher is reachable
+- **AND** live ingress, schedules and dashboard remain on the current release and all production owner holds remain unfulfilled
+
+#### Scenario: A stage receipt cannot close the complete process-split outcome
+- **WHEN** only KEY_ABSENT_STAGE evidence is available for the original process-split task
+- **THEN** all seven original criteria remain final obligations and the original task stays incomplete
+- **AND** current-routing receipts carry exact source/configuration identities and affected candidate changes require fresh compatibility and custody evidence
+
+#### Scenario: Session reachability never grants service or model-function authority
+- **WHEN** a session guest in either candidate or switched profile tries a service route, health route, model-function launch or direct domain call
+- **THEN** network and endpoint boundaries refuse it before any handler or launch
+- **AND** a missing or mismatched GOAL key does not stop the existing deterministic service listener
+
 ### Requirement: Ingest Envelopes Feed Goal Admission
 
-Switchboard SHALL keep ingest envelope validation, deduplication and the durable buffer, and SHALL submit each accepted envelope that is neither withheld by a deterministic ingestion rule nor bound to a domain's deterministic channel ingest directly to goal admission, without a model classification or route-dispatch step. A duplicate submission of an envelope SHALL return the goal already admitted for it.
-
-Each connector SHALL declare whether its channel carries messages from people or is a device or telemetry feed (for example `home_assistant`, `owntracks`, `gaming` and ActivityWatch). A feed envelope SHALL NOT be admitted as an owner or third-party goal: Switchboard delivers it to the owning domain's deterministic channel ingest on the service plane, which records it in that domain's own schema, and it SHALL wake reasoning only when it matches a subscription declared in git, which is admitted with origin `obligation` and that subscription's capability set (`REQ-capability-authorization-003`). Feed fields a person other than the owner can author SHALL be stamped untrusted.
+In ISOLATED_CANDIDATE and SWITCHED_RELEASE, Switchboard SHALL keep ingest envelope validation, deduplication and the durable buffer, and SHALL submit each accepted envelope that is neither withheld by a deterministic ingestion rule nor bound to a domain's deterministic channel ingest directly to goal admission, without a model classification or route-dispatch step. A duplicate submission of an envelope SHALL return the goal already admitted for it. In those profiles, each connector SHALL declare whether its channel carries messages from people or is a device or telemetry feed (for example `home_assistant`, `owntracks`, `gaming` and ActivityWatch). A feed envelope SHALL NOT be admitted as an owner or third-party goal: Switchboard delivers it to the owning domain's deterministic channel ingest on the service plane, which records it in that domain's own schema, and it SHALL wake reasoning only when it matches a subscription declared in git, which is admitted with origin `obligation` and that subscription's capability set (`REQ-capability-authorization-003`). Feed fields a person other than the owner can author SHALL be stamped untrusted. KEY_ABSENT_STAGE SHALL retain today's validated/deduplicated/durable-buffer classify-and-route behavior and SHALL NOT wire live traffic to goal admission. In ISOLATED_CANDIDATE, only the closed trusted test harness SHALL submit accepted test envelopes to goal admission; no live connector, schedule or dashboard caller SHALL submit them. SWITCHED_RELEASE SHALL apply this direct-goal contract to actual accepted ingress after the owner-authorized switch. Identity, origin, feed, exposure, idempotency and service-plane outcomes SHALL NOT be weakened by profile selection.
 
 ID: REQ-butler-switchboard-007
 Source: RFC 0038 D1 and D5; RFC 0003 disposition
 Scope: v1-mandatory
 
 #### Scenario: A duplicate envelope returns the existing goal
-- **WHEN** a connector resubmits an envelope with the same idempotency key after its goal was admitted
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a connector resubmits an envelope with the same idempotency key after its goal was admitted
 - **THEN** admission SHALL return the existing goal
 - **AND** no second goal SHALL be admitted and no second lead SHALL start
 
 #### Scenario: A feed envelope matches no subscription
-- **WHEN** a Home Assistant state change that matches no declared subscription is accepted
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a Home Assistant state change that matches no declared subscription is accepted
 - **THEN** Home's deterministic channel ingest records it in Home's schema and no goal is admitted
 
 #### Scenario: Buffered envelopes survive a control-plane restart
-- **WHEN** `butlers-control` restarts while accepted envelopes are in the durable buffer and not yet admitted
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, `butlers-control` restarts while accepted envelopes are in the durable buffer and not yet admitted
 - **THEN** each buffered envelope SHALL be admitted exactly once after the restart
 - **AND** none SHALL be lost or classified
+
+#### Scenario: Stage ingress does not prematurely admit goals
+- **WHEN** a current connector envelope reaches KEY_ABSENT_STAGE
+- **THEN** the current validation, dedupe, durable buffer and routing behavior run unchanged and no live goal admission occurs
+- **AND** a closed candidate test harness exercises the final admission semantics separately
 
 ### Requirement: Service-Plane Relay
 
