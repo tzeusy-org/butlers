@@ -842,3 +842,31 @@ describe("Memory read ceiling row (bu-6uarl2)", () => {
     expect(screen.queryByText(/fail-closed/)).toBeNull();
   });
 });
+
+describe("Memory read ceiling row without a runtime config (bu-6uarl2)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
+  });
+  afterEach(() => cleanup());
+
+  it("renders a dash, not the fail-closed default, when the config fetch failed", () => {
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("boom"),
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    const row = screen.getByText("Memory read ceiling").parentElement;
+    expect(row?.textContent).toContain("—");
+    expect(screen.queryByText(/fail-closed/)).toBeNull();
+  });
+});
