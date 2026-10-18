@@ -534,6 +534,10 @@ Scope: v1-mandatory
 - **AND** `recall` is called with `filters={"predicate": P}`
 - **THEN** that fact is returned
 
+#### Scenario: An unrecognized filter key is refused
+- **WHEN** `recall` or `search` is called with a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity` (for example the misspelling `entity_idd`)
+- **THEN** the call MUST raise an error that names the unknown key and lists the allowed keys, before any query runs, rather than ignoring the key and returning an unfiltered result set
+
 ### Requirement: Registry-relational edges are out of scope for the memory facts store
 
 The memory module's `object_entity_id` edge-facts SHALL represent **non-registry, narrative**

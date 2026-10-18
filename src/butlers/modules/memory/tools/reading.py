@@ -40,7 +40,7 @@ async def memory_search(
         filters: Optional dict of AND-conditions applied at the search layer.
             Supported keys: scope, entity_id, predicate, source_butler,
             time_from, time_to, retention_class, sensitivity.
-            Unrecognized keys are silently ignored.
+            An unrecognized key raises an error naming it.
         read_policy: Server-held sensitivity ceiling. MCP closures pass the
             owning runtime policy so a private memory pool cannot substitute
             its own missing or stale runtime_config row.
@@ -78,7 +78,7 @@ async def memory_recall(
     Args:
         filters: Optional dict of AND-conditions. Supported keys: scope,
             entity_id, predicate, source_butler, time_from, time_to,
-            retention_class, sensitivity. Unrecognized keys are silently ignored.
+            retention_class, sensitivity. An unrecognized key raises an error naming it.
         request_context: Optional dict with 'tenant_id' and 'request_id'.
         read_policy: Server-held sensitivity ceiling. MCP closures pass the
             owning runtime policy so a private memory pool cannot substitute

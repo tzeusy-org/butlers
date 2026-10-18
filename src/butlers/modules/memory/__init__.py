@@ -1240,7 +1240,7 @@ class MemoryModule(Module):
                         "Optional structured filters applied as AND conditions. "
                         "Supported keys: scope, entity_id, predicate, source_butler, "
                         "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
-                        "Unrecognized keys are silently ignored."
+                        "An unrecognized key is refused with an error naming it."
                     )
                 ),
             ] = None,
@@ -1297,7 +1297,7 @@ class MemoryModule(Module):
                         "Optional structured filters applied as AND conditions. "
                         "Supported keys: scope, entity_id, predicate, source_butler, "
                         "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
-                        "Unrecognized keys are silently ignored."
+                        "An unrecognized key is refused with an error naming it."
                     )
                 ),
             ] = None,
