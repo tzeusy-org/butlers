@@ -135,6 +135,54 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert call_kwargs.kwargs["source_butler"] == "switchboard"
 
     @pytest.mark.asyncio
+    async def test_telegram_feedback_bindings_survive_the_production_envelope(self):
+        """Broker metadata reaches the actual typed Messenger delivery path."""
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        pool = _make_mock_pool()
+        notify_fn = _build_switchboard_insight_notify_fn(pool)
+
+        deliver_return = {"status": "sent", "notification_id": "abc-123"}
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new=AsyncMock(return_value="12345678"),
+            ) as mock_resolve,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=AsyncMock(return_value=deliver_return),
+            ) as mock_deliver,
+        ):
+            feedback = [
+                {
+                    "insight_id": "11111111-1111-1111-1111-111111111111",
+                    "created_at": _PINNED_NOW.isoformat(),
+                }
+            ]
+            result = await notify_fn(
+                "Test insight",
+                {
+                    "channel": "telegram",
+                    "intent": "insight",
+                    "feedback_actions": feedback,
+                },
+            )
+
+        assert result == deliver_return
+        # Must resolve the deliverable numeric chat id, not the @username handle.
+        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
+        mock_deliver.assert_awaited_once()
+        call_kwargs = mock_deliver.call_args
+        assert call_kwargs.kwargs["channel"] == "telegram"
+        assert call_kwargs.kwargs["message"] == "Test insight"
+        assert call_kwargs.kwargs["recipient"] == "12345678"
+        assert call_kwargs.kwargs["source_butler"] == "switchboard"
+        envelope = call_kwargs.kwargs["notify_request"]
+        assert envelope["delivery"]["intent"] == "insight"
+        assert envelope["feedback_actions"] == feedback
+
+    @pytest.mark.asyncio
     async def test_failed_status_translated_to_error(self):
         """deliver() returning status='failed' is translated to status='error' for the broker."""
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
@@ -622,6 +670,9 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]
+        assert all(
+            action["created_at"] == _PINNED_NOW.isoformat() for action in meta["feedback_actions"]
+        )
         assert meta.get("channel") == expected_channel, (
             f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )
