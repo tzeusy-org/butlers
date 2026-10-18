@@ -714,6 +714,7 @@ class ContactsModule(Module):
                     state_store=state_store,
                     apply_contact=backfill_engine,
                     batch_finalizer=backfill_engine if provider.name == "telegram" else None,
+                    known_entity_id=backfill_engine.known_entity_id,
                 )
 
                 runtime = ContactsSyncRuntime(

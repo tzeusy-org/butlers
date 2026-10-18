@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
@@ -1272,6 +1272,10 @@ class ContactApplyFn(Protocol):
         ...
 
 
+ContactEntityLookup = Callable[[CanonicalContact], Awaitable[Any]]
+"""Best-effort lookup of the entity a contact is already linked to (None when unlinked)."""
+
+
 class ContactsBatchFinalizer(Protocol):
     """Connected local custody work before the engine commits successful state."""
 
@@ -1307,11 +1311,13 @@ class ContactsSyncEngine:
         state_store: ContactsSyncStateRepository,
         apply_contact: ContactApplyFn,
         batch_finalizer: ContactsBatchFinalizer | None = None,
+        known_entity_id: ContactEntityLookup | None = None,
     ) -> None:
         self._provider = provider
         self._state_store = state_store
         self._apply_contact = apply_contact
         self._batch_finalizer = batch_finalizer
+        self._known_entity_id = known_entity_id
         self._account_locks: dict[str, asyncio.Lock] = {}
 
     async def sync(
@@ -1525,13 +1531,14 @@ class ContactsSyncEngine:
                 # full sync retries it, and carry on.
                 failed += 1
                 last_failure = exc
+                entity_id = await self._linked_entity_id(contact)
                 logger.warning(
                     "contact_sync_apply_failed",
                     extra={
                         "provider": self._provider.name,
                         "account_id": account_id,
                         "external_id": contact.external_id,
-                        "entity_id": None,
+                        "entity_id": entity_id,
                         "error_class": type(exc).__name__,
                     },
                 )
@@ -1580,6 +1587,20 @@ class ContactsSyncEngine:
             provider_total=provider_total,
             failed_contacts=failed,
         )
+
+    async def _linked_entity_id(self, contact: CanonicalContact) -> str | None:
+        """The entity the failing contact is already linked to, for the failure record.
+
+        Best-effort: a lookup failure (the storage that failed the apply may still be down)
+        yields None and never masks the apply failure.
+        """
+        if self._known_entity_id is None:
+            return None
+        try:
+            entity_id = await self._known_entity_id(contact)
+        except Exception:  # noqa: BLE001 — diagnostics must not replace the real failure
+            return None
+        return str(entity_id) if entity_id is not None else None
 
 
 def _contact_version(contact: CanonicalContact) -> str:

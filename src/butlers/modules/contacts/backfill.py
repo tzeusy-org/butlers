@@ -951,6 +951,10 @@ class ContactBackfillEngine:
             pool, provider=provider, account_id=account_id, owner=owner
         )
 
+    async def known_entity_id(self, contact: CanonicalContact) -> uuid.UUID | None:
+        """The entity this contact's source link already points at (None when unlinked)."""
+        return await self._resolver._match_source_link(contact.external_id)
+
     async def begin_sync(self, *, provider: str, account_id: str) -> dict[str, dict[str, Any]]:
         """Snapshot local source anchors before a configured Telegram cycle fetches."""
         if provider != "telegram" or provider != self._provider or account_id != self._account_id:
