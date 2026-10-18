@@ -24,13 +24,15 @@
   block while RFC 0023's active delta remains unarchived.
 - [x] 2.3 Run countable-task, documentation, and repository guards plus
   `git diff --check`.
-- [ ] 2.4 Obtain independent exact-head security review covering actor
+- [x] 2.4 Obtain independent exact-head security review covering actor
   derivation, content-blind storage, channel allowlisting, ambiguity
-  non-laundering, and absence of action decision/execution authority.
-- [ ] 2.5 Obtain independent exact-head product review covering cadence/count,
+  non-laundering, and absence of action decision/execution authority. Reviewed
+  `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (bu-8cdl1.23); findings S1-S7 resolved in the same PR.
+- [x] 2.5 Obtain independent exact-head product review covering cadence/count,
   channel order, evidence freshness, safe hold, homecoming bounds, and
   disengagement semantics; resolve every finding and record the reviewed
-  commit/digest.
+  commit/digest `a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (bu-8cdl1.23); findings P1-P7 resolved
+  in the same PR.
 
 ## 3. Exact owner adoption gate
 
