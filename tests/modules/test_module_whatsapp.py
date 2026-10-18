@@ -32,6 +32,74 @@ from butlers.modules.whatsapp import (
 pytestmark = pytest.mark.unit
 
 
+async def test_inert_whatsapp_delivery_parks_without_using_unsupported_preview_api(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core_tools._routing import _check_routed_delivery_approval
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    pool = object()
+    import uuid
+
+    park = AsyncMock(return_value=SimpleNamespace(action_id=uuid.uuid4()))
+    monkeypatch.setattr("butlers.modules.approvals.park.park_pending_action", park)
+    module = WhatsAppModule()
+    module._send_message_with_policy = AsyncMock()
+    assert module.supports_inert_link_delivery is False
+    approval = ApprovalsModule()
+    await approval.on_startup({}, pool)
+    raw = {
+        "schema_version": "route.v1",
+        "input": {
+            "context": {
+                "notify_request": {
+                    "render_links_inert": True,
+                    "delivery": {"channel": "whatsapp", "message": "https://example.test"},
+                }
+            }
+        },
+    }
+    try:
+        decision = await _check_routed_delivery_approval(
+            daemon=SimpleNamespace(
+                db=SimpleNamespace(pool=pool),
+                config=SimpleNamespace(name="messenger"),
+                _approval_push_runtime=None,
+            ),
+            command=None,
+            route_payload=raw,
+            notify_request=SimpleNamespace(
+                render_links_inert=True, delivery=SimpleNamespace(channel="whatsapp")
+            ),
+            modules_by_name={"whatsapp": module},
+            dossier={},
+        )
+        assert not decision.allowed and decision.reason == "parked"
+        assert park.await_args.kwargs["tool_name"] == "route.execute"
+        assert park.await_args.kwargs["tool_args"] == raw
+        module._send_message_with_policy.assert_not_awaited()
+        park.side_effect = RuntimeError("Synthetic storage refusal")
+        with pytest.raises(RuntimeError, match="storage refusal"):
+            await _check_routed_delivery_approval(
+                daemon=SimpleNamespace(
+                    db=SimpleNamespace(pool=pool),
+                    config=SimpleNamespace(name="messenger"),
+                    _approval_push_runtime=None,
+                ),
+                command=None,
+                route_payload=raw,
+                notify_request=SimpleNamespace(
+                    render_links_inert=True, delivery=SimpleNamespace(channel="whatsapp")
+                ),
+                modules_by_name={"whatsapp": module},
+                dossier={},
+            )
+        module._send_message_with_policy.assert_not_awaited()
+    finally:
+        await approval.on_shutdown()
+
+
 @pytest.fixture
 def whatsapp_module() -> WhatsAppModule:
     return WhatsAppModule()
