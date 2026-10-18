@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.connectors.home_assistant_statistics import (
     HAStatisticsClient,
     HAStatisticsError,
@@ -59,6 +60,8 @@ if _spec is not None and _spec.loader is not None:
     EnergyThresholds = _models.EnergyThresholds
     AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
     AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
+    SafetyWatchEntry = _models.SafetyWatchEntry
+    SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
 
 logger = logging.getLogger(__name__)
 
@@ -1429,3 +1432,91 @@ async def update_atmosphere_location(
         request=request,
     )
     return {"latitude": body.latitude, "longitude": body.longitude}
+
+
+# ---------------------------------------------------------------------------
+# /api/home/safety-watch — owner-declared leak/smoke/CO/gas sensors (bu-jv1moa.6)
+# ---------------------------------------------------------------------------
+
+
+def _safety_watch_entry(row: Any) -> SafetyWatchEntry:
+    updated_at = row["updated_at"]
+    return SafetyWatchEntry(
+        entity_id=row["entity_id"],
+        role=row["role"],
+        owner_label=row["owner_label"],
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+@router.get("/safety-watch", response_model=list[SafetyWatchEntry])
+async def list_safety_watch(
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[SafetyWatchEntry]:
+    """The sensors the safety sentinel watches, as the owner declared them."""
+    rows = await _pool(db).fetch(
+        "SELECT entity_id, role, owner_label, updated_at FROM safety_watch ORDER BY entity_id, role"
+    )
+    return [_safety_watch_entry(row) for row in rows]
+
+
+@router.put("/safety-watch", response_model=SafetyWatchEntry)
+async def upsert_safety_watch(
+    request: Request,
+    body: SafetyWatchUpsertRequest,
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> SafetyWatchEntry:
+    """Declare a binary sensor as guarding against a hazard, or relabel it.
+
+    The label is the owner's own wording and is the only name an alert uses; Home Assistant's
+    ``friendly_name`` is never read.  Only ``binary_sensor`` entities are accepted.
+    """
+    row = await _pool(db).fetchrow(
+        "INSERT INTO safety_watch (entity_id, role, owner_label) VALUES ($1, $2, $3) "
+        "ON CONFLICT (entity_id, role) DO UPDATE "
+        "SET owner_label = EXCLUDED.owner_label, updated_at = now() "
+        "RETURNING entity_id, role, owner_label, updated_at",
+        body.entity_id,
+        body.role,
+        body.owner_label,
+    )
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="safety_watch_upsert",
+        method="PUT",
+        path="/api/home/safety-watch",
+        body={"entity_id": body.entity_id, "role": body.role},
+        response_status=200,
+        request=request,
+    )
+    return _safety_watch_entry(row)
+
+
+@router.delete("/safety-watch/{entity_id}/{role}", status_code=204)
+async def delete_safety_watch(
+    request: Request,
+    entity_id: str,
+    role: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Response:
+    """Stop watching a sensor for one hazard; an open condition resolves on the next sweep."""
+    status = await _pool(db).execute(
+        "DELETE FROM safety_watch WHERE entity_id = $1 AND role = $2", entity_id, role
+    )
+    if status == "DELETE 0":
+        raise HTTPException(status_code=404, detail="No such safety watch")
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="safety_watch_delete",
+        method="DELETE",
+        path="/api/home/safety-watch",
+        body={"entity_id": entity_id, "role": role},
+        response_status=204,
+        request=request,
+    )
+    return Response(status_code=204)

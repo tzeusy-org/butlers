@@ -415,3 +415,57 @@ the Home butler (`dispatch_mode = "job"`, cron `*/30 * * * *`).
 - **AND** this SHALL NOT increment `consecutive_failures` or set
   `last_error` — it is a legitimately-absent field for that location, not a
   fetch failure
+
+### Requirement: Home Safety Sentinel Job
+
+The Home butler SHALL alert the owner when a sensor the owner declared as a life-safety sensor
+(`home.safety_watch`, role `leak`, `smoke`, `co` or `gas`) reports `on`, with no model in the loop
+(RFC 0038 D18). Two triggers SHALL share one engine: the Home module's websocket `state_changed`
+hook for the declared entities, and the `home_safety_sentinel` job scheduled with
+`dispatch_mode = "job"`, cron `*/5 * * * *`. The sentinel SHALL be read-only: it SHALL NOT call any
+Home Assistant service, and no LLM tool SHALL expose it.
+
+#### Scenario: A held alarm opens one owner condition and alerts at high priority
+
+- **WHEN** a declared sensor has held `on` for at least 60 seconds
+- **THEN** exactly one `public.owner_conditions` episode SHALL open with source `home:safety` and
+  fingerprint `(entity_id, role)`
+- **AND** the owner SHALL be sent one message at high priority through the Switchboard `deliver`
+  tool, without the quiet-hours or context-bus hold and without the insight broker
+- **AND** the message SHALL name the owner's `owner_label` and a fixed hazard phrase, and SHALL NOT
+  contain Home Assistant's `friendly_name` or any other feed text
+
+#### Scenario: The edge hook and the reconcile job dedupe on the ledger
+
+- **WHEN** the websocket hook and the five-minute job both observe the same alarm
+- **THEN** only one condition SHALL exist for the `(entity_id, role)` fingerprint
+- **AND** the owner SHALL NOT be sent a second message for the same opening
+
+#### Scenario: A flapping sensor opens nothing
+
+- **WHEN** a sensor turns `on` and `off` within the 60-second debounce window
+- **THEN** no condition SHALL open and no message SHALL be sent
+
+#### Scenario: A failed delivery keeps the condition open and is retried
+
+- **WHEN** delivery to the owner raises or reports failure
+- **THEN** the condition SHALL stay open without a delivery marker
+- **AND** a later run, once the condition is at least two minutes old, SHALL send the alert again,
+  and the ledger's re-escalation SHALL re-send a still-active alarm
+
+#### Scenario: A clear sensor resolves; an unreadable one never does
+
+- **WHEN** the snapshot is complete and healthy and a declared sensor reads `off`, or is no longer
+  declared
+- **THEN** its open condition SHALL resolve
+- **AND** when the sensor reads `unavailable`, `unknown` or is missing, or the Home Assistant
+  source health lease is missing, in error or expired, the job SHALL NOT resolve any safety
+  condition by omission
+
+#### Scenario: The owner declares the sensors
+
+- **WHEN** the owner uses the Home dashboard's Safety sensors panel
+- **THEN** the declaration SHALL be written through `PUT /api/home/safety-watch` and removed through
+  `DELETE /api/home/safety-watch/{entity_id}/{role}`, each requiring dashboard owner authority
+- **AND** only `binary_sensor.*` entities and the four roles above SHALL be accepted, with a
+  1-to-80 character label
