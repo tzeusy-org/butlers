@@ -304,14 +304,17 @@ class TestBackfillLifecycleStateMachine:
 class TestIngestionPageSmoke:
     def test_all_backend_modules_importable(self) -> None:
         """All /ingestion backend API modules are importable with expected attributes."""
-        import importlib
-
+        from butlers.api.router_discovery import _DEFAULT_ROSTER_DIR, _load_router_module
         from butlers.tools.switchboard.triage.thread_affinity import (
             AffinityOutcome,
             lookup_thread_affinity,
         )
 
-        mod = importlib.import_module("switchboard_api_router")
+        # Load the router the way production discovery does, so the test does not depend on
+        # another test having registered it in sys.modules; a broken import raises here.
+        mod = _load_router_module(
+            _DEFAULT_ROSTER_DIR / "switchboard" / "api" / "router.py", "switchboard_api_router"
+        )
         assert hasattr(mod, "router")
 
         from butlers.tools.switchboard.backfill import connector, controls
