@@ -46,8 +46,9 @@ Design
   atomically (``replace_pending_deferred_notification``: cancel + insert behind an
   advisory lock) so repeated and concurrent scans leave exactly one pending envelope,
   released by the ordinary deferred flush at window end. Each held credential records
-  ``deferred``, and a ``lifecycle_state_parked`` audit row so a delivered (or still
-  pending) parked state is not re-alerted after the window. If the policy window cannot
+  ``deferred``, and a ``lifecycle_state_parked`` audit row (``state|envelope id``) so a
+  state whose OWN aggregate is pending or delivered, and that no direct delivery has
+  superseded, is not re-alerted after the window. If the policy window cannot
   be resolved, the legacy ``suppressed`` drop remains. Every outcome is recorded via
   ``record_attention_event`` so it shows up honestly as
   delivered/deferred/suppressed/failed in the attention ledger (bu-hmdqz.3: a
@@ -156,7 +157,7 @@ from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
     get_delivery_preferences,
     insert_deferred_notification,
-    latest_status_matching_line,
+    notification_status,
     replace_pending_deferred_notification,
 )
 from butlers.credential_store import resolve_owner_telegram_recipient
@@ -713,34 +714,41 @@ def _compose_window_message(snapshots: list[CredentialSnapshot], marker: str) ->
     return "\n".join(lines)
 
 
-async def _last_parked(pool: Any, key: str) -> tuple[str, str] | None:
-    """``(state, window marker)`` last parked for ``key``, or ``None``."""
+async def _latest_lifecycle_marker(pool: Any, key: str) -> tuple[str, str, str | None] | None:
+    """Newest lifecycle marker for ``key`` as ``(kind, state, envelope_id)``, or ``None``.
+
+    ``kind`` is ``"notified"`` (a confirmed direct delivery) or ``"parked"`` (held in a
+    quiet-window aggregate; ``envelope_id`` names the envelope that carried the credential).
+    One query over both actions, so a parked marker only counts while it is the newest:
+    any later direct delivery supersedes it and the next transition is eligible again.
+    """
     try:
         row = await pool.fetchrow(
             """
-            SELECT note FROM public.audit_log
-            WHERE target = $1 AND action = $2
+            SELECT action, note FROM public.audit_log
+            WHERE target = $1 AND action = ANY($2::text[])
             ORDER BY ts DESC
             LIMIT 1
             """,
             key,
-            _LIFECYCLE_PARKED_ACTION,
+            [_LIFECYCLE_NOTIFIED_ACTION, _LIFECYCLE_PARKED_ACTION],
         )
     except Exception:
-        logger.debug("secrets_lifecycle_check: last-parked lookup failed", exc_info=True)
+        logger.debug("secrets_lifecycle_check: lifecycle-marker lookup failed", exc_info=True)
         return None
-    note = row["note"] if row is not None else None
-    if not isinstance(note, str) or "|" not in note:
+    if row is None or not isinstance(row["note"], str):
         return None
-    state, marker = note.split("|", 1)
-    return state, marker
+    if row["action"] == _LIFECYCLE_NOTIFIED_ACTION:
+        return "notified", row["note"], None
+    state, _, envelope_id = row["note"].partition("|")
+    return "parked", state, envelope_id or None
 
 
-async def _parked_envelope_status(db: DatabaseManager, marker: str) -> str | None:
-    """Status of the newest envelope for a window marker, or ``None`` when unknown."""
+async def _parked_envelope_status(db: DatabaseManager, envelope_id: str) -> str | None:
+    """Status of the envelope a credential was parked in, or ``None`` when unknown."""
     try:
-        return await latest_status_matching_line(
-            db.pool("switchboard"), butler_name="switchboard", line_token=marker
+        return await notification_status(
+            db.pool("switchboard"), butler_name="switchboard", notification_id=envelope_id
         )
     except Exception:
         logger.debug("secrets_lifecycle_check: parked-envelope lookup failed", exc_info=True)
@@ -816,14 +824,21 @@ async def _park_quiet_window_holds(
                 dedup_key=snapshot.key,
                 notification_ref=envelope_ref,
             )
-            await audit_router.append(
-                shared_pool,
-                _LIFECYCLE_ACTOR,
-                _LIFECYCLE_PARKED_ACTION,
-                target=snapshot.key,
-                note=f"{snapshot.state}|{marker}",
-                result="deferred",
-            )
+            try:
+                await audit_router.append(
+                    shared_pool,
+                    _LIFECYCLE_ACTOR,
+                    _LIFECYCLE_PARKED_ACTION,
+                    target=snapshot.key,
+                    note=f"{snapshot.state}|{envelope_ref}",
+                    result="deferred",
+                )
+            except Exception:
+                # Without the row the credential is simply not skipped later (a possible
+                # duplicate alert, never a lost one); keep parking the rest.
+                logger.exception(
+                    "secrets_lifecycle_check: failed to record parked marker for %s", snapshot.key
+                )
         return len(held), 0
     except Exception as exc:
         logger.exception("secrets_lifecycle_check: unexpected error parking quiet-window holds")
@@ -1001,13 +1016,21 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 continue
 
             # Outside the hold: a state already parked in a quiet-window envelope must not be
-            # re-alerted. Pending => the flush will deliver it; delivered => it already was.
-            # The delivery debounce marker stays direct-delivery-only. Cancelled/expired/
-            # unknown falls through to a direct delivery.
-            parked = await _last_parked(shared_pool, snapshot.key)
-            if parked is not None and parked[0] == snapshot.state:
-                if await _parked_envelope_status(db, parked[1]) in ("pending", "delivered"):
-                    continue
+            # re-alerted, but only while the parked marker is the NEWEST lifecycle marker
+            # (a later direct delivery supersedes it) and the envelope that carried THIS
+            # credential is pending (the flush will deliver it) or delivered. A credential
+            # dropped from a later aggregate points at a cancelled envelope, and cancelled/
+            # expired/unknown falls through to a direct delivery. The delivery debounce
+            # marker stays direct-delivery-only.
+            marker_row = await _latest_lifecycle_marker(shared_pool, snapshot.key)
+            if (
+                marker_row is not None
+                and marker_row[0] == "parked"
+                and marker_row[1] == snapshot.state
+                and marker_row[2] is not None
+                and await _parked_envelope_status(db, marker_row[2]) in ("pending", "delivered")
+            ):
+                continue
 
             recipient = await resolve_owner_telegram_recipient(shared_pool)
             if not recipient:

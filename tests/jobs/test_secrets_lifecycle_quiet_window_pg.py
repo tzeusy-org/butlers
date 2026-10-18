@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.core.temporal.delivery_db import latest_status_matching_line
+from butlers.core.temporal.delivery_db import notification_status
 from butlers.db import register_jsonb_codec
 from butlers.jobs import secrets_lifecycle as lifecycle
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -143,16 +143,18 @@ async def test_a_credential_retry_supersede_does_not_cancel_the_aggregate(pool):
 
 async def test_the_parked_envelope_status_follows_the_flush(pool):
     db = _Db(pool)
-    marker = _marker()
     assert (
-        await latest_status_matching_line(pool, butler_name="switchboard", line_token=marker)
+        await notification_status(
+            pool, butler_name="switchboard", notification_id="00000000-0000-0000-0000-000000000000"
+        )
         is None
     )
-    await _park(db)
-    assert await lifecycle._parked_envelope_status(db, marker) == "pending"
+    assert await notification_status(pool, butler_name="switchboard", notification_id="x") is None
+    envelope_id = await _park(db)
+    assert await lifecycle._parked_envelope_status(db, envelope_id) == "pending"
 
     await pool.execute(
         "UPDATE deferred_notifications SET status = 'delivered' WHERE status = 'pending'"
     )
 
-    assert await lifecycle._parked_envelope_status(db, marker) == "delivered"
+    assert await lifecycle._parked_envelope_status(db, envelope_id) == "delivered"

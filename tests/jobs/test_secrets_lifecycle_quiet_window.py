@@ -70,6 +70,14 @@ class _Queue:
         )
         return self.rows[-1]["id"]
 
+    def status_of(self, envelope_id):
+        return next((r["status"] for r in self.rows if r["id"] == envelope_id), None)
+
+    def flush(self):
+        """The ordinary deferred flush: every pending envelope is delivered."""
+        for row in self.pending:
+            row["status"] = "delivered"
+
     @property
     def pending(self):
         return [row for row in self.rows if row["status"] == "pending"]
@@ -78,27 +86,23 @@ class _Queue:
 class _Harness:
     def __init__(self, *, suppression="quiet_hours", window=_WINDOW, recipient="chat-1"):
         self.db = _Db()
+        self.db.shared.fetchrow = AsyncMock(side_effect=self._audit_row)
         self.queue = _Queue()
         self.ledger = AsyncMock()
-        self.audit = AsyncMock()
+        self.audit = AsyncMock(side_effect=self._append_audit)
         self.snapshots: list[CredentialSnapshot] = [_A, _B]
         self.suppression = suppression
         self.window = window
         self.recipient = recipient
-        self.parked: dict[str, tuple[str, str]] = {}
-        self.parked_status: str | None = None
+        self.audit_log: list[tuple[str, str, str]] = []  # (action, key, note), oldest first
         self.deliver = AsyncMock(return_value={"status": "ok", "notification_id": "d1"})
 
     async def scan(self):
         async def collect(*_a, **_k):
             return list(self.snapshots)
 
-        async def last_parked(_pool, key):
-            return self.parked.get(key)
-
         patches = [
             patch.object(lifecycle, "_collect_snapshots", collect),
-            patch.object(lifecycle, "_last_notified_state", AsyncMock(return_value=None)),
             patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
             patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=self.suppression)),
             patch.object(lifecycle, "_policy_quiet_window", AsyncMock(return_value=self.window)),
@@ -110,7 +114,6 @@ class _Harness:
             patch.object(lifecycle, "record_attention_event", self.ledger),
             patch.object(lifecycle.audit_router, "append", self.audit),
             patch.object(lifecycle, "replace_pending_deferred_notification", self.queue.replace),
-            patch.object(lifecycle, "_last_parked", last_parked),
             patch.object(lifecycle, "_parked_envelope_status", AsyncMock(side_effect=self._status)),
             patch("butlers.tools.switchboard.notification.deliver.deliver", self.deliver),
         ]
@@ -122,8 +125,17 @@ class _Harness:
             for p in patches:
                 p.stop()
 
-    async def _status(self, _db, _marker):
-        return self.parked_status
+    async def _audit_row(self, _sql, key, actions):
+        """The newest ``public.audit_log`` row for ``key`` among ``actions`` (str or list)."""
+        wanted = [actions] if isinstance(actions, str) else actions
+        rows = [(a, n) for a, k, n in self.audit_log if k == key and a in wanted]
+        return {"action": rows[-1][0], "note": rows[-1][1]} if rows else None
+
+    async def _append_audit(self, _pool, _actor, action, *, target, note, **_):
+        self.audit_log.append((action, target, note))
+
+    async def _status(self, _db, envelope_id):
+        return self.queue.status_of(envelope_id)
 
     def outcomes(self):
         return [call.kwargs["outcome"] for call in self.ledger.await_args_list]
@@ -187,13 +199,13 @@ async def test_the_parked_state_is_recorded_for_every_held_credential():
 
     await harness.scan()
 
-    marker = _window_marker(lifecycle._dashboard_url(), _WINDOW)
+    (envelope,) = harness.queue.pending
     notes = {
         call.kwargs["target"]: call.kwargs["note"]
         for call in harness.audit.await_args_list
         if call.args[2] == lifecycle._LIFECYCLE_PARKED_ACTION
     }
-    assert notes == {"s:A": f"expired|{marker}", "s:B": f"expiring|{marker}"}
+    assert notes == {"s:A": f"expired|{envelope['id']}", "s:B": f"expiring|{envelope['id']}"}
     # Parking never advances the delivery debounce marker.
     assert all(
         call.args[2] != lifecycle._LIFECYCLE_NOTIFIED_ACTION
@@ -218,12 +230,13 @@ async def test_context_only_or_unresolved_suppression_still_records_and_drops(su
     assert (summary["suppressed"], summary["deferred"]) == (2, 0)
 
 
-@pytest.mark.parametrize("status", ["pending", "delivered"])
-async def test_a_parked_state_is_not_re_alerted_after_the_window(status):
-    harness = _Harness(suppression=None)
-    marker = _window_marker(lifecycle._dashboard_url(), _WINDOW)
-    harness.parked = {"s:A": ("expired", marker), "s:B": ("expiring", marker)}
-    harness.parked_status = status
+@pytest.mark.parametrize("flush", [False, True])
+async def test_a_parked_state_is_not_re_alerted_after_the_window(flush):
+    harness = _Harness()
+    await harness.scan()
+    if flush:
+        harness.queue.flush()
+    harness.suppression = None
 
     summary = await harness.scan()
 
@@ -232,11 +245,11 @@ async def test_a_parked_state_is_not_re_alerted_after_the_window(status):
 
 
 async def test_a_cancelled_parked_envelope_falls_back_to_direct_delivery():
-    harness = _Harness(suppression=None)
-    marker = _window_marker(lifecycle._dashboard_url(), _WINDOW)
-    harness.parked = {"s:A": ("expired", marker)}
-    harness.parked_status = "cancelled"
+    harness = _Harness()
     harness.snapshots = [_A]
+    await harness.scan()
+    harness.queue.rows[0]["status"] = "cancelled"
+    harness.suppression = None
 
     summary = await harness.scan()
 
@@ -245,15 +258,62 @@ async def test_a_cancelled_parked_envelope_falls_back_to_direct_delivery():
 
 
 async def test_a_different_state_than_the_parked_one_is_delivered():
-    harness = _Harness(suppression=None)
-    marker = _window_marker(lifecycle._dashboard_url(), _WINDOW)
-    harness.parked = {"s:A": ("expiring", marker)}  # parked as expiring, now expired
-    harness.parked_status = "delivered"
-    harness.snapshots = [_A]
+    harness = _Harness()
+    harness.snapshots = [
+        CredentialSnapshot(key="s:A", family="system", label="Alpha", state="expiring")
+    ]
+    await harness.scan()
+    harness.queue.flush()
+    harness.suppression = None
+    harness.snapshots = [_A]  # parked as expiring, now expired
 
     await harness.scan()
 
     harness.deliver.assert_awaited_once()
+
+
+async def test_a_credential_dropped_from_a_later_aggregate_is_not_masked():
+    harness = _Harness()
+    await harness.scan()  # aggregate {A, B}
+    harness.snapshots = [_B]  # A drops out (e.g. a degraded per-butler fetch)
+    await harness.scan()  # aggregate {B} supersedes {A, B}
+    harness.queue.flush()  # the flush delivers {B}
+    harness.suppression = None
+    harness.snapshots = [_A, _B]
+
+    summary = await harness.scan()
+
+    # B rides the delivered aggregate; A never did, so it reaches the owner directly.
+    assert harness.deliver.await_count == 1
+    assert "Alpha" in harness.deliver.await_args.kwargs["message"]
+    assert summary["delivered"] == 1
+
+
+async def test_a_direct_delivery_after_the_park_supersedes_the_parked_marker():
+    expiring = CredentialSnapshot(key="s:A", family="system", label="Alpha", state="expiring")
+    harness = _Harness()
+    harness.snapshots = [expiring]
+    await harness.scan()  # expiring parked in the window
+    harness.queue.flush()
+    harness.suppression = None
+    harness.snapshots = [_A]
+    await harness.scan()  # expired is a different state: delivered directly
+    assert harness.deliver.await_count == 1
+
+    harness.snapshots = [expiring]  # renewed, then expiring again outside any window
+    await harness.scan()
+
+    assert harness.deliver.await_count == 2
+
+
+async def test_a_failing_parked_marker_write_does_not_stop_the_other_credentials():
+    harness = _Harness()
+    harness.audit.side_effect = [RuntimeError("audit down"), None]
+
+    summary = await harness.scan()
+
+    assert summary["deferred"] == 2
+    assert harness.audit.await_count == 2
 
 
 async def test_no_recipient_records_failed_and_parks_nothing():

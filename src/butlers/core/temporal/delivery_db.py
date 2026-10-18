@@ -330,32 +330,25 @@ async def replace_pending_deferred_notification(
             )
 
 
-async def latest_status_matching_line(
+async def notification_status(
     pool: asyncpg.Pool,
     *,
     butler_name: str,
-    line_token: str,
+    notification_id: str,
 ) -> str | None:
-    """Status of the newest deferred notification whose ``message`` carries ``line_token``.
+    """Status of one deferred notification, or ``None`` when it does not exist.
 
-    Uses the same literal whole-line match as :func:`cancel_pending_notifications_matching_line`.
-    Returns ``None`` when no row matches (or ``line_token`` is empty).
+    Keyed on the row id (not a message token) so the answer is about exactly the envelope
+    the caller was handed, never a newer or older sibling that shares a dedup marker.
     """
-    if not line_token:
+    try:
+        uuid.UUID(notification_id)
+    except (ValueError, AttributeError, TypeError):
         return None
     return await pool.fetchval(
-        r"""
-        SELECT status FROM deferred_notifications
-        WHERE butler_name = $1
-          AND (
-                strpos(message, $2 || E'\n') > 0
-                OR right(message, char_length($2)) = $2
-              )
-        ORDER BY deferred_at DESC
-        LIMIT 1
-        """,
+        "SELECT status FROM deferred_notifications WHERE butler_name = $1 AND id = $2::uuid",
         butler_name,
-        line_token,
+        notification_id,
     )
 
 
