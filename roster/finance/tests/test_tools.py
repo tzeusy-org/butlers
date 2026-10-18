@@ -852,6 +852,15 @@ async def _assert_no_raw_destination(pool, raw_values) -> None:
 class TestTrackBillPaymentDestination:
     """track_bill fingerprints payment destinations per counterparty."""
 
+    @pytest.fixture(scope="module")
+    def migrated_db_url(self, postgres_container) -> str:
+        """Add the memory chain so the SPO mirror's ``facts`` table exists to be scanned."""
+        return create_migrated_test_db(
+            postgres_container,
+            migration_db_name(),
+            chains=["core", "memory", "finance"],
+        )
+
     @pytest.fixture(autouse=True)
     async def _clear_destinations(self, pool):
         """The shared ``pool`` fixture does not truncate payment_destinations."""
