@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 
-from butlers.core.insight_premise import probe_premise
+from butlers.core.insight_premise import owner_condition_premise, probe_premise
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
@@ -32,6 +32,7 @@ from butlers.tools.finance.alerts import detect_price_changes, register_obligati
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
+from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
@@ -49,7 +50,86 @@ logger = logging.getLogger(__name__)
 async def run_cost_claim_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the deterministic cost-claim sweep without an LLM session."""
     async with _finance_scoped_connection(db_pool) as conn:
-        return await reconcile_cost_claims(_SingleConnectionPool(conn))
+        result = await reconcile_cost_claims(_SingleConnectionPool(conn))
+    # bu-q7vx1q.45: a concurrent sweep that lost the lock leaves this step to the winner.
+    if result.get("acquired"):
+        result["memorial_claims"] = await _ask_about_memorial_claims(db_pool)
+    return result
+
+
+_OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE = "finance:memorial-claim"
+_MEMORIAL_CLAIM_PRIORITY = 40
+_MEMORIAL_CLAIM_EXPIRES = timedelta(days=14)
+
+
+def _memorial_claim_message(name: str, direction: str) -> str:
+    """Fixed copy: names the person and the direction, never an amount or description."""
+    owes = f"{name} owes you" if direction == "inbound" else f"you owe {name}"
+    return (
+        f"You marked {name} as remembered, and an open loan is still recorded ({owes}). "
+        "Retract it or keep it?"
+    )
+
+
+async def _ask_about_memorial_claims(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Ask the owner once per open loan claim against a memorial counterparty.
+
+    One owner condition per claim; the question is proposed only on the ``opened``
+    transition, so a re-run, an owner who keeps the claim and a cooldown expiry never
+    re-ask. The claim itself is never touched. A posture/claim read failure is unknown:
+    nothing is reconciled (so no existing condition resolves on a guess) or proposed.
+    """
+    try:
+        claims = await list_memorial_open_claims(db_pool)
+    except Exception:
+        logger.warning("Finance memorial-claim question: claim read failed", exc_info=True)
+        return {"status": "degraded", "opened": 0}
+
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    observations: list[OwnerObservation] = []
+    for claim in claims:
+        fingerprint = owner_condition_fingerprint(
+            _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE, 1, {"claim_id": str(claim["id"])}
+        )
+        by_fingerprint[fingerprint] = claim
+        observations.append(
+            OwnerObservation(
+                fingerprint=fingerprint,
+                summary="Open loan claim against a person marked memorial",
+                metadata={"claim_id": str(claim["id"])},
+            )
+        )
+    try:
+        transitions = await reconcile_owner_condition(
+            db_pool,
+            source=_OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=_OWNER_CONDITION_GRACE_S,
+        )
+    except Exception:
+        logger.warning("Finance memorial-claim question: reconcile failed", exc_info=True)
+        return {"status": "degraded", "opened": 0}
+
+    opened = 0
+    now = datetime.now(UTC)
+    for transition in transitions:
+        claim = by_fingerprint.get(transition.fingerprint)
+        if transition.transition != "opened" or claim is None:
+            continue
+        await _propose(
+            db_pool,
+            priority=_MEMORIAL_CLAIM_PRIORITY,
+            category="memorial-claim",
+            dedup_key=f"finance:memorial-claim:{transition.condition_id}",
+            message=_memorial_claim_message(claim["counterparty_name"], claim["direction"]),
+            expires_at=now + _MEMORIAL_CLAIM_EXPIRES,
+            premise=owner_condition_premise(
+                _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE, transition.fingerprint
+            ),
+        )
+        opened += 1
+    return {"status": "ok", "opened": opened}
 
 
 class _SingleConnectionPool:
