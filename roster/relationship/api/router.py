@@ -76,6 +76,8 @@ if _models_path.exists():
         DunbarRankingResponse = _models_module.DunbarRankingResponse
         OverdueContact = _models_module.OverdueContact
         OverdueContactsResponse = _models_module.OverdueContactsResponse
+        PendingDebrief = _models_module.PendingDebrief
+        PendingDebriefsResponse = _models_module.PendingDebriefsResponse
         EntityNote = _models_module.EntityNote
         EntityInteraction = _models_module.EntityInteraction
         EntityGift = _models_module.EntityGift
@@ -5796,6 +5798,35 @@ async def get_overdue_contacts(
         cadence_available=result["cadence_available"],
         unmeasurable_count=result["unmeasurable_count"],
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /meeting-debriefs/pending — prompted, unanswered meeting debriefs
+# ---------------------------------------------------------------------------
+
+
+@router.get("/meeting-debriefs/pending", response_model=PendingDebriefsResponse)
+async def get_pending_meeting_debriefs(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PendingDebriefsResponse:
+    """Return what ``meeting_debrief_pending`` returns: same items, order and posture filter.
+
+    A failed read is a degraded envelope, never an empty "all answered".
+    """
+    from butlers.tools.relationship import meeting_debrief as _debrief
+
+    try:
+        result = await _debrief.meeting_debrief_pending(_pool(db))
+        return PendingDebriefsResponse(
+            debriefs=[PendingDebrief(**item) for item in result["debriefs"]]
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- unreadable debriefs are not an empty all-clear
+        # Class name only: exception text can carry attendee row content (e.g. an email in a
+        # validation error's input_value).
+        logger.warning("Pending meeting debriefs unavailable: %s", type(exc).__name__)
+        return PendingDebriefsResponse(debriefs=[], debriefs_available=False)
 
 
 # ---------------------------------------------------------------------------

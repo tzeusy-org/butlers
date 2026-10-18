@@ -28,6 +28,16 @@ import {
   useToggleCalendarSource,
 } from "@/hooks/use-calendar-workspace";
 
+// The Debrief card (bu-q7vx1q.63) is covered in CalendarWorkspacePage.debrief.test.tsx;
+// here it just has nothing pending.
+vi.mock("@/hooks/use-meeting-debriefs", () => ({
+  PENDING_DEBRIEFS_KEY: ["relationship", "meeting-debriefs", "pending"],
+  usePendingMeetingDebriefs: vi.fn(() => ({
+    isError: false,
+    data: { debriefs: [], debriefs_available: true },
+  })),
+}));
+
 vi.mock("@/hooks/use-calendar-workspace", () => ({
   useCalendarWorkspace: vi.fn(),
   useCalendarInvitations: vi.fn(),
