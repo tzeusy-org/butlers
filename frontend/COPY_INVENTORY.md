@@ -456,6 +456,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - This conversation may have been deleted, or the link is incorrect.
 - New conversation
 - Recent conversations
+- Conversation owner
 - conversation history
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
