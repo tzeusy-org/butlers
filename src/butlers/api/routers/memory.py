@@ -49,6 +49,7 @@ from butlers.api.models.memory import (
     MemoryActivity,
     MemoryCatalogSearchResult,
     MemoryGap,
+    MemoryGapDemand,
     MemoryGapDismissal,
     MemoryInspectResult,
     MemoryLink,
@@ -1625,6 +1626,46 @@ async def list_memory_gaps(
             sources_degraded=tracker.names or None,
         ),
     )
+
+
+@router.get("/gaps/demand", response_model=ApiResponse[list[MemoryGapDemand]])
+async def memory_gap_demand(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[MemoryGapDemand]]:
+    """Open gaps and asking threads per predicate, most asked first, across memory pools.
+
+    Aggregated per pool in SQL and summed here, so the count is right whatever the page
+    size of ``GET /api/memory/gaps``.  A pool that fails is named in
+    ``meta.sources_degraded`` rather than reading as zero demand.
+    """
+
+    async def _query_pool(butler_name: str, pool: object) -> list[dict]:
+        return await knowledge_gaps.demand_by_predicate(
+            pool, memory_schema=_memory_source_schema(db, butler_name)
+        )
+
+    tracker = DegradedSources(logger)
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="gap demand",
+        query_fn=_query_pool,
+        tracker=tracker,
+    )
+    totals: dict[str, list[int]] = {}
+    for rows in per_pool:
+        for row in rows:
+            acc = totals.setdefault(row["predicate"], [0, 0])
+            acc[0] += row["open_gaps"]
+            acc[1] += row["asks"]
+    data = [
+        MemoryGapDemand(predicate=predicate, open_gaps=open_gaps, asks=asks)
+        for predicate, (open_gaps, asks) in totals.items()
+    ]
+    data.sort(key=lambda d: (-d.asks, -d.open_gaps, d.predicate))
+    meta_fields: dict[str, object] = {}
+    if tracker.names:
+        meta_fields["sources_degraded"] = tracker.names
+    return ApiResponse[list[MemoryGapDemand]](data=data, meta=ApiMeta(**meta_fields))
 
 
 @router.post("/gaps/{gap_id}/dismiss", response_model=ApiResponse[MemoryGapDismissal])

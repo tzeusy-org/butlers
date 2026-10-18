@@ -46,6 +46,8 @@ Response envelope:
   a page offset; do not mix cursors between sort modes.
 - `GET /api/memory/gaps` follows the same keyset shape (`asked_at DESC, id DESC`, merged across
   memory pools) and adds `meta.limit` and `meta.sources_degraded` for pools that failed.
+  `GET /api/memory/gaps/demand` is a plain `{data, meta}` list (open gaps and asks per predicate)
+  that names failed pools in `meta.sources_degraded`.
 
 Channel filtering uses `channels` (comma-separated); there is no single-value channel alias.
 

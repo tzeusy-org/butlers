@@ -3,7 +3,7 @@
 //
 // The left column (1.4fr of the 1.4fr/1fr Band-3 grid) carries:
 //   1. the ONE search affordance (MemorySearch) — `/` focuses, Enter submits;
-//   2. the register pills (Facts / Rules / Episodes) selecting the browse
+//   2. the register pills (Facts / Rules / Episodes / Questions) selecting the browse
 //      register via the `register` URL param;
 //   3. the focused register (FactsRegister / RulesRegister / EpisodesRegister)
 //      in BROWSE mode, OR the grouped SearchResults in RESULTS mode.
@@ -24,6 +24,7 @@
 import EpisodesRegister from "@/components/memory/EpisodesRegister";
 import FactsRegister from "@/components/memory/FactsRegister";
 import MemorySearch from "@/components/memory/MemorySearch";
+import QuestionsRegister from "@/components/memory/QuestionsRegister";
 import RegisterCrossfade from "@/components/memory/RegisterCrossfade";
 import RulesRegister from "@/components/memory/RulesRegister";
 import SearchResults from "@/components/memory/SearchResults";
@@ -42,6 +43,7 @@ const REGISTER_PILLS: { label: string; value: MemoryRegister }[] = [
   { label: "Facts", value: "facts" },
   { label: "Rules", value: "rules" },
   { label: "Episodes", value: "episodes" },
+  { label: "Questions", value: "questions" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -95,6 +97,7 @@ export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
             {register === "episodes" && (
               <EpisodesRegister butlerScope={butlerScope} />
             )}
+            {register === "questions" && <QuestionsRegister />}
           </RegisterCrossfade>
         </div>
       )}

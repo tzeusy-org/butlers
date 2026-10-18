@@ -455,6 +455,34 @@ async def list_gaps(
     return gaps
 
 
+async def demand_by_predicate(
+    pool: Any, *, memory_schema: str | None = None
+) -> list[dict[str, Any]]:
+    """Open gaps and asks per predicate, most asked first.
+
+    ``asks`` counts ``knowledge_gap_origins`` rows (one per asking thread) of *open*
+    gaps only: an answerable, delivered, dismissed or expired gap is no longer unknown.
+    Aggregated in SQL so the count is right however many pages a listing would take.
+    """
+    async with _scoped(pool, memory_schema) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT g.predicate,
+                   count(DISTINCT g.id) AS open_gaps,
+                   count(o.gap_id) AS asks
+            FROM knowledge_gaps g
+            LEFT JOIN knowledge_gap_origins o ON o.gap_id = g.id
+            WHERE g.status = 'open'
+            GROUP BY g.predicate
+            ORDER BY asks DESC, open_gaps DESC, g.predicate
+            """
+        )
+    return [
+        {"predicate": r["predicate"], "open_gaps": int(r["open_gaps"]), "asks": int(r["asks"])}
+        for r in rows
+    ]
+
+
 def public_view(gap: dict[str, Any]) -> dict[str, Any]:
     """The owner-facing shape of a listed gap (shared by the tool and the API)."""
     origins = gap["origins"]

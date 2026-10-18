@@ -756,6 +756,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - health · medications
 - Medications
 
+## `frontend/src/pages/MemoryPage.tsx`
+
+- Open questions
+
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
@@ -3568,6 +3572,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Facts
 - Rules
 - Episodes
+- Questions
 
 ## `frontend/src/components/memory/MemoryOverture.tsx`
 
@@ -3592,6 +3597,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Facts
 - Rules
 - Episodes
+
+## `frontend/src/components/memory/QuestionsRegister.tsx`
+
+- asked most
+- dismiss failed, try again
+- confirm dismiss
+- delivery failed
+- Couldn&rsquo;t load which questions are asked most.
+- No open questions.
+- Dismiss question: {}
+- the questions
 
 ## `frontend/src/components/memory/RulesRegister.tsx`
 
@@ -4916,4 +4932,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3928*

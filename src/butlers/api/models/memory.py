@@ -186,6 +186,14 @@ class MemoryGap(BaseModel):
     origins: list[MemoryGapOrigin] = []
 
 
+class MemoryGapDemand(BaseModel):
+    """Open knowledge gaps and asking threads for one predicate (bu-q7vx1q.73)."""
+
+    predicate: str
+    open_gaps: int
+    asks: int
+
+
 class MemoryGapDismissal(BaseModel):
     """Receipt for an owner dismissal; ``status`` is the gap's resulting state."""
 

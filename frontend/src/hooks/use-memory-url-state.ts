@@ -6,7 +6,7 @@
  * URLSearchParams manipulation. Backed by React Router's useSearchParams.
  *
  * Supported query parameters ((memory house-ledger redesign, graduated) prompts/00-foundation.md):
- * - register: 'facts' | 'rules' | 'episodes' — focused register. Default 'facts'.
+ * - register: 'facts' | 'rules' | 'episodes' | 'questions' — focused register. Default 'facts'.
  * - q:        submitted search string (NOT keystroke). Absent by default.
  * - kind:     search scope when q is set: 'all' | 'fact' | 'rule' | 'episode'. Default 'all'.
  * - validity: ledger filter: 'active' | 'fading' | 'superseded' | 'expired' | 'retracted'. Default 'active'.
@@ -26,7 +26,7 @@ import { useSearchParams } from 'react-router'
 // Types
 // ---------------------------------------------------------------------------
 
-export type MemoryRegister = 'facts' | 'rules' | 'episodes'
+export type MemoryRegister = 'facts' | 'rules' | 'episodes' | 'questions'
 export type MemorySearchKind = 'all' | 'fact' | 'rule' | 'episode'
 export type MemoryValidity = 'active' | 'fading' | 'superseded' | 'expired' | 'retracted'
 /**
@@ -58,7 +58,7 @@ export interface MemoryUrlState {
 // Vocabulary + defaults
 // ---------------------------------------------------------------------------
 
-const VALID_REGISTERS: MemoryRegister[] = ['facts', 'rules', 'episodes']
+const VALID_REGISTERS: MemoryRegister[] = ['facts', 'rules', 'episodes', 'questions']
 const VALID_KINDS: MemorySearchKind[] = ['all', 'fact', 'rule', 'episode']
 const VALID_VALIDITIES: MemoryValidity[] = [
   'active',

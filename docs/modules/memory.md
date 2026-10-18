@@ -113,8 +113,16 @@ ledger and listed with `delivery_failed`. Open gaps past `expires_at` (ninety da
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
-captures gaps today; the Telegram answer path, an entity-detail "Still unknown" section and
-per-predicate demand counts are a later slice.
+captures gaps today; the Telegram answer path and an entity-detail "Still unknown" section are a
+later slice.
+
+The dashboard's `/memory` page has a Questions register (`register=questions`, also reachable from
+the "Open questions" command-palette verb). It lists open and answerable gaps with their coverage
+in words ("never looked", "looked, nothing there", "unavailable", "answered"), asked date and
+thread count, and offers dismiss with a confirm. Above the rows, a per-predicate demand summary
+reads `GET /api/memory/gaps/demand`: open gaps and asking threads per predicate, open gaps only,
+summed across memory pools in SQL so the count is right whatever the page size, with failing pools
+named in `meta.sources_degraded`.
 
 ## Tools Provided
 
