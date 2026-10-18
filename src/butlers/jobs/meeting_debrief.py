@@ -152,10 +152,12 @@ def _other_attendees(meta: dict[str, Any]) -> list[dict[str, str]]:
 async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dict[str, Any]]:
     """Map email -> {entity_id, name, posture, is_owner} for emails that resolve.
 
-    Mirrors the canonical contact resolver: merged-away and soft-deleted entities are ignored, and
-    one entity holding an address under several casings is one claimant.  An email claimed by
-    several distinct live entities is decided fail-closed (see ``_merge_claimants``); an email
-    that stays ambiguous between active entities is left out, like one that resolves to nothing.
+    Like the canonical contact resolver, a merged-away or soft-deleted ("tombstoned") entity never
+    resolves an address and never makes it ambiguous, but its posture still counts: a tombstoned
+    ``no_contact`` or ``memorial`` entity keeps withholding its email, because entity deletion
+    leaves its ``has-email`` facts active.  One entity holding an address under several casings
+    is one claimant.  See ``_merge_claimants`` for the rule; an email that stays ambiguous between
+    active entities is left out, like one that resolves to nothing.
     """
     if not emails:
         return {}
@@ -165,15 +167,15 @@ async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dic
                LOWER(ef.object)          AS email,
                e.canonical_name          AS name,
                e.posture                 AS posture,
-               COALESCE(e.roles, '{}')   AS roles
+               COALESCE(e.roles, '{}')   AS roles,
+               ((e.metadata->>'merged_into') IS NOT NULL
+                OR (e.metadata->>'deleted_at') IS NOT NULL) AS tombstoned
         FROM relationship.entity_facts ef
         JOIN public.entities e ON e.id = ef.subject
         WHERE ef.predicate   = 'has-email'
           AND ef.object_kind = 'literal'
           AND ef.validity    = 'active'
           AND LOWER(ef.object) = ANY($1::text[])
-          AND (e.metadata->>'merged_into') IS NULL
-          AND (e.metadata->>'deleted_at') IS NULL
         ORDER BY ef.subject
         """,
         sorted(emails),
@@ -185,6 +187,7 @@ async def _resolve_people(pool: asyncpg.Pool, emails: set[str]) -> dict[str, dic
             "name": row["name"] or "",
             "posture": row["posture"],
             "is_owner": "owner" in list(row["roles"] or []),
+            "tombstoned": bool(row["tombstoned"]),
         }
     merged = {email: _merge_claimants(list(found.values())) for email, found in claimants.items()}
     return {email: person for email, person in merged.items() if person is not None}
@@ -194,19 +197,20 @@ def _merge_claimants(found: list[dict[str, Any]]) -> dict[str, Any] | None:
     """One answer for an email, however many entities hold it as an active ``has-email``.
 
     Two entities can claim one address (a stale duplicate beside the real person, an owner
-    alias), and row order must never decide who the attendee is.  Fail closed: if any claimant is
-    the owner or not ``active`` the answer is that claimant, so the attendee is withheld; several
-    distinct active claimants are ambiguous and give ``None`` (no entity, as if unresolved).
+    alias), and row order must never decide who the attendee is.  Fail closed: a claimant that is
+    not ``active`` (tombstoned or not), or a live claimant that is the owner, is the answer, so
+    the attendee is withheld.  Otherwise only live (not merged-away, not soft-deleted) claimants
+    can resolve it: exactly one does; none or several distinct ones give ``None`` (as if
+    unresolved).
     """
     blocked = sorted(
-        (c for c in found if c["is_owner"] or c["posture"] != "active"),
+        (c for c in found if c["posture"] != "active" or (c["is_owner"] and not c["tombstoned"])),
         key=lambda c: (not c["is_owner"], c["entity_id"]),
     )
     if blocked:
         return blocked[0]
-    if len(found) > 1:
-        return None
-    return found[0]
+    live = [c for c in found if not c["tombstoned"]]
+    return live[0] if len(live) == 1 else None
 
 
 async def _record_new_debriefs(pool: asyncpg.Pool, now: datetime) -> tuple[int, int]:

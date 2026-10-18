@@ -144,18 +144,39 @@ async def test_one_entity_with_two_casings_of_its_email_resolves_to_that_entity(
     assert people["dana@example.com"]["entity_id"] == dana
 
 
-@pytest.mark.parametrize(
-    "metadata", [{"merged_into": str(uuid.uuid4())}, {"deleted_at": "2031-01-01"}]
-)
-async def test_merged_or_deleted_holder_neither_blocks_nor_makes_the_email_ambiguous(
+_TOMBSTONES = [{"merged_into": str(uuid.uuid4())}, {"deleted_at": "2031-01-01"}]
+
+
+@pytest.mark.parametrize("metadata", _TOMBSTONES, ids=["merged", "deleted"])
+async def test_tombstoned_active_holder_neither_blocks_nor_makes_the_email_ambiguous(
     pool, metadata
 ) -> None:
     from butlers.jobs.meeting_debrief import _resolve_people
 
     live = await _entity_with_email(pool, "dana@example.com")
-    await _entity_with_email(pool, "dana@example.com", posture="no_contact", metadata=metadata)
+    await _entity_with_email(pool, "dana@example.com", metadata=metadata)
 
     people = await _resolve_people(pool, {"dana@example.com"})
 
     assert people["dana@example.com"]["entity_id"] == live
     assert people["dana@example.com"]["posture"] == "active"
+
+
+@pytest.mark.parametrize("metadata", _TOMBSTONES, ids=["merged", "deleted"])
+async def test_tombstoned_no_contact_holder_still_withholds_beside_a_live_active_entity(
+    pool, metadata
+) -> None:
+    await _snapshot(pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
+    await _entity_with_email(pool, "dana@example.com")
+    await _entity_with_email(pool, "dana@example.com", posture="no_contact", metadata=metadata)
+
+    assert _names(await meeting_debrief_pending(pool)) == []
+
+
+async def test_deleted_memorial_holder_alone_still_withholds(pool) -> None:
+    await _snapshot(pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
+    await _entity_with_email(
+        pool, "dana@example.com", posture="memorial", metadata={"deleted_at": "2031-01-01"}
+    )
+
+    assert _names(await meeting_debrief_pending(pool)) == []
