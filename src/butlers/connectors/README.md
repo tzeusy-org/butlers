@@ -7,7 +7,10 @@ Transport-only adapters for external message ingestion.
 Connectors are responsible for:
 - Reading events from external systems (Telegram, Gmail, etc.)
 - Normalizing to canonical `ingest.v1` format
-- Submitting to Switchboard MCP server via ingest tool
+- Submitting to Switchboard MCP server via ingest tool, always through
+  `butlers.connectors.ingest_submit.submit_ingest()`: `accepted`, `queued` and `duplicate`
+  succeed; a `status: error`, missing or unknown status, or non-dict reply raises `IngestRejected`.
+  `tests/contracts/test_connector_ingest_submit_guard.py` fails on a direct `call_tool("ingest", ...)`.
 - Handling checkpointing and crash-safe resume
 
 Connectors do NOT:

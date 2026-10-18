@@ -137,7 +137,9 @@ async def test_process_segment_logs_ids_and_length_not_transcript(caplog) -> Non
             session_last_ts_ms=0,
         )
     }
-    connector._mcp_client = SimpleNamespace(call_tool=AsyncMock(return_value={"status": "ok"}))
+    connector._mcp_client = SimpleNamespace(
+        call_tool=AsyncMock(return_value={"status": "accepted"})
+    )
     connector._connector_metrics = MagicMock()
     connector._db_pool = None
     segment = SimpleNamespace(duration_ms=1000, audio_bytes=b"x", offset_ts=1_782_000_000.0)

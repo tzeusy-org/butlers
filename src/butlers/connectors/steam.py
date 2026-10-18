@@ -60,6 +60,7 @@ from prometheus_client import Counter, Histogram, generate_latest
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
@@ -1654,14 +1655,11 @@ class SteamAccountPoller:
            (e.g. ``telegram_bot._submit_to_ingest``) checks for. This
            connector never checked it, so ``call_tool`` returning without
            raising was treated as success even though nothing was persisted
-           to ``public.ingestion_events``. Checked explicitly below.
+           to ``public.ingestion_events``. ``submit_ingest`` now checks it.
         """
         wire_envelope = _to_wire_envelope(envelope)
         try:
-            result = await self._mcp_client.call_tool("ingest", wire_envelope)
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = (await submit_ingest(self._mcp_client, wire_envelope)).response
             self._metrics.record_ingest_submission(status="success")
             self._metrics.record_source_api_call(api_method="ingest", status="success")
             return result

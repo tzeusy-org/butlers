@@ -89,6 +89,7 @@ from butlers.connectors.home_assistant_wellness import (
     WellnessRule,
     parse_rules_extra,
 )
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
@@ -1781,7 +1782,7 @@ async def emit_with_wellness_promotion(
         if ha_envelope is None:
             raise ValueError("ha_envelope is required when emit_home_assistant=True")
         try:
-            await mcp_client.call_tool("ingest", scrub_ha_envelope(ha_envelope))
+            await submit_ingest(mcp_client, scrub_ha_envelope(ha_envelope))
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1836,7 +1837,7 @@ async def emit_with_wellness_promotion(
     )
 
     try:
-        await mcp_client.call_tool("ingest", scrub_ha_envelope(wellness_envelope))
+        await submit_ingest(mcp_client, scrub_ha_envelope(wellness_envelope))
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -2045,7 +2046,7 @@ async def _main() -> None:
 
     # Filter persistence (for recording dropped events)
     async def _submit_envelope_for_replay(envelope: dict[str, Any]) -> None:
-        await connector._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(connector._mcp_client, envelope)
 
     ha_filter_persistence = HAFilterPersistence(
         endpoint_identity=endpoint_identity,
@@ -2335,7 +2336,7 @@ def _make_event_dispatcher(
             )
             try:
                 ingest_start = time.monotonic()
-                await connector._mcp_client.call_tool("ingest", scrub_ha_envelope(envelope))
+                await submit_ingest(connector._mcp_client, scrub_ha_envelope(envelope))
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )
