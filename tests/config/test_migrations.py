@@ -613,13 +613,13 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     check_bootstrap_database(db_url)
     command.upgrade(relationship_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     check_bootstrap_database(db_url)
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     assert (
         _execute_as_role(
             db_url,
