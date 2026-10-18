@@ -34,7 +34,7 @@ Scope: v1-mandatory
 #### Scenario: Vision capability requires exact-path evidence
 - **WHEN** a catalog row declares `capabilities.vision = true`
 - **THEN** the declaration is backed by an end-to-end probe of that exact `runtime_type`, `model_id`, runtime/CLI version, and account path
-- **AND** the probe proves an MCP image content block reaches inference by requiring an answer available only from the image bytes, not from prompt text or attachment metadata
+- **AND** the probe proves the exact model reads an inline image on that tuple by requiring an answer available only from the image bytes, not from prompt text or attachment metadata, through the runtime adapter's tool-less single-turn structured-output model-function mode (RFC 0038 D18); the server-side `attachment_view` wire shape is pinned separately by existing tests, and runtime-side forwarding of an MCP image block into inference is an accepted unproven residual, not evidence
 - **AND** a text-only model verification, model-brand claim, direct `attachment_view()` unit test, or adapter-wide capability assumption is insufficient evidence
 - **AND** rows without that evidence retain unknown vision support and remain excluded from image-bearing external dispatches
 
@@ -54,7 +54,7 @@ When resolution is given a dispatch intent, the system SHALL exclude every candi
 that cannot satisfy the intent's required capabilities, context floor, deadline, or
 per-call budget BEFORE selecting the winning tier, before narrowing to the highest
 effective priority, and before the tie-break.
-For rows explicitly converted to the managed Models vision-proof lifecycle, image-fit SHALL additionally require a matching applied proof identity. Stale managed proof MUST fail closed. Historical unbound declarations retain their existing applicability semantics. The separately authenticated private diagnostic selection MAY bypass only the exact authorized candidate vision prerequisite for its bounded synthetic operation; it MUST retain every other authority, quota and enabled-row constraint and MUST NOT expose this exception to ordinary dispatch callers or mutate capability bits.
+For rows explicitly converted to the managed Models vision-proof lifecycle, image-fit SHALL additionally require a matching applied proof identity. Stale managed proof MUST fail closed. Historical unbound declarations retain their existing applicability semantics. The vision proof is a model function that addresses its exact authorized row directly; resolution SHALL contain no vision-fit exception for it, SHALL NOT expose any bypass to ordinary dispatch callers and SHALL NOT mutate capability bits.
 
 ID: REQ-model-catalog-004
 Source: owner-adopted Models vision contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; canonical model-catalog baseline
@@ -102,4 +102,4 @@ Scope: v1-mandatory
 #### Scenario: Diagnostic fitting never grants ordinary image authority
 
 - **WHEN** an ordinary session lacks image capability or attempts to provide a probe bypass flag
-- **THEN** it remains excluded; only a verified purpose-bound exact diagnostic operation can exercise the narrow exception
+- **THEN** it remains excluded, because model resolution has no vision-fit exception for the proof
