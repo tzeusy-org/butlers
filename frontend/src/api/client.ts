@@ -414,6 +414,7 @@ import type {
   HomeTopConsumer,
   HomeCommandLogEntry,
   OverdueContactsResponse,
+  PendingDebriefsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
   GeneralCollection,
@@ -2021,6 +2022,11 @@ export function getOverdueContacts(days?: number): Promise<OverdueContactsRespon
   return apiFetch<OverdueContactsResponse>(
     `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** Fetch prompted, unanswered meeting debriefs (bu-q7vx1q.63). */
+export function getPendingMeetingDebriefs(): Promise<PendingDebriefsResponse> {
+  return apiFetch<PendingDebriefsResponse>("/relationship/meeting-debriefs/pending");
 }
 
 /** Build URLSearchParams from group query parameters. */

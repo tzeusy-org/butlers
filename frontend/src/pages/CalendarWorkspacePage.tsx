@@ -85,6 +85,7 @@ import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpen
 import { ConflictRadarBanner } from "@/components/calendar/ConflictRadarBanner";
 import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabilityDialog";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
+import { DebriefCard } from "@/components/calendar/DebriefCard";
 import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
 import {
   LinkedPeopleAvatars,
@@ -5254,6 +5255,7 @@ export default function CalendarWorkspacePage() {
         }
       >
         <div className="flex min-h-0 flex-1 flex-col pt-5">
+          <DebriefCard />
           {/* Events fan-out degraded (bu-yjfk2): a butler schema's workspace
               query failed, so the grid may be missing that schema's events —
               name the degraded source rather than let a short grid read as an
