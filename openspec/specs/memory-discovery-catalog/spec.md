@@ -153,11 +153,23 @@ row (a fact with no row is left to the backfill), and SHALL mark the row stale
 instead of refreshing it when the fact is no longer live or its `sensitivity`
 is `pii` or `confidential`. It MUST NOT create a row for such a fact.
 
+The refresh SHALL touch only the calling butler's own row, scoped by
+`source_schema`, never another schema's row that shares the same `source_id`.
+Loading the embedding model SHALL happen inside the best-effort boundary and
+only when a refresh needs an embedding, so a model-load failure cannot fail
+the edit and a stale-marking edit never loads the model.
+
 #### Scenario: A Health measurement or meal edit updates the catalog summary
 
 - **WHEN** a cataloged Health measurement or meal fact is edited in place
 - **THEN** its catalog row's `summary` and `embedding` MUST reflect the edited
   content
+
+#### Scenario: An edit never touches another schema's catalog row
+
+- **WHEN** another butler's catalog row shares the edited fact's `source_id`
+- **THEN** that row MUST be left unchanged, whether the edit refreshes or stales
+  this butler's row
 
 #### Scenario: An edit of a confidential fact writes no catalog row
 

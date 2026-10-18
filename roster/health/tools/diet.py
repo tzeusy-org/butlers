@@ -343,7 +343,7 @@ async def meal_update(
     # The in-place edit bypasses store_fact's catalog write-behind: refresh the catalog row.
     from butlers.modules.memory.storage import refresh_catalog_for_edited_fact
 
-    await refresh_catalog_for_edited_fact(pool, meal_uuid, embedding_engine=_get_embedding_engine())
+    await refresh_catalog_for_edited_fact(pool, meal_uuid, engine_factory=_get_embedding_engine)
 
     return _fact_to_meal(
         {

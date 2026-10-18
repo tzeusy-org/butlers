@@ -33,6 +33,13 @@ _SELECT = (
 )
 
 
+_DECOY = (
+    "SELECT summary, embedding::text AS embedding, invalid_at, confidence"
+    " FROM public.memory_catalog"
+    " WHERE source_schema = 'other_butler' AND source_table = 'facts' AND source_id = $1"
+)
+
+
 def _engine() -> MagicMock:
     """Deterministic embeddings: the vector encodes the text length, so an edit changes it."""
     engine = MagicMock()
@@ -106,6 +113,34 @@ async def _scenario(db_url: str) -> dict:
         await measurements.measurement_update(pool, str(reclassified), value=73)
         out["reclassified_after"] = await row(reclassified)
 
+        # Another butler's catalog row that happens to share the fact's source_id is not ours:
+        # neither a refresh nor a stale-marking edit may touch it.
+        async def decoy_of(fact_id) -> dict:
+            await pool.execute(
+                "INSERT INTO public.memory_catalog (source_schema, source_table, source_id,"
+                " source_butler, tenant_id, summary, embedding, search_vector, memory_type)"
+                " SELECT 'other_butler', source_table, source_id, source_butler, tenant_id,"
+                " summary, embedding, search_vector, memory_type FROM public.memory_catalog"
+                " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+                fact_id,
+            )
+            return dict(await pool.fetchrow(_DECOY, fact_id))
+
+        shared = await store("measurement_weight", "weight: 70 kg", metadata={"value": 70})
+        out["decoy_live_before"] = await decoy_of(shared)
+        await measurements.measurement_update(pool, str(shared), value=75)
+        out["decoy_live_after"] = dict(await pool.fetchrow(_DECOY, shared))
+        out["decoy_live_own"] = await row(shared)
+
+        shared_stale = await store("measurement_weight", "weight: 70 kg", metadata={"value": 70})
+        await pool.execute(
+            "UPDATE facts SET sensitivity = 'confidential' WHERE id = $1", shared_stale
+        )
+        out["decoy_stale_before"] = await decoy_of(shared_stale)
+        await measurements.measurement_update(pool, str(shared_stale), value=76)
+        out["decoy_stale_after"] = dict(await pool.fetchrow(_DECOY, shared_stale))
+        out["decoy_stale_own"] = await row(shared_stale)
+
         # A fact with no catalog row yet is left to the backfill: the edit creates none.
         uncataloged = await store(
             "measurement_weight", "weight: 70 kg", cataloged=False, metadata={"value": 70}
@@ -170,3 +205,16 @@ def test_a_stale_row_gets_the_edited_content_and_stays_stale(outcome: dict) -> N
     after = outcome["stale_after"]
     assert after["summary"] == "owner meal_dinner: stew"
     assert after["invalid_at"] is not None
+
+
+def test_a_refresh_never_touches_another_schemas_row_with_the_same_source_id(outcome: dict) -> None:
+    assert outcome["decoy_live_after"] == outcome["decoy_live_before"]
+    assert outcome["decoy_live_own"]["summary"].endswith("weight: 75 kg")
+
+
+def test_a_stale_marking_never_touches_another_schemas_row_with_the_same_source_id(
+    outcome: dict,
+) -> None:
+    assert outcome["decoy_stale_after"] == outcome["decoy_stale_before"]
+    assert outcome["decoy_stale_after"]["invalid_at"] is None
+    assert outcome["decoy_stale_own"]["invalid_at"] is not None

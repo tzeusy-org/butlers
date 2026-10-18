@@ -20,6 +20,8 @@ from butlers.modules.memory.embedding import EmbeddingEngine
 from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from asyncpg import Connection, Pool
 
 from butlers.core import entity_graph_edges
@@ -529,7 +531,8 @@ async def refresh_catalog_for_edited_fact(
     pool: Pool,
     fact_id: uuid.UUID,
     *,
-    embedding_engine: EmbeddingEngine,
+    embedding_engine: EmbeddingEngine | None = None,
+    engine_factory: Callable[[], EmbeddingEngine] | None = None,
 ) -> bool:
     """Bring a fact's ``public.memory_catalog`` row in line after an in-place edit.
 
@@ -547,9 +550,19 @@ async def refresh_catalog_for_edited_fact(
     refreshed. A stale row's content is refreshed too, so reviving it later never brings
     back the superseded summary.
 
+    Only the calling butler's own row is touched: both statements are scoped to the
+    connection's ``current_schema()`` (the idiom ``_cascade_catalog_disownment`` documents),
+    since ``public.memory_catalog`` is fleet-shared and a ``source_id`` match alone could
+    reach another schema's row.
+
+    Pass an ``embedding_engine``, or an ``engine_factory`` to defer loading it: the factory
+    is called inside the best-effort boundary and only when a refresh needs an embedding, so
+    a model-load failure cannot fail the edit and a stale-marking edit never loads the model.
+
     Returns True when a catalog row was updated or marked stale.
     """
     try:
+        source_schema = await pool.fetchval("SELECT current_schema()")
         row = await pool.fetchrow(
             "SELECT subject, predicate, content, scope, valid_at, importance,"
             " retention_class, sensitivity, entity_id, object_entity_id, validity"
@@ -563,12 +576,14 @@ async def refresh_catalog_for_edited_fact(
         ):
             status = await pool.execute(
                 "UPDATE public.memory_catalog SET confidence = 0, invalid_at = now(),"
-                " updated_at = now() WHERE source_table = 'facts' AND source_id = $1"
-                " AND invalid_at IS NULL",
+                " updated_at = now() WHERE source_schema = $2 AND source_table = 'facts'"
+                " AND source_id = $1 AND invalid_at IS NULL",
                 fact_id,
+                source_schema,
             )
             return status != "UPDATE 0"
         searchable = f"{row['subject']} {row['predicate']} {row['content']}"
+        engine = embedding_engine if embedding_engine is not None else engine_factory()
         status = await pool.execute(
             f"""
             UPDATE public.memory_catalog
@@ -585,11 +600,11 @@ async def refresh_catalog_for_edited_fact(
                 retention_class = $12,
                 sensitivity = $13,
                 updated_at = now()
-            WHERE source_table = 'facts' AND source_id = $1
+            WHERE source_schema = $14 AND source_table = 'facts' AND source_id = $1
             """,
             fact_id,
             f"{row['subject']} {row['predicate']}: {row['content']}",
-            str(embedding_engine.embed(searchable)),
+            str(engine.embed(searchable)),
             preprocess_text(searchable),
             f"{row['subject']} {row['predicate']}",
             row["predicate"],
@@ -600,6 +615,7 @@ async def refresh_catalog_for_edited_fact(
             row["importance"],
             row["retention_class"],
             row["sensitivity"],
+            source_schema,
         )
         return status != "UPDATE 0"
     except Exception:
