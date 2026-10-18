@@ -342,15 +342,21 @@ def _device_finding(kwh: float, history: list[float]) -> EnergyFinding:
     )
 
 
-def test_detect_anomalies():
+@pytest.mark.parametrize(
+    "weekly_kwh, baseline_kwh, expected_count, expected_severity",
+    [
+        (50.0, 45.0, 0, None),  # inside the usual range -> no anomaly
+        (60.0, 50.0, 1, "anomaly"),  # above the usual range -> anomaly
+        (100.0, 50.0, 1, "high"),  # twice the usual centre -> high
+    ],
+)
+def test_detect_anomalies(weekly_kwh, baseline_kwh, expected_count, expected_severity):
     """Thresholds still grade a device: inside its usual range none, above it anomaly, 2x high."""
-    steady = [20.0, 22.0, 21.0, 19.0, 23.0, 21.0]
-
-    assert anomalies_from([_device_finding(22.0, steady)]) == []
-    (anomaly,) = anomalies_from([_device_finding(30.0, steady)])
-    assert anomaly["severity"] == "anomaly"
-    (high,) = anomalies_from([_device_finding(50.0, steady)])
-    assert high["severity"] == "high"
+    history = [baseline_kwh * share for share in (0.94, 1.06, 1.0, 0.96, 1.04, 1.0)]
+    result = anomalies_from([_device_finding(weekly_kwh, history)])
+    assert len(result) == expected_count
+    if expected_severity:
+        assert result[0]["severity"] == expected_severity
 
 
 def test_detect_anomalies_edge_cases():
