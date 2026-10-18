@@ -1371,6 +1371,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Create standing rule
 - Auto-approve matching tool calls without manual review.
+- Butler
+- Select a butler
+- Loading butlers
+- The butler whose approvals own this rule.
 - Tool Name
 - Description
 - Argument Constraints
@@ -1382,6 +1386,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expires In
 - (days, optional)
 - Cancel
+- Butlers
 - e.g. notify
 - What this rule allows
 - Unlimited
@@ -4152,6 +4157,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - |c:
 - probe all
 - Probe all {} credentials
+- Credential page
 - Spotify
 - Add credential
 - Probe all credentials
@@ -4894,4 +4900,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3899*
+*Total strings: 3905*
