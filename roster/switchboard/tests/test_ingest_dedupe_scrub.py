@@ -38,7 +38,11 @@ PLAIN = "Lunch on Thursday works for me."
 
 
 def _envelope(
-    text: str, *, event_id: str = "placeholder", channel: str = "email"
+    text: str,
+    *,
+    event_id: str = "placeholder",
+    channel: str = "email",
+    bearer_scrubbed: bool = False,
 ) -> IngestEnvelopeV1:
     return IngestEnvelopeV1(
         schema_version="ingest.v1",
@@ -51,7 +55,7 @@ def _envelope(
         ),
         sender=IngestSenderV1(identity=SENDER),
         payload=IngestPayloadV1(raw={}, normalized_text=text),
-        control=IngestControlV1(),
+        control=IngestControlV1(bearer_scrubbed=bearer_scrubbed),
     )
 
 
@@ -97,9 +101,14 @@ def test_scrub_failure_fails_closed_to_a_text_independent_key() -> None:
     assert _legacy_hash(CODE_A) not in first
 
 
-async def _ingest_with_lookups(text: str) -> AsyncMock:
+PRE_SCRUBBED_A = "Your code is [auth-code withheld: example.com]. It expires in 10 minutes."
+
+
+async def _ingest_with_lookups(text: str, *, bearer_scrubbed: bool = False) -> AsyncMock:
     content_lookup = AsyncMock(return_value={"request_id": "00000000-0000-0000-0000-000000000001"})
-    envelope = _envelope(text, event_id="evt-1").model_dump(mode="json")
+    envelope = _envelope(text, event_id="evt-1", bearer_scrubbed=bearer_scrubbed).model_dump(
+        mode="json"
+    )
     with (
         patch.object(ingest_module, "_find_request_by_dedupe_key", AsyncMock(return_value=None)),
         patch.object(ingest_module, "_find_request_by_content_hash", content_lookup),
@@ -121,5 +130,22 @@ async def test_secondary_lookup_runs_for_plain_text() -> None:
 
 async def test_secondary_lookup_is_skipped_when_bearer_material_was_withheld() -> None:
     lookup = await _ingest_with_lookups(CODE_A)
+
+    lookup.assert_not_awaited()
+
+
+def test_pre_scrubbed_placeholder_text_counts_as_withheld() -> None:
+    text, withheld = _dedupe_text(_envelope(PRE_SCRUBBED_A))
+
+    assert text == PRE_SCRUBBED_A
+    assert withheld is True
+
+
+def test_connector_scrub_flag_counts_as_withheld() -> None:
+    assert _dedupe_text(_envelope(PLAIN, bearer_scrubbed=True))[1] is True
+
+
+async def test_secondary_lookup_is_skipped_for_a_pre_scrubbed_second_otp() -> None:
+    lookup = await _ingest_with_lookups(PRE_SCRUBBED_A, bearer_scrubbed=True)
 
     lookup.assert_not_awaited()

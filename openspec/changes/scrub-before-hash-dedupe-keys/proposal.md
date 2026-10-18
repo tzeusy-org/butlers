@@ -9,7 +9,7 @@ code against the visible template. bu-y0cll7 chose to scrub before hashing.
 
 - Content-hash and dedupe keys derive from bearer-scrubbed text. Text without bearer material hashes
   byte-identically to before, so ordinary dedupe and old rows are unchanged.
-- When bearer material was withheld, the secondary cross-connector lookup is skipped and
+- When bearer material was withheld (by ingest or already by the connector), the secondary cross-connector lookup is skipped and
   `content_hash_key` is omitted, so a second code with its own event id is not dropped.
 - Scrub failure fails closed to a constant; the pipeline scrubs before building its key.
 - Historical rows are out of scope (owner decision bu-x5taqy, backfill bu-tnm8zn).

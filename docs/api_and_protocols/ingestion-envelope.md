@@ -75,7 +75,7 @@ in `roster/switchboard/tools/ingestion/ingest.py`). The key prefers `control.ide
 then `external_event_id` plus source identity, then a content hash; a secondary content-hash
 check catches the same message arriving through two connectors. Content hashes derive from the
 bearer-scrubbed text, so a stored key cannot be brute-forced back to a withheld one-time code;
-when bearer material was withheld the secondary check is skipped and `content_hash_key` is
+when bearer material was withheld (by ingest or by a pre-scrubbing connector) the secondary check is skipped and `content_hash_key` is
 omitted. Connectors must:
 
 - Send stable source identity fields on every submission, including retries.

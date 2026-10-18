@@ -252,7 +252,11 @@ def _dedupe_text(envelope: IngestEnvelopeV1) -> tuple[str, bool]:
     except Exception:
         logger.warning("Bearer scrub failed while deriving dedupe key; using constant text")
         return _SCRUB_FAILED_TEXT, True
-    return scrubbed, scrubbed != text
+    # A connector that scrubbed before submitting leaves the placeholder (and usually the flag).
+    withheld = (
+        scrubbed != text or envelope.control.bearer_scrubbed or bool(placeholder_artifacts(text))
+    )
+    return scrubbed, withheld
 
 
 def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
