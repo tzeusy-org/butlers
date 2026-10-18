@@ -86,6 +86,8 @@ async def test_an_overlapping_sync_now_waits_for_the_poller_on_a_non_telegram_ac
 
     assert provider.max_running == 1  # never two runs at once
     assert provider.fetches == 2  # the later run ran after the first finished
+    # The later run saw the first run's saved state, so it did not write the contact again.
+    assert writes == ["people/1"]
 
 
 async def test_different_accounts_are_not_serialized_against_each_other() -> None:

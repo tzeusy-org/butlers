@@ -128,8 +128,9 @@ None. The contacts module is a leaf module.
   cursor/state save share one hosting transaction. Earlier per-contact positive commits survive a
   later failure and are replayable; remote owner calls remain outside that transaction. Ordinary
   logs are not a durable outbox and do not promise exactly-once emission after a crash.
-- Same-account manual/poll cycles serialize. Persistent state and absent-source baseline checks
-  refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
+- Same-account manual/poll cycles serialize for every provider, not only Telegram; a manual
+  `contacts_sync_now` can therefore wait for one in-flight sync cycle. Persistent state and
+  absent-source baseline checks refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
   progress independently. Reappearance bypasses an unchanged etag/fingerprint cache when its exact
   source anchor is inactive, retains that still-live entity anchor and uses the existing upsert to
   clear `deleted_at`; inactive links do not become generally routable. No schema/grant change or
