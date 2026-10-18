@@ -22,7 +22,8 @@ Scope: v1-mandatory
 - **THEN** wording SHALL be normalised to lowercase tokens and mapped through the alias table: `run`, `jog`, `jogging` to running; `swim` to swimming; `ride`, `bike`, `cycle`, `cycling` to biking; `walk` to walking; `hike` to hiking; `lift`, `lifting`, `weights` to weightlifting
 - **AND** a stored activity matches when it contains every normalised query token
 - **AND** an omitted or blank activity SHALL match any workout
-- **AND** wording outside this table SHALL match only an identical stored activity name
+- **AND** a token with no alias SHALL match only that token as written, as a whole token, so unlisted wording matches a stored activity only when it contains that exact token
+- **AND** matching SHALL page through active facts newest-first until a match is found, so a match older than many newer workouts of other activities is still returned
 
 #### Scenario: Source attribution and overlap
 

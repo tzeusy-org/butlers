@@ -38,7 +38,10 @@ _TOKEN_ALIASES: dict[str, str] = {
     "weights": "weightlifting",
 }
 
-_WORKOUT_SCAN_LIMIT = 1000
+_PAGE_SIZE = 200
+# A device record only loses to an owner-logged one that overlaps it, so after the first
+# match keep reading back this far for a manual overlap (no session runs longer).
+_OVERLAP_LOOKBACK = timedelta(hours=24)
 
 NO_WORKOUT_REASON = "no_workout_recorded"
 
@@ -131,19 +134,58 @@ async def workout_last(
     activity: str | None = None,
     *,
     timezone: str | None = "UTC",
+    page_size: int = _PAGE_SIZE,
 ) -> dict[str, Any]:
     """Return the most recent recorded workout matching ``activity`` (any if omitted).
 
+    Reads active facts newest-first in keyset pages until the first match (plus the overlap
+    lookback), so an older match is never missed behind newer workouts of other activities.
     No match returns ``{"found": False, "reason": "no_workout_recorded", ...}``, never an
     error or a guess.
     """
-    rows = await pool.fetch(
-        "SELECT id, valid_at, metadata FROM facts"
-        " WHERE predicate = 'workout_session' AND validity = 'active' AND scope = 'health'"
-        " ORDER BY valid_at DESC LIMIT $1",
-        _WORKOUT_SCAN_LIMIT,
-    )
-    chosen = select_last_workout([dict(row) for row in rows], activity)
+    candidates: list[dict[str, Any]] = []
+    first_match_at: datetime | None = None
+    cursor: tuple[datetime, Any] | None = None
+    while True:
+        if cursor is None:
+            rows = await pool.fetch(
+                "SELECT id, valid_at, metadata FROM facts"
+                " WHERE predicate = 'workout_session' AND validity = 'active'"
+                " AND scope = 'health' AND valid_at IS NOT NULL"
+                " ORDER BY valid_at DESC, id DESC LIMIT $1",
+                page_size,
+            )
+        else:
+            rows = await pool.fetch(
+                "SELECT id, valid_at, metadata FROM facts"
+                " WHERE predicate = 'workout_session' AND validity = 'active'"
+                " AND scope = 'health' AND valid_at IS NOT NULL"
+                " AND (valid_at, id) < ($2, $3)"
+                " ORDER BY valid_at DESC, id DESC LIMIT $1",
+                page_size,
+                cursor[0],
+                cursor[1],
+            )
+        if not rows:
+            break
+        done = False
+        for row in rows:
+            item = dict(row)
+            if first_match_at is not None and item["valid_at"] < first_match_at - _OVERLAP_LOOKBACK:
+                done = True
+                break
+            candidates.append(item)
+            if first_match_at is None and activity_matches(
+                activity, (item.get("metadata") or {}).get("activity_type")
+            ):
+                first_match_at = item["valid_at"]
+                if (item["metadata"] or {}).get("detection") == "manual":
+                    done = True
+                    break
+        if done or len(rows) < page_size:
+            break
+        cursor = (rows[-1]["valid_at"], rows[-1]["id"])
+    chosen = select_last_workout(candidates, activity)
     if chosen is None:
         return {"found": False, "reason": NO_WORKOUT_REASON, "activity": activity}
     return render_workout(chosen, timezone)

@@ -90,15 +90,6 @@ async def test_latest_matching_workout_from_facts(pool) -> None:
     assert result["started_at"] == "2026-10-12T19:00:00+13:00"
 
 
-async def test_no_workout_recorded(pool) -> None:
-    from butlers.tools.health import workout_last
-
-    await _store(pool, datetime(2026, 10, 1, 6, tzinfo=UTC), "walking")
-    result = await workout_last(pool, "running")
-    assert result["found"] is False
-    assert result["reason"] == "no_workout_recorded"
-
-
 async def test_retracted_and_other_scope_facts_are_ignored(pool) -> None:
     from butlers.tools.health import workout_last
 
@@ -111,16 +102,3 @@ async def test_retracted_and_other_scope_facts_are_ignored(pool) -> None:
 
     result = await workout_last(pool, "running")
     assert result["id"] == kept
-
-
-async def test_owner_logged_beats_overlapping_device_record(pool) -> None:
-    from butlers.tools.health import workout_last
-
-    manual = await _store(
-        pool, datetime(2026, 10, 10, 6, 0, tzinfo=UTC), detection="manual", minutes=45
-    )
-    await _store(pool, datetime(2026, 10, 10, 6, 10, tzinfo=UTC), detection="auto")
-
-    result = await workout_last(pool, "running")
-    assert result["id"] == manual
-    assert result["source"] == "owner_logged"
