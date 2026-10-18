@@ -492,6 +492,10 @@ Connectors that need noise filtering before Switchboard ingestion SHALL use the 
 
 The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
+ID: REQ-connector-base-spec-007
+Source: bu-1wwjrb; [Observed] `src/butlers/connectors/discretion.py` evaluator log sites
+Scope: v1-mandatory
+
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
 - **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` (shared module, not connector-specific)
@@ -529,6 +533,11 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 - **WHEN** a connector records a discretion IGNORE to `connectors.filtered_events`
 - **THEN** it increments a low-cardinality `discretion_ignore_total{channel, kind}` Prometheus counter, where `kind` is the `classify_ignore_kind` result (`llm_verdict` for a genuine model-judged noise drop vs a fail-closed default such as `failover_exhausted`)
 - **AND** this makes per-channel over-filtering — and specifically the split between genuine noise and fabricated infra drops — observable per channel without re-sampling private payloads or a schema change
+
+#### Scenario: Discretion evaluator logs carry identifiers, not content
+- **WHEN** the `DiscretionEvaluator` logs an evaluation (input, result, timeout, error, unparseable response, contact-weight resolution or ledger-write failure)
+- **THEN** the log record carries only identifiers: source, channel, weight, prompt and response lengths, short keyed sha256 prefixes, latency, the exception class, the dispatcher's error-code token and the raise site
+- **AND** it SHALL NOT carry prompt or message text, raw model output, exception messages, tracebacks (`exc_info`) or channel values such as phone numbers or handles
 
 ### Requirement: Group-Size Discretion Bypass
 The discretion layer SHALL support a participant-count-based bypass, independent of sender weight, so that small/family-sized group chats are not subject to LLM content filtering while large/mass-membership groups remain filtered for token-cost control.
