@@ -143,8 +143,14 @@ anything beyond imports, docstrings, plain constant assignments and `@pytest.fix
 functions (any `pytest_*` hook, `pytest_plugins`, `collect_*`, module-level calls,
 conditionals, undecorated helpers, unparseable source) can change co-collected tests
 anywhere in the tree, so its change is attributed to every owner
-(`session-hook-context-change`), whatever directory it lives in. An added, edited or
-deleted pytest configuration (`pytest.ini`, `.pytest.ini`, `tox.ini` with `[pytest]`,
+(`session-hook-context-change`), whatever directory it lives in. A fixture counts only
+when the decorator is `pytest.fixture` or `fixture` bound by the module's own
+`import pytest` / `from pytest import fixture`, its decorator arguments and parameter
+defaults are literals, and its annotations only name things, because Python evaluates all
+of these at import; a rebinding of those names is a hook too. Import-time code in other
+modules (a helper a conftest imports, a test module) is not covered by this classifier
+(`bu-qwcgvu`). An added, edited or deleted pytest configuration (`pytest.toml`,
+`.pytest.toml`, `pytest.ini`, `.pytest.ini`, `tox.ini` with `[pytest]`,
 `setup.cfg` with `[tool:pytest]`, or a `pyproject.toml` `[tool.pytest]` table) is likewise
 attributed to every owner (`pytest-configuration-change`); a symlinked one is refused
 (`indirect-pytest-configuration`). Renames, moves and deleted

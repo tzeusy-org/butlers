@@ -2105,6 +2105,8 @@ def test_added_symlinked_conftest_is_refused_as_an_indirect_fixture_source(tmp_p
 _CONFIG_FILES = {
     "tests/pytest.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
     "pytest.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
+    "tests/pytest.toml": "[pytest]\naddopts = ['--deselect', 'tests/test_owner.py']\n",
+    ".pytest.toml": "[pytest]\naddopts = ['--deselect', 'tests/test_owner.py']\n",
     "tox.ini": "[pytest]\naddopts = --deselect tests/test_owner.py\n",
     "setup.cfg": "[tool:pytest]\naddopts = --deselect tests/test_owner.py\n",
     "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--deselect tests/test_owner.py'\n",
@@ -2170,3 +2172,114 @@ def test_symlinked_pytest_configuration_is_refused(tmp_path):
 
     with pytest.raises(ledger.EvidenceError, match="indirect-pytest-configuration"):
         ledger.destructive_changes(root, base)
+
+
+_IMPORT_TIME_EXECUTION_SHAPES = {
+    "decorator-argument-call": (
+        "import pytest\n\n\n@pytest.fixture(params=[boom()])\ndef a():\n    return 1\n"
+    ),
+    "decorator-keyword-call": (
+        "import pytest\n\n\n@pytest.fixture(scope=boom())\ndef a():\n    return 1\n"
+    ),
+    "parameter-default-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(x=boom()):\n    return 1\n"
+    ),
+    "keyword-only-default-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(*, x=boom()):\n    return 1\n"
+    ),
+    "argument-annotation-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a(x: boom()):\n    return 1\n"
+    ),
+    "return-annotation-call": (
+        "import pytest\n\n\n@pytest.fixture\ndef a() -> boom():\n    return 1\n"
+    ),
+    "assignment-annotation-call": "X: boom() = 1\n",
+    "annotation-lambda": "X: (lambda: 1) = 1\n",
+    "annotation-walrus": "X: (y := 1) = 1\n",
+    "fixture-from-another-module": (
+        "from helpers import fixture\n\n\n@fixture\ndef a():\n    return 1\n"
+    ),
+    "fixture-attribute-of-another-module": (
+        "import helpers\n\n\n@helpers.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-bound-to-another-module": (
+        "import helpers as pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-rebound": (
+        "import pytest\nimport helpers as pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "pytest-name-shadowed-by-assignment": (
+        "import pytest\npytest = 1\n\n\n@pytest.fixture\ndef a():\n    return 1\n"
+    ),
+    "fixture-used-before-import": "@pytest.fixture\ndef a():\n    return 1\n",
+    "starred-decorator-keywords": (
+        "import pytest\n\n\n@pytest.fixture(**boom())\ndef a():\n    return 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_IMPORT_TIME_EXECUTION_SHAPES))
+def test_conftest_classifier_rejects_code_that_runs_at_import_inside_a_fixture_shape(name):
+    """bu-p3phlx C1: decorators, defaults and annotations are evaluated at import."""
+    assert ledger.conftest_has_session_hooks(_IMPORT_TIME_EXECUTION_SHAPES[name])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest as pt\n\n\n@pt.fixture(params=[1, 2], ids=['a', 'b'])\ndef a():\n    return 1\n",
+        "from pytest import fixture as make\n\n\n@make\ndef a(x: int = 3, *, y: 'str' = 'z') -> int:\n    return 1\n",
+        "import pytest\n\n\n@pytest.fixture\ndef a(x: list[int] | None = None) -> dict[str, int]:\n    return {}\n",
+        "import pytest\nimport helpers\n\nX: helpers.Kind = 1\n",
+    ],
+)
+def test_conftest_classifier_still_accepts_bound_pytest_fixtures_with_literal_arguments(source):
+    assert not ledger.conftest_has_session_hooks(source)
+
+
+_PROVEN_EVASIONS = {
+    "decorator-argument": (
+        "import pytest\n\n\n"
+        "@pytest.fixture(params=[setattr(__import__('_pytest.python').python.Function,"
+        " 'runtest', lambda self: None)])\n"
+        "def neutral(request):\n    return 1\n"
+    ),
+    "look-alike-fixture": (
+        "from helpers import fixture\n\n\n@fixture\ndef neutral():\n    return 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PROVEN_EVASIONS))
+def test_a_fixture_shaped_conftest_cannot_neutralize_a_failing_owner_unseen(tmp_path, name):
+    """bu-p3phlx C1 end to end: a real failing owner, a real pytest run, a real guard."""
+    root = _repository(tmp_path)
+    (root / "tests/test_owner.py").write_text("def test_owner():\n    assert False\n")
+    (root / "tests/zzz").mkdir()
+    (root / "tests/zzz/helpers.py").write_text("fixture = lambda f: f\n")
+    base = _commit_all(root, "base with a failing owner")
+    (root / "tests/zzz/conftest.py").write_text(_PROVEN_EVASIONS[name])
+    (root / "tests/zzz/test_dummy.py").write_text("def test_dummy():\n    assert True\n")
+    _commit_all(root, "candidate adds a neutralizing conftest")
+
+    losses = ledger.destructive_changes(root, base)
+
+    assert set(losses.values()) == {"session-hook-context-change"}
+    assert _owner_nodes(losses)
+
+
+def test_pytest_toml_that_deselects_an_owner_is_attributed_to_every_owner(tmp_path):
+    """bu-p3phlx C2: pytest.toml is authoritative even when empty, ahead of every other file."""
+    root = _repository(tmp_path)
+    base = ledger.git(root, "rev-parse", "HEAD")
+    (root / "tests/pytest.toml").write_text(
+        '[pytest]\naddopts = ["-p", "no:cacheprovider", "-k", "not owner"]\n'
+    )
+    (root / "tests/test_other.py").write_text("def test_other():\n    assert True\n")
+    _commit_all(root, "candidate adds a tests/pytest.toml")
+
+    code, out = _run_pytest(root)
+    assert "deselected" in out and "failed" not in out and code == 0
+    losses = ledger.destructive_changes(root, base)
+    assert set(losses.values()) == {"pytest-configuration-change"}
+    assert _owner_nodes(losses)
