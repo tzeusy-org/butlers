@@ -322,6 +322,7 @@ jobs:
             --input "${RUNNER_TEMP}/ci-artifacts/smoke/raw-junit.xml" \
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/smoke/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/smoke/top-durations.txt" \
+            --failed-nodes-output "${RUNNER_TEMP}/ci-artifacts/smoke/failed-nodes.txt" \
             --limit 25
       - name: Upload complete execution reconciliation
         if: always() && steps.reconcile.outcome == 'success'
@@ -349,6 +350,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/smoke/junit.xml
             ${{ runner.temp }}/ci-artifacts/smoke/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/smoke/failed-nodes.txt
           retention-days: 14
           if-no-files-found: error
           overwrite: true
