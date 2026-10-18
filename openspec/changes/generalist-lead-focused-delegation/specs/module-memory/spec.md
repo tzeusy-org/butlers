@@ -128,6 +128,8 @@ Scope: v1-mandatory
   SHALL be written, and `content_authority` SHALL remain `third_party`
 - **AND** the fact SHALL leave `GET /api/memory/facts?held=true`
 - **AND** vouching again, or concurrently, SHALL write no further audit row
+- **AND** the fact endorsement state SHALL live in nullable `endorsed_at` and `endorsed_by`
+  columns on the facts table, added additively, with authority and taint unchanged
 
 #### Scenario: A retracted fact cannot be vouched for
 
