@@ -51,6 +51,7 @@ async def test_only_overdue_doses_are_missed_and_later_ones_are_low_priority():
     assert texts == {
         "Missed dose(s) today: Morning pill": "high",
         "Doses due later today: Evening pill": "low",
+        "Medication adherence today: 50% (1 of 2 due doses taken)": "medium",
     }
     assert "Missed 1 dose(s) today." in envelope["summary"]
 

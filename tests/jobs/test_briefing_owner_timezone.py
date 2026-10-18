@@ -93,6 +93,7 @@ async def test_missed_and_due_later_split_uses_owner_local_time():
     assert texts == {
         "Missed dose(s) today: Morning pill": "high",
         "Doses due later today: Evening pill": "low",
+        "Medication adherence today: 0% (0 of 1 due doses taken)": "medium",
     }
 
 
