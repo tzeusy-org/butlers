@@ -28,20 +28,24 @@ None. Every block is ADDED, so no baseline text is rebuilt and no `scripts/spec-
 ## Overlaps and ID checks
 
 - **#4217** (owner's open draft, same change name, same IDs) is the superseded text. It is not touched. If the owner adopts this change instead, #4217 should be closed; if both stay open they cannot both archive, because they mint the same `REQ-owner-checklist-preparation-001..005`.
-- **generalist-lead-focused-delegation** (RFC 0038, pending) supplies the seams cited here (`REQ-capability-authorization-004`, `-007`, `-009`, `-010`, `-014`; goal-orchestration; butler-switchboard service-plane relay). This change adds no block to those capabilities. It depends on that change being adopted; if a cited requirement is renumbered there, the Source lines here follow it.
+- **generalist-lead-focused-delegation** (RFC 0038, pending) supplies the seams cited here (`REQ-capability-authorization-004`, `-007`, `-009`, `-010`, `-014`; goal-orchestration; butler-switchboard service-plane relay). This change adds no block to those capabilities, but it depends on an addition to them: a catalog-declared always-per-event approval mode (bu-n7zmbp.2, see design.md "Required RFC 0038 additions"). It also depends on that change being adopted; if a cited requirement is renumbered there, the Source lines here follow it.
 - No canonical spec or other active change defines `owner-checklist-preparation`. IDs checked against canonical specs and every active change on 2026-10-18.
 - bu-2jtfw.9 (General capture) remains the owner of capture and vocabulary; nothing here is credited to it. Custody (draft PR #4211) is a separate proposal and is not equated with checklist coverage.
 
 ## Decisions taken in this draft ([decision])
 
-- Confirming a revision and issuing a receipt are two park-only `record` capabilities that always need the owner's per-event approval and can never be satisfied by a standing rule.
+- Confirming a revision and issuing a receipt are two `record` capabilities that declare the new always-per-event approval mode: they always need the owner's per-event approval and can never be satisfied by a standing rule. The owner's own dashboard submit is that approval for an owner-authored revision.
+- Confirmation does not clear taint: a goal-confirmed revision keeps the goal's stamp; only an owner-authored dashboard revision is untainted.
+- The specialist read is a goal-plane capability inside the owner-selected grant; service-plane prepare and release return only an opaque fence or a content-blind refusal.
+- The confirm and issue call arguments carry the revision digest, clause decisions, exclusions and versions, so the approval binds them; execution refuses on drift.
+- Named allowlisted service-plane endpoints are the seam for Finance and Travel fences (added on opt-in; sources stay `unavailable` until then).
+- A historical receipt keeps versions and times and withholds source-derived labels and facts once private; versions are opaque.
+- Both revision-confirmation paths exist under REQ-capability-authorization-007, so revision confirmation is not a separate question.
 - Operation identity is the approval plus the effect idempotency key (D12), replacing the adopted operation ID.
 - Source-owned fence operations are non-model-reachable service-plane endpoints called by General's deterministic code.
-- A historical receipt keeps its versions and prepared-at time but withholds a source-derived label or fact once the source has become private (see owner question 3).
-
+-
 ## Open owner questions
 
-1. **Granting a read to exactly the owner-selected source.** The adopted text lets a specialist return even a label only after the owner's exact selection. RFC 0038 gives grants a resource scope and binds the call arguments in the broker assertion, but does not say how a goal's grant resource scope is derived from an owner selection recorded by General. Options: (a) a General-owned owner selection record that the control plane reads when issuing or narrowing the grant; (b) the owner's selection is itself a per-event approval of the read. Until chosen, a Finance or Travel source cannot return a source-derived label, which is the adopted default.
-2. **How General obtains a Finance or Travel version fence.** The adopted commit fence needs General's deterministic code to call a source-owned prepare operation. The Switchboard service-plane relay is a set of named, allowlisted endpoints; this needs new endpoints (General as caller, Finance and Travel as targets). Confirm that adding them is in scope, or keep Finance/Travel `unavailable`, which is the adopted default.
-3. **Historical receipts and later privacy.** The adopted text says a receipt remains retrievable with its original versions; the bead's behavior matrix also says a historical receipt must never disclose evidence that has since become private. This draft reconciles them (versions and times stay, source-derived labels and facts are withheld). Confirm.
-4. **Is a revision confirmation an approval too?** The adopted text confirms both the revision and the receipt. This draft makes both per-event approvals. If the owner wants revision confirmation to be lighter (an owner-origin dashboard action with no goal), that needs a different seam.
+1. **Granting a read to exactly the owner-selected source.** The adopted text lets a specialist return even a label only after the owner's exact selection. RFC 0038 grants carry a resource scope and the broker assertion binds the call arguments, but nothing binds that scope to an owner selection. Recommended: a selection record held by the control plane (the placement #4217 gave Switchboard) and written only from a D19 owner action, which the broker applies as the capability's resource scope. This is an RFC 0038 addition (bu-n7zmbp.3). Alternative: a General-owned selection record that the control plane reads, which moves the trust anchor from the control plane to General. A per-event approval of the read is not an option as RFC 0038 stands: reads carry no effect id and D13 defines no way to return a parked read's result to the goal. Until chosen, Finance and Travel sources cannot return a source-derived label, which is the adopted default.
+
+The adoption ask also covers the always-per-event approval mode (bu-n7zmbp.2): adopting this change asks for that addition too.
