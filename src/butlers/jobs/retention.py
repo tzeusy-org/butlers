@@ -32,6 +32,7 @@ Supported tables
 [B] connectors.filtered_events            — monthly partitions older than N months
 [C] public.insight_candidates             — delivered/filtered rows after 90 days
 [D] public.secret_probe_log               — rows older than 90 days
+[E] connectors.activitywatch_events       — evidence rows older than 90+ days (opt-in)
 
 See docs/operations/data-retention.md for policy rationale.
 """
@@ -489,4 +490,105 @@ async def prune_secret_probe_log(
     )
     deleted = int(result.split()[-1])
     logger.info("secret_probe_log prune: deleted=%d (of %d candidates)", deleted, candidates)
+    return {"candidates": candidates, "deleted": deleted, "dry_run": False, "enabled": True}
+
+
+# ---------------------------------------------------------------------------
+# [E] connectors.activitywatch_events — opt-in evidence retention
+# ---------------------------------------------------------------------------
+
+# The floor must exceed ACTIVITYWATCH_MAX_BACKFILL_DAYS (default 30) and the Chronicler
+# projection's replay window: pruning inside it would lose evidence that an idempotent
+# re-projection still needs.
+_ACTIVITYWATCH_EVENTS_MIN_TTL_DAYS = 90
+
+
+async def prune_activitywatch_events(
+    pool: asyncpg.Pool,
+    *,
+    enabled: bool = False,
+    dry_run: bool = True,
+    ttl_days: int = _ACTIVITYWATCH_EVENTS_MIN_TTL_DAYS,
+    batch_limit: int = 500,
+) -> dict[str, Any]:
+    """Delete evidence rows older than ``ttl_days`` from ``connectors.activitywatch_events``.
+
+    Raw window titles are sensitive and ActivityWatch stays the upstream source of
+    truth, so the owner may bound how long the local evidence copy is kept.  Only rows
+    whose event timestamp ``ts`` is older than ``ttl_days`` are eligible.  Chronicler
+    projections are not touched.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    enabled:
+        Must be ``True`` to run.  Default: ``False``.
+    dry_run:
+        When ``True`` (default), count without deleting.
+    ttl_days:
+        Age threshold in days, measured from ``ts``.  Must be >= 90.
+    batch_limit:
+        Maximum rows to delete per invocation; oldest rows go first and a rerun
+        resumes where the last batch stopped.
+
+    Returns
+    -------
+    dict
+        ``{"candidates": int, "deleted": int, "dry_run": bool, "enabled": bool}``
+
+    Raises
+    ------
+    ValueError
+        If ``ttl_days < 90``, which could delete evidence the Chronicler projection's
+        backfill and replay window still needs.
+    """
+    if not enabled:
+        logger.debug("activitywatch_events pruner is disabled; skipping")
+        return {"candidates": 0, "deleted": 0, "dry_run": dry_run, "enabled": False}
+
+    if ttl_days < _ACTIVITYWATCH_EVENTS_MIN_TTL_DAYS:
+        raise ValueError(
+            f"activitywatch_events ttl_days must be >= {_ACTIVITYWATCH_EVENTS_MIN_TTL_DAYS} "
+            f"(got {ttl_days}); a shorter window would drop evidence that the Chronicler "
+            "projection's backfill and replay window still needs"
+        )
+
+    cutoff = datetime.now(UTC) - timedelta(days=ttl_days)
+
+    count_row = await pool.fetchrow(
+        "SELECT COUNT(*) AS n FROM connectors.activitywatch_events WHERE ts < $1",
+        cutoff,
+    )
+    candidates: int = count_row["n"] if count_row else 0
+
+    logger.info(
+        "activitywatch_events prune: ttl_days=%d candidates=%d dry_run=%s batch_limit=%d",
+        ttl_days,
+        candidates,
+        dry_run,
+        batch_limit,
+    )
+
+    if candidates == 0:
+        return {"candidates": 0, "deleted": 0, "dry_run": dry_run, "enabled": True}
+
+    if dry_run:
+        return {"candidates": candidates, "deleted": 0, "dry_run": True, "enabled": True}
+
+    result = await pool.execute(
+        """
+        DELETE FROM connectors.activitywatch_events
+        WHERE id IN (
+            SELECT id FROM connectors.activitywatch_events
+            WHERE ts < $1
+            ORDER BY ts
+            LIMIT $2
+        )
+        """,
+        cutoff,
+        batch_limit,
+    )
+    deleted = int(result.split()[-1])
+    logger.info("activitywatch_events prune: deleted=%d (of %d candidates)", deleted, candidates)
     return {"candidates": candidates, "deleted": deleted, "dry_run": False, "enabled": True}
