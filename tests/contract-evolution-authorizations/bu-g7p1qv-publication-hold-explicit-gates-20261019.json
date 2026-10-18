@@ -1,0 +1,264 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-g7p1qv-publication-hold-explicit-gates-20261019",
+  "bead": "bu-g7p1qv",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-5ek7fm for implementation bead bu-g7p1qv (triage, healing gate 7, QA gate 7 and the healing status call read the QA publication hold through an explicit get_publication_hold lookup that short-circuits before the cooldown query, and get_recent_attempt returns only real terminal attempts instead of a hold sentinel). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-g7p1qv (sec-review-lane local verdict, code clean with one spec correction since applied; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-g7p1qv head abcf4f0addc5ab6bc1c1788ef4607c10a74fea20 plus the reviewer-computed request. Governing requirement REQ-qa-publication-authority-006 (Durable ambiguous outcome recovery) in the active delta openspec/changes/confine-qa-publication-authority/specs/qa-publication-authority/spec.md, which already carries its ID on main; the change adds one scenario, Admission gates read the hold, not the cooldown window. The 9 owners in tests/core/healing and tests/core/qa replace the sentinel with the explicit hold lookup. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/core/healing/test_tracking.py::test_ambiguous_publication_holds_lineage_past_watchdog_restart_and_cooldown",
+      "after": "tests/core/healing/test_tracking.py::test_ambiguous_publication_holds_lineage_past_watchdog_restart_and_cooldown",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Real-Postgres: the cooldown-expiry step no longer expects get_recent_attempt to return the {publication_held: True} sentinel, which this change removes. It now asserts that get_recent_attempt(pool, fingerprint, 0) is None (only real attempts are reported) and that get_publication_hold is True (the hold persists) (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'). The watchdog, restart and create_or_join_attempt PublicationLineageHeld assertions around it are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_dispatch.py::test_dispatch_qa_gate_rejections",
+      "after": "tests/core/qa/test_dispatch.py::test_dispatch_qa_gate_rejections",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.dispatch.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. QA dispatch gate 7 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_dispatch.py::test_dispatch_qa_success_and_never_raises",
+      "after": "tests/core/qa/test_dispatch.py::test_dispatch_qa_success_and_never_raises",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.dispatch.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. QA dispatch gate 7 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_journal.py::test_flagged_event_emitted_for_novel_finding_after_attempt_claim",
+      "after": "tests/core/qa/test_journal.py::test_flagged_event_emitted_for_novel_finding_after_attempt_claim",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.dispatch.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. QA dispatch gate 7 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_provenance_and_dedup_linkage.py::test_triage_novel_finding_insert_called_with_none_attempt_id",
+      "after": "tests/core/qa/test_provenance_and_dedup_linkage.py::test_triage_novel_finding_insert_called_with_none_attempt_id",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.triage.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. Triage gate 3 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_triage.py::test_triage_gate_rejections_and_short_circuit",
+      "after": "tests/core/qa/test_triage.py::test_triage_gate_rejections_and_short_circuit",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.triage.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. Triage gate 3 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_triage.py::test_triage_holds_a_lineage_with_an_unresolved_publication",
+      "after": "tests/core/qa/test_triage.py::test_triage_holds_a_lineage_with_an_unresolved_publication",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "The unresolved publication is now modelled at its new source: get_publication_hold returns True, replacing the get_recent_attempt sentinel dict {publication_held: True} that this change removes (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'). The expected outcome is unchanged: dedup_reason publication_held, no novel finding, dedup_counts {publication_held: 1}. A new assert_not_called on get_recent_attempt pins that the hold is decided without consulting the cooldown window."
+    },
+    {
+      "before": "tests/core/qa/test_triage.py::test_triage_intra_patrol_dedup_and_sorting",
+      "after": "tests/core/qa/test_triage.py::test_triage_intra_patrol_dedup_and_sorting",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.triage.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. Triage gate 3 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    },
+    {
+      "before": "tests/core/qa/test_triage.py::test_triage_is_novel_empty_and_novel",
+      "after": "tests/core/qa/test_triage.py::test_triage_is_novel_empty_and_novel",
+      "contracts": [
+        "REQ-qa-publication-authority-006"
+      ],
+      "reason": "Setup only: adds patch('butlers.core.qa.triage.get_publication_hold', AsyncMock(return_value=False)) beside the existing get_recent_attempt patch. Triage gate 3 now asks for the publication hold explicitly (REQ-qa-publication-authority-006 scenario 'Admission gates read the hold, not the cooldown window'), and the test's MagicMock pool cannot answer that query. No hold is modelled, so the test runs the same no-hold path as before. The test body and every assertion are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/changes/confine-qa-publication-authority/specs/qa-publication-authority/spec.md",
+      "id": "REQ-qa-publication-authority-006",
+      "before_sha256": "d9dfc77d7b5bcf6ea3ce0be46909c68cd99df4cbc9f57385b1fb8b8ba43ab69c",
+      "after_sha256": "26a4caa4c74b0e23046aa86b5128dfca8d13c926b81684be9bacfcecc648b380"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/core/healing/__init__.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "744e5161b80ca7bb773bd7e19af5d01a1a11fae291a7dd87af9f3f530b01475a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fcb0186d6fb8eebdf844108dbe9a2746a1eb9a0667f0cbd8c85d9ad76d54163b"
+      }
+    },
+    {
+      "path": "src/butlers/core/healing/dispatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7123a2b9cae0c6bcdcd6ba4adab5a72df73e07bcef5e7a1333fe55a104ccc48c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "86677b8c4ed0bd1ceedf9e1de84d3b7413eaac789934a0708aa67f56fa6c583d"
+      }
+    },
+    {
+      "path": "src/butlers/core/healing/tracking.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4f6f6f753f74816f3aa1a343073e68b623259ed340fc8b78be485635e705760e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "665771d537f6169d4e500522810b2a36b513c7fed81a6ec60b9942467928c8e9"
+      }
+    },
+    {
+      "path": "src/butlers/core/qa/dispatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "fee027e7cb55d3ccedeb087f98bb6a2bd9d94bbcca23e4d67448f230acc18c30"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9b70690c7e17d149194921ad4f7af6c8d2f16b1991fb4037954cc128dd66bc15"
+      }
+    },
+    {
+      "path": "src/butlers/core/qa/triage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "f1de46df929f5f16df1ac9dd9a24884aa133bbfbf88716d094924872fd6eb33d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "8f9102b57cf4a5fa9c12e67594156dde89dd7eb6b9171370d0f1d813882cc47d"
+      }
+    },
+    {
+      "path": "src/butlers/modules/self_healing/__init__.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "cfc075581740b5485914f3ac86a35f16afbe4b8f39a727e9be446e87ea358df4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1976dc9a6308378514bf6ba678a38f7604008fa61c4c3eae1eb9f72e5a9b47bb"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-g7p1qv-publication-hold-explicit-gates-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "a2af2bce6ae371f5d9b498b39aab0dc771bf369c0bb9c0bfb2a05a93e856271a"
+      }
+    },
+    {
+      "path": "tests/core/healing/test_publication_hold_gates.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "db21bc5977240ee31be804c5500c625ce1805e13ad939c7abea8b6eccc962581"
+      }
+    },
+    {
+      "path": "tests/core/healing/test_tracking.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "36c6c03621b638e241d89b24f6d9b9107140c0f9740bb2785d574fa60e55ff9f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "76d9c2f3692e4a0dba6d20f566c481f3fbfb77271407d8592e4689c18507f1ed"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_dispatch.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "c982325ceb0cd2d757a8fa43bde5c292f3c395f6fa92dd879fe03c367c0618af"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e479f0f17e0165bf7b23db01d46c757825c7a41ac66ee1d22fbf113735a9bfef"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_journal.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b360d02b0a7355fbbb95552fdd8cc67d614e5272195e3641649ff1425fa08a69"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1dcf625aff7dcb2200c9590e5582f9ecc1b2883a587f02586615007d2a799db1"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_provenance_and_dedup_linkage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "65a14f4e243cc2a83919bfb203ea88302083bea935271192e259018e2d91b543"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9b48636a06c419bd7f153dbb0c12919d142c9d8f2912bbc7002f7175f46714ff"
+      }
+    },
+    {
+      "path": "tests/core/qa/test_triage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3d3580bebea5a9d2102b28c08da9bc8035ec4d6aacf8c6ca9129d22695089f26"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3331c7f6fd4d88adc90850dfb46789ebac86afbdde7505e4214d9c1f25165aa6"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
