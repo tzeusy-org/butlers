@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateRule } from "@/hooks/use-approvals";
 import { useButlers } from "@/hooks/use-butlers";
@@ -38,8 +39,10 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
   const [form, setForm] = useState(EMPTY_FORM);
   const [constraintsError, setConstraintsError] = useState<string | null>(null);
   const createMutation = useCreateRule();
-  const { data: butlersResponse } = useButlers();
-  const butlerNames = (butlersResponse?.data ?? []).map((b) => b.name).sort();
+  const butlersQuery = useButlers();
+  const butlerNames = butlersQuery.data
+    ? butlersQuery.data.data.map((b) => b.name).sort()
+    : [];
 
   function resetForm() {
     setForm(EMPTY_FORM);
@@ -114,9 +117,17 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
                 </option>
               ))}
             </select>
-            <p className="text-muted-foreground text-xs mt-1">
-              The butler whose approvals own this rule.
-            </p>
+            {butlersQuery.isError ? (
+              <SourceDegradedNote
+                label="Butlers"
+                className="mt-1"
+                onRetry={() => butlersQuery.refetch()}
+              />
+            ) : (
+              <p className="text-muted-foreground text-xs mt-1">
+                The butler whose approvals own this rule.
+              </p>
+            )}
           </div>
 
           <div>

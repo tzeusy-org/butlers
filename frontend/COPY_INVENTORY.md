@@ -1385,6 +1385,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expires In
 - (days, optional)
 - Cancel
+- Butlers
 - e.g. notify
 - What this rule allows
 - Unlimited
@@ -4897,4 +4898,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3902*
+*Total strings: 3903*

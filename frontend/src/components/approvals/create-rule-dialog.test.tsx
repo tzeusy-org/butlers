@@ -15,15 +15,20 @@ vi.mock("@/hooks/use-approvals", () => ({
   useCreateRule: () => ({ mutate, isPending: false }),
 }));
 
+let butlersState: { data?: unknown; isError?: boolean } = {
+  data: { data: [{ name: "relationship" }, { name: "finance" }] },
+};
+const refetch = vi.fn();
+
 vi.mock("@/hooks/use-butlers", () => ({
-  useButlers: () => ({
-    data: { data: [{ name: "relationship" }, { name: "finance" }] },
-  }),
+  useButlers: () => ({ ...butlersState, refetch }),
 }));
 
 afterEach(() => {
   cleanup();
   mutate.mockReset();
+  refetch.mockReset();
+  butlersState = { data: { data: [{ name: "relationship" }, { name: "finance" }] } };
 });
 
 function fillRule() {
@@ -46,15 +51,28 @@ describe("CreateRuleDialog", () => {
   it("sends the chosen butler in the create payload", () => {
     render(<CreateRuleDialog open onOpenChange={() => {}} />);
     fillRule();
-    fireEvent.change(screen.getByLabelText("Butler"), { target: { value: "finance" } });
+    fireEvent.change(screen.getByLabelText("Butler"), { target: { value: "relationship" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Create rule" }));
 
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate.mock.calls[0][0]).toMatchObject({
-      butler: "finance",
+      butler: "relationship",
       tool_name: "notify",
       description: "Allow notify",
     });
+  });
+
+  it("shows a degraded note and stays unsubmittable when the butlers list fails", () => {
+    butlersState = { isError: true };
+    render(<CreateRuleDialog open onOpenChange={() => {}} />);
+    fillRule();
+
+    expect(screen.getByRole("alert").textContent).toContain("Butlers");
+    const submit = screen.getByRole("button", { name: "Create rule" });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 });
