@@ -22,7 +22,7 @@ from tests.contracts.test_tool_surface_isolation import _record_core_registratio
 pytestmark = pytest.mark.contract
 
 _CONFIG_OVERRIDES = {
-    "calendar": {"provider": "google"},
+    "calendar": {"provider": "google", "response_enabled": True},
     "contacts": {"provider": "google"},
     "email": {"send_tools": True},
     "spotify": {"playback_tools": True},
@@ -44,7 +44,13 @@ async def _module_registration_union() -> dict[str, str]:
             if config_schema is not None
             else {}
         )
-        butler_names = ("relationship",) if module_name == "memory" else ("inventory",)
+        butler_names = (
+            ("relationship",)
+            if module_name == "memory"
+            else ("inventory", "relationship")
+            if module_name == "calendar"
+            else ("inventory",)
+        )
         for butler_name in butler_names:
             mcp = FastMCP(f"inventory-{module_name}-{butler_name}")
             db = SimpleNamespace(pool=AsyncMock(), schema="inventory", db_name="inventory")
