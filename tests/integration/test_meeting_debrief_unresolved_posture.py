@@ -111,3 +111,51 @@ async def test_shared_email_with_a_no_contact_claimant_is_withheld_in_either_row
         await _later_person(pool, "shared@example.test", posture)
 
     assert _names(await meeting_debrief_pending(pool)) == []
+
+
+async def _entity_with_email(pool, email: str, *, posture="active", metadata=None) -> str:
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+        "VALUES ('Dana', 'person', $1::text::jsonb) RETURNING id",
+        json.dumps(metadata or {}),
+    )
+    await pool.execute(
+        "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
+        "VALUES ($1, 'has-email', $2, 'literal', 'test')",
+        entity_id,
+        email,
+    )
+    await pool.execute("UPDATE public.entities SET posture = $2 WHERE id = $1", entity_id, posture)
+    return str(entity_id)
+
+
+async def test_one_entity_with_two_casings_of_its_email_resolves_to_that_entity(pool) -> None:
+    from butlers.jobs.meeting_debrief import _resolve_people
+
+    dana = await _entity_with_email(pool, "Dana@Example.com")
+    await pool.execute(
+        "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
+        "VALUES ($1::uuid, 'has-email', 'dana@example.com', 'literal', 'test')",
+        dana,
+    )
+
+    people = await _resolve_people(pool, {"dana@example.com"})
+
+    assert people["dana@example.com"]["entity_id"] == dana
+
+
+@pytest.mark.parametrize(
+    "metadata", [{"merged_into": str(uuid.uuid4())}, {"deleted_at": "2031-01-01"}]
+)
+async def test_merged_or_deleted_holder_neither_blocks_nor_makes_the_email_ambiguous(
+    pool, metadata
+) -> None:
+    from butlers.jobs.meeting_debrief import _resolve_people
+
+    live = await _entity_with_email(pool, "dana@example.com")
+    await _entity_with_email(pool, "dana@example.com", posture="no_contact", metadata=metadata)
+
+    people = await _resolve_people(pool, {"dana@example.com"})
+
+    assert people["dana@example.com"]["entity_id"] == live
+    assert people["dana@example.com"]["posture"] == "active"
