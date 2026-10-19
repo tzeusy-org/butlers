@@ -877,6 +877,10 @@ A candidate MAY carry a typed `premise` naming the fact its message asserts: `{"
 ### Requirement: In-Place Amendment of Delivered Insights
 When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. The owner-condition ledger's `reconcile_snapshot` `post_write` hook SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the reconcile transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
 
+ID: REQ-proactive-insight-engine-035
+Source: [Observed] src/butlers/core/insight_premise.py:enqueue_premise_amendments; core_255
+Scope: v1-mandatory
+
 #### Scenario: A standalone Telegram delivery is edited in place
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
 - **THEN** the cycle edits that message to a struck-through original plus `Resolved HH:MM UTC`, marks the amendment `applied`, and records one `outcome="amended"` ledger row
