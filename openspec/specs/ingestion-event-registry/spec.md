@@ -121,6 +121,11 @@ Scope: v1-mandatory
 - **AND** `status="ingested"` queries only `public.ingestion_events`
 - **AND** all other status values query only `connectors.filtered_events`
 
+#### Scenario: Row-level evidence is read in grouped lookups
+- **WHEN** the dashboard API lists one page of events
+- **THEN** the sender display names, the replay policy and the stored sender-authentication verdict are each resolved by one grouped lookup for the whole page, never one request per row
+- **AND** a failure of any one lookup degrades only its own fields
+
 ### Requirement: Session Lineage Query
 
 The function SHALL return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
