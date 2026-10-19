@@ -189,9 +189,49 @@ async def test_a_forced_tick_in_the_lock_hand_off_window_reports_busy() -> None:
     assert not tick_in_progress(pool)
 
 
-async def test_guard_state_is_not_inherited_by_a_new_pool_object() -> None:
+async def test_the_guard_entry_is_evicted_when_the_last_tick_finishes() -> None:
+    from butlers.core import tick_guard
+
     pool = MagicMock()
-    guarded = exclusive_tick(_Probe().tick)
+    probe = _Probe()
+    guarded = exclusive_tick(probe.tick)
+
     await guarded(pool)
+    assert id(pool) not in tick_guard._states
+
+    probe.started.clear()
+    running = asyncio.create_task(guarded(pool, block=True))
+    await probe.started.wait()
+    assert id(pool) in tick_guard._states
+    probe.release.set()
+    await running
+    assert id(pool) not in tick_guard._states
+
+
+async def test_the_guard_entry_is_evicted_after_a_failing_tick() -> None:
+    from butlers.core import tick_guard
+
+    pool = MagicMock()
+
+    async def boom(pool: object) -> int:
+        raise RuntimeError("tick failed")
+
+    with pytest.raises(RuntimeError):
+        await exclusive_tick(boom)(pool)
+    with pytest.raises(RuntimeError):
+        await run_forced_tick(pool, lambda: boom(pool))
+
+    assert id(pool) not in tick_guard._states
+
+
+async def test_a_failing_forced_tick_re_raises_and_does_not_leave_later_forced_ticks_busy() -> None:
+    pool = MagicMock()
+
+    async def failing() -> int:
+        raise RuntimeError("scheduler tick failed")
+
+    with pytest.raises(RuntimeError, match="scheduler tick failed"):
+        await run_forced_tick(pool, failing)
+
     assert not tick_in_progress(pool)
-    assert not tick_in_progress(MagicMock())
+    assert await run_forced_tick(pool, lambda: _Probe().tick(pool)) == {"dispatched": 1}

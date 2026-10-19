@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import weakref
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
@@ -31,39 +30,41 @@ from typing import Any
 class _PoolState:
     """The lock for one daemon pool and the number of ticks running or waiting on it."""
 
-    __slots__ = ("lock", "pending", "__weakref__")
+    __slots__ = ("lock", "pending")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.pending = 0
 
 
-# One state per pool; a butler daemon owns exactly one pool. Weak keys, so a closed pool's
-# state is never inherited by a later object that reuses its ``id()``.
-_states: weakref.WeakKeyDictionary[Any, _PoolState] = weakref.WeakKeyDictionary()
+# One entry per pool id, present only while a tick is running or waiting on that pool. Every
+# running or waiting tick holds a reference to its pool, so the id cannot be reused while the
+# entry exists, and the entry is deleted when the count returns to 0 (the lock is then free
+# with no waiters), so nothing is inherited by a later pool and the dict cannot grow. The id
+# key works for any pool object: asyncpg pools cannot be weakly referenced.
+_states: dict[int, _PoolState] = {}
 # The pools whose lock the current task already holds, so a guarded call made from inside
 # :func:`run_forced_tick` does not deadlock on its own lock.
 _held: ContextVar[frozenset[int]] = ContextVar("tick_guard_held", default=frozenset())
 
 
-# Pools that cannot be weakly referenced (plain ``object()`` sentinels) fall back to an
-# id-keyed entry. Real asyncpg pools take the weak path above.
-_unweakable_states: dict[int, _PoolState] = {}
-
-
-def _state_for(pool: Any) -> _PoolState:
-    try:
-        state = _states.get(pool)
-        if state is None:
-            state = _states[pool] = _PoolState()
-    except TypeError:
-        state = _unweakable_states.setdefault(id(pool), _PoolState())
+def _enter(pool: Any) -> _PoolState:
+    state = _states.get(id(pool))
+    if state is None:
+        state = _states[id(pool)] = _PoolState()
+    state.pending += 1
     return state
+
+
+def _leave(pool: Any, state: _PoolState) -> None:
+    state.pending -= 1
+    if state.pending == 0:
+        _states.pop(id(pool), None)
 
 
 def tick_in_progress(pool: Any) -> bool:
     """Whether a tick is running or waiting for this daemon's lock."""
-    return _state_for(pool).pending > 0
+    return id(pool) in _states
 
 
 def exclusive_tick[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
@@ -75,8 +76,7 @@ def exclusive_tick[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitab
         key = id(pool)
         if key in _held.get():
             return await fn(*args, **kwargs)
-        state = _state_for(pool)
-        state.pending += 1
+        state = _enter(pool)
         try:
             async with state.lock:
                 token = _held.set(_held.get() | {key})
@@ -85,7 +85,7 @@ def exclusive_tick[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitab
                 finally:
                     _held.reset(token)
         finally:
-            state.pending -= 1
+            _leave(pool, state)
 
     return wrapper
 
@@ -97,15 +97,14 @@ async def run_forced_tick(pool: Any, run: Callable[[], Awaitable[int]]) -> dict[
     "message": ...}`` when another tick is running or waiting. The ran reply carries no
     ``status`` key; callers detect busy by ``status == "busy"``.
     """
-    state = _state_for(pool)
-    if state.pending > 0:
+    if tick_in_progress(pool):
         return {
             "status": "busy",
             "dispatched": 0,
             "message": "a scheduler tick is already running; try again when it finishes",
         }
-    # pending == 0 means the lock is free and has no waiters, so this cannot queue.
-    state.pending += 1
+    # No entry means the lock is free and has no waiters, so this cannot queue.
+    state = _enter(pool)
     try:
         async with state.lock:
             token = _held.set(_held.get() | {id(pool)})
@@ -114,5 +113,5 @@ async def run_forced_tick(pool: Any, run: Callable[[], Awaitable[int]]) -> dict[
             finally:
                 _held.reset(token)
     finally:
-        state.pending -= 1
+        _leave(pool, state)
     return {"dispatched": dispatched}

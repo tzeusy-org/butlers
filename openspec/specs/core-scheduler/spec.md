@@ -149,7 +149,8 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 
 #### Scenario: Forced tick while a tick is running reports busy
 - **WHEN** the `tick` tool or `POST /api/butlers/{name}/tick` is invoked while a tick is running or waiting on the same daemon
-- **THEN** the reply carries `status: "busy"` and `dispatched: 0`, no task is dispatched, and the API reports `success: false`
+- **THEN** the `tick` tool replies `status: "busy"` and `dispatched: 0` and no task is dispatched
+- **AND** the API responds with `success: false` and the busy message in `data.message`
 - **AND** the scheduler loop's own tick waits for a forced tick that is mid-run, so at most one tick runs per daemon at a time
 
 #### Scenario: Deadline evaluation runs each tick
