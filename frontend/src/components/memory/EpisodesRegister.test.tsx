@@ -55,6 +55,10 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     expires_at: null,
     metadata: {},
     ...overrides,
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
   };
 }
 
@@ -400,7 +404,7 @@ describe("EpisodesRegister — the daybook", () => {
     act(() => {
       retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mutate).toHaveBeenCalledWith({ butler: "atlas", episodeId: "dead-1" });
+    expect(mutate).toHaveBeenCalledWith({ episodeId: "dead-1" });
     // The row stays expanded — the click must not bubble into the row toggle.
     expect(row.getAttribute("aria-expanded")).toBe("true");
   });
