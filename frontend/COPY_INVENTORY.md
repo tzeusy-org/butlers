@@ -4577,6 +4577,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - View {}
 - Liveness: {}
 - {}: tick triggered
+- {}: a tick is already running
 - {}: tick did not complete successfully
 - Failed to trigger tick for {}
 
@@ -4916,4 +4917,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3919*

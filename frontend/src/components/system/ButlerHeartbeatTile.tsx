@@ -172,6 +172,10 @@ export function ButlerHeartbeatTile() {
           toast.success(
             response.data.message ? `${name}: ${response.data.message}` : `${name}: tick triggered`,
           );
+        } else if (response.data.busy) {
+          toast.warning(
+            response.data.message ? `${name}: ${response.data.message}` : `${name}: a tick is already running`,
+          );
         } else {
           toast.error(`${name}: tick did not complete successfully`);
         }

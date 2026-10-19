@@ -425,6 +425,8 @@ class TickResponse(BaseModel):
 
     success: bool
     message: str | None = None
+    busy: bool = False
+    """True when another tick was already running and this forced tick did nothing."""
 
 
 # ---------------------------------------------------------------------------

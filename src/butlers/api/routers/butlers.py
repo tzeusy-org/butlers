@@ -1600,13 +1600,20 @@ async def trigger_butler(
 # ---------------------------------------------------------------------------
 
 
-def _tick_reported_busy(message: str | None) -> bool:
-    """Whether the tick tool's reply says another tick was already running."""
+def _tick_busy_message(message: str | None) -> str | None:
+    """The tick tool's busy message, or ``None`` when its reply is not a busy reply."""
     try:
         payload = json.loads(message) if message else None
     except ValueError:
-        return False
-    return isinstance(payload, dict) and payload.get("status") == "busy"
+        return None
+    if isinstance(payload, dict) and payload.get("status") == "busy":
+        return str(payload.get("message") or "a scheduler tick is already running")
+    return None
+
+
+def _tick_reported_busy(message: str | None) -> bool:
+    """Whether the tick tool's reply says another tick was already running."""
+    return _tick_busy_message(message) is not None
 
 
 @router.post("/{name}/tick", response_model=ApiResponse[TickResponse])
@@ -1642,8 +1649,11 @@ async def force_butler_tick(
             if text:
                 message = text
 
-        busy = _tick_reported_busy(message)
-        tick_resp = TickResponse(success=not busy, message=message)
+        busy_message = _tick_busy_message(message)
+        busy = busy_message is not None
+        tick_resp = TickResponse(
+            success=not busy, message=busy_message if busy else message, busy=busy
+        )
         # A refused tick is still a handled request, so the audit result stays "success"
         # (an "error" row would be grouped into an Issue); the outcome goes in metadata.
         summary["tick_outcome"] = "busy" if busy else "ran"

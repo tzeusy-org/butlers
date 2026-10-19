@@ -2255,6 +2255,8 @@ export interface TriggerResponse {
 export interface TickResponse {
   success: boolean;
   message: string | null;
+  /** True when another tick was already running and this forced tick did nothing. */
+  busy?: boolean;
 }
 
 // ---------------------------------------------------------------------------
