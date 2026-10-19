@@ -1642,7 +1642,11 @@ async def force_butler_tick(
             if text:
                 message = text
 
-        tick_resp = TickResponse(success=not _tick_reported_busy(message), message=message)
+        busy = _tick_reported_busy(message)
+        tick_resp = TickResponse(success=not busy, message=message)
+        # A refused tick is still a handled request, so the audit result stays "success"
+        # (an "error" row would be grouped into an Issue); the outcome goes in metadata.
+        summary["tick_outcome"] = "busy" if busy else "ran"
         await log_audit_entry(db, name, "tick", summary)
         return ApiResponse[TickResponse](data=tick_resp)
 

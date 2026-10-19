@@ -207,8 +207,8 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         Primarily driven by the internal scheduler loop. Retained as an MCP tool
         for debugging and manual triggering. At most one tick runs per daemon: if the
         scheduler loop (or another forced tick) is mid-tick, this returns
-        ``{"status": "busy", "dispatched": 0}`` without running anything; otherwise
-        ``{"status": "ran", "dispatched": n}``.
+        ``{"status": "busy", "dispatched": 0, "message": ...}`` without running anything;
+        otherwise ``{"dispatched": n}``.
         """
         runtime_context = await daemon._build_scheduler_runtime_context()
 

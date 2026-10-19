@@ -51,7 +51,7 @@ Dispatch failures are logged but do not prevent subsequent tasks from running. T
 
 ### One Tick At A Time
 
-At most one `tick()` runs per daemon. `tick()` takes a per-daemon lock (`src/butlers/core/tick_guard.py`), so two due jobs can never run concurrently because a tick was forced while another was running. The scheduler loop waits for a forced tick that is mid-run. A forced tick (the core `tick` tool and `POST /api/butlers/{name}/tick`) does not queue behind a running tick, since a tick can take minutes; it replies `{"status": "busy", "dispatched": 0}` and runs nothing, and the API reports that reply as `success: false`. When no tick is running the tool replies `{"status": "ran", "dispatched": <n>}`. The per-occurrence claim on `next_run_at` still prevents one occurrence from being dispatched twice.
+At most one `tick()` runs per daemon. `tick()` takes a per-daemon lock (`src/butlers/core/tick_guard.py`), so two due jobs can never run concurrently because a tick was forced while another was running. The scheduler loop waits for a forced tick that is mid-run. A forced tick (the core `tick` tool and `POST /api/butlers/{name}/tick`) does not queue behind a running tick, since a tick can take minutes; it replies `{"status": "busy", "dispatched": 0}` and runs nothing, and the API reports that reply as `success: false`. A tick that is waiting for the lock counts as running, so a forced tick never queues in the hand-off between two ticks. When no tick is running the tool replies `{"dispatched": <n>}` (no `status` key). The per-occurrence claim on `next_run_at` still prevents one occurrence from being dispatched twice.
 
 ## Task Continuity (opt-in)
 

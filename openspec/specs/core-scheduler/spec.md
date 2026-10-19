@@ -147,6 +147,11 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the error is captured in `last_result` as `{"error": "..."}` and the remaining due tasks continue dispatching
 - **AND** the failed task's `next_run_at` is still advanced to the next cron occurrence
 
+#### Scenario: Forced tick while a tick is running reports busy
+- **WHEN** the `tick` tool or `POST /api/butlers/{name}/tick` is invoked while a tick is running or waiting on the same daemon
+- **THEN** the reply carries `status: "busy"` and `dispatched: 0`, no task is dispatched, and the API reports `success: false`
+- **AND** the scheduler loop's own tick waits for a forced tick that is mid-run, so at most one tick runs per daemon at a time
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing

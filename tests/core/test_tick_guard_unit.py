@@ -80,9 +80,16 @@ async def test_an_idle_forced_tick_runs_and_the_guarded_call_inside_does_not_dea
     pool, probe = MagicMock(), _Probe()
     guarded = exclusive_tick(probe.tick)
 
-    outcome = await asyncio.wait_for(run_forced_tick(pool, lambda: guarded(pool)), timeout=2)
+    seen_in_progress: list[bool] = []
 
-    assert outcome == {"status": "ran", "dispatched": 1}
+    async def run() -> int:
+        seen_in_progress.append(tick_in_progress(pool))
+        return await guarded(pool)
+
+    outcome = await asyncio.wait_for(run_forced_tick(pool, run), timeout=2)
+
+    assert outcome == {"dispatched": 1}  # the ran reply carries no status key
+    assert seen_in_progress == [True]  # the forced tick counts as running inside run()
     assert not tick_in_progress(pool)
 
 
@@ -112,7 +119,7 @@ async def test_the_lock_is_per_daemon_pool() -> None:
 
     outcome = await asyncio.wait_for(run_forced_tick(pool_b, lambda: guarded(pool_b)), timeout=2)
 
-    assert outcome["status"] == "ran"
+    assert outcome == {"dispatched": 1}
     probe.release.set()
     await running
 
@@ -138,7 +145,7 @@ def test_the_scheduler_tick_entrypoint_is_guarded() -> None:
     ("message", "busy"),
     [
         (json.dumps({"status": "busy", "dispatched": 0}), True),
-        (json.dumps({"status": "ran", "dispatched": 2}), False),
+        (json.dumps({"dispatched": 2}), False),
         ("not json", False),
         (None, False),
     ],
@@ -147,3 +154,44 @@ def test_the_force_tick_api_marks_a_busy_reply_unsuccessful(
     message: str | None, busy: bool
 ) -> None:
     assert _tick_reported_busy(message) is busy
+
+
+async def test_a_forced_tick_in_the_lock_hand_off_window_reports_busy() -> None:
+    """A tick waiting for the lock counts as running (the asyncio.Lock hand-off window).
+
+    forced-1 holds the lock and the loop tick waits. When forced-1 releases, ``lock.locked()``
+    is False until the loop tick resumes, and a new acquirer would queue behind it.
+    """
+    pool, probe = MagicMock(), _Probe()
+    guarded = exclusive_tick(probe.tick)
+    first = asyncio.create_task(run_forced_tick(pool, lambda: guarded(pool, block=True)))
+    await asyncio.wait_for(probe.started.wait(), timeout=2)
+    loop_tick = asyncio.create_task(guarded(pool, block=True))
+    await asyncio.sleep(0)
+
+    probe.release.set()  # forced-1 resumes next and releases the lock
+    probe.release = asyncio.Event()  # the loop tick blocks until released again
+    second_ran = 0
+
+    async def second_run() -> int:
+        nonlocal second_ran
+        second_ran += 1
+        return await guarded(pool)
+
+    second = asyncio.create_task(run_forced_tick(pool, second_run))
+    done, _ = await asyncio.wait({second}, timeout=1)
+
+    assert done, "the second forced tick queued behind the loop tick instead of reporting busy"
+    assert second.result()["status"] == "busy"
+    assert second_ran == 0
+    probe.release.set()
+    await asyncio.wait_for(asyncio.gather(first, loop_tick), timeout=2)
+    assert not tick_in_progress(pool)
+
+
+async def test_guard_state_is_not_inherited_by_a_new_pool_object() -> None:
+    pool = MagicMock()
+    guarded = exclusive_tick(_Probe().tick)
+    await guarded(pool)
+    assert not tick_in_progress(pool)
+    assert not tick_in_progress(MagicMock())
