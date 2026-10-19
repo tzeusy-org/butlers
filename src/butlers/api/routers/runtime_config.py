@@ -44,6 +44,7 @@ KNOWN_CORE_GROUPS: frozenset[str] = frozenset(
         "domain_events",
         "fleet_cases",
         "cost_claims",
+        "baselines",
         "graph",
     }
 )

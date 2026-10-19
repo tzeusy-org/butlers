@@ -27,9 +27,11 @@ from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core import baselines as baselines_core
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.jobs.health_baselines import METRICS as BASELINE_METRICS
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -39,6 +41,9 @@ if _spec is not None and _spec.loader is not None:
     sys.modules["health_api_models"] = _models
     _spec.loader.exec_module(_models)
 
+    BaselineResponse = _models.BaselineResponse
+    BaselinesResponse = _models.BaselinesResponse
+    BaselineBand = _models.BaselineBand
     Briefing = _models.Briefing
     Condition = _models.Condition
     ConditionCreateRequest = _models.ConditionCreateRequest
@@ -1971,6 +1976,42 @@ async def get_measurement_expected_signals(
             )
             for row in rows
         ],
+        available=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /baselines: the stored personal baselines behind the Health deviation notices
+# ---------------------------------------------------------------------------
+
+
+@router.get("/baselines", response_model=BaselinesResponse)
+async def get_baselines(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> BaselinesResponse:
+    """Return every Health metric's stored baseline, or a named reason for no band.
+
+    Read-only, through the Health butler's own pool. An unreadable store answers
+    a degraded envelope, never an empty list that would read as "no baselines".
+    """
+    try:
+        pool = _pool(db)
+        readings = await baselines_core.read_baselines(
+            pool,
+            [metric.key for metric in BASELINE_METRICS],
+            now=datetime.now(UTC),
+            refresh_intervals={metric.key: metric.refresh_interval for metric in BASELINE_METRICS},
+        )
+    except Exception:  # noqa: BLE001 -- the response carries explicit degradation
+        logger.warning("Health baselines read is unavailable", exc_info=True)
+        return BaselinesResponse(
+            baselines=None,
+            available=False,
+            degraded_reason="baselines_unavailable",
+        )
+
+    return BaselinesResponse(
+        baselines=[BaselineResponse(**reading.as_dict()) for reading in readings],
         available=True,
     )
 

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from butlers.core_tools._base import ToolContext
+from butlers.core_tools._baselines import register_baseline_tools
 from butlers.core_tools._chronicler import register_chronicler_tools
 from butlers.core_tools._continuity import register_continuity_tools
 from butlers.core_tools._conversation_recall import register_conversation_recall_tool
@@ -62,7 +63,8 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       19. Graph tools (entity_graph_walk, entity_graph_path) — always
           registered, zero-LLM recursive-CTE traversal over
           public.entity_graph_edges
-      20. Shutdown tool (shutdown)
+      20. Baseline tool (metric_baseline_get): read-only, caller's own schema
+      21. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -85,5 +87,6 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_domain_event_tools(ctx, mcp, _core_tool)
     register_fleet_case_tools(ctx, mcp, _core_tool)
     register_cost_claim_tools(ctx, mcp, _core_tool)
+    register_baseline_tools(ctx, mcp, _core_tool)
     register_graph_tools(ctx, mcp, _core_tool)
     register_shutdown_tool(ctx, mcp, _core_tool)

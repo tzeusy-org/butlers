@@ -58,6 +58,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "deferred_notifications_list scheduling_preferences_get scheduling_preferences_set",
         namespace="messenger_preferences",
     ),
+    *_declare("core", "baselines", "metric_baseline_get"),
     *_declare("core", "continuity", "carry_forward"),
     *_declare(
         "core",
