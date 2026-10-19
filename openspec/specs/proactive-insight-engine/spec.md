@@ -894,6 +894,21 @@ Scope: v1-mandatory
 - **WHEN** the same resolved condition is reconciled again
 - **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
 
+#### Scenario: An explicit resolution amends exactly like a snapshot resolution
+- **WHEN** an owner condition that is the premise of a delivered candidate is resolved by the explicit `resolve_condition` facade
+- **THEN** exactly one amendment is enqueued for that candidate in the same transaction as the resolution, and resolving again enqueues none
+- **AND** a failed enqueue never rolls back the resolution
+
+#### Scenario: A forged enqueue writes nothing
+- **WHEN** a role granted EXECUTE on `public.enqueue_premise_amendments` calls it for a condition with no `resolved` `owner_conditions` row, or with a `resolved_at` that differs from that row's
+- **THEN** it returns 0 and writes nothing
+- **AND** a genuine call uses the ledger row's own `resolved_at` for the episode key
+
+#### Scenario: Amendment evidence outlives candidate cleanup
+- **WHEN** a candidate that has an amendment is deleted
+- **THEN** the amendment row remains
+- **AND** the delivery cycle skips an amendment whose candidate no longer exists, without error
+
 ### Requirement: Premise Amendment Migration Evidence
 
 The premise-amendment migration lifecycle SHALL distinguish the ordinary migration login's privilege-filtered metadata inventory from table row visibility, ownership and SECURITY DEFINER execution authority. A controlled bounded core_255 rollback SHALL retain existing `public.insight_amendments` rows while their referenced candidates remain, preserve the existing runtime row policy, and remove the candidate premise and delivery-reference columns with their documented lossy folds. Retention SHALL NOT be treated as permission to broaden runtime grants or as proof that bootstrap-recreated functions have converged to the ordinary migration owner.
