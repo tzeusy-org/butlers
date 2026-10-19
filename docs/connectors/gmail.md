@@ -235,6 +235,13 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 
 - `GET /health` -- Aggregated multi-account health status.
 - `GET /metrics` -- Prometheus metrics endpoint.
+- `POST /reload` -- Trigger an immediate account re-scan.
+
+The listener binds `127.0.0.1` only, so it is reachable from the connector's own host or
+pod and from nowhere else. The dashboard API does not call it: completing Google OAuth makes
+no request to the connector, and a new or re-authorized account is picked up at the next
+periodic rescan (`GMAIL_ACCOUNT_RESCAN_INTERVAL_S`, default 300 seconds). `SIGHUP` on the
+connector process also forces a rescan.
 
 ## Idempotency and Resume
 

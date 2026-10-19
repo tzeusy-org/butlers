@@ -1692,18 +1692,9 @@ async def oauth_google_callback(
     )
     logger.info("Scope granted: %s", scope)
 
-    # Notify the Gmail connector to reload accounts immediately so it picks up the
-    # new/updated refresh token without waiting for the next periodic rescan.
-    gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(f"http://127.0.0.1:{gmail_health_port}/reload")
-        logger.info("Gmail connector reload triggered on port %s", gmail_health_port)
-    except Exception:  # noqa: BLE001
-        logger.debug(
-            "Gmail connector reload ping failed (port %s) — may not be running yet",
-            gmail_health_port,
-        )
+    # No reload ping to the Gmail connector: its health listener is loopback-only and lives
+    # in another container or pod on Compose and k3s. It picks up the new refresh token at
+    # its next periodic account rescan (gmail_account_rescan_interval_s, default 300 s).
 
     # Redirect back to the frontend page that initiated the flow.
     # Priority: connector_detail_path (deep-link) > page_of_origin > default (/secrets).
@@ -3308,7 +3299,7 @@ async def oauth_provider_callback(
     """Handle the OAuth callback for *provider*.
 
     For ``provider=google`` the full Google-specific credential persistence
-    logic (registry, health-scope metadata, gmail-reload) is reused.
+    logic (registry, health-scope metadata) is reused.
     For other registered providers, a lightweight generic path stores the
     refresh token in the shared credential store.
 
@@ -3788,13 +3779,7 @@ async def _google_callback_from_state(
         is_new_account,
     )
 
-    # Notify Gmail connector to reload.
-    gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(f"http://127.0.0.1:{gmail_health_port}/reload")
-    except Exception:  # noqa: BLE001
-        logger.debug("Gmail connector reload ping failed (port %s)", gmail_health_port)
+    # No reload ping: the connector picks up the token at its next periodic account rescan.
 
     # --- Audit: connected ---
     await _emit_oauth_audit(

@@ -21,13 +21,14 @@ Account status (GET /api/steam/accounts/{id}/status):
   live Steam Web API test call against the stored key: true = authenticated,
   false = rejected with 401/403, null = no key or transient/network error),
   ``last_poll_at`` (from the steam_accounts table), and ``connector_health``
-  (effective health string for this account from the connector's health report,
-  null if connector unreachable).
+  (the connector's recorded state while its heartbeat is online and it tracks this
+  account, null otherwise).
 
-Connector health proxy (GET /api/steam/connector/health):
-  Proxies the Steam connector's ``/health`` HTTP endpoint (port configured via
-  ``STEAM_CONNECTOR_HEALTH_PORT``, default 40089).  Returns a structured response
-  with ``status='not_running'`` when the connector is unreachable.
+Connector health (GET /api/steam/connector/health):
+  Reports the connector's recorded heartbeat from ``switchboard.connector_registry``
+  (the same source the other connector status cards use). The API never calls the
+  connector's loopback-only health listener, which is unreachable from another
+  container or pod. ``status='not_running'`` means no online heartbeat.
 
 Playtime analytics:
   Queries ``connectors.steam_play_history`` for aggregated playtime data.
@@ -51,12 +52,10 @@ Connection validation error categories:
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.models.steam import (
@@ -66,10 +65,8 @@ from butlers.api.models.steam import (
     SteamAccountListResponse,
     SteamAccountResponse,
     SteamAccountStatusResponse,
-    SteamConnectorAccountHealth,
     SteamConnectorConfigResponse,
     SteamConnectorConfigUpdateRequest,
-    SteamConnectorDataTypeHealth,
     SteamConnectorHealthResponse,
     SteamConnectRequest,
     SteamConnectResponse,
@@ -82,6 +79,7 @@ from butlers.api.models.steam import (
     SteamPollIntervals,
     SteamSetPrimaryResponse,
 )
+from butlers.core.liveness import derive_liveness
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
 from butlers.steam_account_registry import (
     MissingSteamCredentialsError,
@@ -112,8 +110,6 @@ _ENTITY_INFO_TYPE_API_KEY = "steam_api_key"
 _VALIDATION_TIMEOUT_S = 10.0
 
 # Default connector health endpoint port (matches _DEFAULT_HEALTH_PORT in steam connector).
-_DEFAULT_CONNECTOR_HEALTH_PORT = 40089
-_CONNECTOR_HEALTH_TIMEOUT_S = 3.0
 
 # ---------------------------------------------------------------------------
 # Dependency injection stub
@@ -593,8 +589,8 @@ async def get_steam_account_status(
     """Return credential and poll health status for a single Steam account.
 
     Inspects the account row and its stored API key without making any live
-    Steam API call. Also probes the Steam connector health endpoint (if running)
-    to report the connector-side health for this account.
+    Steam API call. Also reports the connector-side state for this account from the
+    connector's recorded heartbeat (no HTTP call to the connector).
 
     Fields returned:
     - ``has_api_key``      — whether an API key is stored in entity_info
@@ -651,8 +647,10 @@ async def get_steam_account_status(
     if has_api_key:
         key_valid = await _check_api_key_valid(key_row["value"], account.steam_id)
 
-    # Probe the connector health to get per-account health status.
-    connector_health: str | None = await _probe_connector_account_health(account.steam_id)
+    # Per-account health comes from the connector's recorded heartbeat (no HTTP probe).
+    connector_health: str | None = await _probe_connector_account_health(
+        db_manager, account.steam_id
+    )
 
     return SteamAccountStatusResponse(
         id=account.id,
@@ -671,68 +669,33 @@ async def get_steam_account_status(
 
 
 @router.get("/connector/health", response_model=SteamConnectorHealthResponse)
-async def get_steam_connector_health() -> SteamConnectorHealthResponse:
-    """Proxy the Steam connector's /health endpoint.
+async def get_steam_connector_health(
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamConnectorHealthResponse:
+    """Report the Steam connector's health from its recorded heartbeat.
 
-    Fetches the health report from the connector process running on
-    ``STEAM_CONNECTOR_HEALTH_PORT`` (default: 40089).  Returns a structured
-    response with ``status='not_running'`` when the connector is unreachable
-    (e.g. not started, crashing).
+    Reads the connector's row in ``switchboard.connector_registry`` (written by the
+    connector's heartbeat) and derives liveness with the shared ``derive_liveness``
+    policy. The API never calls the connector: its health listener is loopback-only
+    and runs in another container or pod on Compose and k3s.
 
-    No database access is required for this endpoint.
+    ``status`` is the connector's recorded state ('healthy', 'degraded', 'error')
+    while its heartbeat is online, otherwise ``'not_running'`` (stale, offline, never
+    seen, or the registry is unreachable). Per-account and per-data-type detail is not
+    recorded in the registry, so ``account_health`` is always empty.
 
-    Returns HTTP 200 in all cases — callers should inspect ``status`` to
-    determine connector health.
+    Returns HTTP 200 in all cases; callers should inspect ``status``.
     """
-    connector_url = _build_connector_health_url()
-
-    raw = await _fetch_connector_health(connector_url)
-    if raw is None:
-        return SteamConnectorHealthResponse(
-            status="not_running",
-            connector_url=connector_url,
-        )
-
-    # Parse the connector health payload into the response model.
-    overall_status = raw.get("status", "unknown")
-    uptime_seconds = raw.get("uptime_seconds")
-    active_accounts = raw.get("active_accounts")
-
-    account_health_list: list[SteamConnectorAccountHealth] = []
-    for acct in raw.get("account_health", []):
-        data_types: dict[str, SteamConnectorDataTypeHealth] = {}
-        for dt_name, dt_info in acct.get("data_types", {}).items():
-            last_poll_raw = dt_info.get("last_poll_at")
-            last_poll: datetime | None = None
-            if last_poll_raw:
-                try:
-                    last_poll = datetime.fromisoformat(last_poll_raw)
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "Failed to parse last_poll_at from connector health: %r",
-                        last_poll_raw,
-                    )
-            data_types[dt_name] = SteamConnectorDataTypeHealth(
-                status=dt_info.get("status", "unknown"),
-                last_poll_at=last_poll,
-            )
-
-        account_health_list.append(
-            SteamConnectorAccountHealth(
-                steam_id=acct.get("steam_id", ""),
-                endpoint_identity=acct.get("endpoint_identity", ""),
-                status=acct.get("status", "unknown"),
-                error=acct.get("error"),
-                data_types=data_types,
-            )
-        )
+    heartbeat = await _load_connector_heartbeat(await _get_switchboard_pool(db_manager))
+    if heartbeat is None or _heartbeat_liveness(heartbeat) != "online":
+        return SteamConnectorHealthResponse(status="not_running")
 
     return SteamConnectorHealthResponse(
-        status=overall_status,
-        uptime_seconds=uptime_seconds,
-        active_accounts=active_accounts,
-        account_health=account_health_list,
-        connector_url=connector_url,
+        status=heartbeat["state"] or "unknown",
+        uptime_seconds=heartbeat["uptime_s"],
+        active_accounts=len(_heartbeat_account_identities(heartbeat)),
+        last_heartbeat_at=heartbeat["last_heartbeat_at"],
+        source="registry",
     )
 
 
@@ -740,58 +703,66 @@ async def get_steam_connector_health() -> SteamConnectorHealthResponse:
 # Connector health helpers
 # ---------------------------------------------------------------------------
 
+_NO_ACCOUNTS_IDENTITY = "steam:no_accounts"
 
-def _build_connector_health_url() -> str:
-    """Return the Steam connector health URL for the configured port.
 
-    Uses ``STEAM_CONNECTOR_HEALTH_PORT`` env var (default: 40089).
-    Centralised here to avoid repeating the port-resolution logic in each caller.
+async def _load_connector_heartbeat(pool: Any | None) -> dict[str, Any] | None:
+    """Return the Steam connector's most recent registry heartbeat row, or None.
+
+    The connector registers one row per distinct comma-joined account identity set, so
+    the newest ``last_heartbeat_at`` wins. The ``steam:config`` settings row never
+    carries a heartbeat and is excluded. Returns None when the pool is unavailable,
+    the query fails, or no row exists.
     """
-    health_port = int(
-        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
-    )
-    return f"http://127.0.0.1:{health_port}/health"
-
-
-async def _fetch_connector_health(url: str) -> dict[str, Any] | None:
-    """Fetch the raw health JSON from the connector HTTP endpoint.
-
-    Returns the parsed dict on success, or None when the connector is
-    unreachable (connection refused, timeout, or unexpected response).
-    """
+    if pool is None:
+        return None
     try:
-        async with httpx.AsyncClient(timeout=_CONNECTOR_HEALTH_TIMEOUT_S) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
+        row = await pool.fetchrow(
+            """
+            SELECT endpoint_identity, state, error_message, uptime_s, last_heartbeat_at
+            FROM switchboard.connector_registry
+            WHERE connector_type = 'steam'
+              AND endpoint_identity <> $1
+              AND last_heartbeat_at IS NOT NULL
+            ORDER BY last_heartbeat_at DESC
+            LIMIT 1
+            """,
+            _STEAM_CONFIG_ENDPOINT_IDENTITY,
+        )
     except Exception:  # noqa: BLE001
-        logger.debug("Steam connector health probe failed at %s", url, exc_info=True)
+        logger.debug("connector_registry query failed for Steam", exc_info=True)
         return None
+    return dict(row) if row is not None else None
 
 
-async def _probe_connector_account_health(steam_id: int) -> str | None:
-    """Probe the connector health endpoint and return health for a specific steam_id.
+def _heartbeat_liveness(heartbeat: dict[str, Any]) -> str:
+    """Return 'online', 'stale' or 'offline' for a registry heartbeat row."""
+    last = heartbeat.get("last_heartbeat_at")
+    if isinstance(last, datetime) and last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return derive_liveness(last if isinstance(last, datetime) else None)
 
-    The connector redacts steam IDs in the health report (last 4 digits), so
-    matching is done by the suffix of the steam_id string representation.
 
-    Returns the effective health string for the account, or None when the
-    connector is unreachable or the account is not tracked.
+def _heartbeat_account_identities(heartbeat: dict[str, Any]) -> list[str]:
+    """Split the heartbeat's comma-joined endpoint identity into account identities."""
+    raw = heartbeat.get("endpoint_identity") or ""
+    return [part for part in raw.split(",") if part and part != _NO_ACCOUNTS_IDENTITY]
+
+
+async def _probe_connector_account_health(db_manager: Any, steam_id: int) -> str | None:
+    """Return the connector's recorded state for a specific steam_id.
+
+    The heartbeat records one overall state plus the account identities the connector
+    is polling (``steam:user:<steam_id>``), so an account is reported with the overall
+    state only while the connector is online and tracks it. Returns None when the
+    connector is not online, the registry is unreachable, or the account is not tracked.
     """
-    connector_url = _build_connector_health_url()
-
-    raw = await _fetch_connector_health(connector_url)
-    if raw is None:
+    heartbeat = await _load_connector_heartbeat(await _get_switchboard_pool(db_manager))
+    if heartbeat is None or _heartbeat_liveness(heartbeat) != "online":
         return None
-
-    steam_id_str = str(steam_id)
-    for acct in raw.get("account_health", []):
-        # The connector redacts steam IDs to "****<last4>". Match by suffix.
-        reported_id: str = acct.get("steam_id", "")
-        if reported_id.endswith(steam_id_str[-4:]):
-            return acct.get("status")
-
-    return None
+    if f"steam:user:{steam_id}" not in _heartbeat_account_identities(heartbeat):
+        return None
+    return heartbeat["state"]
 
 
 # ---------------------------------------------------------------------------

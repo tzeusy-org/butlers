@@ -209,24 +209,31 @@ class SteamConnectorAccountHealth(BaseModel):
 class SteamConnectorHealthResponse(BaseModel):
     """Response for GET /api/steam/connector/health.
 
-    Proxied directly from the connector's ``/health`` HTTP endpoint.
-    Returns a degraded response when the connector is not running.
+    Derived from the connector's heartbeat row in ``switchboard.connector_registry``;
+    the API never calls the connector. Returns ``not_running`` when no online
+    heartbeat is recorded.
     """
 
     status: str
     """Overall connector status: 'healthy', 'degraded', 'error', or 'not_running'."""
 
     uptime_seconds: int | None = None
-    """Connector uptime in seconds, or null when not running."""
+    """Connector uptime in seconds at its last heartbeat, or null when not running."""
 
     active_accounts: int | None = None
-    """Number of accounts actively polled, or null when not running."""
+    """Number of accounts the connector reported polling, or null when not running."""
 
     account_health: list[SteamConnectorAccountHealth] = []
-    """Per-account health snapshots (empty when not running)."""
+    """Always empty: per-account detail is not recorded in the registry."""
 
     connector_url: str | None = None
-    """URL that was probed for the health check, or null."""
+    """Deprecated; always null. The API no longer probes a connector URL."""
+
+    last_heartbeat_at: datetime | None = None
+    """Timestamp of the connector's last recorded heartbeat, or null when not running."""
+
+    source: str = "registry"
+    """Where the answer came from; always 'registry'."""
 
 
 # ---------------------------------------------------------------------------
