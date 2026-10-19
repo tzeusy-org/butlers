@@ -269,6 +269,10 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 ### Requirement: MCP Client Proxy
 `src/butlers/api/deps.py` SHALL provide `MCPClientManager` for lazy FastMCP client connections to running butler MCP daemons. Write operations (state set/delete, schedule CRUD, triggers) are proxied through MCP to preserve the architectural constraint that only the butler mutates its own database.
 
+ID: REQ-dashboard-api-073
+Source: bu-h3ihis (CE authorization for bu-ukf1u0); existing MCP Client Proxy contract
+Scope: v1-mandatory
+
 #### Scenario: Lazy client connection
 - **WHEN** `get_client(butler_name)` is called for the first time
 - **THEN** a FastMCP SSE client is created, connected to `http://localhost:{port}/sse`, and cached
