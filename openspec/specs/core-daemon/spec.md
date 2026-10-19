@@ -51,6 +51,7 @@ Tool groups:
 - `media`: get_attachment
 - `temporal`: deadline_*, event_chain_*, seasonal_period_*
 - `module_mgmt`: module.states, module.set_enabled
+- `baselines`: metric_baseline_get (read-only; reads the caller's own schema)
 - `switchboard_routing`: ingest, route_to_butler, connector.heartbeat (name-gated: switchboard only)
 - `switchboard_backfill`: backfill.poll, backfill.progress (name-gated: switchboard only)
 
@@ -91,6 +92,11 @@ Name-gated tools (messenger-only, switchboard-only) are gated by butler name as 
 #### Scenario: Domain tools excluded from staffers via core_groups
 - **WHEN** a staffer starts and its core_groups does not include `temporal`
 - **THEN** deadline, event_chain, and seasonal_period tools SHALL NOT be registered
+
+#### Scenario: A baseline read cannot write
+- **WHEN** a butler enables the `baselines` group
+- **THEN** `metric_baseline_get` SHALL be registered and SHALL only read the butler's own stored baselines
+
 
 ### Requirement: Config loading parses runtime_seed section
 The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL NOT be rejected with a clear error; they SHALL be accepted and ignored. The dataclass is operational-only: retired `model`, `runtime_type`, `args`, and `session_timeout_s` keys inside `[butler.runtime_seed]` SHALL be rejected, while the obsolete top-level `[runtime]` section SHALL be rejected with deletion guidance. The dataclass SHALL carry `tool_exposure_policy` as one further operational field without restoring any retired runtime-selection field.
