@@ -161,6 +161,12 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** when no scheduled work is running they dispatch as before, holding the same per-daemon guard so a tick that arrives mid-dispatch waits
 - **AND** a forced tick (`tick` tool or `POST /api/butlers/{name}/tick`) also reports busy while a manual dispatch holds the guard
 
+#### Scenario: A trigger that did not happen is never a 2xx
+- **WHEN** `POST /api/butlers/{name}/schedules/{id}/trigger` is called and the `schedule_trigger` tool does not reply `triggered`
+- **THEN** a nonexistent schedule (`code: "SCHEDULE_NOT_FOUND"`) answers 404 with `detail`, a busy reply answers 409, and any other reply (a dispatch failure, a slot refusal, an unrecognised reply) answers 502 with a bounded `detail`
+- **AND** only a `triggered` reply answers 200
+- **AND** each call is audited exactly once: not found and busy as a success whose metadata carries `observed_status` `not_found` or `busy`, a failure as an error
+
 #### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard
 - **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
 - **THEN** the call is refused with `status: "error"` and `code: "SPAWNER_SLOTS_FULL"` before the tick guard is taken

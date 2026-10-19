@@ -356,7 +356,12 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 task_uuid,
             )
             if row is None:
-                return {"id": resolved_id, "status": "error", "error": "Schedule not found"}
+                return {
+                    "id": resolved_id,
+                    "status": "error",
+                    "code": "SCHEDULE_NOT_FOUND",
+                    "error": "Schedule not found",
+                }
 
             name = row["name"]
             dispatch_mode = row["dispatch_mode"] or "prompt"

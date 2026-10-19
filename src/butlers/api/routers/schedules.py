@@ -181,6 +181,10 @@ async def _call_mcp_tool(
     return {"result": str(result)}
 
 
+_SCHEDULE_NOT_FOUND = "SCHEDULE_NOT_FOUND"
+_TRIGGER_DETAIL_LIMIT = 500
+
+
 async def _log_legacy_schedule_mutation(
     db: DatabaseManager,
     butler: str,
@@ -202,6 +206,11 @@ async def _log_legacy_schedule_mutation(
         # failure: keep result="success" (an "error" row is grouped into an Issue) and record
         # the outcome in the metadata.
         observed_status = "busy"
+        audit_result, error = "success", None
+    elif operation == "schedule.trigger" and response.get("code") == _SCHEDULE_NOT_FOUND:
+        # Asking for a schedule that does not exist is a refused request, not a fault: audited
+        # as a success with the outcome in the metadata, like busy.
+        observed_status = "not_found"
         audit_result, error = "success", None
     elif response.get("status") == "error":
         observed_status = "error"
@@ -394,11 +403,22 @@ async def trigger_schedule(
     except HTTPException:
         await _log_legacy_schedule_mutation(db, name, "schedule.trigger", schedule_id=schedule_id)
         raise
-    if result.get("status") == "busy":
-        # Nothing was dispatched, so this must not read as a successful trigger.
+    # Nothing was dispatched unless the tool says it triggered, so none of these may read as a
+    # successful trigger (the UI toasts "triggered" on any 2xx). The audit row above is the
+    # only one: the raises below sit outside the try, so they are never audited a second time.
+    status = result.get("status")
+    if status == "busy":
         raise HTTPException(
             status_code=409,
             detail=str(result.get("message") or BUSY_MESSAGE),
+        )
+    if status == "error" and result.get("code") == _SCHEDULE_NOT_FOUND:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if status != _MUTATION_SUCCESS_STATUS["schedule.trigger"]:
+        reason = str(result.get("error") or "the butler did not confirm the trigger")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Schedule trigger failed: {reason[:_TRIGGER_DETAIL_LIMIT]}",
         )
     return ApiResponse[dict](data=result)
 
