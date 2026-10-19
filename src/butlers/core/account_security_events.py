@@ -24,6 +24,7 @@ from butlers.account_security import (
     PROVIDER_RECOVERY_DOORS,
     AccountSecurityClassification,
     classify_account_security,
+    verify_sender_domain,
 )
 from butlers.core import fleet_cases
 
@@ -76,6 +77,23 @@ def classify_ingest_record(
         _subject_from_normalized_text(normalized_text),
         headers={"Authentication-Results": auth_results} if auth_results else None,
     )
+
+
+def sender_authentication_verdict(
+    *, source_channel: str, sender_address: str, raw: Any
+) -> str | None:
+    """Stored sender-authentication verdict for an accepted ingest, or ``None``.
+
+    ``None`` for non-email channels and for an address with no domain. Email always
+    yields one of ``authenticated``, ``unverified`` or ``failed`` from the topmost
+    ``Authentication-Results`` header kept in *raw* (absent header: ``unverified``).
+    """
+    if source_channel != "email":
+        return None
+    address = sender_address.strip().lower()
+    if "@" not in address:
+        return None
+    return verify_sender_domain(_auth_results_from_raw(raw), address.rsplit("@", 1)[-1])
 
 
 async def publish_security_event(

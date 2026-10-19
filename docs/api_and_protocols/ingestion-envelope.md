@@ -79,6 +79,10 @@ check catches the same message arriving through two connectors. Connectors must:
 - Provide `control.idempotency_key` when the source has no stable event id.
 - Treat duplicate acceptance as success, not error.
 
+## Sender Authentication Verdict
+
+For every accepted `email` envelope the Switchboard stores one verdict on the canonical `public.ingestion_events.sender_authentication` column: `authenticated`, `unverified` or `failed`. It describes the From domain only and is computed once at ingest from the topmost `Authentication-Results` header kept in `payload.raw` (a lower or injected header never counts). An aligned `dkim=pass` or a `dmarc=pass` gives `authenticated`; a `dmarc` fail or permerror, or an aligned `dkim` fail, gives `failed`; a missing header, a metadata-tier row with no raw payload, `temperror`, `none` and unaligned passes give `unverified`. Non-email rows, and rows ingested before the column existed, read `NULL`. A verifier error stores `NULL` and never fails the ingest. The verdict never grants owner origin. Readers use this column instead of parsing headers themselves. See `openspec/specs/ingestion-event-registry/spec.md`.
+
 ## Heartbeat Protocol
 
 Connectors send periodic `connector.heartbeat.v1` envelopes (default every 2 minutes,

@@ -10,7 +10,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
-- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
+- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, `triage_target`, and `sender_authentication`
 - **AND** `source_sender_display_name` is the raw sender display name from the envelope's `sender.display_name` (e.g. the email `From:` header's display part), or `NULL` when the envelope carried no display name; unlike `source_sender_identity` it is stored verbatim (not normalized) and is used by identity enrichment to name recurring correspondents from the real display name rather than a guess derived from the address local-part
 - **AND** the row's `id` is returned as `request_id` in `IngestAcceptedResponse`
 
@@ -23,6 +23,39 @@ The `public.ingestion_events` table is the canonical first-class record of every
 - **WHEN** two ingestion events are accepted in sequence
 - **THEN** the second event's `id` is lexicographically greater than the first's
 - **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries
+
+### Requirement: Sender Authentication Verdict
+Every accepted email ingest SHALL record one deterministic sender-authentication verdict on its canonical `public.ingestion_events` row, so downstream readers (the payment-redirect guard, vendor-door confirmation, goal admission) read one stored fact instead of each re-parsing headers. The verdict describes the From domain only. It is not a lookalike score, and it never grants owner origin (RFC 0017 alone decides that).
+
+#### Scenario: Verdict is computed from the topmost Authentication-Results header
+- **WHEN** an email envelope is accepted and its raw payload kept an `Authentication-Results` header
+- **THEN** only the topmost such header is read, and a later or injected one never counts
+- **AND** the column `sender_authentication` is `authenticated` for an aligned `dkim=pass` (its own `header.d`, or the domain of `header.i`) or a `dmarc=pass` (its own `header.from`) that aligns with the From domain
+- **AND** it is `failed` for a `dmarc` fail or permerror, or a fail on an aligned `dkim`
+- **AND** it is `unverified` for everything else, including `temperror`, `none` and an unaligned pass
+
+#### Scenario: Alignment is conservative
+- **WHEN** the signing domain and the From domain are the same, or one is a label-boundary subdomain of the other
+- **THEN** they align, provided a parent signer has at least two labels
+- **AND** sibling subdomains do not align, so a tenant of a shared suffix cannot vouch for another tenant
+
+#### Scenario: Missing evidence is unverified, not failed
+- **WHEN** an email envelope carries no raw payload (a metadata-tier row) or no `Authentication-Results` header
+- **THEN** `sender_authentication` is `unverified`
+
+#### Scenario: Non-email rows carry no verdict
+- **WHEN** the accepted envelope's channel is not `email`, or the sender identity has no domain
+- **THEN** `sender_authentication` is `NULL`
+- **AND** rows ingested before the column existed also read `NULL`
+
+#### Scenario: A verifier failure never fails an accepted ingest
+- **WHEN** computing the verdict raises
+- **THEN** the ingest still succeeds with `sender_authentication` `NULL` and a warning is logged
+- **AND** replaying the same envelope computes the same value, and deduplication is unchanged
+
+#### Scenario: The account-security sensor keeps its own view
+- **WHEN** a first-party provider alert is classified
+- **THEN** its alignment stays one-directional against the provider's signing domain and its classification and event are unchanged by the stored verdict
 
 ### Requirement: Ingestion Event Query by ID
 
