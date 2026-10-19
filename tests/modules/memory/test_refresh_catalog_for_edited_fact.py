@@ -131,6 +131,9 @@ class _EditPool:
             self.row.update(predicate=args[1], content=args[2])
         return "UPDATE 1"
 
+    def index(self, prefix: str) -> list[int]:
+        return [i for i, s in enumerate(self.sql) if s.lstrip().startswith(prefix)]
+
 
 def _edit_row(**overrides) -> dict:
     row = {
@@ -222,3 +225,32 @@ async def test_a_failing_engine_factory_is_logged_and_never_raised(caplog) -> No
 
     assert any("failed to refresh catalog entry" in r.getMessage() for r in caplog.records)
     pool.execute.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "function", "kwargs", "row"),
+    [
+        ("measurements", "measurement_update", {"value": 72}, {}),
+        (
+            "diet",
+            "meal_update",
+            {"description": "tuna salad"},
+            {"predicate": "meal_lunch", "content": "salad", "metadata": {}},
+        ),
+    ],
+    ids=["measurement", "meal"],
+)
+async def test_an_engine_that_fails_to_load_never_fails_the_edit(
+    module_name, function, kwargs, row
+) -> None:
+    import importlib
+
+    module = importlib.import_module(f"butlers.tools.health.{module_name}")
+    pool = _EditPool(_edit_row(**row))
+    getter = MagicMock(side_effect=RuntimeError("model failed to load"))
+    with patch.object(module, "_get_embedding_engine", getter):
+        result = await getattr(module, function)(pool, str(_ID), **kwargs)
+
+    assert result is not None  # the edit returned normally although the model could not load
+    assert pool.index("UPDATE facts SET predicate") != []
+    assert [s for s in pool.sql if "public.memory_catalog" in s] == []
