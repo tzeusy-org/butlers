@@ -1,6 +1,6 @@
 ## 1. Versioned durable protocol foundation
 
-- [ ] 1.1 Add guarded migrations for origin-local quiet-hours hold provenance, admission sequencing, fenced reservation states, and legacy-row preservation.
+- [x] 1.1 Add guarded migrations for origin-local quiet-hours hold provenance, admission sequencing, fenced reservation states, and legacy-row preservation. (Slice A, bu-kqnum.3.6.1: core_272 on `deferred_notifications`.)
 - [ ] 1.2 Add guarded migrations for Switchboard accepted-event snapshots, owner/window runs, participant snapshots, run fences, and composition/action digests.
 - [ ] 1.3 Add migrated-database tests for immutability, unique accepted-event and owner/window claims, stale-fence rejection, and no direct cross-schema queue access.
 
@@ -12,9 +12,9 @@
 
 ## 3. Origin cohort preparation and ordinary scheduler fencing
 
-- [ ] 3.1 Persist wake-recovery provenance atomically with newly eligible owner-attention quiet-hours holds while preserving full resolved envelopes in their origin schema.
+- [x] 3.1 Persist wake-recovery provenance atomically with newly eligible owner-attention quiet-hours holds while preserving full resolved envelopes in their origin schema. (Slice A, bu-kqnum.3.6.1: `WakeHoldProvenance` written in the park INSERT.)
 - [ ] 3.2 Implement origin-local prepare, deterministic cutoff, same-fence replay, reason-specific abort, and commit transitions without exposing queue tables to Switchboard; retain the zero-cohort pre-durable-prepare `aborted_preprepare` path, and bind an all-uncommitted `ordinary_precommit_cancel` only after every participant has supplied a compatible durable prepare result for the complete current-fence cohort, through the landed `durable-precommit-cancellation-admission` contract.
-- [ ] 3.3 Restrict the ordinary deferred scheduler to pending rows and test the zero-cohort pre-prepare path, the referenced complete-cohort cancellation-return boundary, retained/committed states, legacy, context-only, retry, partial-prepare, and post-cutoff late-row behavior without re-gating stored holds or exposing protocol-bound cohorts as ordinary work.
+- [x] 3.3 Restrict the ordinary deferred scheduler to pending rows and test the zero-cohort pre-prepare path, the referenced complete-cohort cancellation-return boundary, retained/committed states, legacy, context-only, retry, partial-prepare, and post-cutoff late-row behavior without re-gating stored holds or exposing protocol-bound cohorts as ordinary work. (Slice A, bu-kqnum.3.6.1: the flush selects, expires and transitions `pending` rows only; the prepare, cancellation-return and late-row cases belong to 3.2 and are tested there.)
 
 ## 4. Health context and cross-origin MCP contract
 

@@ -39,6 +39,59 @@ _REQUEST_CONTEXT_KEYS_HINT = (
 )
 
 
+async def _wake_hold_provenance(
+    pool: Any,
+    *,
+    channel: str,
+    policy: dict[str, Any] | None,
+    policy_deliver_at: datetime | None,
+    deferred_at: datetime,
+    deliver_at: datetime,
+    notify_request: dict[str, Any],
+) -> Any:
+    """Wake-recovery provenance for a newly parked owner-attention quiet-hours hold, or None.
+
+    Eligible only when the Owner Attention Policy quiet-hours decision is part of the hold
+    (not a context-only hold) and the envelope's recipient is the owner's own Telegram chat,
+    resolved now rather than inferred later. Anything not provable fails closed to None: the
+    hold is still parked and releases at its stored ``deliver_at`` as before, it is simply not
+    wake-recovery eligible (strict-owner-telegram-wake-recovery, core-notify spec).
+    """
+    if channel != "telegram" or policy is None or policy_deliver_at is None:
+        return None
+    try:
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+        from butlers.core.temporal.delivery_db import WakeHoldProvenance, envelope_digest
+        from butlers.credential_store import resolve_owner_entity_info
+
+        window_start = policy_quiet_hours_window_start(policy, now=deferred_at)
+        recipient = notify_request.get("delivery", {}).get("recipient")
+        owner_chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
+        if window_start is None or not recipient or owner_chat_id != recipient:
+            return None
+        return WakeHoldProvenance(
+            policy_window_key=(
+                f"{window_start.astimezone(UTC).isoformat()}/"
+                f"{policy_deliver_at.astimezone(UTC).isoformat()}"
+            ),
+            timezone=str(policy.get("timezone") or "UTC"),
+            target={
+                "provider": "telegram",
+                "chat_id": recipient,
+                "thread_id": None,
+                "recipient_endpoint": f"telegram:{recipient}",
+            },
+            envelope_digest=envelope_digest(notify_request),
+            original_deliver_at=deliver_at,
+        )
+    except Exception:
+        logger.warning(
+            "notify() could not derive wake-recovery provenance; parking without it",
+            exc_info=True,
+        )
+        return None
+
+
 def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | None]:
     """Normalize a request_context argument into a dict.
 
@@ -1127,6 +1180,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         _reason_parts.append(f"context_bus:{_context_suppression.signal_type}")
                     _defer_reason = "+".join(_reason_parts)
 
+                    _wake_provenance = await _wake_hold_provenance(
+                        _notify_pool,
+                        channel=channel,
+                        policy=_policy,
+                        policy_deliver_at=_policy_deliver_at,
+                        deferred_at=_deferred_at,
+                        deliver_at=_deliver_at,
+                        notify_request=notify_request,
+                    )
                     try:
                         _notif_id = await _insert_deferred_notification(
                             _notify_pool,
@@ -1137,6 +1199,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             envelope=notify_request,
                             deliver_at=_deliver_at,
                             deferred_at=_deferred_at,
+                            **({"wake_provenance": _wake_provenance} if _wake_provenance else {}),
                         )
                     except Exception as _defer_exc:
                         # Once a routine owner-default notification has been

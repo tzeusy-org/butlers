@@ -13,8 +13,10 @@ See: openspec/changes/temporal-intelligence/specs/time-aware-delivery/spec.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -191,6 +193,31 @@ async def upsert_delivery_preferences(
     return result
 
 
+WAKE_HOLD_KIND_OWNER_QUIET_HOURS = "owner_attention_quiet_hours"
+
+
+@dataclass(frozen=True)
+class WakeHoldProvenance:
+    """Immutable wake-recovery admission provenance for one parked owner-attention hold.
+
+    Written in the same INSERT as the hold (bu-kqnum.3.6.1; strict-owner-telegram-wake-recovery
+    D3). The admission sequence is drawn by the INSERT itself, so it is not a field here.
+    """
+
+    policy_window_key: str
+    timezone: str
+    target: dict[str, Any]
+    envelope_digest: str
+    original_deliver_at: datetime
+    hold_kind: str = WAKE_HOLD_KIND_OWNER_QUIET_HOURS
+
+
+def envelope_digest(envelope: dict[str, Any]) -> str:
+    """SHA-256 of the canonical JSON form of a resolved ``notify.v1`` envelope."""
+    canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 async def insert_deferred_notification(
     pool: asyncpg.Pool,
     *,
@@ -201,6 +228,7 @@ async def insert_deferred_notification(
     envelope: dict[str, Any],
     deliver_at: datetime,
     deferred_at: datetime | None = None,
+    wake_provenance: WakeHoldProvenance | None = None,
 ) -> str:
     """Persist a deferred notification to the database.
 
@@ -213,6 +241,9 @@ async def insert_deferred_notification(
         envelope: Full notify.v1 envelope dict.
         deliver_at: UTC datetime when the notification should be delivered.
         deferred_at: UTC datetime when the notification was deferred (default: now()).
+        wake_provenance: Wake-recovery provenance for a new owner-attention quiet-hours
+            hold. It is written in this same INSERT; ``None`` (every other caller) leaves
+            all ``wake_*`` columns NULL, exactly as a legacy row.
 
     Returns:
         The UUID of the inserted row as a string.
@@ -221,6 +252,33 @@ async def insert_deferred_notification(
         raise ValueError(
             f"Invalid priority {priority!r}; expected one of {sorted(_VALID_PRIORITIES)}"
         )
+
+    if wake_provenance is not None:
+        notif_id = await pool.fetchval(
+            """
+            INSERT INTO deferred_notifications
+                (butler_name, channel, message, priority, envelope, deliver_at, deferred_at,
+                 status, wake_hold_kind, wake_policy_window_key, wake_admission_sequence,
+                 wake_timezone, wake_target, wake_envelope_digest, wake_original_deliver_at)
+            VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), 'pending', $8, $9,
+                    nextval('deferred_notifications_admission_seq'), $10, $11, $12, $13)
+            RETURNING id
+            """,
+            butler_name,
+            channel,
+            message,
+            priority,
+            envelope,
+            deliver_at,
+            deferred_at,
+            wake_provenance.hold_kind,
+            wake_provenance.policy_window_key,
+            wake_provenance.timezone,
+            wake_provenance.target,
+            wake_provenance.envelope_digest,
+            wake_provenance.original_deliver_at,
+        )
+        return str(notif_id)
 
     notif_id = await pool.fetchval(
         """
