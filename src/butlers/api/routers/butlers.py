@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from butlers.api import accept_window
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -1609,22 +1610,18 @@ def _tick_reported_busy(message: str | None) -> bool:
     return isinstance(payload, dict) and payload.get("status") == "busy"
 
 
-@router.post("/{name}/tick", response_model=ApiResponse[TickResponse])
-async def force_butler_tick(
-    name: str,
-    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+# A tick runs due schedules to completion, and a prompt-mode schedule is a whole LLM session. The
+# route answers within this window (inside the browser's 15 s budget); a tick still running after it
+# answers 202 and finishes in the background.
+_TICK_ACCEPT_WINDOW_S = 10.0
+# Upper bound on the tick call itself, so a hung daemon cannot pin a background task forever.
+_TICK_BACKGROUND_TIMEOUT_S = 1800.0
+
+
+async def _run_tick_and_audit(
+    name: str, mcp_manager: MCPClientManager, db: DatabaseManager
 ) -> ApiResponse[TickResponse] | JSONResponse:
-    """Force a scheduler tick on the specified butler.
-
-    Connects to the butler's MCP server and calls the tick tool,
-    which triggers the scheduler to run immediately.  Returns 503 if the
-    butler is unreachable or the request times out.
-    """
-    if not any(cfg.name == name for cfg in configs):
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
-
+    """Call the tick tool and audit the outcome exactly once."""
     summary: dict = {}
     try:
         client = await asyncio.wait_for(
@@ -1633,7 +1630,7 @@ async def force_butler_tick(
         )
         result = await asyncio.wait_for(
             client.call_tool("tick", {}),
-            timeout=_STATUS_TIMEOUT_S,
+            timeout=_TICK_BACKGROUND_TIMEOUT_S,
         )
 
         message: str | None = None
@@ -1676,3 +1673,38 @@ async def force_butler_tick(
                 }
             },
         )
+
+
+@router.post("/{name}/tick", response_model=ApiResponse[TickResponse])
+async def force_butler_tick(
+    name: str,
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TickResponse] | JSONResponse:
+    """Force a scheduler tick on the specified butler.
+
+    Connects to the butler's MCP server and calls the tick tool,
+    which triggers the scheduler to run immediately.  Returns 503 if the
+    butler is unreachable or does not accept the call in time.  A tick that is
+    still running after ``_TICK_ACCEPT_WINDOW_S`` answers 202 with ``running``
+    (so the dashboard does not read a started tick as failed) and finishes,
+    and is audited, in the background.
+    """
+    if not any(cfg.name == name for cfg in configs):
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    call, finished = await accept_window.run_within_window(
+        _run_tick_and_audit(name, mcp_manager, db),
+        _TICK_ACCEPT_WINDOW_S,
+        name=f"forced-tick:{name}",
+        log=logger,
+    )
+    if not finished:
+        return JSONResponse(
+            status_code=202,
+            content=ApiResponse[TickResponse](
+                data=TickResponse(success=True, running=True)
+            ).model_dump(mode="json"),
+        )
+    return call.result()

@@ -168,7 +168,9 @@ export function ButlerHeartbeatTile() {
   function handleTriggerTick(name: string) {
     forceTick.mutate(name, {
       onSuccess: (response) => {
-        if (response.data.success) {
+        if (response.data.running) {
+          toast.info(`${name}: tick is running; it may take a few minutes`);
+        } else if (response.data.success) {
           toast.success(
             response.data.message ? `${name}: ${response.data.message}` : `${name}: tick triggered`,
           );

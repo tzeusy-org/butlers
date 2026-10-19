@@ -13,7 +13,6 @@ only the butler itself mutates its own database.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from uuid import UUID
@@ -21,6 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+from butlers.api import accept_window
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -396,33 +396,8 @@ async def delete_schedule(
 # request open past the browser's 15 s budget (it would read as a failed trigger).
 _TRIGGER_ACCEPT_WINDOW_S = 10.0
 
-#: Strong references so a trigger that outlives its request is not garbage collected.
-_trigger_tasks: set[asyncio.Task] = set()
-
-
-#: Triggers whose request already answered 202: only these log "after its request ended".
-_detached_triggers: set[asyncio.Task] = set()
-
-
-def _trigger_task_done(task: asyncio.Task) -> None:
-    _trigger_tasks.discard(task)
-    detached = task in _detached_triggers
-    _detached_triggers.discard(task)
-    label = task.get_name()
-    if task.cancelled():
-        # Loop teardown cancels a pending trigger; it never reached its audit write.
-        logger.warning("Schedule trigger %s was cancelled; its outcome was not audited", label)
-        return
-    exc = task.exception()
-    if exc is None:
-        return
-    if isinstance(exc, HTTPException):
-        # `_trigger_and_audit` already audited it. A request still waiting re-raises it to the
-        # caller; only one that answered 202 has nobody left to tell.
-        if detached:
-            logger.info("Schedule trigger %s finished with %r after its request ended", label, exc)
-        return
-    logger.error("Schedule trigger %s failed unexpectedly", label, exc_info=exc)
+# Shared with the tests that wait for a trigger that outlived its request.
+_trigger_tasks = accept_window.TASKS
 
 
 async def _trigger_and_audit(
@@ -457,15 +432,13 @@ async def trigger_schedule(
     a trigger still running after that answers 202 ``running`` (inside the browser's 15 s
     budget) and finishes in the background, which then audits the outcome.
     """
-    call = asyncio.create_task(
+    call, finished = await accept_window.run_within_window(
         _trigger_and_audit(mgr, db, name, schedule_id),
+        _TRIGGER_ACCEPT_WINDOW_S,
         name=f"schedule-trigger:{name}:{schedule_id}",
+        log=logger,
     )
-    _trigger_tasks.add(call)
-    call.add_done_callback(_trigger_task_done)
-    done, _pending = await asyncio.wait({call}, timeout=_TRIGGER_ACCEPT_WINDOW_S)
-    if not done:
-        _detached_triggers.add(call)
+    if not finished:
         return JSONResponse(
             status_code=202,
             content=ApiResponse[dict](

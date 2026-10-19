@@ -2255,6 +2255,8 @@ export interface TriggerResponse {
 export interface TickResponse {
   success: boolean;
   message: string | null;
+  /** True when the tick outlasted the API's accept window and is still running. */
+  running?: boolean;
 }
 
 // ---------------------------------------------------------------------------

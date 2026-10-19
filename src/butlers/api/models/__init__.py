@@ -425,6 +425,8 @@ class TickResponse(BaseModel):
 
     success: bool
     message: str | None = None
+    running: bool = False
+    """True when the tick outlasted the API's accept window and is still running."""
 
 
 # ---------------------------------------------------------------------------

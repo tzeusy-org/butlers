@@ -728,6 +728,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - {} is reachable
 - {} is still unreachable
 - Failed to ping {}
+- {}: tick is running; it may take a few minutes
 - {}: schedule run now
 - {}: tick did not complete successfully
 - Failed to run schedule for {}
@@ -4578,6 +4579,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - No butlers registered.
 - View {}
 - Liveness: {}
+- {}: tick is running; it may take a few minutes
 - {}: tick triggered
 - {}: tick did not complete successfully
 - Failed to trigger tick for {}
@@ -4918,4 +4920,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3920*
+*Total strings: 3922*

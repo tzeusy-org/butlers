@@ -345,7 +345,9 @@ export default function IssuesPage() {
   function handleRunScheduleNow(name: string) {
     runNow.mutate(name, {
       onSuccess: (response) => {
-        if (response.data.success) {
+        if (response.data.running) {
+          toast.info(`${name}: tick is running; it may take a few minutes`);
+        } else if (response.data.success) {
           toast.success(
             response.data.message ? `${name}: ${response.data.message}` : `${name}: schedule run now`,
           );

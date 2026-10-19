@@ -175,6 +175,12 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** the trigger keeps running and its outcome is audited exactly once when it finishes, whatever that outcome is, unless the API process stops first: a pending trigger then ends unaudited and the API logs a warning
 - **AND** a reply inside the window keeps the status mapping above, and the `schedule_trigger` tool's own semantics are unchanged
 
+#### Scenario: A forced tick that outlasts the accept window answers 202 running
+- **WHEN** `POST /api/butlers/{name}/tick` has not received the `tick` tool's reply within the accept window (shorter than the dashboard's 15 second request budget)
+- **THEN** the API answers 202 with `data.running: true` and `data.success: true` instead of a 503 timeout, and the heartbeat tile and the Issues page show the tick as running rather than as a failure
+- **AND** the tick keeps running without being cancelled, and its outcome is audited exactly once when it finishes
+- **AND** a reply inside the window keeps its mapping (ran or busy as 200, an unreachable butler as 503), and the `tick` tool's own semantics are unchanged
+
 #### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard
 - **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
 - **THEN** the call is refused with `status: "error"` and `code: "SPAWNER_SLOTS_FULL"` before the tick guard is taken
