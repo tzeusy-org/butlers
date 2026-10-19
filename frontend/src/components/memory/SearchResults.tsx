@@ -15,7 +15,13 @@
 // render real belief / maturity / importance data identical to browse mode
 // (honest-default fallback only for rows that predate the embedded row).
 //
-// Empty result: one serif-italic line — "Nothing in the books." (§3d).
+// Empty result: one serif-italic line — "Nothing in the books." (§3d) — only
+// after a successful, healthy, empty response. While the query is in flight a
+// loading line stands in; when a pool dropped out (`meta.pools_failed`) the
+// degraded note names it, with or without rows (bu-kqnum.14.5).
+//
+// Paging: `offset` lives in the URL (owned by MemoryBrowser); the footer reads
+// the exact `meta.total` ("showing 1–50 of 312") and moves only the offset.
 //
 // Binding docs:
 // - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 1
@@ -23,8 +29,11 @@
 // ---------------------------------------------------------------------------
 
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Mono } from "@/components/ui/Mono";
+import { Pill } from "@/components/ui/Pill";
 import { Voice } from "@/components/ui/Voice";
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { LedgerRow } from "@/components/memory/FactsRegister";
 import { DirectiveRow } from "@/components/memory/RulesRegister";
 import { EpisodeRow } from "@/components/memory/EpisodesRegister";
@@ -57,6 +66,50 @@ const KIND_LABEL: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Group header
 // ---------------------------------------------------------------------------
+
+/** `showing 1–50 of 312` left, prev/next pills right (mono dim, no numbered pages). */
+function PaginationFooter({
+  offset,
+  count,
+  total,
+  hasMore,
+  partial,
+  onOffset,
+}: {
+  offset: number;
+  count: number;
+  total: number;
+  hasMore: boolean;
+  /** True when a pool dropped out, so the total undercounts. */
+  partial: boolean;
+  onOffset: (next: number) => void;
+}) {
+  if (total === 0) return null;
+
+  const from = count === 0 ? offset : offset + 1;
+  const to = offset + count;
+
+  return (
+    <div className="flex items-baseline justify-between pt-1" data-testid="memory-search-pager">
+      <Mono muted>
+        showing {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
+        {partial ? " (partial)" : ""}
+      </Mono>
+      <div className="flex gap-1.5">
+        <Pill
+          selected={false}
+          disabled={offset === 0}
+          onClick={() => onOffset(Math.max(0, offset - SEARCH_LIMIT))}
+        >
+          prev
+        </Pill>
+        <Pill selected={false} disabled={!hasMore} onClick={() => onOffset(offset + SEARCH_LIMIT)}>
+          next
+        </Pill>
+      </div>
+    </div>
+  );
+}
 
 /** `FACTS · 12` — mono kind eyebrow with a hairline rule beneath it. */
 function GroupHeader({ kind, count }: { kind: string; count: number }) {
@@ -123,6 +176,10 @@ interface SearchResultsProps {
   kind: "all" | "fact" | "rule" | "episode";
   /** Reference instant for the ledger belief numeral / daybook (tests). */
   now?: Date;
+  /** Page offset (from the URL). Defaults to the first page. */
+  offset?: number;
+  /** Move to another page; writes only the offset. */
+  onOffset?: (next: number) => void;
 }
 
 /**
@@ -130,12 +187,16 @@ interface SearchResultsProps {
  * query + kind scope, groups them by kind, and renders each group's rows in its
  * register shape. Empty result is one serif-italic line.
  */
-export default function SearchResults({ q, kind, now }: SearchResultsProps) {
-  const { data: response, isError, refetch } = useMemoryInspect({
+export default function SearchResults({ q, kind, now, offset = 0, onOffset }: SearchResultsProps) {
+  const { data: response, isError, isLoading, refetch } = useMemoryInspect({
     q,
     kind: kind === "all" ? undefined : kind,
+    offset,
     limit: SEARCH_LIMIT,
   });
+  const total = response?.meta?.total ?? 0;
+  const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   // useMemoryInspect returns PaginatedResponse<MemoryInspectResult> = {data,meta}
   // — unwrap .data before grouping (the #2190/#2191 envelope pattern).
@@ -163,7 +224,52 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
     );
   }
 
+  if (isLoading) {
+    // An in-flight search has no verdict yet; never render the empty line.
+    return (
+      <div role="status" data-testid="memory-search-loading">
+        <Voice variant="italic" className="py-6">
+          Searching the books…
+        </Voice>
+      </div>
+    );
+  }
+
+  const degradedNote = (
+    <PoolsDegradedNote
+      label="Search results"
+      poolsFailed={poolsFailed}
+      onRetry={() => void refetch()}
+      testId="memory-search-degraded"
+    />
+  );
+  const footer = (
+    <PaginationFooter
+      offset={offset}
+      count={results.length}
+      total={total}
+      hasMore={hasMore}
+      partial={poolsFailed.length > 0}
+      onOffset={(next) => onOffset?.(next)}
+    />
+  );
+
   if (results.length === 0) {
+    if (poolsFailed.length > 0) {
+      // A pool dropped out: an empty page is not a "no match" verdict.
+      return <div className="flex flex-col gap-4">{degradedNote}{footer}</div>;
+    }
+    if (total > 0) {
+      // Paged past the last result: say so and keep the way back.
+      return (
+        <div className="flex flex-col gap-4">
+          <Voice variant="italic" className="py-6">
+            Nothing on this page.
+          </Voice>
+          {footer}
+        </div>
+      );
+    }
     return (
       <Voice variant="italic" className="py-6">
         Nothing in the books.
@@ -173,6 +279,7 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
 
   return (
     <div className="flex flex-col gap-8">
+      {degradedNote}
       {KIND_ORDER.map((k) => {
         const group = byKind[k];
         if (!group || group.length === 0) return null;
@@ -180,6 +287,7 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
         if (k === "rule") return <RuleGroup key={k} results={group} />;
         return <EpisodeGroup key={k} results={group} />;
       })}
+      {footer}
     </div>
   );
 }

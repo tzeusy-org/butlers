@@ -27,6 +27,7 @@
 import { Link, useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
@@ -274,6 +275,7 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
   const facts = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   const onSelectValidity = (v: MemoryValidity) => {
     // Switching filter resets paging to the first page.
@@ -284,11 +286,18 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
     <div className="flex flex-col gap-4">
       <ValidityPills validity={validity} onSelect={onSelectValidity} />
 
+      <PoolsDegradedNote
+        label="Facts"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-facts-degraded"
+      />
+
       {isError && facts.length === 0 ? (
         // An errored fetch must not render "The ledger is empty." — a down
         // backend would read as a genuinely empty ledger (bu-mkd5r).
         <MemoryLoadError label="the ledger" onRetry={() => void refetch()} testId="memory-facts-error" />
-      ) : facts.length === 0 ? (
+      ) : facts.length === 0 && poolsFailed.length === 0 ? (
         <Voice variant="italic" className="py-6">
           {validity === "active"
             ? "The ledger is empty."

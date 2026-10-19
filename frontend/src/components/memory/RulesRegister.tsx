@@ -33,6 +33,7 @@
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
@@ -308,6 +309,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   const rules = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   // anti_pattern pinned top, then maturity rank, then confidence desc.
   const ordered = orderRules(rules);
@@ -321,6 +323,13 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
 
+      <PoolsDegradedNote
+        label="Rules"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-rules-degraded"
+      />
+
       {isError && ordered.length === 0 ? (
         // An errored fetch must not render "No standing orders yet." — a down
         // backend would read as a genuinely empty ruleset (bu-mkd5r).
@@ -329,7 +338,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
           onRetry={() => void refetch()}
           testId="memory-rules-error"
         />
-      ) : ordered.length === 0 ? (
+      ) : ordered.length === 0 && poolsFailed.length === 0 ? (
         <Voice variant="italic" className="py-6">
           {maturity === "all"
             ? "No standing orders yet."

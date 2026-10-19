@@ -39,6 +39,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Mono } from "@/components/ui/Mono";
 import { useTimezone } from "@/components/ui/timezone-context";
@@ -361,6 +362,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const episodes = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   const groups = groupEpisodesByDay(episodes, tz, now);
 
@@ -373,6 +375,13 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
     <div className="flex flex-col gap-4">
       <StatusPills status={status} onSelect={onSelectStatus} />
 
+      <PoolsDegradedNote
+        label="Episodes"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-episodes-degraded"
+      />
+
       {isError && episodes.length === 0 ? (
         // An errored fetch must not render "Nothing observed yet." — a down
         // backend would read as a genuinely empty daybook (bu-mkd5r).
@@ -381,7 +390,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
           onRetry={() => void refetch()}
           testId="memory-episodes-error"
         />
-      ) : episodes.length === 0 ? (
+      ) : episodes.length === 0 && poolsFailed.length === 0 ? (
         <Voice variant="italic" className="py-6">
           {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
         </Voice>
