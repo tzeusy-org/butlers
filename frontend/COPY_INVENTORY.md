@@ -2096,6 +2096,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Daily summaries · 7d
 - Google Health: {}
 
+## `frontend/src/components/butler-detail/HealthBaselinesPanel.tsx`
+
+- Usual range
+- Loading…
+- The usual ranges could not be read. Trends below are unaffected.
+- Usual {} range {} to {}{}
+
 ## `frontend/src/components/butler-detail/HomeAtmosphereLocationPanel.tsx`
 
 - The atmosphere feed is stale. Saved coordinates remain available.
@@ -4899,4 +4906,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3904*
+*Total strings: 3908*
