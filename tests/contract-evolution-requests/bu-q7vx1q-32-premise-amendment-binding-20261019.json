@@ -1,0 +1,9 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-q7vx1q-32-premise-amendment-binding-20261019",
+  "owners": [
+    "tests/core/test_owner_conditions.py::TestExplicitResolutionValidation::test_req_owner_condition_ledger_004_facade_exports_and_binds_table",
+    "tests/migrations/test_core_255_insight_premise_binding_migration.py::test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly"
+  ],
+  "timeout_s": 300
+}
