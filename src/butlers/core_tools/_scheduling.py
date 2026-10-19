@@ -23,6 +23,7 @@ from butlers.core.scheduler import schedule_list as _schedule_list
 from butlers.core.scheduler import schedule_toggle as _schedule_toggle
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.sessions import schedule_costs as _schedule_costs
+from butlers.core.tick_guard import BUSY_MESSAGE, exclusive_manual_dispatch
 from butlers.core_tools._base import ToolContext
 
 
@@ -257,12 +258,24 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     if butler_type != ButlerType.STAFFER:
 
         @_core_tool("scheduling")
+        @exclusive_manual_dispatch(
+            lambda *_a, **_k: pool,
+            lambda task_id=None, id=None: {
+                "id": task_id or id,
+                "status": "busy",
+                "message": BUSY_MESSAGE,
+            },
+        )
         async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
             """Trigger a scheduled task immediately (one-off dispatch).
 
             Dispatches the task via the same mechanism as the scheduler tick
             but does NOT advance next_run_at — this is a manual one-off run.
             Updates last_run_at and last_result.
+
+            Not run while a scheduler tick is running or waiting on this daemon: replies
+            ``{"status": "busy"}`` and dispatches nothing, so a manual run cannot overlap
+            the tick (which could send the same thing twice).
             """
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_trigger")
             task_uuid = uuid.UUID(resolved_id)

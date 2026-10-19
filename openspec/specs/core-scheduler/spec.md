@@ -153,6 +153,12 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** the API responds with `success: false` and the busy message in `data.message`
 - **AND** the scheduler loop's own tick waits for a forced tick that is mid-run, so at most one tick runs per daemon at a time
 
+#### Scenario: Manual schedule trigger and Chronicler refresh do not overlap a tick
+- **WHEN** the `schedule_trigger` tool (`POST /api/butlers/{name}/schedules/{id}/trigger`) or the Chronicler day-close refresh is invoked while a tick is running or waiting on the same daemon
+- **THEN** nothing is dispatched and the reply reports busy: `status: "busy"` for `schedule_trigger`, error code `scheduler_busy` for the refresh
+- **AND** the API responds 409 and records the refused trigger as a successful request whose audit metadata carries `observed_status: "busy"`
+- **AND** when no tick is running they dispatch as before, holding the same per-daemon guard so a tick that arrives mid-dispatch waits
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing

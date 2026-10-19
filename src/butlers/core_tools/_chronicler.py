@@ -20,6 +20,7 @@ from butlers.chronicler.day_close_writer import (
     write_day_close_cache,
 )
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.tick_guard import BUSY_MESSAGE, exclusive_manual_dispatch
 from butlers.core.tool_call_capture import (
     MANUAL_DAY_CLOSE_TRIGGER_PREFIX,
     get_current_runtime_session_id,
@@ -68,6 +69,10 @@ async def _authoritative_witness(pool: Any, target: date, timezone: str) -> Any:
     )
 
 
+@exclusive_manual_dispatch(
+    lambda ctx, **_k: ctx.pool,
+    lambda ctx, **_k: _error("scheduler_busy", BUSY_MESSAGE),
+)
 async def _run_manual_refresh(
     ctx: ToolContext,
     *,

@@ -194,6 +194,12 @@ async def _log_legacy_schedule_mutation(
     elif response.get("status") == _MUTATION_SUCCESS_STATUS[operation]:
         observed_status = _MUTATION_SUCCESS_STATUS[operation]
         audit_result, error = "success", None
+    elif operation == "schedule.trigger" and response.get("status") == "busy":
+        # A tick was running, so the trigger was refused. That is a handled request, not a
+        # failure: keep result="success" (an "error" row is grouped into an Issue) and record
+        # the outcome in the metadata.
+        observed_status = "busy"
+        audit_result, error = "success", None
     elif response.get("status") == "error":
         observed_status = "error"
         audit_result, error = "error", "MCP_REFUSED"
@@ -382,10 +388,16 @@ async def trigger_schedule(
         await _log_legacy_schedule_mutation(
             db, name, "schedule.trigger", schedule_id=schedule_id, response=result
         )
-        return ApiResponse[dict](data=result)
     except HTTPException:
         await _log_legacy_schedule_mutation(db, name, "schedule.trigger", schedule_id=schedule_id)
         raise
+    if result.get("status") == "busy":
+        # Nothing was dispatched, so this must not read as a successful trigger.
+        raise HTTPException(
+            status_code=409,
+            detail=str(result.get("message") or "A scheduler tick is already running"),
+        )
+    return ApiResponse[dict](data=result)
 
 
 async def _log_schedule_toggle_audit(
