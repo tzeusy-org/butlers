@@ -207,7 +207,11 @@ async def _log_legacy_schedule_mutation(
         # the outcome in the metadata.
         observed_status = "busy"
         audit_result, error = "success", None
-    elif operation == "schedule.trigger" and response.get("code") == _SCHEDULE_NOT_FOUND:
+    elif (
+        operation == "schedule.trigger"
+        and response.get("status") == "error"
+        and response.get("code") == _SCHEDULE_NOT_FOUND
+    ):
         # Asking for a schedule that does not exist is a refused request, not a fault: audited
         # as a success with the outcome in the metadata, like busy.
         observed_status = "not_found"
@@ -418,7 +422,7 @@ async def trigger_schedule(
         reason = str(result.get("error") or "the butler did not confirm the trigger")
         raise HTTPException(
             status_code=502,
-            detail=f"Schedule trigger failed: {reason[:_TRIGGER_DETAIL_LIMIT]}",
+            detail=reason[:_TRIGGER_DETAIL_LIMIT],
         )
     return ApiResponse[dict](data=result)
 
