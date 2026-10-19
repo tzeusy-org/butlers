@@ -112,7 +112,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
       onSuccess: (response) => {
         // A trigger still running after the API's accept window answers 202 "running".
         if (response.data.status === "running") {
-          toast.info(`Schedule "${schedule.name}" is running; it may take a few minutes`);
+          toast.info(`Schedule "${schedule.name}" is running; its last result shows the outcome`);
         } else {
           toast.success(`Schedule "${schedule.name}" triggered`);
         }

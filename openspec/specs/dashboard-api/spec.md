@@ -319,8 +319,9 @@ Scope: v1-mandatory
 
 #### Scenario: A schedule trigger's outcome maps to the HTTP status
 - **WHEN** `POST /api/butlers/{name}/schedules/{schedule_id}/trigger` proxies `schedule_trigger`
-- **THEN** a `triggered` reply answers 200, a `busy` reply answers 409, a nonexistent schedule answers 404, and any other reply (a dispatch failure or an unrecognised reply) answers 502
-- **AND** each non-200 outcome carries its reason in `detail`, so a trigger that did not happen never reads as a successful one
+- **THEN** a reply received inside the accept window maps to a status: a `triggered` reply answers 200, a `busy` reply answers 409, a nonexistent schedule answers 404, and any other reply (a dispatch failure or an unrecognised reply) answers 502
+- **AND** each error outcome carries its reason in `detail`, so a trigger that did not happen never reads as a successful one
+- **AND** a trigger still running at the end of the accept window answers 202 with `data.status: "running"`; its eventual outcome is audited, not reported to that request
 - **AND** a failed MCP call (a raised tool error or an unreachable butler) is not a reply and stays 503
 
 ### Requirement: Butler-Specific Route Auto-Discovery

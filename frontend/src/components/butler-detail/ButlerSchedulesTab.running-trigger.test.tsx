@@ -85,7 +85,7 @@ describe("ButlerSchedulesTab running schedule trigger", () => {
     onSuccess({ data: { id: "schedule-1", status: "running" } });
 
     expect(toast.info).toHaveBeenCalledWith(
-      'Schedule "daily_digest" is running; it may take a few minutes',
+      'Schedule "daily_digest" is running; its last result shows the outcome',
     );
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();

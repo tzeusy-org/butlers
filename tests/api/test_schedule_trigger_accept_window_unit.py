@@ -141,3 +141,76 @@ async def test_a_fast_unreachable_error_inside_the_window_is_still_a_503(app) ->
 
     assert resp.status_code == 503
     audit.assert_awaited_once()
+
+
+def test_the_accept_window_stays_below_the_browsers_request_budget() -> None:
+    # frontend/src/api/client.ts API_REQUEST_TIMEOUT_MS is 15 s; leave headroom for the network
+    # and any proxy, or a trigger that did start reads as a failed one again.
+    assert 0 < schedules_module._TRIGGER_ACCEPT_WINDOW_S <= 12
+
+
+async def test_a_trigger_cancelled_after_the_202_is_logged_and_never_audited(app, caplog) -> None:
+    release = asyncio.Event()
+
+    async def slow_tool(*_args, **_kwargs):
+        await release.wait()
+        return _TRIGGERED
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.schedules"):
+        resp, audit = await _post_trigger(app, slow_tool)
+        for task in list(schedules_module._trigger_tasks):
+            task.cancel()
+        await _drain()
+
+    assert resp.status_code == 202
+    audit.assert_not_awaited()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "cancelled" in warnings[0].getMessage()
+    assert "not audited" in warnings[0].getMessage()
+    assert f"qa:{_SCHEDULE_ID}" in warnings[0].getMessage()
+    assert not schedules_module._trigger_tasks
+
+
+async def test_a_non_http_failure_after_the_202_is_logged_as_an_error_with_a_traceback(
+    app, caplog
+) -> None:
+    release = asyncio.Event()
+
+    async def slow_bug(*_args, **_kwargs):
+        await release.wait()
+        raise RuntimeError("parse path bug")
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.schedules"):
+        resp, _audit = await _post_trigger(app, slow_bug, release=release)
+
+    assert resp.status_code == 202
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+    assert "parse path bug" in repr(errors[0].exc_info[1])
+
+
+async def test_an_in_window_503_does_not_log_that_its_request_ended(app, caplog) -> None:
+    tool = AsyncMock(side_effect=HTTPException(status_code=503, detail="butler unreachable"))
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.schedules"):
+        resp, _audit = await _post_trigger(app, tool, window=5.0)
+
+    assert resp.status_code == 503
+    assert not [r for r in caplog.records if "request ended" in r.getMessage()]
+
+
+async def test_a_503_after_the_202_logs_that_its_request_ended(app, caplog) -> None:
+    release = asyncio.Event()
+
+    async def slow_failure(*_args, **_kwargs):
+        await release.wait()
+        raise HTTPException(status_code=503, detail="butler unreachable")
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.schedules"):
+        await _post_trigger(app, slow_failure, release=release)
+
+    infos = [r for r in caplog.records if "request ended" in r.getMessage()]
+    assert len(infos) == 1
+    assert infos[0].levelname == "INFO"

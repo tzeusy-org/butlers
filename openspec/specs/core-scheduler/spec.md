@@ -172,7 +172,7 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 #### Scenario: A trigger that outlasts the accept window answers 202 running
 - **WHEN** `POST /api/butlers/{name}/schedules/{id}/trigger` has not received the `schedule_trigger` reply within the accept window (shorter than the dashboard's 15 second request budget)
 - **THEN** the API answers 202 with `data.status: "running"` instead of holding the request open, and the dashboard shows the schedule as running rather than as a failed trigger
-- **AND** the trigger keeps running and its outcome is audited exactly once when it finishes, whatever that outcome is
+- **AND** the trigger keeps running and its outcome is audited exactly once when it finishes, whatever that outcome is, unless the API process stops first: a pending trigger then ends unaudited and the API logs a warning that it was cancelled
 - **AND** a reply inside the window keeps the status mapping above, and the `schedule_trigger` tool's own semantics are unchanged
 
 #### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard

@@ -1983,7 +1983,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Event paused
 - Failed to toggle schedule: {}
 - Unknown error
-- Schedule "{}" is running; it may take a few minutes
+- Schedule "{}" is running; its last result shows the outcome
 - Schedule "{}" triggered
 - Schedule "{}" not triggered: {}
 - Failed to trigger schedule: {}

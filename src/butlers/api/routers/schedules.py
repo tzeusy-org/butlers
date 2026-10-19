@@ -400,12 +400,29 @@ _TRIGGER_ACCEPT_WINDOW_S = 10.0
 _trigger_tasks: set[asyncio.Task] = set()
 
 
+#: Triggers whose request already answered 202: only these log "after its request ended".
+_detached_triggers: set[asyncio.Task] = set()
+
+
 def _trigger_task_done(task: asyncio.Task) -> None:
     _trigger_tasks.discard(task)
-    if not task.cancelled() and task.exception() is not None:
-        # An HTTPException already audited itself in `_trigger_and_audit`; a request that is
-        # still waiting re-raises it, and one that answered 202 has nobody left to tell.
-        logger.info("Schedule trigger finished with %r after its request ended", task.exception())
+    detached = task in _detached_triggers
+    _detached_triggers.discard(task)
+    label = task.get_name()
+    if task.cancelled():
+        # Loop teardown cancels a pending trigger; it never reached its audit write.
+        logger.warning("Schedule trigger %s was cancelled; its outcome was not audited", label)
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    if isinstance(exc, HTTPException):
+        # `_trigger_and_audit` already audited it. A request still waiting re-raises it to the
+        # caller; only one that answered 202 has nobody left to tell.
+        if detached:
+            logger.info("Schedule trigger %s finished with %r after its request ended", label, exc)
+        return
+    logger.error("Schedule trigger %s failed unexpectedly", label, exc_info=exc)
 
 
 async def _trigger_and_audit(
@@ -440,11 +457,15 @@ async def trigger_schedule(
     a trigger still running after that answers 202 ``running`` (inside the browser's 15 s
     budget) and finishes in the background, which then audits the outcome.
     """
-    call = asyncio.create_task(_trigger_and_audit(mgr, db, name, schedule_id))
+    call = asyncio.create_task(
+        _trigger_and_audit(mgr, db, name, schedule_id),
+        name=f"schedule-trigger:{name}:{schedule_id}",
+    )
     _trigger_tasks.add(call)
     call.add_done_callback(_trigger_task_done)
     done, _pending = await asyncio.wait({call}, timeout=_TRIGGER_ACCEPT_WINDOW_S)
     if not done:
+        _detached_triggers.add(call)
         return JSONResponse(
             status_code=202,
             content=ApiResponse[dict](
