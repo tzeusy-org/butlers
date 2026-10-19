@@ -99,3 +99,22 @@ The Health butler SHALL run a deterministic daily `baseline_watch` job, with no 
 
 - **WHEN** the latest day is scored back inside the band
 - **THEN** the episode SHALL close, the owner-condition SHALL resolve, and no new message SHALL be sent for the closure
+
+### Requirement: Stored baselines are readable, and the owner sees words, not a band, when there is none
+
+A butler SHALL be able to read its own stored baseline for a metric through a read-only core tool `metric_baseline_get(metric_key)`, and the Health dashboard SHALL read every Health metric's baseline through `GET /api/health/baselines`. Both SHALL return `state`, `band`, `n_observed`, `n_expected`, `coverage`, `computed_at` and `stale`, read from the latest stored row of the caller's own schema, and SHALL classify it with the scorer's precedence: `unmeasurable`, then `stale` (computed more than twice the refresh interval ago), then `insufficient_history`, otherwise `ready`. `band` SHALL be present only when `state` is `ready`. A key with no stored row SHALL read as `no_baseline`, not as an error. When the store cannot be read, the API SHALL answer a degraded envelope (`available = false`, `baselines = null`) rather than an empty list. The Health measurements tab SHALL draw the usual range and an "n of m days" plaque only for a `ready` baseline, and SHALL render every other state, and an unreadable store, as one sentence while the trends keep rendering.
+
+#### Scenario: A ready baseline is drawn with its denominator
+
+- **WHEN** resting heart rate has a ready, fresh baseline built from 54 of 60 days
+- **THEN** the tab SHALL show the usual range and "54 of 60 days", and the tool and API SHALL return the same band and counts
+
+#### Scenario: Thin, unmeasurable, stale or missing baselines are words
+
+- **WHEN** a baseline is `insufficient_history`, `unmeasurable`, `stale` or absent
+- **THEN** the tool and API SHALL return `band = null` with the named state, and the tab SHALL show one sentence and no band element
+
+#### Scenario: An unreadable store is not an empty answer
+
+- **WHEN** the Health baseline read fails
+- **THEN** the API SHALL answer `available = false` with `baselines = null`, and the tab SHALL say the usual ranges could not be read while keeping the trends

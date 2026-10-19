@@ -28,5 +28,24 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
-Home energy, Finance spend and the dashboard band are later slices; see
+## Reading baselines (slice 2)
+
+The stored band is readable three ways, all from the caller's own schema and all read-only:
+
+- **Core tool `metric_baseline_get(metric_key)`** (`src/butlers/core_tools/_baselines.py`, group
+  `baselines`) returns `{state, band, n_observed, n_expected, coverage, computed_at, stale}`.
+- **`GET /api/health/baselines`** returns the same for every Health metric, through the Health
+  router's own pool. An unreadable store answers `available = false` with `baselines = null`, never
+  an empty list.
+- **The Health measurements tab** shows the usual range with an "n of m days" plaque, and shades it
+  on the HRV trend, only for a `ready` baseline.
+
+`state` follows the scorer's precedence, so the tab and a deviation notice never disagree about the
+same row: `unmeasurable`, then `stale` (computed more than twice the refresh interval ago), then
+`insufficient_history`, otherwise `ready`. A metric with no stored row reads `no_baseline` (the job
+has not run, or the key is unknown). `band` is present only for `ready`; every other state renders
+as one sentence, never as a range. Resting heart rate and sleep duration have no trend panel that
+charts them, so they show the range and plaque in the "Usual range" panel only.
+
+Home energy, Finance spend and later metrics are later slices; see
 `openspec/changes/add-personal-baselines/proposal.md`.
