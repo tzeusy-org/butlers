@@ -170,6 +170,7 @@ async def test_a_trigger_cancelled_after_the_202_is_logged_and_never_audited(app
     assert "not audited" in warnings[0].getMessage()
     assert f"qa:{_SCHEDULE_ID}" in warnings[0].getMessage()
     assert not schedules_module._trigger_tasks
+    assert not schedules_module._detached_triggers
 
 
 async def test_a_non_http_failure_after_the_202_is_logged_as_an_error_with_a_traceback(
