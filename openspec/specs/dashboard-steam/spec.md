@@ -118,17 +118,25 @@ The dashboard SHALL expose endpoints for querying playtime data.
 
 ### Requirement: Connector Health View
 
-The dashboard SHALL expose a Steam connector health endpoint that reports the
-connector's recorded heartbeat state. It SHALL NOT call the connector's own health
-listener, which is bound to loopback and unreachable from another container or pod.
+The dashboard SHALL expose a Steam connector health endpoint that proxies the
+connector's own health endpoint.
 
 #### Scenario: Get connector health
 
 - **WHEN** `GET /api/steam/connector/health` is called
+- **THEN** the response SHALL proxy the Steam connector's health endpoint
+- **AND** return aggregated and per-account health status
+
+#### Scenario: Connector health comes from the recorded heartbeat
+
+The scenario above is realised without calling the connector: its health listener is bound
+to loopback and is unreachable from another container or pod.
+
+- **WHEN** `GET /api/steam/connector/health` is called
 - **THEN** the response SHALL report the connector's state from its `switchboard.connector_registry` heartbeat row, with `uptime_seconds` and the count of polled accounts
 - **AND** `status` SHALL be `not_running` when the heartbeat is stale, offline, future-dated, absent, or the registry is unreachable
-- **AND** per-account detail SHALL be empty because the registry does not record it
 - **AND** the API SHALL make no HTTP call to the connector
+- **AND** per-account detail SHALL be empty, because the registry does not record it
 
 ### Requirement: Steam Connector Configuration
 
