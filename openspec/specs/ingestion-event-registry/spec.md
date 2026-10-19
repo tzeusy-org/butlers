@@ -79,6 +79,10 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 
 The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
+ID: REQ-ingestion-event-registry-003
+Source: [Observed] src/butlers/api/routers/ingestion_events.py:_enrich_list_summaries
+Scope: v1-mandatory
+
 #### Scenario: Paginated list
 - **WHEN** `ingestion_events_list(pool, limit=20, cursor=None)` is called
 - **THEN** up to 20 rows are returned (most recent first), with an opaque `next_cursor` for the following page
