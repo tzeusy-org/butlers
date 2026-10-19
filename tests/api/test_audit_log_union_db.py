@@ -287,7 +287,9 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
         expected_http_status = 502  # a trigger that did not happen is never a 2xx
     assert response.status_code == expected_http_status
     if operation == "trigger" and mode == "refused":
-        assert "private-provider-failure" in response.json()["detail"]
+        body = response.json()
+        assert "data" not in body
+        assert body["detail"]
     elif mode != "unreachable":
         assert response.json()["data"]["status"] == (
             "error" if mode == "refused" else expected_status

@@ -1,0 +1,8 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-ukf1u0-schedule-trigger-status-20261019",
+  "owners": [
+    "tests/api/test_audit_log_union_db.py::test_legacy_schedule_mutation_audits_owner_and_observed_outcome"
+  ],
+  "timeout_s": 300
+}
