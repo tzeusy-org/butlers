@@ -35,6 +35,7 @@ from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.tick_guard import BUSY_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +396,7 @@ async def trigger_schedule(
         # Nothing was dispatched, so this must not read as a successful trigger.
         raise HTTPException(
             status_code=409,
-            detail=str(result.get("message") or "Scheduled work is already running on this butler"),
+            detail=str(result.get("message") or BUSY_MESSAGE),
         )
     return ApiResponse[dict](data=result)
 

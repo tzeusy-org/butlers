@@ -114,10 +114,11 @@ async def _run_if_idle[T](pool: Any, run: Callable[[], Awaitable[T]]) -> tuple[b
 
 
 async def run_forced_tick(pool: Any, run: Callable[[], Awaitable[int]]) -> dict[str, Any]:
-    """Run a forced tick unless a tick is already running or waiting.
+    """Run a forced tick unless the guard is held by a tick or a manual dispatch.
 
     Returns ``{"dispatched": n}`` after running, or ``{"status": "busy", "dispatched": 0,
-    "message": ...}`` when another tick is running or waiting. The ran reply carries no
+    "message": ...}`` when another tick is running or waiting, or a manual schedule
+    trigger or Chronicler refresh holds the guard. The ran reply carries no
     ``status`` key; callers detect busy by ``status == "busy"``.
     """
     ran, dispatched = await _run_if_idle(pool, run)

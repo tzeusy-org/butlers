@@ -165,6 +165,7 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
 - **THEN** the call is refused with `status: "error"` and `code: "SPAWNER_SLOTS_FULL"` before the tick guard is taken
 - **AND** nothing is dispatched and the scheduler loop is not stalled behind the call
+- **AND** the refusal also applies when only the process-wide session cap is exhausted while this butler has a free slot, since the spawner takes the global cap first
 - **AND** job-mode schedules, calls from the dashboard, and calls made while a slot is free are unaffected
 
 #### Scenario: Deadline evaluation runs each tick

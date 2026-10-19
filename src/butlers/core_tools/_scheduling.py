@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.config import ButlerType
+from butlers.core import spawner as spawner_module
 from butlers.core.scheduler import (
     _effective_schedule_timezone,
     _parse_complexity_from_db_row,
@@ -53,22 +54,31 @@ except ImportError:
 
 
 def _spawner_slots_full(spawner: Any) -> bool:
-    """Whether every spawner concurrency slot is taken.
+    """Whether the per-butler slots or the process-wide global cap are all taken.
 
-    Reads ``asyncio.Semaphore._value`` exactly as ``Spawner.trigger`` does for its own
-    self-trigger refusal (see the implementation note in ``core/spawner.py``).
+    ``Spawner.trigger`` acquires the global semaphore first, then the per-butler one, so
+    either cap being exhausted means a new dispatch would wait. Reads
+    ``asyncio.Semaphore._value`` exactly as ``Spawner.trigger`` does for its own
+    self-trigger refusal (see the implementation note in ``core/spawner.py``). An unset
+    global semaphore (``None``) is not full.
     """
-    semaphore = getattr(spawner, "_session_semaphore", None)
-    return isinstance(semaphore, asyncio.Semaphore) and semaphore._value == 0
+    for semaphore in (
+        getattr(spawner_module, "_global_semaphore", None),
+        getattr(spawner, "_session_semaphore", None),
+    ):
+        if isinstance(semaphore, asyncio.Semaphore) and semaphore._value == 0:
+            return True
+    return False
 
 
 def _refuse_runtime_trigger_without_slot(pool: Any, ctx: ToolContext) -> Callable[[Any], Any]:
     """Refuse a runtime-originated prompt-mode trigger that could only wait on its own slot.
 
-    The calling session occupies a spawner slot. With every slot taken, the dispatch inside
-    the tick guard would wait for a slot until the session timeout, stalling the scheduler
-    loop and deterministic jobs behind the guard. Refuse before taking the guard. Job-mode
-    schedules do not need a slot and are unaffected.
+    The calling session occupies a spawner slot. With this butler's slots or the fleet-wide
+    cap exhausted, the dispatch inside the tick guard would wait on its own or other
+    sessions' slots, which can stall the scheduler loop and deterministic jobs behind the
+    guard. Refuse before taking the guard. Job-mode schedules do not need a slot and are
+    unaffected.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -89,7 +99,8 @@ def _refuse_runtime_trigger_without_slot(pool: Any, ctx: ToolContext) -> Callabl
                         "status": "error",
                         "code": "SPAWNER_SLOTS_FULL",
                         "error": (
-                            "Every session slot is in use, so a prompt-mode schedule cannot be "
+                            "No session slot is free (this butler's or the fleet-wide limit), so "
+                            "a prompt-mode schedule cannot be "
                             "triggered from inside a running session; trigger it from the "
                             "dashboard instead."
                         ),
