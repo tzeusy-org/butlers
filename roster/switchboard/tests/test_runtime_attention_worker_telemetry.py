@@ -111,26 +111,39 @@ def _worker(outbox: _Outbox, result: transport.TransportResult) -> RuntimeAttent
     async def send(episode: OutboxEpisode) -> transport.TransportResult:
         return result
 
-    return RuntimeAttentionDeliveryWorker(outbox, send)  # type: ignore[arg-type]
+    async def no_backoff(seconds: float) -> None:
+        return None
+
+    return RuntimeAttentionDeliveryWorker(outbox, send, sleep=no_backoff)  # type: ignore[arg-type]
 
 
-async def test_confirmed_delivery_records_outcome_with_no_error_class(
+async def test_confirmed_delivery_records_outcome_with_no_reason(
     counters: dict[str, _Recorder],
 ) -> None:
     await _worker(_Outbox(), transport.CONFIRMED).run_once()
 
-    assert counters["_delivery_total"].calls == [
-        (1, {"outcome": "confirmed", "error_class": "none"})
-    ]
+    assert counters["_delivery_total"].calls == [(1, {"outcome": "confirmed", "reason": "none"})]
 
 
-async def test_rejected_delivery_records_the_closed_error_class(
+async def test_rejected_delivery_records_the_closed_reason_code(
     counters: dict[str, _Recorder],
 ) -> None:
     await _worker(_Outbox(), transport.PROVIDER_REJECTED).run_once()
 
     assert counters["_delivery_total"].calls == [
-        (1, {"outcome": "rejected", "error_class": "transport_rejected"})
+        (1, {"outcome": "rejected", "reason": "provider_rejected"})
+    ]
+
+
+async def test_two_not_attempted_causes_stay_distinguishable(
+    counters: dict[str, _Recorder],
+) -> None:
+    await _worker(_Outbox(), transport.POLICY_DENIED).run_once()
+    await _worker(_Outbox(), transport.RECIPIENT_UNAVAILABLE).run_once()
+
+    assert [attributes["reason"] for _, attributes in counters["_delivery_total"].calls] == [
+        "policy_denied",
+        "recipient_unavailable",
     ]
 
 
@@ -138,7 +151,7 @@ async def test_delivery_attributes_come_only_from_the_closed_vocabulary(
     counters: dict[str, _Recorder],
 ) -> None:
     allowed_outcomes = {str(o) for o in transport.TransportOutcome}
-    allowed_classes = {str(c) for c in transport.TransportErrorClass} | {"none"}
+    allowed_reasons = {str(d) for d in transport.TransportErrorDetail} | {"none"}
     for result in (
         transport.CONFIRMED,
         transport.RECIPIENT_UNAVAILABLE,
@@ -149,9 +162,9 @@ async def test_delivery_attributes_come_only_from_the_closed_vocabulary(
         counters["_delivery_total"].calls.clear()
         await _worker(_Outbox(), result).run_once()
         for _, attributes in counters["_delivery_total"].calls:
-            assert set(attributes) == {"outcome", "error_class"}
+            assert set(attributes) == {"outcome", "reason"}
             assert attributes["outcome"] in allowed_outcomes
-            assert attributes["error_class"] in allowed_classes
+            assert attributes["reason"] in allowed_reasons
 
 
 async def test_a_lost_service_lease_is_counted(counters: dict[str, _Recorder]) -> None:

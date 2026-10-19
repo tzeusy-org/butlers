@@ -176,11 +176,13 @@ class RuntimeAttentionDeliveryWorker:
             if attempt < MAX_TRANSPORT_ATTEMPTS:
                 await self._sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
 
+        # ``error_class`` is not an attribute: it is a function of ``outcome``. The
+        # closed reason code is what tells a policy denial from a timeout.
         _delivery_total.add(
             1,
             {
                 "outcome": str(result.outcome),
-                "error_class": str(result.error_class) if result.error_class else "none",
+                "reason": str(result.error_detail) if result.error_detail else "none",
             },
         )
         try:

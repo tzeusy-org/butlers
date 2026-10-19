@@ -18,9 +18,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from prometheus_client import REGISTRY
 
 from butlers.api.db import DatabaseManager
-from butlers.chronicler.adapters import calendar as calendar_module
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.models import Episode
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -84,6 +84,15 @@ def _chronicler_pool() -> AsyncMock:
     return pool
 
 
+def _get_counter_value(schema: str) -> float:
+    """Return current value of chronicler_episode_participants_resolved_total for schema."""
+    val = REGISTRY.get_sample_value(
+        "chronicler_episode_participants_resolved_total",
+        {"schema": schema},
+    )
+    return val if val is not None else 0.0
+
+
 class _RecordingCounter:
     """OTel counter double: totals the amounts added per ``source_butler``."""
 
@@ -93,19 +102,6 @@ class _RecordingCounter:
     def add(self, amount: float, attributes: dict[str, str] | None = None) -> None:
         key = (attributes or {})["source_butler"]
         self.totals[key] = self.totals.get(key, 0.0) + amount
-
-
-_COUNTER = _RecordingCounter()
-
-
-@pytest.fixture(autouse=True)
-def _record_participant_counter(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(calendar_module, "chronicler_episode_participants_resolved_total", _COUNTER)
-
-
-def _get_counter_value(schema: str) -> float:
-    """Return the recorded participant-resolution total for schema."""
-    return _COUNTER.totals.get(schema, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +122,7 @@ async def test_counter_increments_by_participant_count_in_project_run() -> None:
     participant_a = uuid4()
     participant_b = uuid4()
     row = _make_row(event_title="Team sync")
-
-    before = _get_counter_value(schema)
+    counter = _RecordingCounter()
 
     adapter = CalendarCompletedAdapter(butler_schemas=(schema,))
     episode_id = uuid4()
@@ -157,6 +152,10 @@ async def test_counter_increments_by_participant_count_in_project_run() -> None:
             "butlers.chronicler.adapters.calendar.upsert_episode",
             side_effect=_fake_upsert,
         ),
+        patch(
+            "butlers.chronicler.adapters.calendar.chronicler_episode_participants_resolved_total",
+            new=counter,
+        ),
     ):
         result = await adapter.project(
             MagicMock(),
@@ -165,10 +164,10 @@ async def test_counter_increments_by_participant_count_in_project_run() -> None:
         )
 
     assert result.rows_projected == 1
-    after = _get_counter_value(schema)
-    assert after - before == 2.0, (
-        f"Expected counter to increase by 2 (2 participants), got {after - before}"
+    assert counter.totals == {schema: 2.0}, (
+        f"Expected counter to increase by 2 (2 participants), got {counter.totals}"
     )
+    assert _get_counter_value(schema) == 0.0, "the counter is OTel, not a prometheus_client series"
 
 
 @pytest.mark.unit
@@ -180,8 +179,7 @@ async def test_counter_not_incremented_when_no_participants() -> None:
     schema = f"test_schema_{uuid4().hex[:8]}"
     owner_id = uuid4()
     row = _make_row(event_title="Solo session")
-
-    before = _get_counter_value(schema)
+    counter = _RecordingCounter()
 
     adapter = CalendarCompletedAdapter(butler_schemas=(schema,))
     episode_id = uuid4()
@@ -211,6 +209,10 @@ async def test_counter_not_incremented_when_no_participants() -> None:
             "butlers.chronicler.adapters.calendar.upsert_episode",
             side_effect=_fake_upsert,
         ),
+        patch(
+            "butlers.chronicler.adapters.calendar.chronicler_episode_participants_resolved_total",
+            new=counter,
+        ),
     ):
         result = await adapter.project(
             MagicMock(),
@@ -219,8 +221,7 @@ async def test_counter_not_incremented_when_no_participants() -> None:
         )
 
     assert result.rows_projected == 1
-    after = _get_counter_value(schema)
-    assert after == before, (
+    assert counter.totals == {}, (
         "Counter must not increment when there are no participants (owner-only episode)"
     )
 
@@ -243,8 +244,7 @@ async def test_counter_increments_by_total_across_multiple_episodes() -> None:
     participant_b = uuid4()
     participant_c = uuid4()
     participant_d = uuid4()
-
-    before = _get_counter_value(schema)
+    counter = _RecordingCounter()
 
     adapter = CalendarCompletedAdapter(butler_schemas=(schema,))
 
@@ -275,6 +275,10 @@ async def test_counter_increments_by_total_across_multiple_episodes() -> None:
             "butlers.chronicler.adapters.calendar.upsert_episode",
             side_effect=_fake_upsert,
         ),
+        patch(
+            "butlers.chronicler.adapters.calendar.chronicler_episode_participants_resolved_total",
+            new=counter,
+        ),
     ):
         result = await adapter.project(
             MagicMock(),
@@ -283,9 +287,8 @@ async def test_counter_increments_by_total_across_multiple_episodes() -> None:
         )
 
     assert result.rows_projected == 2
-    after = _get_counter_value(schema)
-    assert after - before == 4.0, (
-        f"Expected counter to increase by 4 (1 + 3 participants), got {after - before}"
+    assert counter.totals == {schema: 4.0}, (
+        f"Expected counter to increase by 4 (1 + 3 participants), got {counter.totals}"
     )
 
 

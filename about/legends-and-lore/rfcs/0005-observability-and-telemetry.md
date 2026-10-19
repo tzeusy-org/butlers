@@ -189,7 +189,7 @@ Exported to Prometheus as `butlers_chronicler_episode_participants_resolved_tota
 
 | Instrument | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `butlers.switchboard.runtime_attention.delivery` | Counter | `outcome` (the `TransportOutcome` set), `error_class` (the `TransportErrorClass` set, or `none`) | Delivery attempts by typed transport outcome |
+| `butlers.switchboard.runtime_attention.delivery` | Counter | `outcome` (the `TransportOutcome` set), `reason` (the `TransportErrorDetail` set, or `none` for a confirmed send) | Delivery attempts by typed transport outcome and reason code |
 | `butlers.switchboard.runtime_attention.recovered` | Counter | none | Claims fenced to uncertain by a recovery sweep |
 | `butlers.switchboard.runtime_attention.fenced` | Counter | none | Transitions refused because the claim was no longer current |
 | `butlers.switchboard.runtime_attention.lease_lost` | Counter | none | Delivery cycles cut short by losing the sole service lease |
