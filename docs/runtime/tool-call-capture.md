@@ -44,11 +44,31 @@ The capture system also manages per-session routing context --- metadata about h
 
 After a session completes, the spawner calls `_merge_tool_call_records(parsed_calls, executed_calls)`:
 
-1. For each executed call, compute a signature from `(tool_name, JSON-serialized input)`.
-2. Match each executed call to an unmatched parsed call with the same signature.
-3. Matched pairs are merged (executed data overwrites parsed, preserving extra fields).
-4. Unmatched executed calls are added as-is (calls the parser missed).
-5. Unmatched parsed calls are added as-is (calls that may not have executed).
+1. Every parser record's raw input is reduced to the capture allowlist (the common cross-butler
+   fields plus any per-tool fields in `mcp_wrappers`), so a parameter a tool deliberately never
+   stores never reaches `sessions.tool_calls`. A keyed fingerprint of the full raw input is kept
+   when the allowlist view drops information, so loop detection still tells calls apart. Shell
+   commands the runtime ran itself (`command_execution`) keep their raw input.
+2. For each executed call, compute a signature from `(tool_name, keyed input fingerprint)` and
+   match it to an unmatched parsed call with the same signature.
+3. An executed call that did not match by fingerprint pairs with the next unmatched parsed call of
+   the same tool, in call order. A parser cannot know the defaults the daemon binds, so a call
+   that omits an optional parameter never matches by fingerprint.
+4. Matched pairs are merged (executed data overwrites parsed, preserving extra fields).
+5. Unmatched executed calls are added as-is (calls the parser missed).
+6. Unmatched parsed calls are added as-is (calls that may not have executed), already reduced to
+   the allowlist view.
+
+The reduced list is also what in-process consumers see: the merged list is
+`SpawnerResult.tool_calls`, which the Switchboard question lanes read. A field a consumer branches
+on (for example `answer_question`'s `scope` and `target`) must therefore be on the allowlist, in
+`_VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL`, or that consumer no longer sees it.
+
+The input fingerprint is an HMAC-SHA256 under a random per-process key. It is only compared
+inside the daemon process, and the key is never stored, so a persisted fingerprint cannot be
+brute-forced back to a low-entropy argument. Rows written before this change carry plain sha256
+fingerprints and, for some tools, raw input; scrubbing them is a separate owner-gated data
+operation.
 
 ## Integration Points
 

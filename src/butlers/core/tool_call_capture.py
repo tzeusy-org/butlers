@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import hmac
 import json
+import secrets
 import threading
 from collections import defaultdict
 from typing import Any
@@ -62,6 +64,13 @@ _runtime_codex_auth_authority_var: contextvars.ContextVar[Any | None] = contextv
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
+
+# Keys the tool-input fingerprint. Fingerprints are only compared inside this process
+# (parser/daemon pairing and the degenerate-loop check), but they are also persisted in
+# ``sessions.tool_calls``. A plain sha256 of a low-entropy argument (an account number,
+# a short identifier) can be brute-forced from that value; an HMAC under a key that is
+# never stored or logged cannot.
+_FINGERPRINT_KEY = secrets.token_bytes(32)
 
 
 def set_current_runtime_session_id(session_id: str | None) -> contextvars.Token[str | None]:
@@ -207,7 +216,11 @@ def _json_safe(value: Any) -> Any:
 
 
 def fingerprint_tool_call_payload(value: Any) -> str:
-    """Return a stable, non-reversible fingerprint for a tool input payload."""
+    """Return a keyed, stable-within-process fingerprint for a tool input payload.
+
+    The key is random per process, so the value cannot be recomputed or brute-forced
+    from a persisted record, and it is not comparable across processes.
+    """
     safe_value = _json_safe(value)
     encoded = json.dumps(
         safe_value,
@@ -215,7 +228,7 @@ def fingerprint_tool_call_payload(value: Any) -> str:
         separators=(",", ":"),
         default=str,
     ).encode("utf-8", errors="replace")
-    return hashlib.sha256(encoded).hexdigest()
+    return hmac.new(_FINGERPRINT_KEY, encoded, hashlib.sha256).hexdigest()
 
 
 def capture_tool_call(

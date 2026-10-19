@@ -711,6 +711,12 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **AND** SHALL classify the failure as not failover-eligible so no automatic retry is attempted
 - **AND** the suppressed-failover metric SHALL be recorded for observability
 
+#### Scenario: Persisted tool-call input is limited to the capture allowlist
+- **WHEN** the spawner merges adapter-reported tool calls with daemon-captured tool calls
+- **THEN** every persisted adapter-reported record other than a runtime shell command carries only the capture-allowlisted view of its input, whether or not it pairs with a daemon-captured record
+- **AND** a call that omits an optional parameter pairs with its daemon-captured record and writes one record
+- **AND** the persisted input fingerprint is keyed, so a low-entropy argument cannot be recovered from it
+
 ### Requirement: Interactive Reply Delivery Accounting
 On the normal-completion (non-raising) path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a reply via `notify()` but delivered nothing, and SHALL persist that session record with `success=False` and a human-readable reason in the session `error` column.
 This is a **third session outcome**: the runtime invocation returned normally but the user received no reply. It is detected on the success path and SHALL NOT trigger same-tier model failover or a per-butler investigation dispatcher. Ordinary crash evidence and centralized QA discovery remain separate.

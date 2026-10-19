@@ -17,6 +17,15 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.mcp_wrappers import (
+    _VISIBLE_CAPTURE_INPUT_FIELDS,
+    _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL,
+)
+
+# Runtime-reported records of these tools keep their raw input: they are shell commands the
+# runtime ran itself, not butler MCP tools with a capture allowlist.
+_RAW_INPUT_TOOL_NAMES = frozenset({"command_execution"})
+_RAW_INPUT_KEYS = ("input", "args", "arguments", "parameters")
 
 
 def _dedup_tool_calls_by_id(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,6 +113,70 @@ def _normalize_tool_name(name: str, butler_name: str | None) -> str:
     return name
 
 
+def _payload_for_signature(call: dict[str, Any]) -> Any:
+    payload = call.get("input")
+    if payload is None:
+        payload = call.get("args")
+    if payload is None:
+        payload = call.get("arguments")
+    if payload is None:
+        payload = call.get("parameters")
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        if stripped:
+            try:
+                return json.loads(stripped)
+            except Exception:
+                return payload
+    return payload
+
+
+def _capture_view(tool_name: str, payload: Any) -> dict[str, Any]:
+    """The part of a tool input that may be persisted: the capture allowlist.
+
+    This is the same allowlist the daemon-side wrapper applies
+    (``mcp_wrappers._visible_capture_input``), minus signature defaults, which a runtime
+    parser cannot know. Anything else a tool received, including parameters it deliberately
+    never stores, is dropped.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    fields = set(_VISIBLE_CAPTURE_INPUT_FIELDS)
+    fields |= _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL.get(tool_name, frozenset())
+    return {key: payload[key] for key in fields if key in payload}
+
+
+def _strip_parsed_input(call: dict[str, Any], butler_name: str) -> dict[str, Any]:
+    """Normalize a parser record's name and reduce its raw input to the capture allowlist.
+
+    The record keeps a keyed fingerprint of the full raw input, so pairing with the daemon
+    record and the degenerate-loop check still tell different inputs apart.
+    """
+    normalized = dict(call)
+    raw_name = str(normalized.get("name", "") or "")
+    # The stored name stays as reported: the merge normalizes it exactly once.
+    name = _normalize_tool_name(raw_name, butler_name)
+    if name in _RAW_INPUT_TOOL_NAMES or raw_name in _RAW_INPUT_TOOL_NAMES:
+        return normalized
+    payload = _payload_for_signature(normalized)
+    has_raw_input = any(key in normalized for key in _RAW_INPUT_KEYS)
+    if not has_raw_input:
+        return normalized
+    visible = _capture_view(name, payload)
+    if payload is not None and visible != payload and not normalized.get("input_fingerprint"):
+        # The allowlist view drops information, so keep a keyed fingerprint of the full
+        # raw input to tell this call from another with the same visible view.
+        normalized["input_fingerprint"] = fingerprint_tool_call_payload(payload)
+    reported_input = "input" in normalized
+    for key in _RAW_INPUT_KEYS:
+        normalized.pop(key, None)
+    if visible or reported_input:
+        # A parser that reported an (even empty) input keeps the key, so record shapes
+        # are stable; only what the allowlist admits is left inside it.
+        normalized["input"] = visible
+    return normalized
+
+
 def _merge_tool_call_records(
     parsed_calls: list[dict[str, Any]],
     executed_calls: list[dict[str, Any]],
@@ -118,7 +191,16 @@ def _merge_tool_call_records(
     that use the bare ``fn.__name__`` form. It is required: every production
     caller passes ``self._config.name``, which the config layer guarantees is a
     non-empty butler name.
+
+    Parser records report the raw arguments the model sent, including parameters a tool
+    deliberately never stores. Every persisted record therefore carries only the capture
+    allowlist view of its input, whether or not it pairs with a daemon record.
+
+    Pairing is by name and keyed input fingerprint first. A parser record cannot know the
+    defaults the daemon binds, so a call that omits an optional parameter does not match by
+    fingerprint; the remaining records of one tool then pair in call order.
     """
+    parsed_calls = [_strip_parsed_input(call, butler_name) for call in parsed_calls]
 
     def _normalize_name_in_place(call: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(call)
@@ -131,59 +213,84 @@ def _merge_tool_call_records(
     if not parsed_calls:
         return _dedup_tool_calls_by_id([_normalize_name_in_place(c) for c in executed_calls])
 
-    def _payload_for_signature(call: dict[str, Any]) -> Any:
-        payload = call.get("input")
-        if payload is None:
-            payload = call.get("args")
-        if payload is None:
-            payload = call.get("arguments")
-        if payload is None:
-            payload = call.get("parameters")
-        if isinstance(payload, str):
-            stripped = payload.strip()
-            if stripped:
-                try:
-                    return json.loads(stripped)
-                except Exception:
-                    return payload
-        return payload
+    def _name(call: dict[str, Any]) -> str:
+        return _normalize_tool_name(str(call.get("name", "") or ""), butler_name)
+
+    def _canonical_name(call: dict[str, Any]) -> str:
+        """Fixed point of name normalization, so every runtime form of one tool compares equal.
+
+        A parser reports ``mcp__chronicler__chronicler_day_close_bundle`` where the daemon
+        records ``chronicler_day_close_bundle``; one normalization pass leaves them different
+        (the second still carries the butler prefix), and the second pass makes them equal.
+        """
+        name = str(call.get("name", "") or "")
+        while True:
+            stripped = _normalize_tool_name(name, butler_name)
+            if stripped == name:
+                return name
+            name = stripped
 
     def _signature(call: dict[str, Any]) -> str:
-        raw_name = str(call.get("name", "") or "")
-        name = _normalize_tool_name(raw_name, butler_name)
         fingerprint = call.get("input_fingerprint")
         if not isinstance(fingerprint, str) or not fingerprint:
             fingerprint = fingerprint_tool_call_payload(_payload_for_signature(call))
-        return f"{name}|{fingerprint}"
+        return f"{_canonical_name(call)}|{fingerprint}"
 
-    merged: list[dict[str, Any]] = []
+    # executed index -> parsed index
+    pairs: dict[int, int] = {}
     matched_parsed_indexes: set[int] = set()
 
-    for executed_call in executed_calls:
+    for executed_index, executed_call in enumerate(executed_calls):
         executed_signature = _signature(executed_call)
         parsed_index = next(
             (
                 idx
                 for idx, parsed_call in enumerate(parsed_calls)
-                if (
-                    idx not in matched_parsed_indexes
-                    and _signature(parsed_call) == executed_signature
-                )
+                if idx not in matched_parsed_indexes
+                and _signature(parsed_call) == executed_signature
             ),
             None,
         )
+        if parsed_index is not None:
+            pairs[executed_index] = parsed_index
+            matched_parsed_indexes.add(parsed_index)
+
+    for executed_index, executed_call in enumerate(executed_calls):
+        if executed_index in pairs:
+            continue
+        executed_name = _canonical_name(executed_call)
+        parsed_index = next(
+            (
+                idx
+                for idx, parsed_call in enumerate(parsed_calls)
+                if idx not in matched_parsed_indexes
+                and _canonical_name(parsed_call) == executed_name
+            ),
+            None,
+        )
+        if parsed_index is not None:
+            pairs[executed_index] = parsed_index
+            matched_parsed_indexes.add(parsed_index)
+
+    merged: list[dict[str, Any]] = []
+    for executed_index, executed_call in enumerate(executed_calls):
+        parsed_index = pairs.get(executed_index)
         if parsed_index is None:
             # No parser counterpart; capture name is already bare. Keep as-is.
             merged.append(executed_call)
             continue
-        matched_parsed_indexes.add(parsed_index)
         merged_record = dict(parsed_calls[parsed_index])
         merged_record.update(executed_call)
-        # Canonical stored name is the bare fn.__name__ form. The capture-side
-        # record carries that form already, but we normalize defensively so a
-        # single invocation always persists under one stable tool name.
-        raw_name = str(merged_record.get("name", "") or "")
-        merged_record["name"] = _normalize_tool_name(raw_name, butler_name)
+        # Canonical stored name is the bare fn.__name__ form, which the capture-side
+        # record carries already. Normalizing it again would strip a tool's own butler
+        # prefix (``chronicler_day_close_bundle`` is a bare name), so only a prefixed
+        # runtime form is normalized, defensively, so a single invocation always
+        # persists under one stable tool name.
+        raw_name = str(executed_call.get("name", "") or "")
+        if not raw_name or raw_name.startswith("mcp__"):
+            raw_name = str(merged_record.get("name", "") or "")
+            raw_name = _normalize_tool_name(raw_name, butler_name)
+        merged_record["name"] = raw_name
         merged.append(merged_record)
 
     for idx, parsed_call in enumerate(parsed_calls):

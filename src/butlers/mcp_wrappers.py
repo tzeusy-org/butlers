@@ -40,6 +40,10 @@ _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
     # request-local target. These are date/timezone labels, not user prose or
     # evidence payloads, so they are safe to retain in the executed witness.
     "chronicler_day_close_bundle": frozenset(("date_label", "timezone")),
+    # The Switchboard pipeline recognises a system-scope decline or cancel from these two
+    # fields of the merged tool-call list. A two-value scope enum and a butler name carry
+    # no question text or arguments.
+    "answer_question": frozenset(("scope", "target")),
 }
 
 _MANUAL_DAY_CLOSE_ALLOWED_TOOLS = frozenset({"chronicler_day_close_bundle"})
@@ -356,7 +360,12 @@ class _ToolCallLoggingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
-                capture_input = _visible_capture_input(kwargs)
+                capture_input = _visible_capture_input(
+                    kwargs,
+                    tool_name=resolved_tool_name,
+                    fn=fn,
+                    args=args,
+                )
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
                 policy_result = _manual_day_close_tool_policy(
                     butler_name=self._butler_name,
