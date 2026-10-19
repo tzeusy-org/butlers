@@ -1,0 +1,161 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-p88e3l-pseudonymous-gmail-policy-labels-20261019",
+  "bead": "bu-p88e3l",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-wei36k for implementation bead bu-p88e3l (the Gmail ingestion-policy Prometheus counters, including the label-filter excluded path, label the account with the pseudonymous clamped endpoint identity instead of the raw gmail:user:<email>, and raw MIME types are clamped out of connector labels). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-p88e3l (sec-review-lane CORRECTIONS at 418ed6644, recheck CLEAN at 920f0c2e6 with the recomputed pre-manifest; the formal review bead opens with the DRAFT PR while GitHub access is suspended); approved subject: agent/bu-p88e3l head 920f0c2e6 plus the reviewer-computed request. Governing requirement REQ-connector-gmail-006 (Tiered Email Ingestion Policy) in openspec/specs/connector-gmail/spec.md and its generalist-lead-focused-delegation MODIFIED copy, whose ID-only headers land in this same change ahead of the manifest; the branch adds the scenario \"Policy counters label the account pseudonymously\" to both copies. The 5 owners are the whole of tests/connectors/test_gmail_automated_replies.py: test_automated_messages_ingest_as_metadata_only_with_their_reason reads the tier counter by the pseudonymous identity through the module _counter() helper, and the other 4 lose only module context (that helper and an import) with unchanged bodies. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/connectors/test_gmail_automated_replies.py::test_a_global_action_never_upgrades_an_automated_message_to_tier_1",
+      "after": "tests/connectors/test_gmail_automated_replies.py::test_a_global_action_never_upgrades_an_automated_message_to_tier_1",
+      "contracts": [
+        "REQ-connector-gmail-006"
+      ],
+      "reason": "Module context only: the file's _counter() helper now reads the tier counter by the pseudonymous identity (REQ-connector-gmail-006 scenario 'Policy counters label the account pseudonymously') and the file imports prometheus_endpoint_identity. This test does not call _counter(); its body, parameters and assertions are unchanged, and it stays governed by the unchanged 'Automated replies and bounces are metadata-only' scenario of the same block. The ledger flags it because a module-level helper changed."
+    },
+    {
+      "before": "tests/connectors/test_gmail_automated_replies.py::test_a_global_skip_still_wins_over_an_automated_message",
+      "after": "tests/connectors/test_gmail_automated_replies.py::test_a_global_skip_still_wins_over_an_automated_message",
+      "contracts": [
+        "REQ-connector-gmail-006"
+      ],
+      "reason": "Module context only: the file's _counter() helper now reads the tier counter by the pseudonymous identity (REQ-connector-gmail-006 scenario 'Policy counters label the account pseudonymously') and the file imports prometheus_endpoint_identity. This test does not call _counter(); its body, parameters and assertions are unchanged, and it stays governed by the unchanged 'Automated replies and bounces are metadata-only' scenario of the same block. The ledger flags it because a module-level helper changed."
+    },
+    {
+      "before": "tests/connectors/test_gmail_automated_replies.py::test_a_mailer_daemon_with_a_delivery_status_part_is_a_bounce",
+      "after": "tests/connectors/test_gmail_automated_replies.py::test_a_mailer_daemon_with_a_delivery_status_part_is_a_bounce",
+      "contracts": [
+        "REQ-connector-gmail-006"
+      ],
+      "reason": "Module context only: the file's _counter() helper now reads the tier counter by the pseudonymous identity (REQ-connector-gmail-006 scenario 'Policy counters label the account pseudonymously') and the file imports prometheus_endpoint_identity. This test does not call _counter(); its body, parameters and assertions are unchanged, and it stays governed by the unchanged 'Automated replies and bounces are metadata-only' scenario of the same block. The ledger flags it because a module-level helper changed."
+    },
+    {
+      "before": "tests/connectors/test_gmail_automated_replies.py::test_automated_messages_ingest_as_metadata_only_with_their_reason",
+      "after": "tests/connectors/test_gmail_automated_replies.py::test_automated_messages_ingest_as_metadata_only_with_their_reason",
+      "contracts": [
+        "REQ-connector-gmail-006"
+      ],
+      "reason": "The module helper _counter() now reads butlers_connector_gmail_tier_assigned_total at endpoint_identity=prometheus_endpoint_identity('test') instead of the raw 'test', because the policy counters now carry the pseudonymous identity (REQ-connector-gmail-006 scenario 'Policy counters label the account pseudonymously'). _evaluate() still passes the raw identity 'test', so the reading also proves the clamp happens inside evaluate_message_policy. The expected +1 per case, the tier and reason labels, and every other assertion are unchanged."
+    },
+    {
+      "before": "tests/connectors/test_gmail_automated_replies.py::test_missing_or_malformed_headers_are_ordinary_mail",
+      "after": "tests/connectors/test_gmail_automated_replies.py::test_missing_or_malformed_headers_are_ordinary_mail",
+      "contracts": [
+        "REQ-connector-gmail-006"
+      ],
+      "reason": "Module context only: the file's _counter() helper now reads the tier counter by the pseudonymous identity (REQ-connector-gmail-006 scenario 'Policy counters label the account pseudonymously') and the file imports prometheus_endpoint_identity. This test does not call _counter(); its body, parameters and assertions are unchanged, and it stays governed by the unchanged 'Automated replies and bounces are metadata-only' scenario of the same block. The ledger flags it because a module-level helper changed."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/connector-gmail/spec.md",
+      "id": "REQ-connector-gmail-006",
+      "before_sha256": "2a757a21f47b007168f82c371b0863d93ce8184cbdafb3d1c35086e57d632984",
+      "after_sha256": "b48a4bddce195fc52d6c012032572a75ea10c4da2047df9e1e08efdda552fbce"
+    },
+    {
+      "path": "openspec/changes/generalist-lead-focused-delegation/specs/connector-gmail/spec.md",
+      "id": "REQ-connector-gmail-006",
+      "before_sha256": "0a5b726ef1cd722b6c9d4df3de48c732cc25774415053b597cf1cb4499609142",
+      "after_sha256": "d2bd0f904d25b9492d760d662ec9138f63762673b62b652a0920debddf5029d7"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/connectors/metrics.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "b45f321be6f83ea1f830ab4076477da3502529381376e972c731fa14c370bfb6"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b2a76a09083641081a8f5c83fcb35e8b94c550b9f0d2d30627052a6399fab195"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/gmail_policy.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "a65ef673d774a97ddc3f43c90eb70ce87c280be823a1516eb230993beecf5328"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "85c052511cc85376023efd781a90cc1a7edd1ab67ddd0461def057cab48caf78"
+      }
+    },
+    {
+      "path": "src/butlers/connectors/metrics.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "960aba5887ea2b2b7bd8c3d6cfa7e3e9a68c045c11ce64e6106c6d2a607d09d7"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1070b4910356209c7b5ead95fd051056c1b993ea0d1d47f1226cd21eb7ca4911"
+      }
+    },
+    {
+      "path": "tests/connectors/test_gmail_automated_replies.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "1f37b5d718411c8a909d4f52c3c22b37973be171c6a0918ab0bbf1fb68b2a609"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "85796c27a0da27239947c2e8cb1bd4dae0d6a938c1ba54d23d5cc8c0ee849dbb"
+      }
+    },
+    {
+      "path": "tests/connectors/test_prometheus_label_bounds_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "42d6592c52489b3adae62a2d66ce365f3b2b392d1cf4beb87ff2702f3e005c3c"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-p88e3l-pseudonymous-gmail-policy-labels-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "36e2f5d053203ae457efed4818889bbaad5294cd2f6454904630f74f1fdb5c94"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
