@@ -172,6 +172,7 @@ import type {
   EntityParams,
   EntitySummary,
   ExpectedSignalsResponse,
+  HealthBaselinesResponse,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -2423,6 +2424,11 @@ export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
   return apiFetch<ExpectedSignalsResponse>(
     "/health/measurements/expected-signals",
   );
+}
+
+/** Fetch the stored personal baselines (usual ranges) behind Health deviation notices. */
+export function getHealthBaselines(): Promise<HealthBaselinesResponse> {
+  return apiFetch<HealthBaselinesResponse>("/health/baselines");
 }
 
 /**

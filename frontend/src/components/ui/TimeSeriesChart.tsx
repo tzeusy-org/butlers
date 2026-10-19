@@ -51,6 +51,8 @@ interface TimeSeriesChartProps {
   tooltip?: ReactElement;
   animate?: boolean;
   testId?: string;
+  /** A horizontal usual-range band (y values); drawn behind the series, extends the y domain. */
+  referenceBand?: { low: number; high: number };
 }
 
 function tickValues([start, end]: [number, number]): number[] {
@@ -70,6 +72,7 @@ export function TimeSeriesChart({
   tooltip,
   animate = false,
   testId,
+  referenceBand,
 }: TimeSeriesChartProps) {
   const timezone = useTimezone();
   // Unique per instance so several charts on one page never share a gradient;
@@ -103,6 +106,14 @@ export function TimeSeriesChart({
         labelFormatter={(l) => formatTick(Number(l))}
         isAnimationActive={animate}
       />
+      {referenceBand && (
+        <ReferenceArea
+          y1={referenceBand.low}
+          y2={referenceBand.high}
+          className="fill-primary/15"
+          ifOverflow="extendDomain"
+        />
+      )}
       {label && lastReadingAt !== null && (
         <ReferenceArea
           x1={lastReadingAt}

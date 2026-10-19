@@ -2672,6 +2672,39 @@ export interface ExpectedSignalsResponse {
   available: boolean;
   degraded_reason: string | null;
 }
+
+/** The owner's usual range for a Health metric (GET /health/baselines). */
+export interface HealthBaselineBand {
+  low: number;
+  high: number;
+}
+
+export type HealthBaselineState =
+  | "ready"
+  | "insufficient_history"
+  | "unmeasurable"
+  | "stale"
+  | "no_baseline";
+
+/** One metric's stored baseline; `band` is set only when `state` is "ready". */
+export interface HealthBaseline {
+  metric_key: string;
+  state: HealthBaselineState;
+  band: HealthBaselineBand | null;
+  center: number | null;
+  unit: string | null;
+  n_observed: number;
+  n_expected: number;
+  coverage: number;
+  computed_at: string | null;
+  stale: boolean;
+}
+
+export interface HealthBaselinesResponse {
+  baselines: HealthBaseline[] | null;
+  available: boolean;
+  degraded_reason: string | null;
+}
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface MeasurementTrendResponse {
   type: string;

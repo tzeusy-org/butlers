@@ -46,12 +46,14 @@ import {
   useMedications,
   useConditions,
 } from "@/hooks/use-health";
+import { useHealthBaselines } from "@/hooks/use-health-baselines";
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
 import { chartColor } from "@/lib/chart-colors";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { GoogleHealthStatusCard } from "./GoogleHealthStatusCard";
+import { HealthBaselinesPanel } from "./HealthBaselinesPanel";
 
 // ---------------------------------------------------------------------------
 // Shared UI helpers — loading / empty
@@ -270,6 +272,7 @@ function TrendSparkline({
   label,
   valueKey,
   unit,
+  band,
 }: {
   measurements: Measurement[];
   isLoading: boolean;
@@ -277,6 +280,7 @@ function TrendSparkline({
   label: string;
   valueKey?: string;
   unit?: string;
+  band?: { low: number; high: number } | null;
 }) {
   const prefersReducedMotion = usePrefersReducedMotion();
   const points = useMemo(() => {
@@ -348,6 +352,7 @@ function TrendSparkline({
         yDomain={["auto", "auto"]}
         tooltip={<TrendTooltip unit={unit} />}
         animate={!prefersReducedMotion}
+        referenceBand={band ?? undefined}
       />
       {/* Screen-reader text alternative for the decorative chart */}
       <p className="sr-only">{`${label} trend · ${series.observationCount} readings over ${TREND_WINDOW_DAYS} days`}</p>
@@ -365,12 +370,14 @@ function TrendPanel({
   valueKey,
   unit,
   drilldownLink,
+  band,
 }: {
   title: string;
   type: string;
   valueKey?: string;
   unit?: string;
   drilldownLink?: string;
+  band?: { low: number; high: number } | null;
 }) {
   const { since, until } = useMemo(() => fourteenDayWindow(), []);
   const { data, isLoading, isError } = useMeasurements({ type, since, until, limit: 50 });
@@ -396,6 +403,7 @@ function TrendPanel({
           label={title}
           valueKey={valueKey}
           unit={unit}
+          band={band}
         />
       </SectionContent>
     </Section>
@@ -757,6 +765,11 @@ export default function ButlerHealthMeasurementsTab() {
 
   const kpiLoading = latestLoading || sleepLoading;
 
+  // Usual ranges: the HRV trend draws its band only from a ready baseline.
+  const baselines = useHealthBaselines();
+  const hrvBaseline = baselines.data?.baselines?.find((b) => b.metric_key === "hrv");
+  const hrvBand = hrvBaseline?.state === "ready" ? hrvBaseline.band : null;
+
   return (
     <div className="space-y-4 pt-4" data-testid="health-measurements-tab">
       {/* Google Health connector status card — per-account widget(s) */}
@@ -774,6 +787,12 @@ export default function ButlerHealthMeasurementsTab() {
         measurements={measurements}
         sleep={sleepData}
         isLoading={kpiLoading}
+      />
+
+      <HealthBaselinesPanel
+        data={baselines.data}
+        isLoading={baselines.isLoading}
+        isError={baselines.isError}
       />
 
       {/* Row 2: Glucose trend + Heart rate trend */}
@@ -799,6 +818,7 @@ export default function ButlerHealthMeasurementsTab() {
           type="hrv"
           unit="ms"
           drilldownLink="/health/measurements"
+          band={hrvBand}
         />
         <TrendPanel
           title="Weight"
