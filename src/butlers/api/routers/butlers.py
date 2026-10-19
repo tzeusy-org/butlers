@@ -1614,8 +1614,6 @@ def _tick_reported_busy(message: str | None) -> bool:
 # route answers within this window (inside the browser's 15 s budget); a tick still running after it
 # answers 202 and finishes in the background.
 _TICK_ACCEPT_WINDOW_S = 10.0
-# Upper bound on the tick call itself, so a hung daemon cannot pin a background task forever.
-_TICK_BACKGROUND_TIMEOUT_S = 1800.0
 
 
 async def _run_tick_and_audit(
@@ -1628,10 +1626,10 @@ async def _run_tick_and_audit(
             mcp_manager.get_client(name),
             timeout=_STATUS_TIMEOUT_S,
         )
-        result = await asyncio.wait_for(
-            client.call_tool("tick", {}),
-            timeout=_TICK_BACKGROUND_TIMEOUT_S,
-        )
+        # No client-side bound on the tick itself: it runs due schedules one after another, so a
+        # healthy tick can outlast one session budget. The daemon's session timeouts bound the
+        # work, and a dead daemon makes `call_tool` raise promptly, which is audited below.
+        result = await client.call_tool("tick", {})
 
         message: str | None = None
         if result.content:
@@ -1673,6 +1671,15 @@ async def _run_tick_and_audit(
                 }
             },
         )
+    except Exception as exc:
+        # A tool error, or a daemon that dies mid-tick (the SSE session closes). Audit it with
+        # the exception type only (no provider text) and re-raise: inside the window that stays
+        # a 500, and after it the helper logs the failure with its traceback.
+        logger.warning("Tick on butler %s failed: %s", name, type(exc).__name__)
+        await log_audit_entry(
+            db, name, "tick", summary, result="error", error=f"Tick failed: {type(exc).__name__}"
+        )
+        raise
 
 
 @router.post("/{name}/tick", response_model=ApiResponse[TickResponse])

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 from httpx import ASGITransport, AsyncClient
 
 from butlers.api import accept_window
@@ -53,7 +54,9 @@ async def _drain() -> None:
     await asyncio.gather(*accept_window.TASKS, return_exceptions=True)
 
 
-async def _post_tick(app, call_tool, *, get_client=None, window=0.05, release=None, **patches):
+async def _post_tick(
+    app, call_tool, *, get_client=None, window=0.05, release=None, raise_app=True, **patches
+):
     client = MagicMock()
     client.call_tool = call_tool
     manager = MagicMock()
@@ -68,7 +71,8 @@ async def _post_tick(app, call_tool, *, get_client=None, window=0.05, release=No
         patch("butlers.api.routers.butlers.log_audit_entry", audit),
         patch.multiple("butlers.api.routers.butlers", _TICK_ACCEPT_WINDOW_S=window, **patches),
     ):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        transport = ASGITransport(app=app, raise_app_exceptions=raise_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as http:
             resp = await http.post("/api/butlers/qa/tick", headers=_HEADERS)
         audit.awaits_at_response = audit.await_count
         if release is not None:
@@ -228,3 +232,42 @@ async def test_a_non_http_failure_after_the_202_is_logged_as_an_error_with_a_tra
     assert errors[0].exc_info is not None
     assert errors[0].name == "butlers.api.routers.butlers"
     assert "parse path bug" in repr(errors[0].exc_info[1])
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ToolError("provider said something private"), ConnectionError("stream closed")],
+    ids=["tool-error", "connection-error"],
+)
+async def test_a_failure_after_the_202_is_audited_once_by_type_only(app, exc) -> None:
+    release = asyncio.Event()
+
+    async def slow_failure(*_args, **_kwargs):
+        await release.wait()
+        raise exc
+
+    resp, audit = await _post_tick(app, slow_failure, release=release)
+
+    assert resp.status_code == 202
+    audit.assert_awaited_once()
+    assert audit.await_args.args[1:3] == ("qa", "tick")
+    assert audit.await_args.kwargs["result"] == "error"
+    assert audit.await_args.kwargs["error"] == f"Tick failed: {type(exc).__name__}"
+    assert str(exc) not in audit.await_args.kwargs["error"]
+
+
+async def test_a_tool_error_inside_the_window_is_audited_and_stays_a_500(app) -> None:
+    call_tool = AsyncMock(side_effect=ToolError("provider said something private"))
+
+    resp, audit = await _post_tick(app, call_tool, window=5.0, raise_app=False)
+
+    assert resp.status_code == 500
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["result"] == "error"
+    assert audit.await_args.kwargs["error"] == "Tick failed: ToolError"
+
+
+async def test_the_tick_call_has_no_client_side_bound_of_its_own() -> None:
+    from butlers.api.routers import butlers as butlers_module
+
+    assert not hasattr(butlers_module, "_TICK_BACKGROUND_TIMEOUT_S")

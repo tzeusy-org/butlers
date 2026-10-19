@@ -180,6 +180,7 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the API answers 202 with `data.running: true` and `data.success: true` instead of a 503 timeout, and the heartbeat tile and the Issues page show the tick as running rather than as a failure
 - **AND** the tick keeps running without being cancelled, and its outcome is audited exactly once when it finishes, unless the API process stops first: a pending tick then ends unaudited and the API logs a warning that it was cancelled
 - **AND** a reply inside the window keeps its mapping (ran or busy as 200, an unreachable butler as 503), and the `tick` tool's own semantics are unchanged
+- **AND** a tick that fails, inside the window or after it, is audited once as an error naming the exception type and not the tool's text; the API puts no time limit of its own on the tick call
 
 #### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard
 - **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
