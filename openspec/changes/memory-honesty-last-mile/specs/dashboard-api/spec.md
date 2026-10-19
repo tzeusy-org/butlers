@@ -126,8 +126,10 @@ Scope: v1-mandatory
 
 #### Scenario: Requeue rejects unauthorized callers without target disclosure
 
-- **WHEN** a caller is not authorized as the dashboard owner
-- **THEN** the endpoint MUST return 403 with the stable `owner_required` code
+- **WHEN** a caller carries no valid owner authority (no configured `X-API-Key` and no
+  valid server-managed owner session)
+- **THEN** the central `dashboard-owner-auth` boundary MUST return 401 before the handler
+  runs, and 503 when authoritative auth state is unavailable
 - **AND** it MUST NOT disclose whether the requested episode exists, is
   dead-lettered, or belongs to a reachable pool
 
