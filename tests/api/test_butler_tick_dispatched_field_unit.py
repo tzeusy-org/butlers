@@ -1,7 +1,7 @@
 """``POST /api/butlers/{name}/tick`` exposes the dispatched count as a typed field (bu-5s42ls).
 
-A ran tick's ``dispatched`` is an int the dashboard can render without parsing prose, and
-``message`` reads in plain language instead of echoing the tick tool's raw JSON.
+A ran tick's ``dispatched`` is an int the dashboard can render without parsing prose.
+``message`` is unchanged: the tick tool's reply text for a ran reply.
 """
 
 from __future__ import annotations
@@ -52,19 +52,13 @@ async def _post_tick(app, reply_text: str) -> dict:
     return resp.json()["data"]
 
 
-@pytest.mark.parametrize(
-    ("count", "message"),
-    [
-        (0, "tick ran, 0 jobs dispatched"),
-        (1, "tick ran, 1 job dispatched"),
-        (3, "tick ran, 3 jobs dispatched"),
-    ],
-)
-async def test_a_ran_tick_exposes_the_count_and_a_plain_message(app, count, message) -> None:
-    data = await _post_tick(app, json.dumps({"dispatched": count}))
+@pytest.mark.parametrize("count", [0, 1, 3])
+async def test_a_ran_tick_exposes_the_count_and_keeps_the_tool_text(app, count) -> None:
+    reply_text = json.dumps({"dispatched": count})
+    data = await _post_tick(app, reply_text)
 
     assert data["dispatched"] == count
-    assert data["message"] == message
+    assert data["message"] == reply_text
     assert data["success"] is True
     assert data["busy"] is False
 

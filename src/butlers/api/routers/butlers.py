@@ -1669,15 +1669,11 @@ async def force_butler_tick(
         busy_message = _tick_busy_message(message)
         busy = busy_message is not None
         dispatched = None if busy else _tick_dispatched_count(message)
-        if busy:
-            reply_message = busy_message
-        elif dispatched is not None:
-            noun = "job" if dispatched == 1 else "jobs"
-            reply_message = f"tick ran, {dispatched} {noun} dispatched"
-        else:
-            reply_message = message
         tick_resp = TickResponse(
-            success=not busy, message=reply_message, busy=busy, dispatched=dispatched
+            success=not busy,
+            message=busy_message if busy else message,
+            busy=busy,
+            dispatched=dispatched,
         )
         # A refused tick is still a handled request, so the audit result stays "success"
         # (an "error" row would be grouped into an Issue); the outcome goes in metadata.

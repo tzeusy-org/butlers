@@ -119,7 +119,7 @@ describe("IssuesPage ran forced tick", () => {
         success: true,
         busy: false,
         dispatched: 2,
-        message: "tick ran, 2 jobs dispatched",
+        message: '{"dispatched":2}',
       },
     });
 

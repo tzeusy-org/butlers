@@ -72,9 +72,9 @@ async def test_a_busy_reply_without_a_message_falls_back_to_the_api_wording(app)
     )
 
 
-async def test_a_ran_reply_is_not_busy_and_reads_in_plain_language(app) -> None:
+async def test_a_ran_reply_is_not_busy_and_keeps_its_message(app) -> None:
     data = await _post_tick(app, {"dispatched": 2})
 
     assert data["busy"] is False
     assert data["success"] is True
-    assert data["message"] == "tick ran, 2 jobs dispatched"
+    assert json.loads(data["message"]) == {"dispatched": 2}
