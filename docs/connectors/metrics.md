@@ -39,16 +39,16 @@ All metrics include `connector_type` and `endpoint_identity` labels.
 
 ## Label Bounds
 
-Every `prometheus_client` label value must come from a closed set, or from a bounded normalization with a fixed fallback, and must not carry account PII (see [RFC 0005](../../about/legends-and-lore/rfcs/0005-observability-and-telemetry.md), Prometheus Client Instruments). Two labels are clamped centrally in `src/butlers/connectors/metrics.py`; the rest are bounded by code or configuration.
+Every `prometheus_client` label value must come from a closed set, or from a bounded normalization with a fixed fallback, and must not carry account PII (see [RFC 0005 Cardinality Discipline](../../about/legends-and-lore/rfcs/0005-observability-and-telemetry.md#cardinality-discipline)). Two labels are clamped centrally in `src/butlers/connectors/metrics.py`; the rest are bounded by code or configuration.
 
 ### Clamped labels
 
 | Label | Where | Bound |
 |---|---|---|
-| `endpoint_identity` | `ConnectorMetrics` and the Gmail policy counters | `<family>:<8 hex>` from `prometheus_endpoint_identity()`. `family` is the identity's leading lowercase token (else `unknown`); the digest is the first 8 hex characters of SHA-256 of the full identity. Stable across restarts, one value per account, never the raw email, phone number or handle. Pseudonymous, not anonymous: recompute it from a known identity to find the series. Empty identity is `unknown`. |
+| `endpoint_identity` | `ConnectorMetrics` and the Gmail policy counters | `<family>:<8 hex>` from `prometheus_endpoint_identity()`. `family` is the identity's leading lowercase token (else `unknown`); the digest is the first 8 hex characters of SHA-256 of the full identity. Stable across restarts, one value per account, never the raw email, phone number or handle. Pseudonymous, not anonymous: the digest is unkeyed, so anyone holding a candidate identity can recompute it to find the series, and identities from a small space (phone numbers, numeric account IDs, short handles) can be recovered by enumerating candidates. Treat the label as access-controlled operator data. Empty identity is `unknown`. |
 | `media_type` | the four attachment metrics | `prometheus_media_type()`: a fixed list of common MIME types, else `<major>/other` for a registered top-level type, else `other`. Case and parameters are dropped first. |
 
-Instruments that label `endpoint_identity` directly instead of through `ConnectorMetrics` (the Google Drive, Home Assistant, Steam, Spotify, OwnTracks and ActivityWatch module-level instruments) still carry the raw value until they adopt `prometheus_endpoint_identity()`.
+Instruments that label `endpoint_identity` directly instead of through `ConnectorMetrics` (the Google Drive, Google Health, Home Assistant, Steam, Spotify, OwnTracks and ActivityWatch module-level instruments; Google Health values have the form `google_health:user:<google user id>:<resource>`) still carry the raw value until they adopt `prometheus_endpoint_identity()`.
 
 ### Bounded by code or configuration
 
@@ -68,6 +68,13 @@ Instruments that label `endpoint_identity` directly instead of through `Connecto
 | `source`, `channel`, `kind` | discretion metrics | Connector source names and `classify_ignore_kind()` results, defined in code. |
 | `runtime_type` | `discretion_auth_failures_total` | Configured runtime adapter types. |
 | `error_detail` | `switchboard_runtime_attention_delivery_total` | The `TransportErrorDetail` StrEnum, six fixed codes (`recipient_unavailable`, `policy_denied`, `provider_rejected`, `transport_timeout`, `transport_connection_lost`, `worker_recovery`), plus `none`. `TransportResult` rejects any other value at construction. |
+| `ingestion_tier`, `policy_tier`, `assignment_rule` | Gmail tier counters | Code literals in `gmail_policy.py`. |
+| `filter_action` | Gmail label-filter counter | `allowed` or `excluded`. |
+| `reason` (label filter) | Gmail label-filter counter | `label_allowed`, `label_not_in_include_list`, or `label_exclude:<labels>` where the labels are the subset of the configured exclude list that matched, so it is bounded by configuration, not by code. |
+| `data_type`, `filter_reason` | Steam poll and filter counters | Code-defined cursor data types and filter reasons. |
+| `resource` | Google Health counters | Code-defined resource names (`sleep`, `activity`, `resting_hr`, `hrv` and the other call-site literals). |
+| `metric` | `connector_ha_wellness_classify_total` | The matched wellness metric name from the connector's table, or `none`. |
+| `edge` | `runtime_attention_recorder_total` | Code-defined runtime-attention edge results. |
 | `schema`, `kind`, `source_type`, `dedup_reason`, `status`, `action`, `failure_category`, `reason` | approvals, audit, QA, chronicler and person-mapping counters | Butler schema names, and code-defined enums or literals. |
 
 ## ConnectorMetrics Class

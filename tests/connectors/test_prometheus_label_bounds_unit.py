@@ -113,6 +113,26 @@ class TestEndpointIdentityClamp:
             assert raw not in seen, metric
             assert not any("@" in value for value in seen), metric
 
+    def test_gmail_label_filter_excluded_path_exports_only_the_clamped_value(self) -> None:
+        raw = f"gmail:user:{_EMAIL}"
+        message = {
+            "id": "m2",
+            "threadId": "t2",
+            "labelIds": ["SPAM"],
+            "payload": {"headers": [{"name": "From", "value": "sender@example.invalid"}]},
+        }
+        result = evaluate_message_policy(
+            message,
+            label_filter=LabelFilterPolicy.default(),
+            tier_assigner=PolicyTierAssigner(user_email=_EMAIL),
+            endpoint_identity=raw,
+        )
+        assert result.should_ingest is False
+        seen = _label_values("butlers_connector_gmail_label_filter_total", "endpoint_identity")
+        assert prometheus_endpoint_identity(raw) in seen
+        assert raw not in seen
+        assert not any("@" in value for value in seen)
+
 
 class TestMediaTypeClamp:
     @pytest.mark.parametrize(

@@ -460,7 +460,7 @@ def evaluate_message_policy(
     should_ingest, filter_reason = label_filter.evaluate(message_labels)
     if not should_ingest:
         _gmail_label_filter_counter.labels(
-            endpoint_identity=endpoint_identity,
+            endpoint_identity=prometheus_endpoint_identity(endpoint_identity),
             filter_action="excluded",
             reason=filter_reason,
         ).inc()
