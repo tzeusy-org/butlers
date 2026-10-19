@@ -349,3 +349,29 @@ async def test_detail_and_list_carry_the_dossier_and_never_the_lease(app) -> Non
         assert "leased_by" not in payload and "leased_until" not in payload
     assert all("leased" not in q for q in pool.queries)
     assert all("consolidation_attempts" in q for q in pool.queries if "SELECT id" in q)
+
+
+async def test_the_inspect_embedded_episode_carries_the_dossier_and_never_the_lease(app) -> None:
+    episode_id = uuid.uuid4()
+    pool = _ReadPool(_read_rows(episode_id))
+    db = MagicMock()
+    db.butler_names = ["atlas"]
+    db.pool.return_value = pool
+    db.schema_for_butler.return_value = "atlas"
+    db.memory_schema_for_butler.return_value = "atlas"
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "episode"})
+
+    assert resp.status_code == 200
+    embedded = resp.json()["data"][0]["episode"]
+    assert embedded["consolidation_attempts"] == 5
+    assert embedded["last_consolidation_error"] == "Consolidation execution failed."
+    assert embedded["dead_letter_reason"] == "terminal"
+    assert "next_consolidation_retry_at" in embedded
+    assert "leased_by" not in embedded and "leased_until" not in embedded
+    assert all("leased" not in q for q in pool.queries)
+    assert all("consolidation_attempts" in q for q in pool.queries if "SELECT id" in q)

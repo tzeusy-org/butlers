@@ -39,7 +39,7 @@
   constrain target resolution and mutation to recovery-eligible sources,
   excluding Chronicler's private `chronicler_mem` schema.
 - [x] 2.5 Add API/auth/race regressions for requeue success, malformed UUID,
-  clean 404, named 503, unauthenticated 401 at the central boundary, non-dead-letter 409, and two concurrent
+  clean 404, named 503, the central boundary outcomes (401, 403 Origin/CSRF, 503) pinned on the requeue route, non-dead-letter 409, and two concurrent
   calls yielding exactly one queued outcome/event; assert a successful requeue
   persists and returns `consolidation_attempts=0`; prove an id present only in
   `chronicler_mem` remains outside requeue resolution and is not mutated.

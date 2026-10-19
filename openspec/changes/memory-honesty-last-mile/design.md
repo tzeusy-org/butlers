@@ -141,8 +141,10 @@ because it erases the operator boundary that makes a dead letter trustworthy.
 `POST /api/memory/episodes/{episode_id}/requeue` is a dashboard API-only owner
 operation. It requires the dashboard's owner authorization guard; a caller
 without valid owner authority is stopped by the central `dashboard-owner-auth`
-boundary before the handler (`401` for missing, expired or invalid authority, safe
-`503` when auth state is unavailable); no per-route `403 owner_required` exists because
+boundary before the handler: `401 UNAUTHORIZED` for missing, expired, revoked or invalid
+authority, `403 FORBIDDEN` for a cookie-backed request that fails the exact-Origin or
+synchronizer-CSRF admission, and safe `503 AUTH_UNAVAILABLE` when auth state is unavailable.
+The route adds no per-route owner check, and no per-route `403 owner_required` exists because
 no authenticated non-owner principal can reach the dashboard API.
 It is not registered as an MCP tool and no scheduler, request handler, or UI
 callback may invoke `run_consolidation` as a consequence.
