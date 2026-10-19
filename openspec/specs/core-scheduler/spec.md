@@ -153,6 +153,11 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** the API responds with `success: false`, `busy: true` and the busy message in `data.message`, while ran and failed replies carry `busy: false`
 - **AND** the scheduler loop's own tick waits for a forced tick that is mid-run, so at most one tick runs per daemon at a time
 
+#### Scenario: Forced tick that ran reports its dispatched count
+- **WHEN** `POST /api/butlers/{name}/tick` runs a tick and the `tick` tool replies `{"dispatched": n}`
+- **THEN** the API responds with `success: true`, `data.dispatched: n` as an integer, and a plain-language `data.message` such as "tick ran, 2 jobs dispatched"
+- **AND** `data.dispatched` is null for a busy reply or a tool reply that carries no integer count, in which case `data.message` is the tool's own text
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing

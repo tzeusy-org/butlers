@@ -1614,6 +1614,20 @@ def _tick_busy_message(message: str | None) -> str | None:
     return None
 
 
+def _tick_dispatched_count(message: str | None) -> int | None:
+    """The dispatched count in a tick reply, or ``None`` when the reply has none."""
+    try:
+        payload = json.loads(message) if message else None
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    count = payload.get("dispatched")
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
+
+
 def _tick_reported_busy(message: str | None) -> bool:
     """Whether the tick tool's reply says another tick was already running."""
     return _tick_busy_message(message) is not None
@@ -1654,8 +1668,16 @@ async def force_butler_tick(
 
         busy_message = _tick_busy_message(message)
         busy = busy_message is not None
+        dispatched = None if busy else _tick_dispatched_count(message)
+        if busy:
+            reply_message = busy_message
+        elif dispatched is not None:
+            noun = "job" if dispatched == 1 else "jobs"
+            reply_message = f"tick ran, {dispatched} {noun} dispatched"
+        else:
+            reply_message = message
         tick_resp = TickResponse(
-            success=not busy, message=busy_message if busy else message, busy=busy
+            success=not busy, message=reply_message, busy=busy, dispatched=dispatched
         )
         # A refused tick is still a handled request, so the audit result stays "success"
         # (an "error" row would be grouped into an Issue); the outcome goes in metadata.

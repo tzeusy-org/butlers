@@ -2257,6 +2257,8 @@ export interface TickResponse {
   message: string | null;
   /** True when another tick was already running and this forced tick did nothing. */
   busy?: boolean;
+  /** Jobs the tick dispatched; null/absent when busy or the reply carried no count. */
+  dispatched?: number | null;
 }
 
 // ---------------------------------------------------------------------------

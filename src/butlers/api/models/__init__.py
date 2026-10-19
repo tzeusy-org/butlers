@@ -427,6 +427,8 @@ class TickResponse(BaseModel):
     message: str | None = None
     busy: bool = False
     """True when another tick was already running and this forced tick did nothing."""
+    dispatched: int | None = None
+    """Jobs the tick dispatched; ``None`` when busy or the tick reply carried no count."""
 
 
 # ---------------------------------------------------------------------------
