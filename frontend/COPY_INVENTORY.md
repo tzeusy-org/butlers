@@ -729,6 +729,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - {} is still unreachable
 - Failed to ping {}
 - {}: schedule run now
+- {}: a tick is already running
 - {}: tick did not complete successfully
 - Failed to run schedule for {}
 
@@ -4917,4 +4918,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3919*
+*Total strings: 3920*
