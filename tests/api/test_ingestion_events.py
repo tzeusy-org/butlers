@@ -1031,8 +1031,9 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
 
     # Exactly one grouped fan-out call for the whole page — never per row.
     assert mock_db.fan_out_with_status.await_count == 1
-    # One sender query plus one server-authoritative replay-policy query.
-    assert shared_pool.fetch.await_count == 2
+    # One sender query, one server-authoritative replay-policy query and one grouped
+    # sender-authentication query (bu-6u90jj).
+    assert shared_pool.fetch.await_count == 3
 
 
 async def test_list_events_explains_unavailable_replay_policy(app):
