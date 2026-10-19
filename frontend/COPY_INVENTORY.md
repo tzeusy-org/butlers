@@ -1984,6 +1984,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to toggle schedule: {}
 - Unknown error
 - Schedule "{}" triggered
+- Schedule "{}" not triggered: {}
 - Failed to trigger schedule: {}
 - Schedule "{}" deleted
 - Failed to delete schedule: {}
@@ -4916,4 +4917,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3919*

@@ -158,7 +158,7 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** nothing is dispatched and the reply reports busy: `status: "busy"` for `schedule_trigger`, error code `scheduler_busy` for the refresh
 - **AND** the busy message says scheduled work is already running on the butler, not that a tick is
 - **AND** the API responds 409 and records the refused trigger as a successful request whose audit metadata carries `observed_status: "busy"`
-- **AND** the 409 body carries `error.code: "scheduler_busy"` (and the busy message in `error.message`), because 409 is shared with the managed-schedule refusals and clients branch on the code, never on the status or the message text
+- **AND** the 409 body carries `error.code: "scheduler_busy"` (and the busy message in `error.message`), because clients branch on the code, never on the status or the message text
 - **AND** the dashboard shows a `scheduler_busy` refusal as a warning with the server's message, while managed-schedule refusals and other failures stay errors
 - **AND** when no scheduled work is running they dispatch as before, holding the same per-daemon guard so a tick that arrives mid-dispatch waits
 - **AND** a forced tick (`tick` tool or `POST /api/butlers/{name}/tick`) also reports busy while a manual dispatch holds the guard

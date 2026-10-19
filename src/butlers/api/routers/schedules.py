@@ -415,8 +415,8 @@ async def trigger_schedule(
     # only one: the raises below sit outside the try, so they are never audited a second time.
     status = result.get("status")
     if status == "busy":
-        # 409 is shared with the managed-schedule refusals, so the body carries a code the
-        # dashboard branches on; `detail` stays for clients that read the FastAPI shape.
+        # The body carries an error code the dashboard branches on, never the status or the
+        # message text; `detail` stays for clients that read the FastAPI shape.
         message = str(result.get("message") or BUSY_MESSAGE)
         return JSONResponse(
             status_code=409,

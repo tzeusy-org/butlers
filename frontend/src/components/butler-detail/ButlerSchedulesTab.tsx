@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { ApiError } from "@/api/client";
 import type { Schedule, ScheduleToggleResult } from "@/api/types.ts";
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
 import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
@@ -113,9 +114,9 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
         setTriggeringId(null);
       },
       onError: (err) => {
-        // 409 is shared with the managed-schedule refusals, so branch on the body's code.
-        if ((err as { code?: string }).code === "scheduler_busy") {
-          toast.warning(err.message);
+        // Branch on the body's error code, never on the status or the message text.
+        if (err instanceof ApiError && err.code === "scheduler_busy") {
+          toast.warning(`Schedule "${schedule.name}" not triggered: ${err.message}`);
         } else {
           toast.error(`Failed to trigger schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
         }

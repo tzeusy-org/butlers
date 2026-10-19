@@ -1,9 +1,8 @@
 """The busy 409 from ``POST /api/butlers/{name}/schedules/{id}/trigger`` carries an error code (bu-3fle50).
 
-409 is shared with the managed-schedule refusals, so the dashboard cannot tell "scheduled work is
-already running" from "this schedule is managed elsewhere" by status. The busy body carries
-``error.code == "scheduler_busy"`` (the ErrorResponse envelope, as the chronicler refresh does)
-and keeps the FastAPI ``detail`` string for clients that read it. Other non-2xx replies carry no
+The dashboard branches on an error code, never on the status or the message text. The busy body
+carries ``error.code == "scheduler_busy"`` (the ErrorResponse envelope, as the chronicler refresh
+does) and keeps the FastAPI ``detail`` string for clients that read it. Other non-2xx replies carry no
 such code.
 """
 
@@ -17,13 +16,14 @@ from httpx import ASGITransport, AsyncClient
 
 from butlers.api.deps import get_mcp_manager
 from butlers.api.routers.schedules import _get_db_manager
+from butlers.core.tick_guard import BUSY_MESSAGE
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
 _HEADERS = {"X-API-Key": "synthetic-owner-key"}
 _SCHEDULE_ID = uuid.uuid4()
-_MESSAGE = "Scheduled work is already running on this butler; try again when it finishes."
+_MESSAGE = BUSY_MESSAGE
 
 
 @pytest.fixture(scope="module")

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * ButlerSchedulesTab: a busy schedule trigger (409 `scheduler_busy`) reads as a warning with the
- * server's message (bu-3fle50). The managed-schedule 409s and every other failure stay errors,
- * so the tab branches on the error code, never on the status or the message text.
+ * ButlerSchedulesTab: a busy schedule trigger (409 `scheduler_busy`) reads as a warning that names
+ * the schedule and carries the server's message (bu-3fle50). Every other failure, including a 409
+ * with another code, stays an error: the tab branches on the error code, never on the status or
+ * the message text.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -43,7 +44,8 @@ const schedule = {
   updated_at: "2026-09-16T00:00:00Z",
 };
 
-const BUSY_MESSAGE = "Scheduled work is already running on this butler; try again when it finishes.";
+// The text of tick_guard.BUSY_MESSAGE, which the 409 body carries on the real path.
+const BUSY_MESSAGE = "scheduled work is already running on this butler; try again when it finishes";
 
 const mockTrigger = vi.fn();
 
@@ -81,12 +83,14 @@ function clickRunAndGetOnError() {
 }
 
 describe("ButlerSchedulesTab busy schedule trigger", () => {
-  it("shows a busy 409 as a warning with the server message", () => {
+  it("shows a busy 409 as a warning that names the schedule and carries the server message", () => {
     const onError = clickRunAndGetOnError();
 
     onError(new ApiError("scheduler_busy", BUSY_MESSAGE, 409));
 
-    expect(toast.warning).toHaveBeenCalledWith(BUSY_MESSAGE);
+    expect(toast.warning).toHaveBeenCalledWith(
+      `Schedule "daily_digest" not triggered: ${BUSY_MESSAGE}`,
+    );
     expect(toast.error).not.toHaveBeenCalled();
   });
 
