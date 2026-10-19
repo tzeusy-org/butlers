@@ -35,7 +35,6 @@ import { Time } from "@/components/ui/time";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useForceButlerTick } from "@/hooks/use-butlers";
 import type { StatusBoardRow, ActivityVerb } from "@/hooks/use-butler-status-board";
-import { ranTickToast } from "@/lib/tick-toast";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,7 +169,13 @@ export function ButlerHeartbeatTile() {
     forceTick.mutate(name, {
       onSuccess: (response) => {
         if (response.data.success) {
-          toast.success(ranTickToast(name, response.data, "tick triggered"));
+          toast.success(
+            typeof response.data.dispatched === "number"
+              ? `${name}: tick ran, ${response.data.dispatched} ${response.data.dispatched === 1 ? "job" : "jobs"} dispatched`
+              : response.data.message
+                ? `${name}: ${response.data.message}`
+                : `${name}: tick triggered`,
+          );
         } else if (response.data.busy) {
           toast.warning(
             response.data.message ? `${name}: ${response.data.message}` : `${name}: scheduled work is already running`,

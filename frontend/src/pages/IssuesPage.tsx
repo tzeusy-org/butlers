@@ -19,7 +19,6 @@ import {
 } from "@/hooks/use-issues";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import type { Issue } from "@/api/types";
-import { ranTickToast } from "@/lib/tick-toast";
 
 // ---------------------------------------------------------------------------
 // URL-backed window + severity/butler pills (bu-qvnce.13, pursuit move 13)
@@ -347,7 +346,13 @@ export default function IssuesPage() {
     runNow.mutate(name, {
       onSuccess: (response) => {
         if (response.data.success) {
-          toast.success(ranTickToast(name, response.data, "schedule run now"));
+          toast.success(
+            typeof response.data.dispatched === "number"
+              ? `${name}: tick ran, ${response.data.dispatched} ${response.data.dispatched === 1 ? "job" : "jobs"} dispatched`
+              : response.data.message
+                ? `${name}: ${response.data.message}`
+                : `${name}: schedule run now`,
+          );
         } else if (response.data.busy) {
           toast.warning(
             response.data.message ? `${name}: ${response.data.message}` : `${name}: scheduled work is already running`,
