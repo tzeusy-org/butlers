@@ -55,3 +55,4 @@ Scope: v1-mandatory
 - **WHEN** `POST /api/butlers/{name}/schedules/{schedule_id}/trigger` proxies `schedule_trigger`
 - **THEN** a `triggered` reply answers 200, a `busy` reply answers 409, a nonexistent schedule answers 404, and any other reply (a dispatch failure or an unrecognised reply) answers 502
 - **AND** each non-200 outcome carries its reason in `detail`, so a trigger that did not happen never reads as a successful one
+- **AND** a failed MCP call (a raised tool error or an unreachable butler) is not a reply and stays 503

@@ -321,6 +321,7 @@ Scope: v1-mandatory
 - **WHEN** `POST /api/butlers/{name}/schedules/{schedule_id}/trigger` proxies `schedule_trigger`
 - **THEN** a `triggered` reply answers 200, a `busy` reply answers 409, a nonexistent schedule answers 404, and any other reply (a dispatch failure or an unrecognised reply) answers 502
 - **AND** each non-200 outcome carries its reason in `detail`, so a trigger that did not happen never reads as a successful one
+- **AND** a failed MCP call (a raised tool error or an unreachable butler) is not a reply and stays 503
 
 ### Requirement: Butler-Specific Route Auto-Discovery
 `src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code. Direct butlers.api._roster.<butler>.router imports SHALL resolve on demand to the same actual router module used by explicit discovery, preserving the existing {butler_name}_api_router execution/cache identity. Its models namespace SHALL expose the router's actual local model objects. Installing the namespace resolver SHALL NOT mount or execute every router. Explicit discovery/create_app SHALL still mount the complete healthy router set and preserve dependency overrides, sorted traversal and optional invalid-router warnings/skips. Failed newly-created loads SHALL NOT be cached as successful routers, and explicit custom roster roots SHALL not reuse a different file solely by matching a butler name.
