@@ -13,6 +13,7 @@ only the butler itself mutates its own database.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from uuid import UUID
@@ -391,6 +392,37 @@ async def delete_schedule(
 # ---------------------------------------------------------------------------
 
 
+# A trigger that is still running after this long answers 202 "running" instead of holding the
+# request open past the browser's 15 s budget (it would read as a failed trigger).
+_TRIGGER_ACCEPT_WINDOW_S = 10.0
+
+#: Strong references so a trigger that outlives its request is not garbage collected.
+_trigger_tasks: set[asyncio.Task] = set()
+
+
+def _trigger_task_done(task: asyncio.Task) -> None:
+    _trigger_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        # An HTTPException already audited itself in `_trigger_and_audit`; a request that is
+        # still waiting re-raises it, and one that answered 202 has nobody left to tell.
+        logger.info("Schedule trigger finished with %r after its request ended", task.exception())
+
+
+async def _trigger_and_audit(
+    mgr: MCPClientManager, db: DatabaseManager, name: str, schedule_id: UUID
+) -> dict:
+    """Call the tool and audit the outcome exactly once; raises HTTPException when unreachable."""
+    try:
+        result = await _call_mcp_tool(mgr, name, "schedule_trigger", {"id": str(schedule_id)})
+        await _log_legacy_schedule_mutation(
+            db, name, "schedule.trigger", schedule_id=schedule_id, response=result
+        )
+    except HTTPException:
+        await _log_legacy_schedule_mutation(db, name, "schedule.trigger", schedule_id=schedule_id)
+        raise
+    return result
+
+
 @router.post(
     "/{name}/schedules/{schedule_id}/trigger",
     response_model=ApiResponse[dict],
@@ -401,15 +433,25 @@ async def trigger_schedule(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict] | JSONResponse:
-    """Trigger a scheduled task immediately (one-off dispatch) via MCP."""
-    try:
-        result = await _call_mcp_tool(mgr, name, "schedule_trigger", {"id": str(schedule_id)})
-        await _log_legacy_schedule_mutation(
-            db, name, "schedule.trigger", schedule_id=schedule_id, response=result
+    """Trigger a scheduled task immediately (one-off dispatch) via MCP.
+
+    The tool runs the dispatch to completion, which for a prompt-mode schedule is a whole
+    LLM session. A reply inside ``_TRIGGER_ACCEPT_WINDOW_S`` is mapped to a status as below;
+    a trigger still running after that answers 202 ``running`` (inside the browser's 15 s
+    budget) and finishes in the background, which then audits the outcome.
+    """
+    call = asyncio.create_task(_trigger_and_audit(mgr, db, name, schedule_id))
+    _trigger_tasks.add(call)
+    call.add_done_callback(_trigger_task_done)
+    done, _pending = await asyncio.wait({call}, timeout=_TRIGGER_ACCEPT_WINDOW_S)
+    if not done:
+        return JSONResponse(
+            status_code=202,
+            content=ApiResponse[dict](
+                data={"id": str(schedule_id), "status": "running"}
+            ).model_dump(mode="json"),
         )
-    except HTTPException:
-        await _log_legacy_schedule_mutation(db, name, "schedule.trigger", schedule_id=schedule_id)
-        raise
+    result = call.result()
     # Nothing was dispatched unless the tool says it triggered, so none of these may read as a
     # successful trigger (the UI toasts "triggered" on any 2xx). The audit row above is the
     # only one: the raises below sit outside the try, so they are never audited a second time.

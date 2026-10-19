@@ -169,6 +169,12 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** only a `triggered` reply answers 200
 - **AND** each call is audited exactly once: not found and busy as a success whose metadata carries `observed_status` `not_found` or `busy`, a failure as an error
 
+#### Scenario: A trigger that outlasts the accept window answers 202 running
+- **WHEN** `POST /api/butlers/{name}/schedules/{id}/trigger` has not received the `schedule_trigger` reply within the accept window (shorter than the dashboard's 15 second request budget)
+- **THEN** the API answers 202 with `data.status: "running"` instead of holding the request open, and the dashboard shows the schedule as running rather than as a failed trigger
+- **AND** the trigger keeps running and its outcome is audited exactly once when it finishes, whatever that outcome is
+- **AND** a reply inside the window keeps the status mapping above, and the `schedule_trigger` tool's own semantics are unchanged
+
 #### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard
 - **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
 - **THEN** the call is refused with `status: "error"` and `code: "SPAWNER_SLOTS_FULL"` before the tick guard is taken

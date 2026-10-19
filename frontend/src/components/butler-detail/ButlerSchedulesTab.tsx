@@ -109,8 +109,13 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
   function handleTrigger(schedule: Schedule) {
     setTriggeringId(schedule.id);
     triggerMutation.mutate(schedule.id, {
-      onSuccess: () => {
-        toast.success(`Schedule "${schedule.name}" triggered`);
+      onSuccess: (response) => {
+        // A trigger still running after the API's accept window answers 202 "running".
+        if (response.data.status === "running") {
+          toast.info(`Schedule "${schedule.name}" is running; it may take a few minutes`);
+        } else {
+          toast.success(`Schedule "${schedule.name}" triggered`);
+        }
         setTriggeringId(null);
       },
       onError: (err) => {
