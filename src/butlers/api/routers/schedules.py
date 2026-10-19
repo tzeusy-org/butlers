@@ -398,6 +398,7 @@ _TRIGGER_ACCEPT_WINDOW_S = 10.0
 
 # Shared with the tests that wait for a trigger that outlived its request.
 _trigger_tasks = accept_window.TASKS
+_detached_triggers = accept_window._DETACHED
 
 
 async def _trigger_and_audit(

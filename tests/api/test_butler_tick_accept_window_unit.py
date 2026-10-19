@@ -212,6 +212,7 @@ async def test_a_tick_cancelled_after_the_202_is_logged_and_never_audited(app, c
     assert "forced-tick:qa" in warnings[0].getMessage()
     assert warnings[0].name == "butlers.api.routers.butlers"
     assert not accept_window.TASKS
+    assert not accept_window._DETACHED
 
 
 async def test_a_non_http_failure_after_the_202_is_logged_as_an_error_with_a_traceback(
