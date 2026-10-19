@@ -283,8 +283,12 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
         response = await client.request(method, f"{path}?actor=forged", json=body)
 
     expected_http_status = 503 if mode == "unreachable" else (201 if operation == "create" else 200)
+    if operation == "trigger" and mode == "refused":
+        expected_http_status = 502  # a trigger that did not happen is never a 2xx
     assert response.status_code == expected_http_status
-    if mode != "unreachable":
+    if operation == "trigger" and mode == "refused":
+        assert "private-provider-failure" in response.json()["detail"]
+    elif mode != "unreachable":
         assert response.json()["data"]["status"] == (
             "error" if mode == "refused" else expected_status
         )
