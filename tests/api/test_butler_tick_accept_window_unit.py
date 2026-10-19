@@ -180,3 +180,51 @@ async def test_the_tick_call_is_not_cut_off_at_the_old_status_timeout(app) -> No
     audit.assert_awaited_once()
     assert audit.await_args.args[3]["tick_outcome"] == "ran"
     assert audit.await_args.kwargs.get("result", "success") == "success"
+
+
+def test_the_accept_window_stays_below_the_browsers_request_budget() -> None:
+    from butlers.api.routers import butlers as butlers_module
+
+    # frontend/src/api/client.ts API_REQUEST_TIMEOUT_MS is 15 s; leave headroom for the network
+    # and any proxy, or a tick that did start reads as a failed one again.
+    assert 0 < butlers_module._TICK_ACCEPT_WINDOW_S <= 12
+
+
+async def test_a_tick_cancelled_after_the_202_is_logged_and_never_audited(app, caplog) -> None:
+    release = asyncio.Event()
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.butlers"):
+        resp, audit = await _post_tick(app, _slow(release, _RAN))
+        for task in list(accept_window.TASKS):
+            task.cancel()
+        await _drain()
+
+    assert resp.status_code == 202
+    audit.assert_not_awaited()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "cancelled" in warnings[0].getMessage()
+    assert "not audited" in warnings[0].getMessage()
+    assert "forced-tick:qa" in warnings[0].getMessage()
+    assert warnings[0].name == "butlers.api.routers.butlers"
+    assert not accept_window.TASKS
+
+
+async def test_a_non_http_failure_after_the_202_is_logged_as_an_error_with_a_traceback(
+    app, caplog
+) -> None:
+    release = asyncio.Event()
+
+    async def slow_bug(*_args, **_kwargs):
+        await release.wait()
+        raise RuntimeError("parse path bug")
+
+    with caplog.at_level("INFO", logger="butlers.api.routers.butlers"):
+        resp, _audit = await _post_tick(app, slow_bug, release=release)
+
+    assert resp.status_code == 202
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+    assert errors[0].name == "butlers.api.routers.butlers"
+    assert "parse path bug" in repr(errors[0].exc_info[1])
