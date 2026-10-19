@@ -55,7 +55,7 @@ credential presence, key validity, last poll time, and connector health.
   - `has_api_key`: boolean (entity_info exists with type `steam_api_key`)
   - `key_valid`: boolean (result of a test API call)
   - `last_poll_at`: timestamp or null
-  - `connector_health`: health status for this account from the connector (if running)
+  - `connector_health`: always null, because the connector records one connector-wide state that is never attributed to a single account
 
 ### Requirement: Play History Storage
 
@@ -118,25 +118,26 @@ The dashboard SHALL expose endpoints for querying playtime data.
 
 ### Requirement: Connector Health View
 
-The dashboard SHALL expose a Steam connector health endpoint that proxies the
-connector's own health endpoint.
-
-#### Scenario: Get connector health
-
-- **WHEN** `GET /api/steam/connector/health` is called
-- **THEN** the response SHALL proxy the Steam connector's health endpoint
-- **AND** return aggregated and per-account health status
+The dashboard SHALL expose a Steam connector health endpoint that reports the
+connector's state from its recorded heartbeat.
 
 #### Scenario: Connector health comes from the recorded heartbeat
 
-The scenario above is realised without calling the connector: its health listener is bound
-to loopback and is unreachable from another container or pod.
-
 - **WHEN** `GET /api/steam/connector/health` is called
-- **THEN** the response SHALL report the connector's state from its `switchboard.connector_registry` heartbeat row, with `uptime_seconds` and the count of polled accounts
-- **AND** `status` SHALL be `not_running` when the heartbeat is stale, offline, future-dated, absent, or the registry is unreachable
+- **THEN** the response SHALL report the state from the Steam connector's newest `switchboard.connector_registry` heartbeat row, with `uptime_seconds` and `last_heartbeat_at`
 - **AND** the API SHALL make no HTTP call to the connector
-- **AND** per-account detail SHALL be empty, because the registry does not record it
+- **AND** per-account detail SHALL be empty and `active_accounts` SHALL be null, because the registry records no per-account detail and the account set in a heartbeat is fixed when the connector starts
+
+#### Scenario: Connector not running
+
+- **WHEN** the newest heartbeat is stale, offline, future-dated, or absent
+- **THEN** `status` SHALL be `not_running`
+- **AND** `last_heartbeat_at` SHALL still report the newest heartbeat when one exists
+
+#### Scenario: Registry unreadable
+
+- **WHEN** the registry cannot be read
+- **THEN** `status` SHALL be `unknown` and `registry_available` SHALL be false, rather than `not_running`
 
 ### Requirement: Steam Connector Configuration
 
