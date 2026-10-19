@@ -7,7 +7,7 @@ Provides request/response models for:
 - Account status (GET /api/steam/accounts/{id}/status)
 - Playtime analytics (GET /api/steam/playtime)
 - Per-game playtime history (GET /api/steam/playtime/{app_id})
-- Connector health proxy (GET /api/steam/connector/health)
+- Connector health from the recorded heartbeat (GET /api/steam/connector/health)
 """
 
 from __future__ import annotations
@@ -165,11 +165,9 @@ class SteamAccountStatusResponse(BaseModel):
     """Timestamp of the last successful connector poll, or null if never polled."""
 
     connector_health: str | None = None
-    """Health status reported by the connector for this account.
-
-    One of 'healthy', 'degraded', 'error', or null when the connector is
-    not running or this account is not tracked.
-    """
+    """Always null: the connector records one connector-wide state, which is never
+    attributed to a single account (it would read 'error' for a healthy account while
+    another account errors)."""
 
 
 # ---------------------------------------------------------------------------
@@ -211,17 +209,20 @@ class SteamConnectorHealthResponse(BaseModel):
 
     Derived from the connector's heartbeat row in ``switchboard.connector_registry``;
     the API never calls the connector. Returns ``not_running`` when no online
-    heartbeat is recorded.
+    heartbeat is recorded, and ``unknown`` (``registry_available=false``) when the
+    registry itself cannot be read.
     """
 
     status: str
-    """Overall connector status: 'healthy', 'degraded', 'error', or 'not_running'."""
+    """Overall connector status: 'healthy', 'degraded', 'error', 'not_running', or 'unknown'
+    (the registry could not be read; see ``registry_available``)."""
 
     uptime_seconds: int | None = None
     """Connector uptime in seconds at its last heartbeat, or null when not running."""
 
     active_accounts: int | None = None
-    """Number of accounts the connector reported polling, or null when not running."""
+    """Always null: the account set in a heartbeat is frozen at connector start, so the
+    number of accounts currently polled is unknown to the API."""
 
     account_health: list[SteamConnectorAccountHealth] = []
     """Always empty: per-account detail is not recorded in the registry."""
@@ -230,7 +231,13 @@ class SteamConnectorHealthResponse(BaseModel):
     """Deprecated; always null. The API no longer probes a connector URL."""
 
     last_heartbeat_at: datetime | None = None
-    """Timestamp of the connector's last recorded heartbeat, or null when not running."""
+    """Timestamp of the connector's last recorded heartbeat, or null when none is recorded.
+
+    Also present on ``not_running`` when a stale or offline heartbeat exists.
+    """
+
+    registry_available: bool = True
+    """False when the connector registry could not be read, so ``status`` is 'unknown'."""
 
     source: str = "registry"
     """Where the answer came from; always 'registry'."""

@@ -13,6 +13,7 @@ fails the test instead of being swallowed as "connector unreachable".
 from __future__ import annotations
 
 import socket
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -82,9 +83,10 @@ async def test_online_heartbeat_reports_the_recorded_state(
 
     assert response.status == state
     assert response.uptime_seconds == 4200
-    assert response.active_accounts == 1
+    assert response.active_accounts is None
     assert response.last_heartbeat_at is not None
     assert response.source == "registry"
+    assert response.registry_available is True
     assert response.connector_url is None
     assert response.account_health == []
     assert forbid_sockets == []
@@ -103,6 +105,7 @@ async def test_a_stale_or_offline_heartbeat_is_not_running_whatever_state_it_rec
     assert response.status == "not_running"
     assert response.uptime_seconds is None
     assert response.active_accounts is None
+    assert response.registry_available is True
 
 
 async def test_a_future_dated_heartbeat_is_not_trusted() -> None:
@@ -122,37 +125,59 @@ async def test_a_naive_timestamp_is_read_as_utc() -> None:
     assert response.status == "healthy"
 
 
+async def test_a_stale_heartbeat_still_says_when_the_connector_was_last_seen() -> None:
+    row = _heartbeat(age=timedelta(hours=1))
+
+    response = await steam_router.get_steam_connector_health(db_manager=_db_manager(row))
+
+    assert response.status == "not_running"
+    assert response.last_heartbeat_at == row["last_heartbeat_at"]
+
+
+async def test_no_registry_row_is_a_genuine_absence() -> None:
+    response = await steam_router.get_steam_connector_health(db_manager=_db_manager(None))
+
+    assert response.status == "not_running"
+    assert response.last_heartbeat_at is None
+    assert response.registry_available is True
+    assert response.connector_url is None
+
+
 @pytest.mark.parametrize(
     "manager",
     [
         pytest.param(None, id="no-db-manager"),
-        pytest.param(_db_manager(None), id="no-registry-row"),
+        pytest.param(MagicMock(pool=MagicMock(side_effect=KeyError("switchboard"))), id="no-pool"),
         pytest.param(_db_manager(None, query_error=RuntimeError("down")), id="query-error"),
     ],
 )
-async def test_no_usable_registry_answer_is_not_running(manager: Any) -> None:
+async def test_an_unreadable_registry_is_unknown_not_not_running(manager: Any) -> None:
     response = await steam_router.get_steam_connector_health(db_manager=manager)
 
-    assert response.status == "not_running"
+    assert response.status == "unknown"
+    assert response.registry_available is False
+    assert response.uptime_seconds is None
+    assert response.last_heartbeat_at is None
     assert response.connector_url is None
 
 
-async def test_the_no_accounts_identity_counts_zero_accounts() -> None:
-    manager = _db_manager(_heartbeat(state="degraded", identity="steam:no_accounts"))
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "steam:no_accounts",
+        f"steam:user:{_STEAM_ID}",
+        f"steam:user:{_STEAM_ID},steam:user:{_OTHER_STEAM_ID}",
+    ],
+)
+async def test_the_account_count_is_never_claimed_from_the_frozen_identity(identity: str) -> None:
+    # The heartbeat identity is fixed when the connector starts, so a count read from it
+    # would show zero accounts beside "healthy" after the first rescan finds one.
+    manager = _db_manager(_heartbeat(state="healthy", identity=identity))
 
     response = await steam_router.get_steam_connector_health(db_manager=manager)
 
-    assert response.status == "degraded"
-    assert response.active_accounts == 0
-
-
-async def test_several_accounts_are_counted_from_the_joined_identity() -> None:
-    identity = f"steam:user:{_STEAM_ID},steam:user:{_OTHER_STEAM_ID}"
-    manager = _db_manager(_heartbeat(identity=identity))
-
-    response = await steam_router.get_steam_connector_health(db_manager=manager)
-
-    assert response.active_accounts == 2
+    assert response.status == "healthy"
+    assert response.active_accounts is None
 
 
 async def test_the_query_targets_steam_heartbeats_and_skips_the_config_row() -> None:
@@ -172,30 +197,28 @@ async def test_the_query_targets_steam_heartbeats_and_skips_the_config_row() -> 
 # ---------------------------------------------------------------------------
 
 
-async def test_account_health_is_the_recorded_state_for_a_tracked_account(
-    forbid_sockets: list[Any],
+@pytest.mark.parametrize("state", ["healthy", "degraded", "error"])
+@pytest.mark.parametrize("steam_id", [_STEAM_ID, _OTHER_STEAM_ID], ids=["account-a", "account-b"])
+async def test_an_account_never_inherits_the_connectors_overall_state(
+    monkeypatch: pytest.MonkeyPatch, forbid_sockets: list[Any], state: str, steam_id: int
 ) -> None:
-    manager = _db_manager(_heartbeat(state="degraded"))
+    # Two accounts tracked, connector-wide state recorded: account A errors, B is healthy.
+    # The registry cannot say which account the state belongs to, so neither reads it.
+    manager = _db_manager(
+        _heartbeat(state=state, identity=f"steam:user:{_STEAM_ID},steam:user:{_OTHER_STEAM_ID}")
+    )
+    account = MagicMock(id=uuid.uuid4(), steam_id=steam_id, entity_id=uuid.uuid4())
+    account.status = "active"
+    account.last_poll_at = None
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(steam_router, "_get_shared_pool", lambda _manager: pool)
+    monkeypatch.setattr(steam_router, "resolve_steam_account", AsyncMock(return_value=account))
 
-    health = await steam_router._probe_connector_account_health(manager, _STEAM_ID)
+    response = await steam_router.get_steam_account_status(account.id, db_manager=manager)
 
-    assert health == "degraded"
+    assert response.connector_health is None
     assert forbid_sockets == []
-
-
-async def test_account_health_is_unknown_for_an_untracked_account() -> None:
-    manager = _db_manager(_heartbeat(identity=f"steam:user:{_OTHER_STEAM_ID}"))
-
-    assert await steam_router._probe_connector_account_health(manager, _STEAM_ID) is None
-
-
-async def test_account_health_is_unknown_when_the_connector_is_not_online() -> None:
-    manager = _db_manager(_heartbeat(age=timedelta(hours=1)))
-
-    assert await steam_router._probe_connector_account_health(manager, _STEAM_ID) is None
-
-
-async def test_account_health_does_not_match_a_longer_id_by_substring() -> None:
-    manager = _db_manager(_heartbeat(identity=f"steam:user:{_STEAM_ID}0"))
-
-    assert await steam_router._probe_connector_account_health(manager, _STEAM_ID) is None

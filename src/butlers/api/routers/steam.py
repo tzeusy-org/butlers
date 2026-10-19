@@ -21,14 +21,15 @@ Account status (GET /api/steam/accounts/{id}/status):
   live Steam Web API test call against the stored key: true = authenticated,
   false = rejected with 401/403, null = no key or transient/network error),
   ``last_poll_at`` (from the steam_accounts table), and ``connector_health``
-  (the connector's recorded state while its heartbeat is online and it tracks this
-  account, null otherwise).
+  (always null: the heartbeat records one connector-wide state and an account set frozen
+  at connector start, so no state is attributed to a single account).
 
 Connector health (GET /api/steam/connector/health):
   Reports the connector's recorded heartbeat from ``switchboard.connector_registry``
   (the same source the other connector status cards use). The API never calls the
   connector's loopback-only health listener, which is unreachable from another
-  container or pod. ``status='not_running'`` means no online heartbeat.
+  container or pod. ``status='not_running'`` means no online heartbeat; ``'unknown'``
+  with ``registry_available=false`` means the registry itself could not be read.
 
 Playtime analytics:
   Queries ``connectors.steam_play_history`` for aggregated playtime data.
@@ -108,8 +109,6 @@ _ENTITY_INFO_TYPE_API_KEY = "steam_api_key"
 # ---------------------------------------------------------------------------
 
 _VALIDATION_TIMEOUT_S = 10.0
-
-# Default connector health endpoint port (matches _DEFAULT_HEALTH_PORT in steam connector).
 
 # ---------------------------------------------------------------------------
 # Dependency injection stub
@@ -589,8 +588,8 @@ async def get_steam_account_status(
     """Return credential and poll health status for a single Steam account.
 
     Inspects the account row and its stored API key without making any live
-    Steam API call. Also reports the connector-side state for this account from the
-    connector's recorded heartbeat (no HTTP call to the connector).
+    Steam API call. ``connector_health`` is always null: the connector's recorded state is
+    connector-wide and is never attributed to a single account.
 
     Fields returned:
     - ``has_api_key``      — whether an API key is stored in entity_info
@@ -599,8 +598,8 @@ async def get_steam_account_status(
                              rejected it with 401/403), or None (no key stored,
                              or a transient/network error made the result unknown)
     - ``last_poll_at``     — timestamp of the last successful connector poll
-    - ``connector_health`` — connector-reported health ('healthy', 'degraded',
-                             'error') or null when connector is unreachable
+    - ``connector_health`` — always null (the connector's recorded state is
+                             connector-wide, not per account)
 
     Raises HTTP 404 when the account ID is not found.
     Raises HTTP 503 when the database is unavailable.
@@ -647,11 +646,6 @@ async def get_steam_account_status(
     if has_api_key:
         key_valid = await _check_api_key_valid(key_row["value"], account.steam_id)
 
-    # Per-account health comes from the connector's recorded heartbeat (no HTTP probe).
-    connector_health: str | None = await _probe_connector_account_health(
-        db_manager, account.steam_id
-    )
-
     return SteamAccountStatusResponse(
         id=account.id,
         steam_id=account.steam_id,
@@ -659,7 +653,7 @@ async def get_steam_account_status(
         has_api_key=has_api_key,
         key_valid=key_valid,
         last_poll_at=account.last_poll_at,
-        connector_health=connector_health,
+        connector_health=None,
     )
 
 
@@ -680,21 +674,31 @@ async def get_steam_connector_health(
     and runs in another container or pod on Compose and k3s.
 
     ``status`` is the connector's recorded state ('healthy', 'degraded', 'error')
-    while its heartbeat is online, otherwise ``'not_running'`` (stale, offline, never
-    seen, or the registry is unreachable). Per-account and per-data-type detail is not
-    recorded in the registry, so ``account_health`` is always empty.
+    while its heartbeat is online, ``'not_running'`` when no online heartbeat exists
+    (stale, offline, future-dated, or never seen; ``last_heartbeat_at`` still says when
+    it was last seen), and ``'unknown'`` with ``registry_available=false`` when the
+    registry itself cannot be read. Per-account and per-data-type detail is not recorded
+    in the registry, and the account set a heartbeat carries is frozen at connector start,
+    so ``account_health`` is always empty and ``active_accounts`` is always null.
 
     Returns HTTP 200 in all cases; callers should inspect ``status``.
     """
-    heartbeat = await _load_connector_heartbeat(await _get_switchboard_pool(db_manager))
-    if heartbeat is None or _heartbeat_liveness(heartbeat) != "online":
+    try:
+        heartbeat = await _load_connector_heartbeat(await _get_switchboard_pool(db_manager))
+    except _RegistryUnavailable:
+        return SteamConnectorHealthResponse(status="unknown", registry_available=False)
+    if heartbeat is None:
         return SteamConnectorHealthResponse(status="not_running")
+    last_heartbeat_at = heartbeat["last_heartbeat_at"]
+    if _heartbeat_liveness(heartbeat) != "online":
+        return SteamConnectorHealthResponse(
+            status="not_running", last_heartbeat_at=last_heartbeat_at
+        )
 
     return SteamConnectorHealthResponse(
         status=heartbeat["state"] or "unknown",
         uptime_seconds=heartbeat["uptime_s"],
-        active_accounts=len(_heartbeat_account_identities(heartbeat)),
-        last_heartbeat_at=heartbeat["last_heartbeat_at"],
+        last_heartbeat_at=last_heartbeat_at,
         source="registry",
     )
 
@@ -703,7 +707,9 @@ async def get_steam_connector_health(
 # Connector health helpers
 # ---------------------------------------------------------------------------
 
-_NO_ACCOUNTS_IDENTITY = "steam:no_accounts"
+
+class _RegistryUnavailable(Exception):
+    """The connector registry could not be read (no pool, or the query failed)."""
 
 
 async def _load_connector_heartbeat(pool: Any | None) -> dict[str, Any] | None:
@@ -711,11 +717,12 @@ async def _load_connector_heartbeat(pool: Any | None) -> dict[str, Any] | None:
 
     The connector registers one row per distinct comma-joined account identity set, so
     the newest ``last_heartbeat_at`` wins. The ``steam:config`` settings row never
-    carries a heartbeat and is excluded. Returns None when the pool is unavailable,
-    the query fails, or no row exists.
+    carries a heartbeat and is excluded. Returns None when no row exists (a genuine
+    absence) and raises :class:`_RegistryUnavailable` when the pool is missing or the
+    query fails, so a failed source is never read as "not running".
     """
     if pool is None:
-        return None
+        raise _RegistryUnavailable
     try:
         row = await pool.fetchrow(
             """
@@ -729,9 +736,9 @@ async def _load_connector_heartbeat(pool: Any | None) -> dict[str, Any] | None:
             """,
             _STEAM_CONFIG_ENDPOINT_IDENTITY,
         )
-    except Exception:  # noqa: BLE001
-        logger.debug("connector_registry query failed for Steam", exc_info=True)
-        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("connector_registry query failed for Steam (%s)", type(exc).__name__)
+        raise _RegistryUnavailable from exc
     return dict(row) if row is not None else None
 
 
@@ -741,28 +748,6 @@ def _heartbeat_liveness(heartbeat: dict[str, Any]) -> str:
     if isinstance(last, datetime) and last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     return derive_liveness(last if isinstance(last, datetime) else None)
-
-
-def _heartbeat_account_identities(heartbeat: dict[str, Any]) -> list[str]:
-    """Split the heartbeat's comma-joined endpoint identity into account identities."""
-    raw = heartbeat.get("endpoint_identity") or ""
-    return [part for part in raw.split(",") if part and part != _NO_ACCOUNTS_IDENTITY]
-
-
-async def _probe_connector_account_health(db_manager: Any, steam_id: int) -> str | None:
-    """Return the connector's recorded state for a specific steam_id.
-
-    The heartbeat records one overall state plus the account identities the connector
-    is polling (``steam:user:<steam_id>``), so an account is reported with the overall
-    state only while the connector is online and tracks it. Returns None when the
-    connector is not online, the registry is unreachable, or the account is not tracked.
-    """
-    heartbeat = await _load_connector_heartbeat(await _get_switchboard_pool(db_manager))
-    if heartbeat is None or _heartbeat_liveness(heartbeat) != "online":
-        return None
-    if f"steam:user:{steam_id}" not in _heartbeat_account_identities(heartbeat):
-        return None
-    return heartbeat["state"]
 
 
 # ---------------------------------------------------------------------------
