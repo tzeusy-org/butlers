@@ -158,21 +158,31 @@ async def test_the_weekly_key_is_held_for_the_whole_week(monkeypatch) -> None:
 
 
 async def test_transaction_anomalies_keep_their_per_day_key_and_cooldown(monkeypatch) -> None:
+    # The job reads the clock itself: bracket the run so a UTC midnight crossing cannot flake.
+    before = datetime.now(UTC).date()
     proposals = await _run(
         monkeypatch, [_transaction()], as_of=datetime(2026, 10, 14, 9, 0, tzinfo=UTC)
     )
+    after = datetime.now(UTC).date()
 
-    today = datetime.now(UTC).date().isoformat()
-    assert _keys(proposals) == [f"finance:anomaly:t1:{today}"]
+    assert _keys(proposals) in (
+        [f"finance:anomaly:t1:{before.isoformat()}"],
+        [f"finance:anomaly:t1:{after.isoformat()}"],
+    )
     assert [p["cooldown_days"] for p in proposals] == [1]
 
 
 async def test_a_scan_without_a_clock_still_keys_on_the_current_week(monkeypatch) -> None:
-    proposals = await _run(monkeypatch, [_category()], as_of=None)
-
     fj = _fj()
-    week = fj.week_start(datetime.now(UTC), SGT)
-    assert _keys(proposals) == [f"finance:anomaly:category-Groceries-SGD:week-{week.isoformat()}"]
+    # The job reads the clock itself: bracket the run so a week boundary cannot flake.
+    before = fj.week_start(datetime.now(UTC), SGT)
+    proposals = await _run(monkeypatch, [_category()], as_of=None)
+    after = fj.week_start(datetime.now(UTC), SGT)
+
+    assert _keys(proposals) in (
+        [f"finance:anomaly:category-Groceries-SGD:week-{before.isoformat()}"],
+        [f"finance:anomaly:category-Groceries-SGD:week-{after.isoformat()}"],
+    )
 
 
 @pytest.mark.parametrize(

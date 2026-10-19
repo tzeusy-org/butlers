@@ -47,7 +47,7 @@ The system SHALL provide an `anomaly_scan` tool that analyzes recent transaction
 
 #### Scenario: An above-band category is raised once per week
 - **WHEN** the daily anomaly insight scan proposes a candidate for a `category_velocity_anomaly`
-- **THEN** its dedup key SHALL be built from the category, the currency and the owner-local week start the band was scored for, so that day after day of the same week yields the same key
+- **THEN** its dedup key SHALL be built from the category, the currency and the owner-local week whose spend was scored, so that day after day of the same week yields the same key
 - **AND** the candidate's cooldown SHALL cover that whole week, so an above-band category is delivered at most once per category, currency and week
 - **AND** a later severity change within the same week SHALL NOT raise it again, and the next owner-local week SHALL be a new key
 - **AND** per-transaction anomalies SHALL keep their per-transaction, per-day key
