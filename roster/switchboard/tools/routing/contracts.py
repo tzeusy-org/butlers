@@ -37,7 +37,6 @@ SourceChannel = Literal[
     "home_assistant",
     "gaming",
     "google_drive",
-    "discord",
     "wellness",
     "activitywatch",
 ]
@@ -55,7 +54,6 @@ SourceProvider = Literal[
     "home_assistant",
     "steam",
     "google_drive",
-    "discord",
     "google_health",
     "activitywatch",
 ]
@@ -80,7 +78,6 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "home_assistant": frozenset({"home_assistant"}),
     "gaming": frozenset({"steam"}),
     "google_drive": frozenset({"google_drive"}),
-    "discord": frozenset({"discord"}),
     "wellness": frozenset({"google_health", "home_assistant"}),
     "activitywatch": frozenset({"activitywatch"}),
 }

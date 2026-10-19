@@ -32,7 +32,6 @@ account — no manual env var configuration needed:
 - **Telegram bot:** `getMe` API → `telegram:bot:@<username>`
 - **Telegram user client:** Telethon `get_me()` → `telegram:user:@<username>`
 - **Gmail:** derived from `public.google_accounts.email` → `gmail:user:<email>`
-- **Discord:** `/users/@me` API → `discord:user:@<username>`
 
 ## Telegram Bot Connector
 
