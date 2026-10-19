@@ -612,6 +612,16 @@ Scope: v1-mandatory
 - **AND** the endpoint SHALL not rewrite, delete, relabel, or return the
   legacy row
 
+#### Scenario: A parser call that omits optional parameters pairs with its executed capture
+
+- **WHEN** a runtime reports a `chronicler_day_close_bundle` call that omits an optional
+  parameter the tool binds a default for
+- **THEN** the merged tool-call list SHALL hold one record for that call, carrying the
+  executed capture's outcome, result and bound `date_label` and `timezone`
+- **AND** that record SHALL keep the canonical tool name, so the day-close writer finds
+  its single outcome-bearing capture
+- **AND** no raw parser argument outside the capture allowlist SHALL be persisted
+
 ### Requirement: Episode Participant Resolution Read Path
 
 The API SHALL expose participant entity membership as a first-class
