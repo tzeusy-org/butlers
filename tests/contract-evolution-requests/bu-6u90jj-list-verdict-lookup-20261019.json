@@ -1,0 +1,8 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-6u90jj-list-verdict-lookup-20261019",
+  "owners": [
+    "tests/api/test_ingestion_events.py::test_list_events_enriches_rows_with_sessions_and_sender"
+  ],
+  "timeout_s": 300
+}
