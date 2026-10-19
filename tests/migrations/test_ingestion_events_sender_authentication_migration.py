@@ -52,6 +52,16 @@ def test_upgrade_adds_a_nullable_text_column_with_exactly_the_three_values() -> 
 
 
 @pytest.mark.unit
+def test_the_check_is_added_not_valid_then_validated_without_a_long_lock() -> None:
+    sql = _emitted("upgrade")
+
+    assert "NOT VALID" in sql
+    assert sql.index("NOT VALID") < sql.index(
+        "VALIDATE CONSTRAINT ck_ingestion_events_sender_authentication"
+    )
+
+
+@pytest.mark.unit
 def test_downgrade_drops_the_constraint_then_the_column() -> None:
     sql = _emitted("downgrade")
 

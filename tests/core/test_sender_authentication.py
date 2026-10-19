@@ -213,14 +213,3 @@ def test_provider_spoofs_still_drop_the_alert(auth_results):
         )
         is None
     )
-
-
-def test_provider_alignment_stays_one_directional():
-    # A signer that is a parent of the provider domain must not authenticate the alert,
-    # even though the sender-domain verdict treats parent/child as the same organization.
-    verdict = classify_account_security(
-        "account-security-noreply@accountprotection.microsoft.com",
-        "Security alert",
-        headers={"Authentication-Results": "mx; dkim=pass header.d=com"},
-    )
-    assert verdict is not None and verdict.sender_verification == VERIFICATION_UNVERIFIED

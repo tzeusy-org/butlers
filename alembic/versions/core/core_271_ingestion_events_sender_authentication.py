@@ -59,10 +59,19 @@ def upgrade() -> None:
             ) THEN
                 ALTER TABLE public.ingestion_events
                 ADD CONSTRAINT ck_ingestion_events_sender_authentication
-                CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed'));
+                CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed'))
+                NOT VALID;
             END IF;
         END
         $$
+        """
+    )
+    # NOT VALID takes only a brief lock; VALIDATE scans without blocking ingest writes
+    # (core_242 precedent). Every existing row is NULL, so it always passes.
+    op.execute(
+        """
+        ALTER TABLE public.ingestion_events
+        VALIDATE CONSTRAINT ck_ingestion_events_sender_authentication
         """
     )
 

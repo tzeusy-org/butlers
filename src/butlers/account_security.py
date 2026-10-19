@@ -113,9 +113,9 @@ _PROVIDER_SIGNING_DOMAINS: dict[str, str] = {
     "apple": "apple.com",
 }
 
-_COMMENT_RE = re.compile(r"\([^()]*\)")
-_CLAUSE_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9-]*)\s*=\s*([A-Za-z]+)(.*)$", re.S)
-_PROP_RE = re.compile(r"(?<![\w.-])((?:header|smtp|policy)\.[a-z]+)\s*=\s*\"?([^\s\";]+)", re.I)
+_METHOD_RESULT_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*)=([A-Za-z]+)$")
+_PROPERTY_TOKEN_RE = re.compile(r"^([A-Za-z][A-Za-z0-9._-]*)=(.*)$", re.S)
+_DOMAIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _FAIL_RESULTS = frozenset({"fail", "softfail", "permerror"})
 
 
@@ -139,25 +139,136 @@ def _in_domain(candidate: str, domain: str) -> bool:
     return candidate == domain or candidate.endswith("." + domain)
 
 
-def _clauses(auth_results: str) -> list[tuple[str, str, dict[str, str]]]:
-    """Split one Authentication-Results value into (method, result, properties) clauses.
+def _tokenize(auth_results: str) -> list[list[str]] | None:
+    """Split an Authentication-Results value into top-level segments of tokens.
 
-    The first ``;`` segment is the authserv-id and is skipped. A method keyword only
-    counts at the start of its own clause, so ``x-dkim=pass`` never reads as ``dkim``.
+    Receivers echo sender-chosen text (a quoted MAIL FROM, a HELO literal, the ``header.i``
+    local part) into this header, and RFC 8601 lets such text hold ``;`` and ``)``. One scan
+    therefore tracks quoted-strings (with ``\\`` escapes), nested comments (whose own
+    quoted-strings may hold ``)``) and ``[...]`` literals, and splits on ``;`` and
+    whitespace only at top level. Comments act as whitespace and are dropped. Anything
+    unbalanced returns ``None`` so the caller fails closed.
     """
-    parts = _COMMENT_RE.sub(" ", auth_results).split(";")[1:]
-    clauses = []
-    for part in parts:
-        match = _CLAUSE_RE.match(part)
-        if match is None:
+    segments: list[list[str]] = [[]]
+    token: list[str] = []
+    depth = 0
+    in_quote = in_bracket = escaped = False
+
+    def flush() -> None:
+        if token:
+            segments[-1].append("".join(token))
+            token.clear()
+
+    for char in auth_results:
+        if depth:
+            if in_quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_quote = False
+            elif char == "\\":
+                escaped = True
+            elif escaped:
+                escaped = False
+            elif char == '"':
+                in_quote = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
             continue
-        props = {k.lower(): v for k, v in _PROP_RE.findall(match.group(3))}
-        clauses.append((match.group(1).lower(), match.group(2).lower(), props))
+        if in_quote:
+            token.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_quote = False
+            continue
+        if in_bracket:
+            token.append(char)
+            in_bracket = char != "]"
+            continue
+        if char == "(":
+            flush()
+            depth = 1
+        elif char in ")]":
+            return None
+        elif char == '"':
+            token.append(char)
+            in_quote = True
+        elif char == "[":
+            token.append(char)
+            in_bracket = True
+        elif char == ";":
+            flush()
+            segments.append([])
+        elif char.isspace():
+            flush()
+        else:
+            token.append(char)
+    if depth or in_quote or in_bracket:
+        return None
+    flush()
+    return segments
+
+
+def _join_equals(tokens: list[str]) -> list[str]:
+    """Rejoin ``key = value`` written with whitespace (or a comment) around ``=``."""
+    joined: list[str] = []
+    for token in tokens:
+        if joined and (joined[-1].endswith("=") or token.startswith("=")):
+            joined[-1] += token
+        else:
+            joined.append(token)
+    return joined
+
+
+def _clauses(auth_results: str) -> list[tuple[str, str, dict[str, str]]] | None:
+    """Parse one Authentication-Results value into (method, result, properties) clauses.
+
+    The first top-level segment is the authserv-id and is skipped. A clause is
+    ``method=result`` followed by whitespace-separated ``key=value`` tokens; a method only
+    counts at the start of its own clause, so ``x-dkim=pass`` never reads as ``dkim``.
+    Returns ``None`` when the value is unbalanced or holds anything that is not a clause,
+    so a malformed or injected header can only ever read ``unverified``.
+    """
+    segments = _tokenize(auth_results)
+    if segments is None:
+        return None
+    clauses = []
+    for raw_tokens in segments[1:]:
+        tokens = _join_equals(raw_tokens)
+        if not tokens or tokens == ["none"]:
+            continue
+        head = _METHOD_RESULT_RE.match(tokens[0])
+        if head is None:
+            return None
+        props: dict[str, str] = {}
+        for token in tokens[1:]:
+            match = _PROPERTY_TOKEN_RE.match(token)
+            if match is None:
+                return None
+            props.setdefault(match.group(1).lower(), match.group(2))
+        clauses.append((head.group(1).lower(), head.group(2).lower(), props))
     return clauses
 
 
 def _property_domain(value: str) -> str:
-    return value.rsplit("@", 1)[-1]
+    """Domain of a property value (``domain`` or ``local@domain``), or ``""`` if not a domain."""
+    value = value.strip()
+    if value.startswith('"'):
+        end = 1
+        while end < len(value) and value[end] != '"':
+            end += 2 if value[end] == "\\" else 1
+        rest = value[end + 1 :]
+        domain = rest[1:] if rest.startswith("@") else ""
+    else:
+        domain = value.rsplit("@", 1)[-1]
+    return domain if _DOMAIN_RE.match(domain) else ""
 
 
 def _aligned_with(candidate: str, domain: str) -> bool:
@@ -180,8 +291,11 @@ def _verify_against(
     """Clause-local verdict on *domain*; *aligns* decides whether a signer vouches for it."""
     if not domain or not auth_results or not auth_results.strip():
         return VERIFICATION_UNVERIFIED
+    clauses = _clauses(auth_results)
+    if clauses is None:
+        return VERIFICATION_UNVERIFIED
     authenticated = False
-    for method, result, props in _clauses(auth_results):
+    for method, result, props in clauses:
         if method == "dmarc":
             aligned = aligns(_property_domain(props.get("header.from", "")), domain)
         elif method == "dkim":

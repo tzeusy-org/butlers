@@ -10,7 +10,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
-- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, `triage_target`, and `sender_authentication`
+- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
 - **AND** `source_sender_display_name` is the raw sender display name from the envelope's `sender.display_name` (e.g. the email `From:` header's display part), or `NULL` when the envelope carried no display name; unlike `source_sender_identity` it is stored verbatim (not normalized) and is used by identity enrichment to name recurring correspondents from the real display name rather than a guess derived from the address local-part
 - **AND** the row's `id` is returned as `request_id` in `IngestAcceptedResponse`
 
@@ -25,7 +25,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 - **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries
 
 ### Requirement: Sender Authentication Verdict
-Every accepted email ingest SHALL record one deterministic sender-authentication verdict on its canonical `public.ingestion_events` row, so downstream readers (the payment-redirect guard, vendor-door confirmation, goal admission) read one stored fact instead of each re-parsing headers. The verdict describes the From domain only. It is not a lookalike score, and it never grants owner origin (RFC 0017 alone decides that).
+Every accepted email ingest SHALL record one deterministic sender-authentication verdict on its canonical `public.ingestion_events` row, so downstream readers (the payment-redirect guard, vendor-door confirmation, goal admission) read one stored fact instead of each re-parsing headers. The verdict describes the From domain only. It is not a lookalike score, and it never grants owner origin (RFC 0017 alone decides that). The verdict is the receiving provider's claim as written in the topmost `Authentication-Results` header. It is proof only for mail that reached the mailbox through that provider's SMTP receipt; mail placed without SMTP receipt (IMAP APPEND, an import or an insert) can carry a topmost header the sender wrote, and the verdict does not defend against that.
 
 #### Scenario: Verdict is computed from the topmost Authentication-Results header
 - **WHEN** an email envelope is accepted and its raw payload kept an `Authentication-Results` header
@@ -33,6 +33,12 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 - **AND** the column `sender_authentication` is `authenticated` for an aligned `dkim=pass` (its own `header.d`, or the domain of `header.i`) or a `dmarc=pass` (its own `header.from`) that aligns with the From domain
 - **AND** it is `failed` for a `dmarc` fail or permerror, or a fail on an aligned `dkim`
 - **AND** it is `unverified` for everything else, including `temperror`, `none` and an unaligned pass
+
+#### Scenario: Echoed sender text cannot forge a clause
+- **WHEN** the header holds sender-chosen text (a quoted MAIL FROM, a HELO address literal, the `header.i` local part) containing `;` or `)` that would read as another clause
+- **THEN** quoted-strings, comments and bracket literals are never split, so the echoed text stays inside its own clause and the verdict is not `authenticated` for the From domain
+- **AND** a header that is unbalanced, or holds anything that is not a clause, yields `unverified` for the whole header
+- **AND** a real `dmarc` fail clause beside such text still yields `failed`
 
 #### Scenario: Alignment is conservative
 - **WHEN** the signing domain and the From domain are the same, or one is a label-boundary subdomain of the other
@@ -44,7 +50,7 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 - **THEN** `sender_authentication` is `unverified`
 
 #### Scenario: Non-email rows carry no verdict
-- **WHEN** the accepted envelope's channel is not `email`, or the sender identity has no domain
+- **WHEN** the accepted envelope's channel is not `email`, or the sender identity is not one bare address with a domain
 - **THEN** `sender_authentication` is `NULL`
 - **AND** rows ingested before the column existed also read `NULL`
 

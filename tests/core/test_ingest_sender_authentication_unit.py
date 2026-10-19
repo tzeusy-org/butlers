@@ -124,11 +124,18 @@ async def test_a_metadata_tier_email_with_no_raw_payload_stores_unverified():
     assert args[-1] == "unverified"
 
 
-async def test_a_verifier_failure_stores_null_and_still_accepts():
-    with patch(
-        "butlers.tools.switchboard.ingestion.ingest.sender_authentication_verdict",
-        side_effect=RuntimeError("boom"),
+async def test_a_verifier_failure_stores_null_and_still_accepts(caplog):
+    with (
+        caplog.at_level("WARNING"),
+        patch(
+            "butlers.tools.switchboard.ingestion.ingest.sender_authentication_verdict",
+            side_effect=RuntimeError("boom"),
+        ),
     ):
         args = await _ingest(_envelope("email", "billing@vendor.example", {"text": "hi"}))
 
     assert args[-1] is None
+    assert any(
+        r.levelname == "WARNING" and "sender-authentication verdict failed" in r.getMessage()
+        for r in caplog.records
+    )
