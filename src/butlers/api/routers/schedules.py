@@ -395,7 +395,7 @@ async def trigger_schedule(
         # Nothing was dispatched, so this must not read as a successful trigger.
         raise HTTPException(
             status_code=409,
-            detail=str(result.get("message") or "A scheduler tick is already running"),
+            detail=str(result.get("message") or "Scheduled work is already running on this butler"),
         )
     return ApiResponse[dict](data=result)
 

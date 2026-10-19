@@ -154,10 +154,18 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** the scheduler loop's own tick waits for a forced tick that is mid-run, so at most one tick runs per daemon at a time
 
 #### Scenario: Manual schedule trigger and Chronicler refresh do not overlap a tick
-- **WHEN** the `schedule_trigger` tool (`POST /api/butlers/{name}/schedules/{id}/trigger`) or the Chronicler day-close refresh is invoked while a tick is running or waiting on the same daemon
+- **WHEN** the `schedule_trigger` tool (`POST /api/butlers/{name}/schedules/{id}/trigger`) or the Chronicler day-close refresh is invoked while a tick, a forced tick, or another manual trigger or refresh is running or waiting on the same daemon
 - **THEN** nothing is dispatched and the reply reports busy: `status: "busy"` for `schedule_trigger`, error code `scheduler_busy` for the refresh
+- **AND** the busy message says scheduled work is already running on the butler, not that a tick is
 - **AND** the API responds 409 and records the refused trigger as a successful request whose audit metadata carries `observed_status: "busy"`
-- **AND** when no tick is running they dispatch as before, holding the same per-daemon guard so a tick that arrives mid-dispatch waits
+- **AND** when no scheduled work is running they dispatch as before, holding the same per-daemon guard so a tick that arrives mid-dispatch waits
+- **AND** a forced tick (`tick` tool or `POST /api/butlers/{name}/tick`) also reports busy while a manual dispatch holds the guard
+
+#### Scenario: Runtime-originated prompt trigger never waits for its own slot under the guard
+- **WHEN** a running session calls `schedule_trigger` for a prompt-mode schedule while every spawner session slot is taken
+- **THEN** the call is refused with `status: "error"` and `code: "SPAWNER_SLOTS_FULL"` before the tick guard is taken
+- **AND** nothing is dispatched and the scheduler loop is not stalled behind the call
+- **AND** job-mode schedules, calls from the dashboard, and calls made while a slot is free are unaffected
 
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called

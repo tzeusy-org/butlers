@@ -4,6 +4,8 @@ schedule_costs."""
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import uuid
 from collections.abc import Callable
@@ -24,6 +26,7 @@ from butlers.core.scheduler import schedule_toggle as _schedule_toggle
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.sessions import schedule_costs as _schedule_costs
 from butlers.core.tick_guard import BUSY_MESSAGE, exclusive_manual_dispatch
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 
 
@@ -47,6 +50,55 @@ try:
     from butlers.tools.switchboard.routing.contracts import parse_notify_request  # noqa: F401
 except ImportError:
     pass
+
+
+def _spawner_slots_full(spawner: Any) -> bool:
+    """Whether every spawner concurrency slot is taken.
+
+    Reads ``asyncio.Semaphore._value`` exactly as ``Spawner.trigger`` does for its own
+    self-trigger refusal (see the implementation note in ``core/spawner.py``).
+    """
+    semaphore = getattr(spawner, "_session_semaphore", None)
+    return isinstance(semaphore, asyncio.Semaphore) and semaphore._value == 0
+
+
+def _refuse_runtime_trigger_without_slot(pool: Any, ctx: ToolContext) -> Callable[[Any], Any]:
+    """Refuse a runtime-originated prompt-mode trigger that could only wait on its own slot.
+
+    The calling session occupies a spawner slot. With every slot taken, the dispatch inside
+    the tick guard would wait for a slot until the session timeout, stalling the scheduler
+    loop and deterministic jobs behind the guard. Refuse before taking the guard. Job-mode
+    schedules do not need a slot and are unaffected.
+    """
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        async def wrapper(task_id: str | None = None, id: str | None = None) -> dict:
+            if get_current_runtime_session_id() and _spawner_slots_full(ctx.spawner):
+                resolved = task_id or id
+                try:
+                    row = await pool.fetchrow(
+                        "SELECT dispatch_mode FROM scheduled_tasks WHERE id = $1",
+                        uuid.UUID(str(resolved)),
+                    )
+                except (TypeError, ValueError):
+                    row = None
+                if row is not None and (row["dispatch_mode"] or "prompt") != "job":
+                    return {
+                        "id": resolved,
+                        "status": "error",
+                        "code": "SPAWNER_SLOTS_FULL",
+                        "error": (
+                            "Every session slot is in use, so a prompt-mode schedule cannot be "
+                            "triggered from inside a running session; trigger it from the "
+                            "dashboard instead."
+                        ),
+                    }
+            return await fn(task_id=task_id, id=id)
+
+        return wrapper
+
+    return decorate
 
 
 def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -258,6 +310,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     if butler_type != ButlerType.STAFFER:
 
         @_core_tool("scheduling")
+        @_refuse_runtime_trigger_without_slot(pool, ctx)
         @exclusive_manual_dispatch(
             lambda *_a, **_k: pool,
             lambda task_id=None, id=None: {
@@ -273,9 +326,15 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             but does NOT advance next_run_at — this is a manual one-off run.
             Updates last_run_at and last_result.
 
-            Not run while a scheduler tick is running or waiting on this daemon: replies
-            ``{"status": "busy"}`` and dispatches nothing, so a manual run cannot overlap
-            the tick (which could send the same thing twice).
+            Not run while scheduled work is running or waiting on this daemon (a tick, a
+            forced tick, or another manual trigger or refresh): replies ``{"status": "busy"}``
+            and dispatches nothing, so a manual run cannot overlap the tick (which could
+            send the same thing twice). The busy check comes before the id is validated.
+
+            A runtime session calling this for a prompt-mode schedule while every spawner
+            slot is taken is refused with ``SPAWNER_SLOTS_FULL`` instead of waiting for a
+            slot it cannot get, which would hold the tick guard (and stall the scheduler
+            loop) until the session timed out.
             """
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_trigger")
             task_uuid = uuid.UUID(resolved_id)

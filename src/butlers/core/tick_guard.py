@@ -90,7 +90,7 @@ def exclusive_tick[**P, R](fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitab
     return wrapper
 
 
-BUSY_MESSAGE = "a scheduler tick is already running; try again when it finishes"
+BUSY_MESSAGE = "scheduled work is already running on this butler; try again when it finishes"
 
 
 async def _run_if_idle[T](pool: Any, run: Callable[[], Awaitable[T]]) -> tuple[bool, T | None]:

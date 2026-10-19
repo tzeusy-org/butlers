@@ -76,3 +76,26 @@ async def test_a_refused_trigger_is_audited_once_as_success_with_a_busy_outcome(
     assert args[3]["observed_status"] == "busy"
     assert kwargs["result"] == "success"
     assert kwargs.get("error") is None
+
+
+async def test_a_real_trigger_failure_is_audited_once_as_an_error(app) -> None:
+    from fastapi import HTTPException
+
+    app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+    app.dependency_overrides[_get_db_manager] = lambda: MagicMock()
+    audit = AsyncMock()
+    unreachable = AsyncMock(side_effect=HTTPException(status_code=503, detail="butler unreachable"))
+    with (
+        patch("butlers.api.routers.schedules._call_mcp_tool", unreachable),
+        patch("butlers.api.routers.schedules.log_audit_entry", audit),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+            resp = await http.post(
+                f"/api/butlers/qa/schedules/{_SCHEDULE_ID}/trigger", headers=_HEADERS
+            )
+
+    assert resp.status_code == 503
+    audit.assert_awaited_once()
+    args, kwargs = audit.await_args
+    assert args[3]["observed_status"] == "unavailable"
+    assert kwargs["result"] == "error"

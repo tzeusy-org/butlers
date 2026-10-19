@@ -2992,6 +2992,10 @@ async def refresh_day_close(
             "day_close_not_settled": (400, "The regeneration date is not settled yet."),
             "refresh_context_forbidden": (403, "The regeneration context is not permitted."),
             "day_close_rate_limited": (429, "This day was regenerated recently."),
+            "scheduler_busy": (
+                409,
+                "Scheduled work is running on the Chronicler; try again when it finishes.",
+            ),
             "task_not_found": (503, "The Chronicler day-close task is unavailable."),
             "dispatch_unavailable": (503, "The Chronicler daemon is unavailable."),
             "dispatch_failed": (502, "Day-close regeneration failed during execution."),

@@ -538,6 +538,14 @@ validation envelope below.
   invalid_reason}`
 - **AND** the response SHALL NOT contain `prose` or `provenance_refs`
 
+#### Scenario: Refresh while scheduled work is running is busy
+
+- **WHEN** a client POSTs the refresh endpoint while a scheduler tick or another manual
+  dispatch holds the Chronicler's tick guard
+- **THEN** the API SHALL respond `409 Conflict` with `code: scheduler_busy` in the
+  `ErrorResponse` envelope
+- **AND** no Tier-2 invocation SHALL occur
+
 #### Scenario: Refresh rate limit enforced
 
 - **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that has
