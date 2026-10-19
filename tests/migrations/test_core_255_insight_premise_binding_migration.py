@@ -1739,6 +1739,13 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
         f' "fingerprint": "f"}}\'::jsonb WHERE id = \'{candidate}\' RETURNING 1',
     )
     resolved = "'2099-01-01T00:00:00Z'::timestamptz"
+    # core_273 binds the definer to the resolved ledger row, so one must exist.
+    _run(
+        db_url,
+        "INSERT INTO public.owner_conditions"
+        " (source, fingerprint, episode, state, resolved_at, recovered_after_s)"
+        f" VALUES ('s', 'f', 1, 'resolved', {resolved}, 0) RETURNING 1",
+    )
     enqueue = f"SELECT public.enqueue_premise_amendments('s', 'f', {resolved}, NULL)"
     assert _run(db_url, enqueue) == 1
     assert _run(db_url, enqueue) == 0  # the same resolution never queues twice

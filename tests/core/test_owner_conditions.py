@@ -176,6 +176,7 @@ class TestExplicitResolutionValidation:
                 "source": "finance:commitment",
                 "fingerprint": "fp-1",
                 "resolution_metadata": None,
+                "post_write": owner_conditions.enqueue_premise_amendments,
             }
         ]
         assert "resolve_condition" in owner_conditions.__all__
