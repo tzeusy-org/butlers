@@ -161,6 +161,11 @@ The connector SHALL implement a three-tier ingestion policy to process emails in
 - **WHEN** the policy pipeline runs for a message
 - **THEN** the order is: (1) label include/exclude filter → (2) source filter gate → (3) triage rule evaluation for ingestion tier → (4) policy tier assignment for queue ordering → (5) Switchboard submission
 
+#### Scenario: Policy counters label the account pseudonymously
+- **WHEN** the policy pipeline increments `butlers_connector_gmail_label_filter_total`, `butlers_connector_gmail_tier_assigned_total` or `butlers_connector_gmail_priority_tier_assigned_total`
+- **THEN** the `endpoint_identity` label is `prometheus_endpoint_identity()` of the endpoint identity: the identity's family, a colon, and the first 8 hex characters of the SHA-256 of the full identity, so one account always yields the same value
+- **AND** the raw endpoint identity and the account's email address never appear as a label value, including for a message the label filter excludes
+
 ### Requirement: Source Filter Integration (Gmail)
 
 The Gmail connector SHALL implement the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:gmail:<endpoint_identity>'`. It builds an `IngestionEnvelope` from the Gmail message's `From` header. Compatible rule types for Gmail connector scope: `sender_domain`, `sender_address`, `substring`.
