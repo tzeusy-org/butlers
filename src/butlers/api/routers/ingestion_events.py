@@ -69,6 +69,7 @@ from butlers.core.ingestion_events import (
     ingestion_events_received_at_bounds,
     ingestion_events_replay_policy,
     ingestion_events_request_ids_for_trace,
+    ingestion_events_sender_authentication,
     ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
 )
@@ -387,7 +388,21 @@ async def _enrich_list_summaries(
             exc_info=True,
         )
 
+    # The stored sender-authentication verdict is display evidence only: a failed lookup
+    # leaves it None ("no verdict") and never fails the list.
+    verdicts: dict[str, str] = {}
+    try:
+        verdicts = await ingestion_events_sender_authentication(
+            db.credential_shared_pool(), event_ids
+        )
+    except Exception:
+        logger.debug(
+            "_enrich_list_summaries: sender-authentication lookup failed (non-fatal)",
+            exc_info=True,
+        )
+
     for summary in summaries:
+        summary.sender_authentication = verdicts.get(summary.id)  # type: ignore[assignment]
         enr = enrichment.get(summary.id)
         if enr is not None:
             summary.tokens_in = enr["tokens_in"]
@@ -757,6 +772,15 @@ async def get_ingestion_event(
         )
         detail.replay_safe = False
         detail.replay_block_reason = _REPLAY_SAFETY_UNAVAILABLE_REASON
+    try:
+        detail.sender_authentication = (  # type: ignore[assignment]
+            await ingestion_events_sender_authentication(pool, [detail.id])
+        ).get(detail.id)
+    except Exception:
+        logger.debug(
+            "get_ingestion_event: sender-authentication lookup failed (non-fatal)",
+            exc_info=True,
+        )
     # Gate decomposition_output: strip it unless the caller explicitly opted in.
     if not include_decomposition:
         detail.decomposition_output = None

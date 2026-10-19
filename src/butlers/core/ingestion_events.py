@@ -981,6 +981,39 @@ async def ingestion_event_reconcile_after_processing(
         return False
 
 
+_SENDER_AUTHENTICATION_VERDICTS = frozenset({"authenticated", "unverified", "failed"})
+
+
+async def ingestion_events_sender_authentication(
+    pool: asyncpg.Pool,
+    event_ids: list[str | UUID],
+) -> dict[str, str]:
+    """Stored sender-authentication verdict for existing accepted events (bu-6u90jj).
+
+    Reads ``public.ingestion_events.sender_authentication``, written once at ingest
+    (bu-s11n0s.20). Events with no stored verdict (non-email rows, rows ingested before the
+    column existed, filtered events) are absent from the mapping, so the caller reads them as
+    ``None``. A value outside the three known verdicts is dropped, never passed through.
+    """
+    if not event_ids:
+        return {}
+
+    event_uuids = [UUID(str(event_id)) for event_id in event_ids]
+    rows = await pool.fetch(
+        """
+        SELECT id::text AS id, sender_authentication
+        FROM public.ingestion_events
+        WHERE id = ANY($1::uuid[]) AND sender_authentication IS NOT NULL
+        """,
+        event_uuids,
+    )
+    return {
+        str(row["id"]): row["sender_authentication"]
+        for row in rows
+        if row["sender_authentication"] in _SENDER_AUTHENTICATION_VERDICTS
+    }
+
+
 async def ingestion_events_replay_policy(
     pool: asyncpg.Pool,
     event_ids: list[str | UUID],

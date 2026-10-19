@@ -63,6 +63,21 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 - **WHEN** a first-party provider alert is classified
 - **THEN** its alignment stays one-directional against the provider's signing domain and its classification and event are unchanged by the stored verdict
 
+### Requirement: Sender Authentication on Timeline Rows
+The dashboard API SHALL expose the stored `public.ingestion_events.sender_authentication` verdict as `sender_authentication` on every ingestion event summary (the list) and on the event detail, as one of `authenticated`, `unverified`, `failed` or `null`. The API SHALL only read the stored value and SHALL NOT re-derive it from headers. `null` means the row is not email, was ingested before the column existed, or has no stored verdict (a filtered event). The value is the receiving provider's claim from the topmost `Authentication-Results` header; it is not proof for mail placed without SMTP receipt (IMAP APPEND, import or insert), and it never grants owner origin.
+
+#### Scenario: Each stored verdict is returned as stored
+- **WHEN** an ingestion event row stores `authenticated`, `unverified` or `failed`
+- **THEN** the list item and the detail for that event carry the same value in `sender_authentication`
+
+#### Scenario: No stored verdict reads null
+- **WHEN** the row stores `NULL` (non-email, or ingested before the column existed), or the event is a filtered event
+- **THEN** `sender_authentication` is `null`
+
+#### Scenario: A verdict lookup failure degrades only that field
+- **WHEN** the verdict lookup fails or returns a value outside the three verdicts
+- **THEN** `sender_authentication` is `null` and the list or detail response is otherwise unchanged
+
 ### Requirement: Ingestion Event Query by ID
 
 `ingestion_event_get()` SHALL fetch a single ingestion event record by its UUID7 primary key.

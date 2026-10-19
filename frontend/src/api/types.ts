@@ -4386,6 +4386,8 @@ export interface IngestionEventListSessionSummary {
 }
 
 /** One ingestion event from shared.ingestion_events (list view). */
+export type SenderAuthenticationVerdict = "authenticated" | "unverified" | "failed";
+
 export interface IngestionEventSummary {
   id: string; // UUIDv7 — the request_id
   received_at: string | null;
@@ -4435,6 +4437,13 @@ export interface IngestionEventSummary {
    * when unresolved. Fall back to source_sender_identity when null.
    */
   sender_display: string | null;
+  /**
+   * The receiving provider's claim about the From domain, from the topmost
+   * Authentication-Results header at ingest. null means "not email, or ingested
+   * before the column existed". Not proof for mail placed without SMTP receipt
+   * (IMAP APPEND, import, insert); it never grants owner origin.
+   */
+  sender_authentication?: SenderAuthenticationVerdict | null;
 }
 
 /** Full ingestion event detail — augmented with lifecycle and decomposition fields from message_inbox. */

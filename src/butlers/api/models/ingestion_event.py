@@ -100,6 +100,12 @@ class IngestionEventSummary(BaseModel):
     # resolve_contacts_by_channel_bulk), or None when unresolved. The frontend
     # falls back to source_sender_identity when this is null.
     sender_display: str | None = None
+    # Receiving provider's claim about the From domain, stored at ingest from the topmost
+    # Authentication-Results header (bu-s11n0s.20). NULL means "not email, or ingested before
+    # the column existed". It is NOT proof for mail placed without SMTP receipt (IMAP APPEND,
+    # import or insert), where the sender can write that header, and it never grants owner
+    # origin.
+    sender_authentication: Literal["authenticated", "unverified", "failed"] | None = None
 
 
 class IngestionEventDetail(IngestionEventSummary):
