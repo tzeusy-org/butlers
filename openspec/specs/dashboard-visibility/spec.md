@@ -802,6 +802,7 @@ The Issues page (`/issues`) and `IssuesPanel` SHALL present the grouped issues f
 - **WHEN** issues are displayed
 - **THEN** each issue shows its severity, the affected butler (or "N butlers" when several are affected), description, occurrence count with first-seen and last-seen timestamps, an optional "View" link when `issue.link` is set, and an "Acknowledge" action
 - **AND** when the issue names a single real butler, a "Run schedule now" action forces that butler's scheduler to run via `POST /api/butlers/{name}/tick`
+- **AND** a forced tick that reports `busy: true` is shown as an already-running warning, not as a failure
 - **AND** when the issue's `type` is `"unreachable"` and it names a single real butler, a "Ping butler" action rechecks reachability via a live `GET /api/butlers/{name}`
 
 #### Scenario: Multi-butler issue grouping

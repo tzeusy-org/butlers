@@ -1607,7 +1607,10 @@ def _tick_busy_message(message: str | None) -> str | None:
     except ValueError:
         return None
     if isinstance(payload, dict) and payload.get("status") == "busy":
-        return str(payload.get("message") or "a scheduler tick is already running")
+        return str(
+            payload.get("message")
+            or "scheduled work is already running on this butler; try again when it finishes"
+        )
     return None
 
 

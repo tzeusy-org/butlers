@@ -62,6 +62,16 @@ async def test_a_busy_reply_sets_busy_and_carries_the_tool_message_not_raw_json(
     assert data["message"] == _BUSY_TEXT
 
 
+async def test_a_busy_reply_without_a_message_falls_back_to_the_api_wording(app) -> None:
+    data = await _post_tick(app, {"status": "busy", "dispatched": 0})
+
+    assert data["busy"] is True
+    assert data["success"] is False
+    assert data["message"] == (
+        "scheduled work is already running on this butler; try again when it finishes"
+    )
+
+
 async def test_a_ran_reply_is_not_busy_and_keeps_its_message(app) -> None:
     data = await _post_tick(app, {"dispatched": 2})
 

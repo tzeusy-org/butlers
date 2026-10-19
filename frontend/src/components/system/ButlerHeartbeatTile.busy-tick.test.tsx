@@ -2,7 +2,7 @@
 /**
  * ButlerHeartbeatTile: a busy forced tick reads as "already running", not as a failure
  * (bu-0w76ze). POST /api/butlers/{name}/tick answers `success: false, busy: true` with the
- * daemon's message when a tick is already running; a real failure is `success: false`
+ * daemon's message when scheduled work is already running; a real failure is `success: false`
  * without `busy`.
  */
 
@@ -135,7 +135,7 @@ describe("ButlerHeartbeatTile busy forced tick", () => {
     return mockMutate.mock.calls[0][1].onSuccess;
   }
 
-  it("says a tick is already running, using the API's message, when the tick reports busy", () => {
+  it("says scheduled work is already running, using the API's message, when the tick reports busy", () => {
     const onSuccess = clickAndGetOnSuccess();
 
     onSuccess({
@@ -158,7 +158,7 @@ describe("ButlerHeartbeatTile busy forced tick", () => {
 
     onSuccess({ data: { success: false, busy: true, message: null } });
 
-    expect(toast.warning).toHaveBeenCalledWith("overdue-butler: a tick is already running");
+    expect(toast.warning).toHaveBeenCalledWith("overdue-butler: scheduled work is already running");
     expect(toast.error).not.toHaveBeenCalled();
   });
 

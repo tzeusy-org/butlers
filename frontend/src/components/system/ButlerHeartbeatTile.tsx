@@ -174,7 +174,7 @@ export function ButlerHeartbeatTile() {
           );
         } else if (response.data.busy) {
           toast.warning(
-            response.data.message ? `${name}: ${response.data.message}` : `${name}: a tick is already running`,
+            response.data.message ? `${name}: ${response.data.message}` : `${name}: scheduled work is already running`,
           );
         } else {
           toast.error(`${name}: tick did not complete successfully`);

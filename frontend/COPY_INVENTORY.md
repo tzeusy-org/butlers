@@ -729,7 +729,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - {} is still unreachable
 - Failed to ping {}
 - {}: schedule run now
-- {}: a tick is already running
+- {}: scheduled work is already running
 - {}: tick did not complete successfully
 - Failed to run schedule for {}
 
@@ -4578,7 +4578,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - View {}
 - Liveness: {}
 - {}: tick triggered
-- {}: a tick is already running
+- {}: scheduled work is already running
 - {}: tick did not complete successfully
 - Failed to trigger tick for {}
 
