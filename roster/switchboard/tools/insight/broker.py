@@ -109,11 +109,13 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             delivery_ref JSONB
         )
     """)
-    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py.
+    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py and
+    # core_273_insight_amendment_ledger_binding.py (no candidate foreign key).
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS insight_amendments (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            candidate_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            -- No foreign key (core_273): amendment evidence outlives candidate cleanup.
+            candidate_id UUID NOT NULL,
             episode_key TEXT NOT NULL,
             reason TEXT NOT NULL,
             summary TEXT,

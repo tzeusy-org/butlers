@@ -438,6 +438,8 @@ async def resolve_condition(
     source: str,
     fingerprint: str,
     resolution_metadata: dict[str, Any] | None = None,
+    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
+    | None = None,
 ) -> ConditionTransition | None:
     """Explicitly resolve the active episode for one condition identity.
 
@@ -448,6 +450,10 @@ async def resolve_condition(
     snapshot cannot produce duplicate terminal transitions. ``resolution_metadata``
     is shallow-merged with creation-wins semantics: existing top-level row
     values win over keys supplied by the resolver.
+
+    ``post_write``, when given, is awaited with ``(conn, [transition])`` inside the same
+    transaction, after the resolution write and before commit, exactly as in
+    :func:`reconcile_snapshot`. It is not called when there is no active episode.
 
     Returns ``None`` when the identity has no active ``open``/``aging``
     episode, including after a previous explicit or snapshot resolution.
@@ -479,7 +485,7 @@ async def resolve_condition(
             )
             if row is None:
                 return None
-            return await _resolve_episode(
+            transition = await _resolve_episode(
                 conn,
                 row,
                 table=table,
@@ -488,6 +494,9 @@ async def resolve_condition(
                 now=now,
                 resolution_metadata=resolution_metadata,
             )
+            if post_write is not None:
+                await post_write(conn, [transition])
+            return transition
 
 
 async def _reconcile_source_locked(

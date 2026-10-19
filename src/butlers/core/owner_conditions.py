@@ -190,12 +190,16 @@ async def resolve_condition(
     producer boundary. The two rules are complements: no producer value is
     ever overwritten here, and no producer can occupy the names this writes.
     """
+    # bu-q7vx1q.32: an explicit resolution amends the delivered insights whose premise it
+    # was, in the same transaction, exactly as the snapshot path does. The enqueue runs in
+    # a savepoint, so a failed enqueue never rolls back the resolution.
     return await _resolve_condition(
         pool,
         table=_TABLE,
         source=source,
         fingerprint=fingerprint,
         resolution_metadata=resolution_metadata,
+        post_write=enqueue_premise_amendments,
     )
 
 
