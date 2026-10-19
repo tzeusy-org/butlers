@@ -1,0 +1,185 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-ukf1u0-schedule-trigger-status-20261019",
+  "bead": "bu-ukf1u0",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-19",
+    "reference": "Authorization bead bu-h3ihis for implementation bead bu-ukf1u0 (a schedule trigger that did not happen is never a 2xx), prompted by sec-review-lane finding C2: the retained DB-backed case tests/api/test_audit_log_union_db.py::test_legacy_schedule_mutation_audits_owner_and_observed_outcome[trigger-refused] pins the old HTTP 200 with data.status error. Reviewed before: kcgfqb final head 3d7c4cc42ad78bde0c2ca8df5015f60178afe9b8 plus the header commit minting REQ-dashboard-api-073 (bu-h3ihis 4bbae312b3ee2772bc05164ba7b28622042de278; tree ac35d84f06eea8dd5d698c3d390ca099052c0a37). Approved subject: bu-ukf1u0 head 2dca5f48657413ca306c4b7a0cbad1f2b989eec8 (CE draft). Governing requirement REQ-dashboard-api-073 of openspec/specs/dashboard-api/spec.md (MCP Client Proxy), whose block gains the schedule trigger outcome-to-HTTP-status scenario in this change. The base above is a simulated trusted base; this manifest must be recomputed against the real event base when jlrqju and kcgfqb land, and again if any bound input drifts. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+  },
+  "owners": [
+    {
+      "before": "tests/api/test_audit_log_union_db.py::test_legacy_schedule_mutation_audits_owner_and_observed_outcome",
+      "after": "tests/api/test_audit_log_union_db.py::test_legacy_schedule_mutation_audits_owner_and_observed_outcome",
+      "contracts": [
+        "REQ-dashboard-api-073"
+      ],
+      "reason": "Only the trigger-refused parameter case moves: a trigger whose tool reply is an error now answers HTTP 502 with the reason in detail instead of 200 with data.status 'error' (REQ-dashboard-api-073 scenario 'A schedule trigger's outcome maps to the HTTP status'). The test reads that case's status and body from the response; every other case (create, update, delete and trigger success, create, update and delete refused, trigger unreachable) keeps its HTTP status and body assertions. The audit assertions are unchanged for every case, including the trigger-refused row (result error, MCP_REFUSED, observed_status error, no provider text in metadata), and the nine parameter ids are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/dashboard-api/spec.md",
+      "id": "REQ-dashboard-api-073",
+      "before_sha256": "b2f43fef23c1b37fd8d48b84392d652aa1c785589b87dbf8f22622cbd02b872f",
+      "after_sha256": "befa2e2dba439e4c1ba6eb890dd58a8a623839ba5d768b81680980921a5bfea5"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/runtime/scheduler-execution.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "bc773299a282726cc8f20ef5984ab7a5870e747cfc9af398fc245f32d44f5770"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "6d43f708eb9851af448475d9cae7184a52bc99f24391483c8baeed3442a63212"
+      }
+    },
+    {
+      "path": "openspec/changes/archive/2026-10-19-schedule-trigger-status-mapping/proposal.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "ba7016ca49fe67fcedc7013a3ae82c0fb115cce7c7111d038addf79f7de682c2"
+      }
+    },
+    {
+      "path": "openspec/changes/archive/2026-10-19-schedule-trigger-status-mapping/specs/dashboard-api/spec.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "f52993855576d0ae1e6a5ea41ddb29bd6ded7c36a963a28b1e6aa6509d2c9a23"
+      }
+    },
+    {
+      "path": "openspec/changes/archive/2026-10-19-schedule-trigger-status-mapping/tasks.md",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "9a3bd746b7c753abaf3dde4fe18655f45ce3993e74da9fb0e4ade4b1fc445811"
+      }
+    },
+    {
+      "path": "openspec/specs/core-scheduler/spec.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "a837a32829c5d415facbd7b6b1b009403168f1fe4d9e22bd84e3b495404ced3a"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a2909ee3d4d7f265652a117f9804c747b8b243c2970c34b6d8b0e4fdbf524e76"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "src/butlers/api/routers/schedules.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "7ce47a5a12fa2cc0c50a71c11c402d43e63b4df8dd31c8930bbaed369cd2ffa8"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "bb799301a22d7b966b45d610a061220a5b11327af624f368aed61d9e521f415a"
+      }
+    },
+    {
+      "path": "src/butlers/core_tools/_scheduling.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "59ea076c7f4c8ebec455e6dc7bf67af9fee677fc270e70e946d63aa3650275ab"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "1ab780dc1ffa38130f3d16b41962a1112679e3e9d0d8b9db640fe48e750eb540"
+      }
+    },
+    {
+      "path": "tests/api/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      }
+    },
+    {
+      "path": "tests/api/test_audit_log_union_db.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "598d2e93567d3a520eeeb14edc3a40dc2fb035d3497f9a77e1e64e8fb684dd01"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "fd85b4f0d1f062c4f772615627d732a82992e4cb8c53ea67d7eba92c98f26863"
+      }
+    },
+    {
+      "path": "tests/api/test_schedule_trigger_failure_status_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "67b4580963b3ae4da64806ea8d09a04d9c465c384de1ed4cb52289f2a4a26102"
+      }
+    },
+    {
+      "path": "tests/api/test_schedule_trigger_real_client_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "26abdb98d391049b5148126e5aa99a522e53719eb7870c3f3867f280c86d6292"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-ukf1u0-schedule-trigger-status-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "953fa4b4b0241041672ed66a6b1350dbec3104388ddb43bcea650562f29cad5b"
+      }
+    },
+    {
+      "path": "tests/core_tools/test_schedule_trigger_not_found_code_unit.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "b33228e6afceb30a65fbe4974de95decbcd96d651ef8324fb1db91986d59ad6d"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
