@@ -1,0 +1,8 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-4mfhdq-day-close-pairing-20261019",
+  "owners": [
+    "tests/chronicler/test_day_close_writer.py::test_writer_accepts_executed_wrapper_capture_with_parser_duplicate_and_dst_window"
+  ],
+  "timeout_s": 300
+}
