@@ -167,9 +167,11 @@ async def _call_mcp_tool(
             detail=f"MCP call to '{butler_name}' failed: {exc}",
         ) from exc
 
-    # FastMCP call_tool returns a list of content blocks; extract text
-    if result and hasattr(result, "__iter__"):
-        for block in result:
+    # A fastmcp Client returns a CallToolResult whose blocks are in ``.content``; older
+    # callers (and test doubles) return the list of blocks itself.
+    blocks = getattr(result, "content", result)
+    if blocks and hasattr(blocks, "__iter__"):
+        for block in blocks:
             text = getattr(block, "text", None)
             if text:
                 try:
