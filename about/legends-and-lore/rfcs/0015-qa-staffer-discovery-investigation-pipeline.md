@@ -328,7 +328,8 @@ The QA Staffer integrates with the project's observability stack:
   Attributes: `qa.attempt_id`, `qa.fingerprint`, `qa.source_butler`, `qa.severity`.
 
 **Prometheus metrics (prometheus_client instruments are outside the RFC 0005 catalog; they follow
-its cardinality design rule, so no UUIDs, fingerprints, or butler names as label values):**
+its MUST NEVER rule, so no UUIDs or fingerprints as label values; QA also keeps butler names out
+of labels):**
 
 | Metric | Type | Labels |
 |---|---|---|

@@ -241,7 +241,7 @@ This RFC governs OpenTelemetry instruments only: the catalog above and the Cardi
 
 Reasons:
 
-- **Different pipeline.** They are exposed by a `/metrics` endpoint and pulled by Prometheus. They are not exported over OTLP, so the permitted-attribute list does not constrain them.
+- **Different pipeline.** Connector processes serve them on a loopback-only `/metrics` endpoint, so no out-of-pod scraper reaches most of them today; bu-n80xsk moves connector metrics to OTLP. They are not exported over OTLP today, so the permitted-attribute list does not constrain them. Those registered in butler daemons and the dashboard API process (the switchboard runtime-attention worker, `core/dispatch_outcomes.py`, the chronicler calendar adapter, QA, approvals delivery, and the audit and home-person-mapping routers) are served nowhere today; bu-773cjf wires or deletes them.
 - **Roughly 80 instruments, mostly connector-owned.** Most live under `src/butlers/connectors/`. The rest are in the switchboard runtime-attention worker, `core/dispatch_outcomes.py`, the audit and home-person-mapping API routers, the chronicler calendar adapter, the QA dispatch and module, and approvals delivery lifecycle and recovery. A second catalog here would duplicate their definitions and drift.
 - **Little of it is read.** `observability/prometheus/prometheus.yml` scrapes only connector health endpoints, and the only prometheus_client metric any in-repo Grafana dashboard references is `chronicler_episode_participants_resolved_total` (`observability/grafana/butlers-chronicler.json`).
 
@@ -249,13 +249,13 @@ Governing places:
 
 - `src/butlers/metrics_registry.py` owns registration and idempotent get-or-create semantics.
 - `observability/prometheus/prometheus.yml` defines what is scraped.
-- `docs/connectors/metrics.md` and `docs/connectors/overview.md` document the connector instruments and their labels.
+- `docs/connectors/metrics.md` catalogs the shared `ConnectorMetrics` instruments and their labels, and `docs/connectors/overview.md` has query examples. Connector-specific and butler-process instruments are documented only where they are defined.
 
 Constraints that still apply to these instruments:
 
-- The "MUST NEVER" attribute list above is a design rule for every metric backend: no request IDs, raw sender identities, message text, session or trace IDs, UUIDs or timestamps as label values.
+- The "MUST NEVER" attribute list above is a design rule for every metric backend, prometheus_client labels included.
 - A prometheus_client instrument that is later scraped and read by an in-repo dashboard or alert SHOULD be reviewed against that rule, and promoted into the catalog above if it becomes part of the supported observability surface.
-- Label values for these instruments are not validated against the permitted-attribute list. Some connector labels (for example `endpoint_identity`, `media_type`) are not bounded by that list; tracked as follow-ups rather than governed here.
+- Label values for these instruments are not validated against the permitted-attribute list. Some connector labels (for example `endpoint_identity`, `media_type`) are not bounded by that list; tracked in bu-p88e3l rather than governed here.
 
 ### Gauge Registration
 
