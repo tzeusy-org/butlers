@@ -387,6 +387,11 @@ export default function ChroniclesPage() {
   const regenerationErrorStatus = (
     regenerateDayClose.error as (Error & { status?: number }) | null
   )?.status;
+  // A 409 `scheduler_busy` is the scheduler guard refusing, not a failed regeneration.
+  const regenerationBusyMessage =
+    (regenerateDayClose.error as (Error & { code?: string }) | null)?.code === "scheduler_busy"
+      ? regenerateDayClose.error?.message
+      : undefined;
   const attentionItems = adaptAttention(
     isUnknownState ? [] : (briefing?.attention_items ?? []),
     () => void refetch(),
@@ -475,7 +480,11 @@ export default function ChroniclesPage() {
                 {isCurrentDayCloseRegenerationPending ? "Regenerating" : "Regenerate"}
               </Button>
             ) : null}
-            {isCurrentDayCloseRegenerationError ? (
+            {isCurrentDayCloseRegenerationError && regenerationBusyMessage ? (
+              <span role="status" style={{ ...EYEBROW_STYLE, color: "var(--amber-text)" }}>
+                {regenerationBusyMessage}
+              </span>
+            ) : isCurrentDayCloseRegenerationError ? (
               <span role="alert" style={{ ...EYEBROW_STYLE, color: "var(--destructive)" }}>
                 {regenerationErrorStatus === 429
                   ? "Regenerated recently. Try again later."

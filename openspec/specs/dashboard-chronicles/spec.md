@@ -868,6 +868,12 @@ until the same tuple is successfully re-fetched.
 - **AND** the page SHALL announce an actionable failure without substituting
   cached or generated prose
 
+#### Scenario: Busy regeneration is shown as busy, not as a failure
+
+- **WHEN** the day-close refresh answers 409 with `error.code` `scheduler_busy`
+- **THEN** the page SHALL show the server's message as a status rather than the generic failure alert
+- **AND** every other refresh failure SHALL keep its existing failure copy
+
 ## Source References
 
 - `about/heart-and-soul/design-language.md` — editorial archetype

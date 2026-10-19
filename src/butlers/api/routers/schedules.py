@@ -182,6 +182,9 @@ async def _call_mcp_tool(
 
 
 _SCHEDULE_NOT_FOUND = "SCHEDULE_NOT_FOUND"
+# Error code on the 409 for a refusal because scheduled work already holds the tick guard; the
+# chronicler day-close refresh uses the same code.
+_SCHEDULER_BUSY_CODE = "scheduler_busy"
 _TRIGGER_DETAIL_LIMIT = 500
 
 
@@ -397,7 +400,7 @@ async def trigger_schedule(
     schedule_id: UUID,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
+) -> ApiResponse[dict] | JSONResponse:
     """Trigger a scheduled task immediately (one-off dispatch) via MCP."""
     try:
         result = await _call_mcp_tool(mgr, name, "schedule_trigger", {"id": str(schedule_id)})
@@ -412,9 +415,17 @@ async def trigger_schedule(
     # only one: the raises below sit outside the try, so they are never audited a second time.
     status = result.get("status")
     if status == "busy":
-        raise HTTPException(
+        # 409 is shared with the managed-schedule refusals, so the body carries a code the
+        # dashboard branches on; `detail` stays for clients that read the FastAPI shape.
+        message = str(result.get("message") or BUSY_MESSAGE)
+        return JSONResponse(
             status_code=409,
-            detail=str(result.get("message") or BUSY_MESSAGE),
+            content={
+                "detail": message,
+                **ErrorResponse(
+                    error=ErrorDetail(code=_SCHEDULER_BUSY_CODE, message=message, butler=name)
+                ).model_dump(mode="json", exclude_none=True),
+            },
         )
     if status == "error" and result.get("code") == _SCHEDULE_NOT_FOUND:
         raise HTTPException(status_code=404, detail="Schedule not found")

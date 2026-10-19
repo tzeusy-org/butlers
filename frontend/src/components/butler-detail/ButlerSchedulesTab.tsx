@@ -113,7 +113,12 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
         setTriggeringId(null);
       },
       onError: (err) => {
-        toast.error(`Failed to trigger schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+        // 409 is shared with the managed-schedule refusals, so branch on the body's code.
+        if ((err as { code?: string }).code === "scheduler_busy") {
+          toast.warning(err.message);
+        } else {
+          toast.error(`Failed to trigger schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+        }
         setTriggeringId(null);
       },
     });
