@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -33,7 +34,7 @@ def calls(monkeypatch) -> list[Any]:
     log: list[Any] = []
 
     async def _zone(conn):
-        return "zone"
+        return ZoneInfo("UTC")
 
     async def _refresh(conn, *, now, zone):
         log.append("refresh")
