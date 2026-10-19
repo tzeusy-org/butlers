@@ -133,6 +133,8 @@ Gmail label include/exclude policy SHALL gate ingestion before tier evaluation.
 
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value.
 
+ID: REQ-connector-gmail-006
+
 #### Scenario: Tier 1 — full pipeline
 - **WHEN** a message's triage action is `route_to`, `low_priority_queue`, `pass_through`, or unknown, and it is not an automated reply or bounce (see "Automated replies and bounces are metadata-only")
 - **THEN** the full `ingest.v1` envelope with complete `payload.raw` is submitted for LLM classification, routing, and butler processing

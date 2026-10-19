@@ -4,6 +4,7 @@
 
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value. Connector-side triage actions SHALL choose only the ingestion tier; they SHALL NOT select a target butler, and Tier 1 mail SHALL reach goal admission without classification or routing.
 
+ID: REQ-connector-gmail-006
 Source: RFC 0038 D1, D5; RFC 0003 disposition
 Scope: v1-mandatory
 
