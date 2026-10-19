@@ -30,15 +30,15 @@ Every accepted email ingest SHALL record one deterministic sender-authentication
 #### Scenario: Verdict is computed from the topmost Authentication-Results header
 - **WHEN** an email envelope is accepted and its raw payload kept an `Authentication-Results` header
 - **THEN** only the topmost such header is read, and a later or injected one never counts
-- **AND** the column `sender_authentication` is `authenticated` for an aligned `dkim=pass` (its own `header.d`, or the domain of `header.i`) or a `dmarc=pass` (its own `header.from`) that aligns with the From domain
+- **AND** the column `sender_authentication` is `authenticated` for an aligned `dkim=pass` (its own `header.d`; `header.i` never counts, as DMARC aligns on `d=` only) or a `dmarc=pass` (its own `header.from`) that aligns with the From domain
 - **AND** it is `failed` for a `dmarc` fail or permerror, or a fail on an aligned `dkim`
 - **AND** it is `unverified` for everything else, including `temperror`, `none` and an unaligned pass
 
 #### Scenario: Echoed sender text cannot forge a clause
 - **WHEN** the header holds sender-chosen text (a quoted MAIL FROM, a HELO address literal, the `header.i` local part) containing `;` or `)` that would read as another clause
 - **THEN** quoted-strings, comments and bracket literals are never split, so the echoed text stays inside its own clause and the verdict is not `authenticated` for the From domain
-- **AND** a header that is unbalanced, or holds anything that is not a clause, yields `unverified` for the whole header
-- **AND** a real `dmarc` fail clause beside such text still yields `failed`
+- **AND** a header that is unbalanced, or holds anything that is not a clause, yields `unverified` for the whole header, unless it still carries a `dmarc` fail or permerror, or a fail on a `dkim` signature whose `header.d` aligns, which yields `failed`
+- **AND** such a header never yields `authenticated`, and a real `dmarc` fail clause beside stray echoed text still yields `failed`
 
 #### Scenario: Alignment is conservative
 - **WHEN** the signing domain and the From domain are the same, or one is a label-boundary subdomain of the other

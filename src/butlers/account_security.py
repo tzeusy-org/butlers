@@ -285,21 +285,58 @@ def _aligned_with(candidate: str, domain: str) -> bool:
     return _in_domain(candidate, domain) or ("." in candidate and _in_domain(domain, candidate))
 
 
+_LENIENT_DMARC_FAIL_RE = re.compile(r"(?<![\w-])dmarc\s*=\s*(?:fail|permerror)(?![\w-])", re.I)
+_LENIENT_DKIM_FAIL_RE = re.compile(
+    r"(?<![\w-])dkim\s*=\s*(?:fail|softfail|permerror)(?![\w-])([^;]*)", re.I
+)
+_LENIENT_SIGNER_RE = re.compile(r"header\.d\s*=\s*\"?([^\s\";]+)", re.I)
+
+
+def _lenient_failure(auth_results: str, domain: str, aligns: Callable[[str, str], bool]) -> bool:
+    """Whether an unreadable header still carries a genuine failure for *domain*.
+
+    Used only when the strict parse refuses the header. It searches the flat text for a
+    ``dmarc`` fail or permerror, or a fail on a ``dkim`` signature whose ``header.d`` aligns.
+    A stray character in echoed sender text must not hide a real failure; a false match can
+    only come from text the sender wrote into their own message, and only ever fails it.
+    """
+    if _LENIENT_DMARC_FAIL_RE.search(auth_results):
+        return True
+    for match in _LENIENT_DKIM_FAIL_RE.finditer(auth_results):
+        signer = _LENIENT_SIGNER_RE.search(match.group(1))
+        if signer and aligns(signer.group(1), domain):
+            return True
+    return False
+
+
 def _verify_against(
-    auth_results: str | None, domain: str, aligns: Callable[[str, str], bool]
+    auth_results: str | None,
+    domain: str,
+    aligns: Callable[[str, str], bool],
+    *,
+    identity_aligns: bool,
 ) -> str:
-    """Clause-local verdict on *domain*; *aligns* decides whether a signer vouches for it."""
+    """Clause-local verdict on *domain*; *aligns* decides whether a signer vouches for it.
+
+    A header the strict parser refuses is never trusted: it reads ``failed`` when a lenient
+    scan finds a genuine failure for the domain and ``unverified`` otherwise, never
+    ``authenticated``. *identity_aligns* also lets a dkim ``header.i`` domain align.
+    """
     if not domain or not auth_results or not auth_results.strip():
         return VERIFICATION_UNVERIFIED
     clauses = _clauses(auth_results)
     if clauses is None:
+        if _lenient_failure(auth_results, domain, aligns):
+            return VERIFICATION_FAILED
         return VERIFICATION_UNVERIFIED
     authenticated = False
     for method, result, props in clauses:
         if method == "dmarc":
             aligned = aligns(_property_domain(props.get("header.from", "")), domain)
         elif method == "dkim":
-            domains = [props.get("header.d", ""), _property_domain(props.get("header.i", ""))]
+            domains = [props.get("header.d", "")]
+            if identity_aligns:
+                domains.append(_property_domain(props.get("header.i", "")))
             aligned = any(d and aligns(d, domain) for d in domains)
         else:
             continue
@@ -313,14 +350,16 @@ def _verify_against(
 def verify_sender_domain(auth_results: str | None, sender_domain: str) -> str:
     """Deterministic verdict on *sender_domain* from one ``Authentication-Results`` value.
 
-    Returns ``authenticated`` for a clause-local ``dkim=pass`` whose own ``header.d`` (or
-    ``header.i`` domain) aligns with the sender domain, or a ``dmarc=pass`` whose own
-    ``header.from`` does. A ``dmarc`` fail or permerror, or a fail on an aligned dkim, is
-    ``failed``. A missing header, temperror, none and unaligned passes stay ``unverified``.
+    Returns ``authenticated`` for a clause-local ``dkim=pass`` whose own ``header.d`` aligns
+    with the sender domain, or a ``dmarc=pass`` whose own ``header.from`` does (DMARC aligns on
+    ``d=`` only, so ``header.i`` never counts here). A ``dmarc`` fail or permerror, or a fail on
+    an aligned dkim, is ``failed``. A missing header, temperror, none and unaligned passes
+    stay ``unverified``. A header the strict parser refuses reads ``failed`` if it still
+    carries such a failure and ``unverified`` otherwise.
     Only the topmost header (the trusted receiver's) may be passed in; the caller picks it.
     """
     domain = sender_domain.strip().lower().rstrip(".")
-    return _verify_against(auth_results, domain, _aligned_with)
+    return _verify_against(auth_results, domain, _aligned_with, identity_aligns=False)
 
 
 def _verify(auth_results: str | None, provider: str) -> str | None:
@@ -330,7 +369,7 @@ def _verify(auth_results: str | None, provider: str) -> str | None:
     subdomain of it), so provider-alert behavior is unchanged by the shared verdict.
     """
     signing = _PROVIDER_SIGNING_DOMAINS[provider]
-    verdict = _verify_against(auth_results, signing, _in_domain)
+    verdict = _verify_against(auth_results, signing, _in_domain, identity_aligns=True)
     return None if verdict == VERIFICATION_FAILED else verdict
 
 

@@ -42,38 +42,48 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(
-        """
-        ALTER TABLE public.ingestion_events
-        ADD COLUMN IF NOT EXISTS sender_authentication TEXT
-        """
-    )
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint
-                WHERE conname = 'ck_ingestion_events_sender_authentication'
-                  AND conrelid = 'public.ingestion_events'::regclass
-            ) THEN
+    # Autocommit so each statement releases its ACCESS EXCLUSIVE lock when it finishes: the
+    # NOT VALID add is metadata-only, and VALIDATE then scans under a weaker lock that does
+    # not block ingest writes (core_242 precedent). lock_timeout bounds the wait for each lock.
+    with op.get_context().autocommit_block():
+        connection = op.get_bind()
+        previous_timeout = connection.exec_driver_sql("SHOW lock_timeout").scalar_one()
+        op.execute("SET lock_timeout = '5s'")
+        try:
+            op.execute(
+                """
                 ALTER TABLE public.ingestion_events
-                ADD CONSTRAINT ck_ingestion_events_sender_authentication
-                CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed'))
-                NOT VALID;
-            END IF;
-        END
-        $$
-        """
-    )
-    # NOT VALID takes only a brief lock; VALIDATE scans without blocking ingest writes
-    # (core_242 precedent). Every existing row is NULL, so it always passes.
-    op.execute(
-        """
-        ALTER TABLE public.ingestion_events
-        VALIDATE CONSTRAINT ck_ingestion_events_sender_authentication
-        """
-    )
+                ADD COLUMN IF NOT EXISTS sender_authentication TEXT
+                """
+            )
+            op.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'ck_ingestion_events_sender_authentication'
+                          AND conrelid = 'public.ingestion_events'::regclass
+                    ) THEN
+                        ALTER TABLE public.ingestion_events
+                        ADD CONSTRAINT ck_ingestion_events_sender_authentication
+                        CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed'))
+                        NOT VALID;
+                    END IF;
+                END
+                $$
+                """
+            )
+            op.execute(
+                """
+                ALTER TABLE public.ingestion_events
+                VALIDATE CONSTRAINT ck_ingestion_events_sender_authentication
+                """
+            )
+        finally:
+            connection.exec_driver_sql(
+                "SELECT set_config('lock_timeout', %s, false)", (previous_timeout,)
+            )
 
 
 def downgrade() -> None:

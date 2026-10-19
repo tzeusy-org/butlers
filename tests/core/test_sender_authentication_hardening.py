@@ -128,7 +128,7 @@ def test_a_dmarc_fail_fails_whatever_its_header_from():
 
 def test_the_public_verifier_lowercases_and_trims_the_sender_domain():
     assert (
-        verify_sender_domain("mx; dkim=pass header.d=vendor.example", " Vendor.Example. ")
+        verify_sender_domain("mx; dkim=pass header.d=mail.vendor.example", " Vendor.Example. ")
         == VERIFICATION_AUTHENTICATED
     )
 
@@ -213,6 +213,7 @@ def test_a_segment_that_is_not_a_clause_fails_the_whole_header():
         ('"a;b"@vendor.example', "vendor.example"),
         ('"a\\"b"@vendor.example', "vendor.example"),
         ('"vendor.example"', ""),
+        ('"a"@b"@vendor.example', ""),
         ("vendor.example,evil", ""),
         ("a b", ""),
         ("", ""),

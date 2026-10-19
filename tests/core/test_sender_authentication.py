@@ -34,8 +34,8 @@ _ALIGNED_PASS = "mx.example; dkim=pass header.d=vendor.example; spf=pass"
         ),
         pytest.param(
             "mx.example; dkim=pass header.i=@vendor.example",
-            VERIFICATION_AUTHENTICATED,
-            id="aligned-header-i",
+            VERIFICATION_UNVERIFIED,
+            id="header-i-alone-does-not-align",
         ),
         pytest.param(
             "mx.example; dmarc=pass header.from=vendor.example",

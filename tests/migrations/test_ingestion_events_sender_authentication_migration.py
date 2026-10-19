@@ -52,13 +52,26 @@ def test_upgrade_adds_a_nullable_text_column_with_exactly_the_three_values() -> 
 
 
 @pytest.mark.unit
-def test_the_check_is_added_not_valid_then_validated_without_a_long_lock() -> None:
+def test_the_check_is_added_not_valid_then_validated_in_autocommit_under_a_lock_timeout() -> None:
     sql = _emitted("upgrade")
 
+    assert "SET lock_timeout = '5s'" in sql
     assert "NOT VALID" in sql
     assert sql.index("NOT VALID") < sql.index(
         "VALIDATE CONSTRAINT ck_ingestion_events_sender_authentication"
     )
+
+
+@pytest.mark.unit
+def test_the_upgrade_runs_inside_an_autocommit_block() -> None:
+    mod = _load_migration()
+    mock_op = MagicMock()
+    with patch.object(mod, "op", mock_op):
+        mod.upgrade()
+
+    mock_op.get_context.return_value.autocommit_block.assert_called_once()
+    entered = mock_op.get_context.return_value.autocommit_block.return_value.__enter__
+    entered.assert_called_once()
 
 
 @pytest.mark.unit
