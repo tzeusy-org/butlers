@@ -60,6 +60,15 @@ async def test_a_busy_reply_is_a_409_with_the_scheduler_busy_code_and_message(ap
     assert error["butler"] == "qa"
 
 
+async def test_a_busy_reply_passes_the_tools_own_message_through(app) -> None:
+    tool_message = "a distinct message from the tool, not the fallback"
+    resp = await _post_trigger(app, {"status": "busy", "message": tool_message})
+
+    assert tool_message != BUSY_MESSAGE
+    assert resp.json()["error"]["message"] == tool_message
+    assert resp.json()["detail"] == tool_message
+
+
 async def test_a_busy_reply_keeps_the_detail_string(app) -> None:
     resp = await _post_trigger(app, {"status": "busy", "message": _MESSAGE})
 
