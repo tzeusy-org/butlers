@@ -268,7 +268,21 @@ async def test_a_tool_error_inside_the_window_is_audited_and_stays_a_500(app) ->
     assert audit.await_args.kwargs["error"] == "Tick failed: ToolError"
 
 
-async def test_the_tick_call_has_no_client_side_bound_of_its_own() -> None:
-    from butlers.api.routers import butlers as butlers_module
+async def test_the_tick_call_is_not_wrapped_in_a_client_side_timeout(app) -> None:
+    wrapped: list[str] = []
+    real_wait_for = asyncio.wait_for
 
-    assert not hasattr(butlers_module, "_TICK_BACKGROUND_TIMEOUT_S")
+    def spy(aw, *args, **kwargs):
+        wrapped.append(getattr(getattr(aw, "cr_code", None), "co_name", repr(aw)))
+        return real_wait_for(aw, *args, **kwargs)
+
+    async def tick_tool(*_args, **_kwargs):
+        return _reply(_RAN)
+
+    with patch("butlers.api.routers.butlers.asyncio.wait_for", new=spy):
+        resp, _audit = await _post_tick(app, tick_tool, window=5.0)
+
+    assert resp.status_code == 200
+    # The bounded get_client wait is expected; the tick tool call must never be bounded.
+    assert wrapped, "the get_client wait should still be bounded"
+    assert "tick_tool" not in wrapped
