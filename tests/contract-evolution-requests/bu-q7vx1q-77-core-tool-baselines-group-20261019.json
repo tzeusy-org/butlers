@@ -1,0 +1,8 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-q7vx1q-77-core-tool-baselines-group-20261019",
+  "owners": [
+    "tests/contracts/test_tool_surface_isolation.py::TestEphemeralMcpConfig::test_core_tools_catalog_completeness"
+  ],
+  "timeout_s": 300
+}
