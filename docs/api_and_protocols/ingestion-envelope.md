@@ -75,8 +75,10 @@ in `roster/switchboard/tools/ingestion/ingest.py`). The key prefers `control.ide
 then `external_event_id` plus source identity, then a content hash; a secondary content-hash
 check catches the same message arriving through two connectors. Content hashes derive from the
 bearer-scrubbed text, so a stored key cannot be brute-forced back to a withheld one-time code;
-when bearer material was withheld (by ingest or by a pre-scrubbing connector) the secondary check is skipped and `content_hash_key` is
-omitted. Connectors must:
+when bearer material was withheld (by ingest or by a pre-scrubbing connector) the secondary check
+is skipped and `content_hash_key` is omitted. This decision includes all content subtrees scrubbed
+for storage, including bearer links present only in `payload.raw` beside benign visible text.
+The same decision applies before and inside the advisory lock. Connectors must:
 
 - Send stable source identity fields on every submission, including retries.
 - Provide `control.idempotency_key` when the source has no stable event id.

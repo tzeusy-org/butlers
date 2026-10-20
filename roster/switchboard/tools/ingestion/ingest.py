@@ -56,7 +56,6 @@ from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
     placeholder_artifacts,
-    scrub_message_text,
     scrub_stored_record,
 )
 from butlers.ingestion_policy import (
@@ -248,17 +247,23 @@ def _dedupe_text(envelope: IngestEnvelopeV1) -> tuple[str, bool]:
     """
     text = envelope.payload.normalized_text
     try:
-        scrubbed = scrub_message_text(
+        # Match the storage scrubber's entire content scope: Telegram text_link URLs,
+        # Gmail bodies and other bearer material can exist only in payload.raw.
+        # scrub_stored_record returns a copy, preserving original Sender auth headers.
+        _, scrubbed, artifacts = scrub_stored_record(
+            {
+                "source": {"provider": envelope.source.provider},
+                "sender": envelope.sender.model_dump(exclude_none=True),
+                "payload": {"raw": envelope.payload.raw, "normalized_text": text},
+            },
             text,
-            source={"provider": envelope.source.provider},
-            sender=envelope.sender.model_dump(exclude_none=True),
         )
     except Exception:
         logger.warning("Bearer scrub failed while deriving dedupe key; using constant text")
         return _SCRUB_FAILED_TEXT, True
     # A connector that scrubbed before submitting leaves the placeholder (and usually the flag).
     withheld = (
-        scrubbed != text or envelope.control.bearer_scrubbed or bool(placeholder_artifacts(text))
+        bool(artifacts) or envelope.control.bearer_scrubbed or bool(placeholder_artifacts(text))
     )
     return scrubbed, withheld
 
@@ -760,6 +765,7 @@ async def ingest_v1(
             )
 
     # 2. Compute stable dedupe key
+    _, bearer_withheld = _dedupe_text(envelope)
     dedupe_key = _compute_dedupe_key(envelope)
 
     # 3. Check for existing request (idempotent duplicate handling)
@@ -771,7 +777,7 @@ async def ingest_v1(
     # already a content hash).
     # Messages whose bearer material was withheld skip this lookup: two distinct codes
     # would otherwise collide and the second be dropped despite its own event ID.
-    if not existing and not dedupe_key.startswith("hash:") and not _dedupe_text(envelope)[1]:
+    if not existing and not dedupe_key.startswith("hash:") and not bearer_withheld:
         content_hash_key = _compute_content_hash_key(envelope)
         existing = await _find_request_by_content_hash(pool, content_hash_key)
         if existing:
@@ -890,7 +896,7 @@ async def ingest_v1(
     # Store content-hash key for cross-connector dedup (secondary lookup).
     # When the primary key is already a content hash, no separate key is needed.
     # Omitted when bearer material was withheld (see the step 3a skip above).
-    if not dedupe_key.startswith("hash:") and not _dedupe_text(envelope)[1]:
+    if not dedupe_key.startswith("hash:") and not bearer_withheld:
         request_context["content_hash_key"] = _compute_content_hash_key(envelope)
     request_context["dedupe_strategy"] = "connector_api"
 

@@ -23,7 +23,7 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **AND** the Switchboard MUST NOT store any value from which the withheld material can be recovered by hashing candidate values
 
 #### Scenario: Secondary content-hash lookup skips withheld bearer text
-- **WHEN** a submission has a Priority 1 or 2 key and bearer material was withheld, whether by ingest or by a connector that scrubbed before submitting (the envelope's `control.bearer_scrubbed` flag, or a canonical withheld-artifact placeholder in the text)
+- **WHEN** a submission has a Priority 1 or 2 key and bearer material was withheld from any centrally scrubbed content subtree (including `payload.raw` even when `normalized_text` is benign), whether by ingest or by a connector that scrubbed before submitting (the envelope's `control.bearer_scrubbed` flag, or a canonical withheld-artifact placeholder in the text)
 - **THEN** the Switchboard omits `request_context.content_hash_key` and skips the secondary cross-connector content-hash lookup, inside and outside the advisory lock
 - **AND** primary-key deduplication still applies, so a second code with its own event ID is not dropped as a duplicate
 
