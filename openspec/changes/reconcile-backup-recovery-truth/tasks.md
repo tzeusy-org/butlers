@@ -7,7 +7,7 @@
   it with `REQ-deployment-hardening-007` through `009`,
   `restore-drill-recovery-truthfulness` `REQ-database-security-006`,
   `artifact-bound-filtered-event-restore-verification`
-  `REQ-database-security-011`, `REQ-system-overview-page-005` and
+  `REQ-database-security-013`, `REQ-system-overview-page-005` and
   `006`, `REQ-core-notify-026`, and `REQ-testing-031` and `032` without adding a
   duplicate whole-requirement block.
 - [ ] 1.3 Obtain fresh independent security, database, API, and UX review of the

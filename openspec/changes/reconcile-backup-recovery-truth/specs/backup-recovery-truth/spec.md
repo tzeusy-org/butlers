@@ -88,7 +88,7 @@ scoped result and the cleanup outcome beside the artifact binding in the one
 immutable terminal attempt row; no preliminary recovery pass may be persisted.
 
 ID: REQ-backup-recovery-truth-002
-Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-011
+Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-013
 Scope: v1-mandatory
 
 #### Scenario: Managed bootstrap precedes promotion-ready verification
@@ -151,7 +151,7 @@ A public audit, attention row, filesystem timestamp, filename, run receipt, or
 manifest alone SHALL NOT authorize or manufacture a recovery pass.
 
 ID: REQ-backup-recovery-truth-003
-Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-011
+Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-013
 Scope: v1-mandatory
 
 #### Scenario: Separately adopted scoped manifest binds only its named scope

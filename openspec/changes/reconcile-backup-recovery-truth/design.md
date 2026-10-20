@@ -190,7 +190,7 @@ and `--no-owner`/`--no-acl` without retained intent remain rejected.
 
 The existing executor-owner ledger remains sole authority. The artifact-bound
 transition in `artifact-bound-filtered-event-restore-verification`
-`REQ-database-security-011` extends the same row and transaction; it adds no
+`REQ-database-security-013` extends the same row and transaction; it adds no
 receipt table. The row binds overall/scoped results, exact artifact and manifest
 digests, manifest capture completion, verified artifact completion timestamp
 and byte size, coverage-manifest digest, ownership/ACL result and policy digest,

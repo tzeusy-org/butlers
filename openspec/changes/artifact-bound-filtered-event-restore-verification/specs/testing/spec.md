@@ -123,5 +123,5 @@ Scope: v1-mandatory
   REQ-deployment-hardening-009: producer/checker guarantees that the fixtures
   must prove.
 - `artifact-bound-filtered-event-restore-verification` `database-security`
-  `REQ-database-security-011`: trusted transition, atomic
+  `REQ-database-security-013`: trusted transition, atomic
   attempt binding, and exact ACL guarantees that the fixtures must prove.

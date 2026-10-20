@@ -30,7 +30,7 @@ deployment.
   attention contract. Production evidence remains separately gated by
   `bu-e1410` and deferred owner/operations task `bu-lw18o`.
 - Renumber the colliding active filtered-event authority requirement to
-  `REQ-database-security-011` and qualify cross-change sources so trace identity
+  `REQ-database-security-013` and qualify cross-change sources so trace identity
   cannot resolve to the unrelated owner-operations overlay.
 - Require the future owner decision to name this umbrella and the exact
   `artifact-bound-filtered-event-restore-verification` artifact if both are to
