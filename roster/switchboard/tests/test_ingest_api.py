@@ -194,6 +194,9 @@ async def pool(provisioned_postgres_pool):
                 policy_tier              TEXT NOT NULL,
                 triage_decision          TEXT,
                 triage_target            TEXT,
+                sender_authentication    TEXT
+                    CONSTRAINT ck_ingestion_events_sender_authentication
+                    CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed')),
                 CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
             )
             """
