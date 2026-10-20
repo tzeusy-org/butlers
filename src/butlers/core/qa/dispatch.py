@@ -3476,23 +3476,20 @@ async def dispatch_qa_investigation(
                     f"(state={condition['state']}, escalation={condition['escalation_level']}): "
                     f"{condition['summary'] or finding.event_summary}"
                 )
-                try:
-                    await update_finding_dedup_reason(pool, finding_id, "infra_condition_open")
-                except Exception as _dr_exc:
-                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
-                try:
-                    await create_dispatch_event(
-                        pool,
-                        fingerprint=fp,
-                        butler_name=finding.source_butler,
-                        decision="infra_condition_open",
-                        reason=reason,
-                        attempt_id=None,
-                    )
-                except Exception as _evt_exc:
-                    logger.debug(
-                        "QA dispatch: failed to record infra_condition_open event: %s", _evt_exc
-                    )
+                # Neither write is optional. A persistence failure uses the
+                # existing internal_error boundary below, before any attempt
+                # claim. Retry the same finding with the same event identity:
+                # an insert may have committed even if its response was lost.
+                await update_finding_dedup_reason(pool, finding_id, "infra_condition_open")
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="infra_condition_open",
+                    reason=reason,
+                    attempt_id=None,
+                    event_id=uuid.uuid5(uuid.NAMESPACE_URL, f"qa:infra-condition:{finding_id}"),
+                )
                 if metrics is not None:
                     metrics.record_recovery_dispatch_decision(
                         workflow="qa", decision="infra_condition_open"
