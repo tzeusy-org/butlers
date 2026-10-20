@@ -5,7 +5,7 @@
   "decision": {
     "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
     "date": "2026-10-15",
-    "reference": "Authorization bead bu-px20jy for implementation bead bu-kqnum.14.3 (episode requeue is cut over to the spec route and the dead-letter dossier is exposed for inspection). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-kqnum.14.3 (contract-review-lane local verdict APPROVED CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while the agent GitHub account is suspended); approved subject: agent/bu-kqnum.14.3 head b698c680d0023f313d746d316ecaa8bc28db9ac0, which tracks its request. Governing requirement REQ-dashboard-api-057 in the active delta openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md, which already carries its ID on main. The 6 owners are retained retry-consolidation cases that now post to POST /api/memory/episodes/{episode_id}/requeue instead of the retired per-butler retry-consolidation route, or expect the episode_consolidation_requeued event type; every other assertion is unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission. Engineering freshness recomputation for publication: complete before/after bindings regenerated against actual protected main 8bbc3066fbff59688ba830a50a08adbf76406a26 and its faithful native composition with the same approved consuming head b698c680d0023f313d746d316ecaa8bc28db9ac0 (tree f9c7b1ea5e66da58c0e12f8de4e288d27d959aa1). The request identity and bytes, six retained owners, governing requirement hashes and other 25 inputs are unchanged; pyproject.toml now matches that public main identically on both execution sides. This refresh does not certify consuming-candidate execution or expand the authorized decision."
+    "reference": "Authorization bead bu-px20jy for implementation bead bu-kqnum.14.3 (episode requeue is cut over to the spec route and the dead-letter dossier is exposed for inspection). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-kqnum.14.3 (contract-review-lane local verdict APPROVED CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while the agent GitHub account is suspended); approved subject: agent/bu-kqnum.14.3 head b698c680d0023f313d746d316ecaa8bc28db9ac0, which tracks its request. Governing requirement REQ-dashboard-api-057 in the active delta openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md, which already carries its ID on main. The 6 owners are retained retry-consolidation cases that now post to POST /api/memory/episodes/{episode_id}/requeue instead of the retired per-butler retry-consolidation route, or expect the episode_consolidation_requeued event type; every other assertion is unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission. Engineering freshness recomputation for publication: complete before/after bindings regenerated against actual protected main 8bbc3066fbff59688ba830a50a08adbf76406a26 and its faithful native composition with the same approved consuming head b698c680d0023f313d746d316ecaa8bc28db9ac0 (tree f9c7b1ea5e66da58c0e12f8de4e288d27d959aa1). The request identity and bytes, six retained owners, governing requirement hashes and other 25 inputs are unchanged; pyproject.toml now matches that public main identically on both execution sides. This refresh does not certify consuming-candidate execution or expand the authorized decision. Measured budget-input refresh for bu-w198lm after protected privacy publication: native bindings recomputed against actual main f8c1fd5d52a20ec8856e45e3e482c35e9e45aeb4 and its faithful composition with approved consuming head b698c680d0023f313d746d316ecaa8bc28db9ac0. Fresh native collection measures 18456 unit and 5206 integration cases across the complete five-unit/six-integration assignment. This adds only scripts/test-budget-baseline.json, binding its current-main unit cap 18433 to the measured minimal consuming cap 18456; integration cap 5422 and historical collected_at_update values 17522/5163 remain unchanged. All original 26 input records, six retained owners and complete case population, request bytes, governing requirement hashes, decision owner/date and approved meaning remain unchanged. This metadata refresh does not certify consuming execution or grant candidate-only authority; independent protected publication and fresh consuming proof remain required."
   },
   "owners": [
     {
@@ -215,6 +215,17 @@
       "after": {
         "mode": "100644",
         "sha256": "18bc0aa18fe9cd056c6e03387c418af9cc5a77e2d2bfd9da9ca6d4d13c8e6760"
+      }
+    },
+    {
+      "path": "scripts/test-budget-baseline.json",
+      "before": {
+        "mode": "100644",
+        "sha256": "ec65ed51d45252e1ab256c13beb4e670f08c583f40eb830d672e5d98b1036786"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "35dcbb37095b3a44d67b6f11854009d5ba79e212724aa558b60aa666099ad149"
       }
     },
     {

@@ -22,6 +22,8 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.ingestion_bearer_scrub import scrub_message_text
+
 
 def endpoint_identity(device_name: str) -> str:
     """Return the canonical endpoint identity for a mic device.
@@ -59,9 +61,17 @@ def mint_idempotency_key(endpoint_id: str, unix_ms: int, transcript: str) -> str
     Args:
         endpoint_id: The endpoint identity (``"live-listener:mic:{device_name}"``).
         unix_ms: Millisecond-precision UNIX timestamp of speech segment offset.
-        transcript: The transcribed text (used for content hashing).
+        transcript: The transcribed text (its bearer-scrubbed form is hashed).
     """
-    content_hash = hashlib.sha256(transcript.encode()).hexdigest()
+    # The key is stored beside the scrubbed text (dedupe_key, idempotency_key), so hash the
+    # scrubbed transcript: a hash of the raw one lets a reader brute-force a spoken code.
+    try:
+        hashed = scrub_message_text(
+            transcript, source={"provider": "live-listener"}, sender={"identity": "ambient"}
+        )
+    except Exception:
+        hashed = "[content withheld: bearer scrub failed]"
+    content_hash = hashlib.sha256(hashed.encode()).hexdigest()
     return f"voice:{endpoint_id}:{unix_ms}:{content_hash[:8]}"
 
 

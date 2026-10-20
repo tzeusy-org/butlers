@@ -2136,13 +2136,6 @@ class MessagePipeline:
 
         content_blind_observability = self._uses_content_blind_observability(source, args)
         received_at = datetime.now(UTC)
-        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
-            args=args,
-            source_metadata=source_metadata,
-            message_text=message_text,
-            received_at=received_at,
-        )
-
         raw_metadata = args.get("raw_metadata")
         if isinstance(raw_metadata, dict):
             raw_metadata_payload: dict[str, Any] = dict(raw_metadata)
@@ -2155,16 +2148,6 @@ class MessagePipeline:
         external_conversation_id = self._external_conversation_id(args)
         source_endpoint_identity = self._source_endpoint_identity(args, source_metadata)
 
-        request_context = {
-            "source_channel": source,
-            "source_endpoint_identity": source_endpoint_identity,
-            "source_sender_identity": source_sender_identity,
-            "source_thread_identity": source_thread_identity,
-            "external_conversation_id": external_conversation_id,
-            "idempotency_key": idempotency_key,
-            "dedupe_key": dedupe_key,
-            "dedupe_strategy": dedupe_strategy,
-        }
         # Scrub before any write; a detector failure raises, so no raw text is stored.
         scrubbed, message_text, _ = scrub_stored_record(
             {
@@ -2177,6 +2160,25 @@ class MessagePipeline:
         raw_payload = {
             "content": scrubbed["content"],
             "metadata": raw_metadata_payload,
+        }
+
+        # Keys are stored beside the scrubbed text, so they derive from it: hashing the raw
+        # text would let a reader of message_inbox brute-force a withheld code.
+        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
+            args=args,
+            source_metadata=source_metadata,
+            message_text=message_text,
+            received_at=received_at,
+        )
+        request_context = {
+            "source_channel": source,
+            "source_endpoint_identity": source_endpoint_identity,
+            "source_sender_identity": source_sender_identity,
+            "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
+            "idempotency_key": idempotency_key,
+            "dedupe_key": dedupe_key,
+            "dedupe_strategy": dedupe_strategy,
         }
 
         # Ensure the partition exists for received_at — committed immediately,
@@ -2434,8 +2436,8 @@ class MessagePipeline:
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
         # Everything downstream (routing prompt, preview, response summary, dead-letter
-        # cc_output) uses the scrubbed text. The ingress dedupe record keeps hashing
-        # the text as received, and scrubs it itself before any write.
+        # cc_output) uses the scrubbed text. The ingress dedupe record scrubs the text as
+        # received itself and derives its key from the scrubbed result.
         raw_message_text = message_text
         try:
             message_text = scrub_message_text(
