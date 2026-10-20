@@ -1109,3 +1109,132 @@ class TestUpcomingBills:
         result = await upcoming_bills(pool=pool, days_ahead=14)
         due_dates = [item["bill"]["due_date"] for item in result["needs_action"]]
         assert due_dates == sorted(due_dates)
+
+
+# ---------------------------------------------------------------------------
+# Subscription field provenance (bu-svqpzo.10)
+# ---------------------------------------------------------------------------
+
+_GMAIL_ROUTING_CONTEXT = {
+    "source_entity_id": "00000000-0000-0000-0000-000000000001",
+    "request_context": {
+        "source_channel": "email",
+        "source_endpoint_identity": "gmail:user:owner@example.invalid",
+    },
+}
+
+
+class TestSubscriptionFieldProvenance:
+    """cancellation_url and status keep who wrote them; email never outranks the owner."""
+
+    @staticmethod
+    def _as_owner(monkeypatch) -> None:
+        from butlers.tools.finance import subscriptions as subscriptions_module
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+
+        async def _owner(_pool):
+            return FinanceSignalSource("owner")
+
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _owner)
+
+    @staticmethod
+    def _as_routed_gmail(monkeypatch) -> None:
+        from butlers.tools.finance import expected_signals as expected_signals_module
+
+        monkeypatch.setattr(
+            expected_signals_module,
+            "get_current_runtime_session_routing_context",
+            lambda: _GMAIL_ROUTING_CONTEXT,
+        )
+
+    async def _track(self, pool, **overrides):
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        kwargs = {
+            "pool": pool,
+            "service": "Provenance Co",
+            "amount": 12.0,
+            "currency": "USD",
+            "frequency": "yearly",
+            "next_renewal": datetime.now(UTC).date() + timedelta(days=30),
+        }
+        kwargs.update(overrides)
+        return await track_subscription(**kwargs)
+
+    async def test_routed_gmail_write_is_stored_as_extracted(self, pool, monkeypatch):
+        self._as_routed_gmail(monkeypatch)
+
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["cancellation_url"] == "https://example-phish.test/cancel"
+        assert result["cancellation_url_source"] == "extracted"
+        assert result["status_source"] == "extracted"
+
+    async def test_routed_gmail_write_never_overwrites_owner_set_values(self, pool, monkeypatch):
+        with monkeypatch.context() as owner_context:
+            self._as_owner(owner_context)
+            owned = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+        assert owned["cancellation_url_source"] == "owner"
+        assert owned["status_source"] == "owner"
+
+        self._as_routed_gmail(monkeypatch)
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["id"] == owned["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["cancellation_url_source"] == "owner"
+        assert result["status"] == "active"
+        assert result["status_source"] == "owner"
+
+    async def test_owner_write_replaces_extracted_values_and_takes_ownership(
+        self, pool, monkeypatch
+    ):
+        self._as_routed_gmail(monkeypatch)
+        first = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+        self._as_owner(monkeypatch)
+
+        result = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+
+        assert result["id"] == first["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["cancellation_url_source"] == "owner"
+        assert result["status"] == "active"
+        assert result["status_source"] == "owner"
+
+    async def test_attestation_lookup_failure_is_treated_as_extracted(self, pool, monkeypatch):
+        from butlers.tools.finance import subscriptions as subscriptions_module
+
+        async def _unavailable(_pool):
+            raise RuntimeError("attestation store down")
+
+        with monkeypatch.context() as owner_context:
+            self._as_owner(owner_context)
+            owned = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _unavailable)
+
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["id"] == owned["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["status"] == "active"
+
+    async def test_attestation_lookup_failure_on_insert_stores_extracted(self, pool, monkeypatch):
+        from butlers.tools.finance import subscriptions as subscriptions_module
+
+        async def _unavailable(_pool):
+            raise RuntimeError("attestation store down")
+
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _unavailable)
+
+        result = await self._track(pool, cancellation_url="https://example-phish.test/cancel")
+
+        assert result["cancellation_url_source"] == "extracted"
+        assert result["status_source"] == "extracted"

@@ -34,7 +34,6 @@ ConnectorState = Literal["healthy", "degraded", "error"]
 # Known valid connector types that can register via heartbeat
 VALID_CONNECTOR_TYPES = {
     "activitywatch",
-    "discord_user",
     "gmail",
     "google_calendar",
     "google_drive",

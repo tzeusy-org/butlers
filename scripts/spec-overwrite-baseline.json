@@ -2567,7 +2567,7 @@
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
     {
-      "digest": "87a4073f5084",
+      "digest": "1c2a66ee8024",
       "excerpt": "- 1. LLM orchestration layer (butler session level). An ephemeral LLM session, spawned by the curriculum-planning ski...",
       "kind": "prose",
       "scenario": null

@@ -33,7 +33,6 @@ class ButlerSummary(BaseModel):
     port: int
     db: str
     modules: list[str] = Field(default_factory=list)
-    schedule_count: int = 0
 
 
 class ButlerDetail(ButlerSummary):

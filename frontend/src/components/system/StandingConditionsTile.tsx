@@ -13,7 +13,8 @@
 // than a duplicate one, distinguished by a small ledger badge per row.
 // Also surfaces, per infra condition, how many QA dispatches it suppressed
 // (useInfraConditionSuppressionCounts -> GET /api/healing/dispatch-events?
-// decision=infra_condition_open), joined on the shared fingerprint identity
+// decision=infra_condition_open&fingerprint=...), using each filtered total
+// rather than a sample of the newest global events
 // -- the concrete "link to the condition that suppressed them" slice 3 asks
 // for. Owner conditions have no QA-dispatch suppression concept, so that
 // chip is only ever computed/shown for ledger="infra" rows.
@@ -525,14 +526,20 @@ function collectCounterpartyIds(conditions: ConditionEntry[]): string[] {
 export function StandingConditionsTile() {
   const infraQuery = useSystemConditions({ limit: 20 })
   const ownerQuery = useSystemConditions({ limit: 20, ledger: "owner" })
-  const { counts: suppressedCounts, isError: suppressionCountsError } =
-    useInfraConditionSuppressionCounts()
   const [filter, setFilter] = useState<ConditionFilter>("all")
 
   // Counterparty ids are read off the raw query payloads rather than the
   // merged list below, because this hook must run before the early returns.
   const infraConditions = infraQuery.data?.data.conditions
   const ownerConditions = ownerQuery.data?.data.conditions
+  const suppressionFingerprints = !infraQuery.isError && infraQuery.data?.data.conditions_available
+    ? (infraConditions ?? []).filter((condition) => condition.ledger === "infra").map((condition) => condition.fingerprint)
+    : []
+  const {
+    counts: suppressedCounts,
+    isError: suppressionCountsError,
+    isLoading: suppressionCountsLoading,
+  } = useInfraConditionSuppressionCounts(suppressionFingerprints)
   const counterpartyIds = useMemo(
     () => collectCounterpartyIds([...(infraConditions ?? []), ...(ownerConditions ?? [])]),
     [infraConditions, ownerConditions],
@@ -633,6 +640,10 @@ export function StandingConditionsTile() {
           label="QA dispatch suppression counts"
           testId="standing-conditions-suppression-degraded"
         />
+      ) : suppressionCountsLoading ? (
+        <p role="status" className="mb-2 text-xs text-muted-foreground">
+          Loading QA dispatch suppression counts.
+        </p>
       ) : null}
       {merged.length === 0 ? (
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
@@ -660,9 +671,9 @@ export function StandingConditionsTile() {
                   suppressedCount={
                     condition.ledger !== "infra"
                       ? null
-                      : suppressionCountsError
+                      : suppressionCountsError || suppressionCountsLoading
                         ? null
-                        : (suppressedCounts.get(condition.fingerprint) ?? 0)
+                        : (suppressedCounts.get(condition.fingerprint) ?? null)
                   }
                 />
               ))}

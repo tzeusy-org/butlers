@@ -7,8 +7,9 @@
 
 ## Overview
 
-`deploy/helm/butlers` is the Kubernetes counterpart of `docker-compose.yml`. The chart installs one
-release named `butlers` into one of two namespaces:
+Helm on k3s is the production deployment path. `deploy/helm/butlers` installs one
+release named `butlers` into one of two namespaces. The table describes repository
+configuration; it does not attest that a production release is running:
 
 | | `butlers-dev` (`values.dev.yaml`) | `butlers` (`values.prod.yaml`) |
 | --- | --- | --- |
@@ -299,8 +300,10 @@ hotreload. The original Compose-to-k3s cutover is complete. Its earlier
 `make secrets-dev` staging recipe predates dev's BWS-owned ExternalSecrets and
 is not the current deployment or rollback procedure.
 
-Compose remains a supported production/off-cluster deployment path and a local
-path for a non-live database. `scripts/compose.sh --prod` retains the production
+Compose is the retained pre-cutover off-cluster path, pending deletion in
+bu-dss7he.14, and a local path for a non-live database. Production deployment
+uses Helm on k3s (`make -C deploy/helm/butlers ship-prod`, or `deploy-prod` for
+an already-pushed tag). `scripts/compose.sh --prod` retains the pre-cutover
 Compose configuration; it does not authorize starting a fleet against a database
 already owned by Kubernetes. The launcher checks `butlers-up` replicas in the
 matching namespace (`butlers-dev` for dev, `butlers` for prod) and refuses a

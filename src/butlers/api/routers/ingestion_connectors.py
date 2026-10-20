@@ -2244,12 +2244,6 @@ _CONNECTOR_CATALOG: list[dict[str, Any]] = [
         "display_name": "Home Assistant",
     },
     {
-        "connector_type": "discord_user",
-        "channel": "discord",
-        "provider": "discord",
-        "display_name": "Discord User Client",
-    },
-    {
         "connector_type": "spotify",
         "channel": "spotify",
         "provider": "spotify",

@@ -5,7 +5,7 @@
   "decision": {
     "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
     "date": "2026-10-15",
-    "reference": "Authorization bead bu-px20jy for implementation bead bu-kqnum.14.3 (episode requeue is cut over to the spec route and the dead-letter dossier is exposed for inspection). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-kqnum.14.3 (contract-review-lane local verdict APPROVED CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while the agent GitHub account is suspended); approved subject: agent/bu-kqnum.14.3 head b698c680d0023f313d746d316ecaa8bc28db9ac0, which tracks its request. Governing requirement REQ-dashboard-api-057 in the active delta openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md, which already carries its ID on main. The 6 owners are retained retry-consolidation cases that now post to POST /api/memory/episodes/{episode_id}/requeue instead of the retired per-butler retry-consolidation route, or expect the episode_consolidation_requeued event type; every other assertion is unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission."
+    "reference": "Authorization bead bu-px20jy for implementation bead bu-kqnum.14.3 (episode requeue is cut over to the spec route and the dead-letter dossier is exposed for inspection). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-kqnum.14.3 (contract-review-lane local verdict APPROVED CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while the agent GitHub account is suspended); approved subject: agent/bu-kqnum.14.3 head b698c680d0023f313d746d316ecaa8bc28db9ac0, which tracks its request. Governing requirement REQ-dashboard-api-057 in the active delta openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md, which already carries its ID on main. The 6 owners are retained retry-consolidation cases that now post to POST /api/memory/episodes/{episode_id}/requeue instead of the retired per-butler retry-consolidation route, or expect the episode_consolidation_requeued event type; every other assertion is unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission. Engineering freshness recomputation for publication: complete before/after bindings regenerated against actual protected main 8bbc3066fbff59688ba830a50a08adbf76406a26 and its faithful native composition with the same approved consuming head b698c680d0023f313d746d316ecaa8bc28db9ac0 (tree f9c7b1ea5e66da58c0e12f8de4e288d27d959aa1). The request identity and bytes, six retained owners, governing requirement hashes and other 25 inputs are unchanged; pyproject.toml now matches that public main identically on both execution sides. This refresh does not certify consuming-candidate execution or expand the authorized decision."
   },
   "owners": [
     {
@@ -210,11 +210,11 @@
       "path": "pyproject.toml",
       "before": {
         "mode": "100644",
-        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+        "sha256": "18bc0aa18fe9cd056c6e03387c418af9cc5a77e2d2bfd9da9ca6d4d13c8e6760"
       },
       "after": {
         "mode": "100644",
-        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+        "sha256": "18bc0aa18fe9cd056c6e03387c418af9cc5a77e2d2bfd9da9ca6d4d13c8e6760"
       }
     },
     {
