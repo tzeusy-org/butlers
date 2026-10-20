@@ -492,6 +492,10 @@ Connectors that need noise filtering before Switchboard ingestion SHALL use the 
 
 The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
+ID: REQ-connector-base-spec-007
+Source: bu-1wwjrb; [Observed] `src/butlers/connectors/discretion.py` evaluator log sites
+Scope: v1-mandatory
+
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
 - **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` (shared module, not connector-specific)
