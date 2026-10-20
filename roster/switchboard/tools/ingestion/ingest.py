@@ -238,6 +238,36 @@ def _generate_uuid7() -> UUID:
     return uuid.UUID(int=value)
 
 
+def _dedupe_text(envelope: IngestEnvelopeV1) -> tuple[str, bool]:
+    """Text that content-hash keys derive from, and whether bearer material was withheld.
+
+    Keys are stored beside the scrubbed text, so hashing the raw text would let any reader of
+    ``message_inbox``/``ingestion_events`` brute-force a withheld 4-8 digit code. Text with no
+    bearer material hashes exactly as before. A scrub failure fails closed to a constant.
+    """
+    text = envelope.payload.normalized_text
+    try:
+        # Match the storage scrubber's entire content scope: Telegram text_link URLs,
+        # Gmail bodies and other bearer material can exist only in payload.raw.
+        # scrub_stored_record returns a copy, preserving original Sender auth headers.
+        _, scrubbed, artifacts = scrub_stored_record(
+            {
+                "source": {"provider": envelope.source.provider},
+                "sender": envelope.sender.model_dump(exclude_none=True),
+                "payload": {"raw": envelope.payload.raw, "normalized_text": text},
+            },
+            text,
+        )
+    except Exception:
+        logger.warning("Bearer scrub failed while deriving dedupe key; using constant text")
+        return _SCRUB_FAILED_TEXT, True
+    # A connector that scrubbed before submitting leaves the placeholder (and usually the flag).
+    withheld = (
+        bool(artifacts) or envelope.control.bearer_scrubbed or bool(placeholder_artifacts(text))
+    )
+    return scrubbed, withheld
+
+
 def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
     """Compute content-hash dedup key independent of connector-specific identifiers.
 
@@ -252,7 +282,7 @@ def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
     because the same update legitimately arrives on different bots and each
     bot should process it independently.
     """
-    content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
+    content_repr = f"{_dedupe_text(envelope)[0]}:{envelope.sender.identity}"
     content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
     time_bucket = envelope.event.observed_at.strftime("%Y%m%d%H")  # hourly window
     # Email: omit endpoint_identity so the same email from different accounts dedupes.
@@ -735,6 +765,7 @@ async def ingest_v1(
             )
 
     # 2. Compute stable dedupe key
+    _, bearer_withheld = _dedupe_text(envelope)
     dedupe_key = _compute_dedupe_key(envelope)
 
     # 3. Check for existing request (idempotent duplicate handling)
@@ -744,7 +775,9 @@ async def ingest_v1(
     # different connectors produce different primary keys for the same message.
     # Only runs when the primary key used a connector-specific strategy (not
     # already a content hash).
-    if not existing and not dedupe_key.startswith("hash:"):
+    # Messages whose bearer material was withheld skip this lookup: two distinct codes
+    # would otherwise collide and the second be dropped despite its own event ID.
+    if not existing and not dedupe_key.startswith("hash:") and not bearer_withheld:
         content_hash_key = _compute_content_hash_key(envelope)
         existing = await _find_request_by_content_hash(pool, content_hash_key)
         if existing:
@@ -862,7 +895,8 @@ async def ingest_v1(
     request_context["dedupe_key"] = dedupe_key
     # Store content-hash key for cross-connector dedup (secondary lookup).
     # When the primary key is already a content hash, no separate key is needed.
-    if not dedupe_key.startswith("hash:"):
+    # Omitted when bearer material was withheld (see the step 3a skip above).
+    if not dedupe_key.startswith("hash:") and not bearer_withheld:
         request_context["content_hash_key"] = _compute_content_hash_key(envelope)
     request_context["dedupe_strategy"] = "connector_api"
 
