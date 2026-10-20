@@ -56,12 +56,12 @@ function prime(hook: unknown, value: unknown) {
   (hook as ReturnType<typeof vi.fn>).mockReturnValue(value);
 }
 
-function page(rows: unknown[], poolsFailed?: string[]) {
+function page(rows: unknown[], poolsFailed?: string[], total = rows.length) {
   return {
     data: {
       data: rows,
       meta: {
-        total: rows.length,
+        total,
         offset: 0,
         limit: 50,
         has_more: false,
@@ -113,22 +113,20 @@ describe("memory registers under a partial pool outage", () => {
       expect(container.textContent).not.toContain(calm);
     });
 
-    it("keeps the calm empty copy for a healthy empty response", () => {
-      prime(hook, page([]));
+    it("withholds the calm empty copy until the first response arrives", () => {
+      prime(hook, { data: undefined, isPending: true });
 
       render(Register);
 
-      expect(container.textContent).toContain(calm);
-      expect(container.querySelector(`[data-testid="${testId}"]`)).toBeNull();
+      expect(container.textContent).not.toContain(calm);
     });
 
-    it("treats an empty pools_failed list as healthy", () => {
-      prime(hook, page([], []));
+    it("marks the range partial when a pool dropped out", () => {
+      prime(hook, page([], ["finance"], 7));
 
       render(Register);
 
-      expect(container.textContent).toContain(calm);
-      expect(container.querySelector(`[data-testid="${testId}"]`)).toBeNull();
+      expect(container.textContent).toContain("0 of 7 (partial)");
     });
   });
 

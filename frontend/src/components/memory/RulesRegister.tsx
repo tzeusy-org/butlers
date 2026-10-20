@@ -33,6 +33,7 @@
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
 import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
@@ -224,55 +225,6 @@ function MaturityPills({
 }
 
 // ---------------------------------------------------------------------------
-// Pagination footer
-// ---------------------------------------------------------------------------
-
-/** `1–50 of 312` left, prev/next pills right. Mono dim, no numbered pages. */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = offset + 1;
-  const to = offset + count;
-  const atStart = offset === 0;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1">
-      <Mono muted>
-        {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={atStart}
-          onClick={() => onOffset(Math.max(0, offset - RULES_PAGE_SIZE))}
-        >
-          prev
-        </Pill>
-        <Pill
-          selected={false}
-          disabled={!hasMore}
-          onClick={() => onOffset(offset + RULES_PAGE_SIZE)}
-        >
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // RulesRegister
 // ---------------------------------------------------------------------------
 
@@ -297,7 +249,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   // `all` is the unfiltered view; the API takes a concrete maturity string.
   const maturityFilter = maturity === "all" ? undefined : maturity;
 
-  const { data: response, isError, refetch } = useRules({
+  const { data: response, isError, isPending, refetch } = useRules({
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
@@ -339,11 +291,14 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
           testId="memory-rules-error"
         />
       ) : ordered.length === 0 && poolsFailed.length === 0 ? (
-        <Voice variant="italic" className="py-6">
-          {maturity === "all"
-            ? "No standing orders yet."
-            : "Nothing of this maturity."}
-        </Voice>
+        // The calm empty copy is a verdict: only a completed response may say it.
+        !isPending && (
+          <Voice variant="italic" className="py-6">
+            {maturity === "all"
+              ? "No standing orders yet."
+              : "Nothing of this maturity."}
+          </Voice>
+        )
       ) : (
         <div className="flex flex-col">
           {ordered.map((rule, i) => (
@@ -352,11 +307,13 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
         </div>
       )}
 
-      <PaginationFooter
+      <MemoryPaginationFooter
         offset={offset}
         count={ordered.length}
         total={total}
         hasMore={hasMore}
+        pageSize={RULES_PAGE_SIZE}
+        partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />
     </div>

@@ -29,10 +29,9 @@
 // ---------------------------------------------------------------------------
 
 import { Eyebrow } from "@/components/ui/Eyebrow";
-import { Mono } from "@/components/ui/Mono";
-import { Pill } from "@/components/ui/Pill";
 import { Voice } from "@/components/ui/Voice";
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
 import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { LedgerRow } from "@/components/memory/FactsRegister";
 import { DirectiveRow } from "@/components/memory/RulesRegister";
@@ -66,50 +65,6 @@ const KIND_LABEL: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Group header
 // ---------------------------------------------------------------------------
-
-/** `showing 1–50 of 312` left, prev/next pills right (mono dim, no numbered pages). */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  partial,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  /** True when a pool dropped out, so the total undercounts. */
-  partial: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = count === 0 ? offset : offset + 1;
-  const to = offset + count;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1" data-testid="memory-search-pager">
-      <Mono muted>
-        showing {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-        {partial ? " (partial)" : ""}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={offset === 0}
-          onClick={() => onOffset(Math.max(0, offset - SEARCH_LIMIT))}
-        >
-          prev
-        </Pill>
-        <Pill selected={false} disabled={!hasMore} onClick={() => onOffset(offset + SEARCH_LIMIT)}>
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
 
 /** `FACTS · 12` — mono kind eyebrow with a hairline rule beneath it. */
 function GroupHeader({ kind, count }: { kind: string; count: number }) {
@@ -188,31 +143,14 @@ interface SearchResultsProps {
  * register shape. Empty result is one serif-italic line.
  */
 export default function SearchResults({ q, kind, now, offset = 0, onOffset }: SearchResultsProps) {
-  const { data: response, isError, isLoading, refetch } = useMemoryInspect({
+  const { data: response, isError, isPending, refetch } = useMemoryInspect({
     q,
     kind: kind === "all" ? undefined : kind,
     offset,
     limit: SEARCH_LIMIT,
   });
-  const total = response?.meta?.total ?? 0;
-  const hasMore = response?.meta?.has_more ?? false;
-  const poolsFailed = response?.meta?.pools_failed ?? [];
 
-  // useMemoryInspect returns PaginatedResponse<MemoryInspectResult> = {data,meta}
-  // — unwrap .data before grouping (the #2190/#2191 envelope pattern).
-  const results = response?.data ?? [];
-
-  // Group by kind, preserving each kind's incoming (created_at desc) order.
-  const byKind: Record<string, MemoryInspectResult[]> = {
-    fact: [],
-    rule: [],
-    episode: [],
-  };
-  for (const r of results) {
-    (byKind[r.kind] ??= []).push(r);
-  }
-
-  if (isError && results.length === 0) {
+  if (isError && !response) {
     // A failed search must not render "Nothing in the books." — a down inspect
     // endpoint would read as a genuine no-match result (bu-mkd5r).
     return (
@@ -224,8 +162,9 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
     );
   }
 
-  if (isLoading) {
-    // An in-flight search has no verdict yet; never render the empty line.
+  if (isPending || !response) {
+    // No verdict yet (in flight, or paused offline): never render the empty
+    // line. `isPending`, not `isLoading`: a paused query is not fetching.
     return (
       <div role="status" data-testid="memory-search-loading">
         <Voice variant="italic" className="py-6">
@@ -233,6 +172,24 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
         </Voice>
       </div>
     );
+  }
+
+  // Read only from a response that is known to be present.
+  const { total, has_more: hasMore, pools_failed: poolsFailedMeta } = response.meta;
+  const poolsFailed = poolsFailedMeta ?? [];
+
+  // useMemoryInspect returns PaginatedResponse<MemoryInspectResult> = {data,meta}
+  // — unwrap .data before grouping (the #2190/#2191 envelope pattern).
+  const results = response.data;
+
+  // Group by kind, preserving each kind's incoming (created_at desc) order.
+  const byKind: Record<string, MemoryInspectResult[]> = {
+    fact: [],
+    rule: [],
+    episode: [],
+  };
+  for (const r of results) {
+    (byKind[r.kind] ??= []).push(r);
   }
 
   const degradedNote = (
@@ -244,13 +201,16 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
     />
   );
   const footer = (
-    <PaginationFooter
+    <MemoryPaginationFooter
       offset={offset}
       count={results.length}
       total={total}
       hasMore={hasMore}
+      pageSize={SEARCH_LIMIT}
       partial={poolsFailed.length > 0}
       onOffset={(next) => onOffset?.(next)}
+      prefix="showing "
+      testId="memory-search-pager"
     />
   );
 

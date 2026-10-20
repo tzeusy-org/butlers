@@ -39,6 +39,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
 import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Mono } from "@/components/ui/Mono";
@@ -55,7 +56,6 @@ import {
   formatEpisodeTime,
   groupEpisodesByDay,
 } from "@/lib/memory-derived";
-import { formatNumeral } from "@/lib/memory-overture";
 import { cn } from "@/lib/utils";
 import type { Episode } from "@/api/types.ts";
 
@@ -273,55 +273,6 @@ function StatusPills({
 }
 
 // ---------------------------------------------------------------------------
-// Pagination footer
-// ---------------------------------------------------------------------------
-
-/** `1–50 of 1,204` left, prev/next pills right. Mono dim, no numbered pages. */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = offset + 1;
-  const to = offset + count;
-  const atStart = offset === 0;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1">
-      <Mono muted>
-        {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={atStart}
-          onClick={() => onOffset(Math.max(0, offset - EPISODES_PAGE_SIZE))}
-        >
-          prev
-        </Pill>
-        <Pill
-          selected={false}
-          disabled={!hasMore}
-          onClick={() => onOffset(offset + EPISODES_PAGE_SIZE)}
-        >
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // EpisodesRegister
 // ---------------------------------------------------------------------------
 
@@ -350,7 +301,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const { state, setState } = useMemoryUrlState();
   const { status, offset } = state;
 
-  const { data: response, isError, refetch } = useEpisodes({
+  const { data: response, isError, isPending, refetch } = useEpisodes({
     butler: butlerScope,
     status: status ?? undefined,
     offset,
@@ -391,9 +342,12 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
           testId="memory-episodes-error"
         />
       ) : episodes.length === 0 && poolsFailed.length === 0 ? (
-        <Voice variant="italic" className="py-6">
-          {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
-        </Voice>
+        // The calm empty copy is a verdict: only a completed response may say it.
+        !isPending && (
+          <Voice variant="italic" className="py-6">
+            {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
+          </Voice>
+        )
       ) : (
         <div className="flex flex-col">
           {groups.map((group) => (
@@ -407,11 +361,13 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
         </div>
       )}
 
-      <PaginationFooter
+      <MemoryPaginationFooter
         offset={offset}
         count={episodes.length}
         total={total}
         hasMore={hasMore}
+        pageSize={EPISODES_PAGE_SIZE}
+        partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />
     </div>
