@@ -8,6 +8,10 @@ Provides the canonical first-class record of every event that enters the butler 
 ### Requirement: Ingestion Event Table
 The `public.ingestion_events` table is the canonical first-class record of every event that enters the butler ecosystem through a connector or direct internal dashboard ingress. One row exists per canonical ingestion event after deduplication. The UUID7 primary key is the `request_id` returned to connectors or direct internal callers and propagated to all downstream sessions and traces. Connector-specific `filtered_events` joins and status semantics remain limited to connector records and SHALL NOT be inferred for dashboard events.
 
+ID: REQ-ingestion-event-registry-001
+Source: RFC 0003 § ingest.v1 Envelope Format; dashboard-conversations § Dashboard Ingestion Envelope Construction; design.md Decision 1a
+Scope: v1-mandatory
+
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
 - **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
