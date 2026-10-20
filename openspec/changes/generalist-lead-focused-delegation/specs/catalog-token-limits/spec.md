@@ -52,7 +52,8 @@ Scope: v1-mandatory
 ### Requirement: Pre-Spawn Quota Check
 The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function that evaluates whether a catalog entry's usage is within its configured limits for both rolling windows. The function SHALL let its caller distinguish a check that could not complete from an allowed result. The goal runner SHALL fail closed on a check that could not complete and SHALL NOT launch the invocation on that basis, because every goal budget check fails closed; model use outside goals keeps the fail-open treatment.
 
-Source: RFC 0038 D10, D18
+ID: REQ-catalog-token-limits-001
+Source: 2026-03-18-catalog-tier-token-limits; RFC 0038 D10, D18
 Scope: v1-mandatory
 
 #### Scenario: QuotaStatus return type

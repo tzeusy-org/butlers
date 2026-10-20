@@ -2117,6 +2117,22 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Home Assistant person ID {}
 - Person entity UUID {}
 
+## `frontend/src/components/butler-detail/HomeSafetyWatchPanel.tsx`
+
+- Loading safety sensors
+- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
+- Reload safety sensors
+- No safety sensors declared yet.
+- Could not remove the sensor. It is still being watched.
+- Remove
+- Sensor entity ID
+- Hazard
+- Name in alerts
+- Could not save the sensor. Check the details and try again.
+- Safety sensors
+- Stop watching {}
+- Kitchen leak sensor
+
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
 - Runtime Config
@@ -4900,4 +4916,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3905*
+*Total strings: 3918*
