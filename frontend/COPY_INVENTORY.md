@@ -1037,7 +1037,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Full audit log
 - Export data
 - DASHBOARD_EXPORT_ENCRYPTION_KEY
-- All data
+- All data (supported scopes)
 - Memory
 - Audit log
 - Config
