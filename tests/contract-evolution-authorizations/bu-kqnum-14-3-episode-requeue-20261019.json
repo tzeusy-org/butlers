@@ -1,0 +1,341 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-kqnum-14-3-episode-requeue-20261019",
+  "bead": "bu-kqnum.14.3",
+  "decision": {
+    "owner": "Repository owner Yes on the narrow contract-evolution policy amendment, 2026-10-15; applied here by the coordinator after independent review",
+    "date": "2026-10-15",
+    "reference": "Authorization bead bu-px20jy for implementation bead bu-kqnum.14.3 (episode requeue is cut over to the spec route and the dead-letter dossier is exposed for inspection). Reviewed before: main 7cbcbfa13faa1fbe593d6a0fbb57555adeeed888 as recorded in bu-kqnum.14.3 (contract-review-lane local verdict APPROVED CLEAN-pending-CE; the formal review bead opens with the DRAFT PR while the agent GitHub account is suspended); approved subject: agent/bu-kqnum.14.3 head b698c680d0023f313d746d316ecaa8bc28db9ac0, which tracks its request. Governing requirement REQ-dashboard-api-057 in the active delta openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md, which already carries its ID on main. The 6 owners are retained retry-consolidation cases that now post to POST /api/memory/episodes/{episode_id}/requeue instead of the retired per-butler retry-consolidation route, or expect the episode_consolidation_requeued event type; every other assertion is unchanged. This exact manifest requires its own independent review and protected-main publication before consumption; provenance text grants no runtime admission. Engineering freshness recomputation for publication: complete before/after bindings regenerated against actual protected main 8bbc3066fbff59688ba830a50a08adbf76406a26 and its faithful native composition with the same approved consuming head b698c680d0023f313d746d316ecaa8bc28db9ac0 (tree f9c7b1ea5e66da58c0e12f8de4e288d27d959aa1). The request identity and bytes, six retained owners, governing requirement hashes and other 25 inputs are unchanged; pyproject.toml now matches that public main identically on both execution sides. This refresh does not certify consuming-candidate execution or expand the authorized decision."
+  },
+  "owners": [
+    {
+      "before": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_400_malformed_episode_id",
+      "after": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_400_malformed_episode_id",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "The retained case posts to POST /api/memory/episodes/{episode_id}/requeue (REQ-dashboard-api-057, the only public manual recovery verb) instead of the retired /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation. The case name, its fake pool, its status-code expectation and every other assertion are unchanged."
+    },
+    {
+      "before": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_404_unknown_butler",
+      "after": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_404_unknown_butler",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "The retained case posts to POST /api/memory/episodes/{episode_id}/requeue (REQ-dashboard-api-057, the only public manual recovery verb) instead of the retired /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation. The path no longer names a butler, so the unknown name is only a label; the case still expects 404 when no recovery-eligible source owns the episode. The case name, its fake pool, its status-code expectation and every other assertion are unchanged."
+    },
+    {
+      "before": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_404_unknown_episode",
+      "after": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_404_unknown_episode",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "The retained case posts to POST /api/memory/episodes/{episode_id}/requeue (REQ-dashboard-api-057, the only public manual recovery verb) instead of the retired /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation. The case name, its fake pool, its status-code expectation and every other assertion are unchanged."
+    },
+    {
+      "before": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_409_when_not_dead_letter",
+      "after": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_409_when_not_dead_letter",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "The retained case posts to POST /api/memory/episodes/{episode_id}/requeue (REQ-dashboard-api-057, the only public manual recovery verb) instead of the retired /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation. The case name, its fake pool, its status-code expectation and every other assertion are unchanged."
+    },
+    {
+      "before": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_resets_dead_letter_episode",
+      "after": "tests/api/test_memory_retry_consolidation.py::test_retry_consolidation_resets_dead_letter_episode",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "The retained case posts to POST /api/memory/episodes/{episode_id}/requeue (REQ-dashboard-api-057, the only public manual recovery verb) instead of the retired /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation. It also expects the lifecycle event type episode_consolidation_requeued (the concurrent-requeue scenario) instead of episode_consolidation_retry_requested. The 200 status, the pending reset, the single audit execute and the memory_events insert assertions are unchanged."
+    },
+    {
+      "before": "tests/modules/memory/test_consolidation_lifecycle.py::test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_scheduler",
+      "after": "tests/modules/memory/test_consolidation_lifecycle.py::test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_scheduler",
+      "contracts": [
+        "REQ-dashboard-api-057"
+      ],
+      "reason": "Only the expected lifecycle event type changes, to episode_consolidation_requeued (REQ-dashboard-api-057, concurrent-requeue scenario). The reset, the cleared retry state, the lease clearing and the real-scheduler reclaim assertions are unchanged."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/changes/memory-honesty-last-mile/specs/dashboard-api/spec.md",
+      "id": "REQ-dashboard-api-057",
+      "before_sha256": "4e2f7553127bf6230a61a210aa58c16c90f2ad76178e98fdba6b401a6f0b1f35",
+      "after_sha256": "68ff605e3ff30e750f48f557058fced843b744423b44211803b3898f5a0218aa"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "frontend/src/api/client.memory-requeue.test.ts",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "76081d723b5caa757c9b5a7451b076f9316378a410b8629c5c49f7f071743ab5"
+      }
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "ea2baa9feceb03d3190fcfe2169d57a141e792707508f64cbd7c4ebb39f14061"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "7d04f64cb80f06ed1aea6a8026879b51b7452ad6c84d9294dd239e0fa60c5fee"
+      }
+    },
+    {
+      "path": "frontend/src/api/types.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "aebaeb525c5bf7540d64dacbc412ac4034840d36547463e970c578a28a53ba18"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e971da1a07606fb465bb921fb0286b6511534be73c88c0b4eac36d25dd1d3de5"
+      }
+    },
+    {
+      "path": "frontend/src/components/memory/EpisodesRegister.test.tsx",
+      "before": {
+        "mode": "100644",
+        "sha256": "d674f41067c6791ef24cc886690ff7df4c36ebee4dbf048c97914fdb6689239e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e6a4defe1ef7d958a4f4af04c2defac07458f44feb819dd641ef2e1b9cbd47a4"
+      }
+    },
+    {
+      "path": "frontend/src/components/memory/EpisodesRegister.tsx",
+      "before": {
+        "mode": "100644",
+        "sha256": "538ea82266bab7a375ac456049f37aa3bb5d723e13e716880635bd72008d1dd3"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0946581d8a7749a7b525fde8760bce0952c59660a38f6a89debe753ed1981da0"
+      }
+    },
+    {
+      "path": "frontend/src/components/memory/MemoryBrowser.test.tsx",
+      "before": {
+        "mode": "100644",
+        "sha256": "7e8062884212f5dbe4f5511492ed48ba859981d6aec4086a622780a4b5fdf4a4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "62ed67b5b803c5eed55e36f84685c2956b594d2f95f46e0996ce04eec882c19c"
+      }
+    },
+    {
+      "path": "frontend/src/hooks/use-memory.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "85d3a0691e57e70f69065f334a00049f8d3dc19d18d8cab2433ec916c65c0591"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "889a79a0912371c4ba159c1b044781b261d51b2ecac9051e012d97021bf1e755"
+      }
+    },
+    {
+      "path": "frontend/src/lib/memory-derived.test.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "21ee991f431f10ee7ac580ad35dbd6f6d02df1df0da2877621d7d443e1350d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f506ce83b494fb6fa163abfc7cb1c82884cd477e372420032566521e8d2fb27f"
+      }
+    },
+    {
+      "path": "frontend/src/lib/memory-derived.ts",
+      "before": {
+        "mode": "100644",
+        "sha256": "2407cd6f2d767fa3366fdd4bc86b0e48cfae30a41ebe41c52664607b0750db78"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b0e5e0ed01c6458d764edbc20cec7ae14ae8392049945075aa882065b57f5ed1"
+      }
+    },
+    {
+      "path": "frontend/src/pages/EpisodeDetailPage.test.tsx",
+      "before": {
+        "mode": "100644",
+        "sha256": "c471d3b5ffbb7c75eab0fb0009d3ab7c4191aa3a74974284f68de6429a69cd0e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3d96c28bdc0e1f36df60ccb64a9194a46a4562e7acceb595782a251b7d8fcc2e"
+      }
+    },
+    {
+      "path": "openspec/changes/memory-honesty-last-mile/design.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "7fa6d3f562126ef73f6f1e2eff3d2292eef4d70a7ebec37bdc184bb8093c9df0"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d586275e63d157bcb44dd86a1ed28cc23881feaf521a595f1bef365443ddca89"
+      }
+    },
+    {
+      "path": "openspec/changes/memory-honesty-last-mile/tasks.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "6be55b93de790b32a6d13b8d08083cd5235321f4e7e435001483882d0b2e866f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "9ccf672090985138cb24b3d99e4ec774f03a8378b92c1c8839d9f936c760ed83"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "18bc0aa18fe9cd056c6e03387c418af9cc5a77e2d2bfd9da9ca6d4d13c8e6760"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "18bc0aa18fe9cd056c6e03387c418af9cc5a77e2d2bfd9da9ca6d4d13c8e6760"
+      }
+    },
+    {
+      "path": "src/butlers/api/models/memory.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4df97361be0ec1ee7f8b0a448822faab2f5f776648c152ea88c73717d7a32d11"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5a7cddfd0bc52847e42e59e389ba96d6f59a31198aadba47b404169a76847e8c"
+      }
+    },
+    {
+      "path": "src/butlers/api/routers/memory.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "6cbef00689a183acedc580ff615ec32c051a48a62acc553ea71a416cdc507698"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "0e0a16f9af49eb27e2cf23745d95f52a49a5508ec0477bd08f0d0c5c2bd54331"
+      }
+    },
+    {
+      "path": "src/butlers/modules/memory/storage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a1a631208ff3ec46bd85b7a8d745b8d9a9767f627c42800e696ead62c59f77"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3d62e4992c274bc7c62c5de29a896753656d5dc3ae682ce509edee49287a542d"
+      }
+    },
+    {
+      "path": "tests/api/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5f8c03adf263962d0f8877399b5a1526692f0603b4540f7983598aea838333fa"
+      }
+    },
+    {
+      "path": "tests/api/test_memory_episode_requeue.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "ebd136e15b3fdb69fe68db891860d1564a708e659cded551e613301cf43dfcaa"
+      }
+    },
+    {
+      "path": "tests/api/test_memory_episode_requeue_auth.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "3589a2d722ae5b37a5e3b63817b5f184137fed95373567380e1980f733c7fc23"
+      }
+    },
+    {
+      "path": "tests/api/test_memory_retry_consolidation.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "2988fff7dc798eebdcc76400755069917e9eb9a4c7ac9490de843ba20dac1bf8"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "6ada6de17357c69706084d23e518dd6305e94ab767890c2a96f8347806cd220f"
+      }
+    },
+    {
+      "path": "tests/contract-evolution-requests/bu-kqnum-14-3-episode-requeue-20261019.json",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "1385d4bf5a52e29acac39734d96d7410bb61b4c6c2cfe22b790a245cbeee7e52"
+      }
+    },
+    {
+      "path": "tests/modules/conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "4a8c896309bbc67d07f0c29447c85461b3194fb9c9b881a08ac1f6bfbaba5545"
+      }
+    },
+    {
+      "path": "tests/modules/memory/test_consolidation_lifecycle.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3c099618f61db7ec3a7524f4d6f6d20b5e9168ac27974ed769cf30152a2fa0f4"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "d7c58628347ece4f5974d03e98215e3f62eb2d90542946ad024e7018d05c5fc5"
+      }
+    },
+    {
+      "path": "tests/modules/memory/test_episode_requeue_lifecycle.py",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "f52717e44d93657b41cc5fbe588343f9ce15f4ae55489f719247dc6fc8f07632"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}
