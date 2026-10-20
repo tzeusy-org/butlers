@@ -3,10 +3,13 @@
 How the Butlers system is deployed: processes, ports, and where the
 authoritative configuration lives.
 
-This page is a snapshot, not a contract. Service definitions live in
-`docker-compose.yml` and `docs/operations/docker-deployment.md`; ports live in
-each `roster/{butler}/butler.toml`. When they disagree with this page, they win;
-fix this page. The port map below is the one other docs link to.
+Helm on k3s is the production deployment path, targeting namespace `butlers`;
+`butlers-dev` is the dev namespace. This page maps the repository's chart,
+not a verification of a running production fleet. Workload definitions live in
+`deploy/helm/butlers/templates/`, configuration in `deploy/helm/butlers/values*.yaml`,
+and operator procedures in [Kubernetes Deployment](../../docs/operations/kubernetes-deployment.md).
+Ports live in each `roster/{butler}/butler.toml`. These sources win when this
+snapshot disagrees; fix this page. The port map below is the one other docs link to.
 
 ---
 
@@ -14,48 +17,45 @@ fix this page. The port map below is the one other docs link to.
 
 ```mermaid
 graph TB
-    subgraph Host["Deployment Host (docker compose)"]
-        UP["butlers-up<br/>all roster daemons, one port each"]
-        subgraph ConnProcs["Connector containers"]
-            Conn["connector-* (one per external channel)"]
-        end
-        subgraph Dashboard["dashboard-api :41200"]
-            API["FastAPI"]
-            OBS["fleet shadow observer"]
-        end
-        Vite["frontend-dev :41173 (dev profile)"]
-        MIG["migrations (one-shot)"]
-        MinIO["minio :9000 / :9001"]
+    subgraph K3S["k3s: butlers (prod) / butlers-dev (dev)"]
+        UP["Deployment butlers-up<br/>all roster daemons, one port each"]
+        Conn["Deployments connector-*<br/>enabled entries in values.connectors"]
+        API["Deployment dashboard-api :41200<br/>FastAPI + fleet shadow observer"]
+        MIG["dashboard-api initContainer: migrations"]
+        Front["Deployment frontend<br/>nginx static build"]
+        Jobs["CronJobs butlers-backup / butlers-log-cleanup"]
+        Beads["Optional CronJob butlers-beads-export<br/>dev enabled, prod disabled"]
+        PVC["Persistent volumes<br/>logs, backups, runtime homes, WA bridge, optional beads export"]
     end
-
-    PG["PostgreSQL (external, POSTGRES_HOST)"]
-    OTel["OTel Collector -> Tempo / Prometheus"]
-
-    Conn -- "MCP" --> UP
-    OBS -- "GET /internal/control-plane/identity" --> UP
+    PG["PostgreSQL (external to chart)"]
+    OTel["Cluster LGTM telemetry"]
+    Conn -- "MCP: butlers-up Service" --> UP
+    API -- "identity probes" --> UP
     API -- "SQL" --> PG
     UP -- "SQL" --> PG
     MIG -- "db migrate" --> PG
-    UP -- "S3" --> MinIO
+    Jobs --> PVC
+    Beads --> PVC
     UP -- "OTLP" --> OTel
 ```
 
-`butlers up` runs every roster butler in one container; each butler still
+`butlers up` runs every roster butler in one Deployment; each butler still
 serves its own FastMCP endpoint on its own port. Connectors run as separate
-containers and submit ingress to the Switchboard over MCP. There is no
-`postgres` service: the database is external and reached through
-`POSTGRES_HOST` / `POSTGRES_PORT`. The one-shot `migrations` service must
-complete before any application service starts. The full service list,
-profiles, volumes, and dev/prod port offsets are in
-[Docker Deployment](../../docs/operations/docker-deployment.md#services).
+Deployments and submit ingress to Switchboard over MCP. The database is
+external to the chart. Migrations run in the `dashboard-api` initContainer;
+`make deploy-*` waits for the dashboard and daemon rollouts. The chart also
+provides Services, ExternalSecrets, NetworkPolicies and persistent volumes.
+See [chart workloads](../../docs/operations/kubernetes-deployment.md#what-the-chart-runs)
+for the object map and retained off-cluster components.
 
 ---
 
 ## Port Assignments
 
 This is the single port map; other docs link here. Sources of truth: `port` in
-`roster/*/butler.toml`, `CONNECTOR_HEALTH_PORT` in `docker-compose.yml` (or the connector's code
-default), and the mode block in `scripts/compose.sh`.
+`roster/*/butler.toml`, connector `healthPort` entries in the shared chart values
+(or connector code defaults where no chart override is set), and `nodePorts`
+in the dev/prod chart overlays.
 
 ### Butler MCP Ports (41100-41112)
 
@@ -79,7 +79,11 @@ A new butler takes the next free port after the highest one in use.
 
 ### Connector Health Ports (40080-40092)
 
-Container-internal unless noted; each connector serves `/health` and `/metrics` on its port.
+For chart-deployed connectors, these are pod-internal health ports unless a
+Service exposes them. Entries outside the chart retain their connector code
+defaults; live-listener remains off-cluster (see
+[retained components](../../docs/operations/kubernetes-deployment.md#what-the-chart-runs)).
+Each connector serves `/health` and `/metrics` on its port.
 
 | Connector | Port |
 |---|---|
@@ -88,33 +92,28 @@ Container-internal unless noted; each connector serves `/health` and `/metrics` 
 | gmail, whatsapp-user | 40082 (separate containers) |
 | spotify | 40083 |
 | google-calendar | 40085 |
-| owntracks | 40086 (host-published) |
+| owntracks | 40086 (NodePort Service) |
 | home-assistant | 40087 |
 | google-drive | 40088 |
 | steam | 40089 |
 | google-health | 40090 |
 | live-listener | 40091 |
-| activitywatch | 40092 (host-published) |
+| activitywatch | 40092 |
 
-### Host Ports by Mode
+### Kubernetes Services and NodePorts
 
-`scripts/compose.sh` publishes prod and dev on different host ports (bound to `127.0.0.1`) so both
-stacks can run side by side. Inside the containers the ports are always the prod values.
+These are chart values, not observed live listeners. `butlers-up` exposes
+41100-41112 inside the cluster; `dashboard-api` exposes 41200.
 
-| Service | Prod | Dev |
+| Service | Prod NodePort (`butlers`) | Dev NodePort (`butlers-dev`) |
 |---|---|---|
-| Switchboard MCP (`butlers-up`) | 41100 | 42100 |
-| Dashboard API | 41200 | 42200 |
-| Frontend (Vite dev server, `frontend-dev`) | 41173 | 42173 |
-| OwnTracks webhook | 40086 | 42086 |
+| `frontend` (Service port 80, nginx target 8080) | 31173 | 32173 |
+| `dashboard-api-host` (Service port 41200) | 31200 | 32200 |
+| `connector-owntracks-host` (Service port 40086) | 31086 | 32086 |
 
-### Infrastructure Ports
-
-| Service | Port | Notes |
-|---|---|---|
-| PostgreSQL | `POSTGRES_PORT` (default 5432) | External host; not a Compose service |
-| MinIO API | 9000 | S3-compatible blob storage, `127.0.0.1` only |
-| MinIO Console | 9001 | Web UI for MinIO, `127.0.0.1` only |
+PostgreSQL uses `POSTGRES_PORT` (default 5432) outside the chart. The chart
+does not deploy MinIO; the retained Compose MinIO and host-port setup is
+covered by [Docker Deployment](../../docs/operations/docker-deployment.md).
 
 ---
 
@@ -124,7 +123,7 @@ One PostgreSQL database with one schema per butler plus the shared `public`
 schema for cross-butler identity, model catalog, and secrets. Each butler's
 role sees only its own schema and `public`, and its `search_path` is
 `{butler_schema}, public`. Schema creation and Alembic migrations run in the
-`migrations` service (`db migrate`) before daemons start.
+`dashboard-api` migrations initContainer (`db migrate`).
 
 ---
 
@@ -142,7 +141,13 @@ is [`docs/identity_and_secrets/environment-variables.md`](../../docs/identity_an
 
 - Local development setup and quality gates:
   [Dev Environment](../../docs/getting_started/dev-environment.md).
-- Production deploys (`butlers deploy`):
+- Production deploys: `make -C deploy/helm/butlers ship-prod` builds and pushes
+  images, then deploys the Helm release to namespace `butlers`.
+  `make -C deploy/helm/butlers deploy-prod TAG=<tag>` deploys an already-pushed tag.
+  See [Kubernetes Deployment](../../docs/operations/kubernetes-deployment.md#deploy)
+  for prerequisites and the workflow.
+- Retained pre-cutover off-cluster Compose path (`butlers deploy`), pending
+  deletion in bu-dss7he.14:
   [Docker Deployment](../../docs/operations/docker-deployment.md#production-deploys-butlers-deploy).
 
 ---
