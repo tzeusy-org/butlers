@@ -25,7 +25,7 @@ Scope: v1-mandatory
   `source_endpoint_identity`, `source_sender_identity`,
   `source_sender_display_name`, `source_thread_identity`,
   `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`,
-  `policy_tier`, `triage_decision`, and `triage_target`
+  `policy_tier`, `triage_decision`, `triage_target`, and `sender_authentication`
 - **AND** `source_sender_display_name` SHALL be the raw sender display name
   from `sender.display_name`, or `NULL` when the envelope carried none; unlike
   `source_sender_identity` it SHALL remain verbatim for identity enrichment
