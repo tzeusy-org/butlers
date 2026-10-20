@@ -29,6 +29,8 @@ predates this revision leaves the nullable columns untouched.
 
 The core chain runs once per butler schema, so every statement targets ``current_schema()``
 through the search path (core_082 pattern) and is skipped where the table does not exist.
+Only the runtime-role sequence GRANT tolerates ``insufficient_privilege``; the DDL fails
+loudly, since a swallowed error would roll the whole step back yet still stamp it applied.
 """
 
 from __future__ import annotations
@@ -124,14 +126,19 @@ def upgrade() -> None:
                 BEFORE UPDATE ON {_TABLE}
                 FOR EACH ROW EXECUTE FUNCTION {_GUARD}();
 
+            -- Only the grant may be skipped for lack of privilege (core_001's default
+            -- privileges already cover the runtime role); every DDL statement above
+            -- must fail loudly rather than leave core_272 stamped but unapplied.
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
-                EXECUTE format(
-                    'GRANT USAGE, SELECT ON SEQUENCE %I.%I TO %I',
-                    current_schema(), '{_SEQUENCE}', runtime_role
-                );
+                BEGIN
+                    EXECUTE format(
+                        'GRANT USAGE, SELECT ON SEQUENCE %I.%I TO %I',
+                        current_schema(), '{_SEQUENCE}', runtime_role
+                    );
+                EXCEPTION
+                    WHEN insufficient_privilege THEN NULL;
+                END;
             END IF;
-        EXCEPTION
-            WHEN insufficient_privilege THEN NULL;
         END
         $$;
     """)
