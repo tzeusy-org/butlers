@@ -56,6 +56,7 @@ async def test_discord_is_absent_from_available_connectors() -> None:
 
 
 def test_discord_has_no_oauth_manifest_or_auth_registration() -> None:
-    assert get_scope_manifest("discord_user") is None
-    assert "discord_user" not in APPLICABILITY_MATRIX
-    assert get_applicability("discord_user").oauth_supported is False
+    for connector_type in ("discord", "discord_user"):
+        assert get_scope_manifest(connector_type) is None
+        assert connector_type not in APPLICABILITY_MATRIX
+        assert get_applicability(connector_type).oauth_supported is False
