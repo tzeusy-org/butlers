@@ -363,6 +363,9 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
         ("for-update-joins", "check_for_update_joins.py"),
     ):
         plan.append((name, [python, f"scripts/{script}"]))
+    if any(name.startswith("frontend/") for name in paths):
+        # Hosted guards runs these when frontend/ changed (bu-5n9pfa); one shared step list.
+        plan.append(("frontend-guards", [python, "scripts/frontend_guards.py", "--assume-changed"]))
     plan.append(("openspec-strict", ["openspec", "validate", "--all", "--strict"]))
     if collection_required(paths):
         plan.append(

@@ -240,6 +240,7 @@ check-guards: check-lock lint check-format check-for-update-joins check-em-dashe
 	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/extract-frontend-copy.py
 	git diff --exit-code -- frontend/COPY_INVENTORY.md
+	python3 scripts/frontend_guards.py --base "$${CONDENSATION_BASE:-$(BASE)}" --skip-inventory
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \
