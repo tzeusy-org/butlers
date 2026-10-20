@@ -112,10 +112,16 @@ never touched.
 
 ### `public.insight_amendments`
 
-**Decision: BOUNDED BY INSIGHT LIFECYCLE**
+**Decision: RETAINED AS EVIDENCE (no automatic bound yet)**
 
-One row per (delivered candidate, premise resolution), removed by `ON DELETE
-CASCADE` when the candidate is pruned. No independent retention concern.
+One row per (delivered candidate, premise resolution). Since `core_273` the table has no
+foreign key to `insight_candidates`, so rows outlive candidate cleanup (which deletes
+non-pending candidates after 30 days) and the amendment history of a deleted candidate is
+kept. Nothing prunes the table: a row is a few small columns written once per premise
+resolution. An orphaned row, including one still `pending`, is never settled, because the
+broker's joins skip an amendment whose candidate no longer exists. Whether to bound the
+evidence by age and whether to settle orphaned `pending` rows are open choices that no
+migration or job makes today.
 
 ---
 

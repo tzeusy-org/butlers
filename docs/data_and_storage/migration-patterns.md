@@ -293,15 +293,16 @@ bootstrap change and disposable-PG validation of first install, retained-table
 replay, repeated convergence and the same positive/negative role controls.
 It is a proposal, not an adopted owner change or a verified repair. No applied
 core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
-is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+is authorized here. Function-owner convergence is not addressed by `core_273` and remains
+unowned (see the settled scope below).
 
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
 candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
 folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
 recover the removed candidate fields. The surviving table does not mean that older
-code can deliver corrections. Its existing candidate FK still cascades on deletion;
-this decision is not a promise of indefinite evidence retention.
+code can deliver corrections. From `core_273` the table has no candidate FK, so its rows also
+outlive candidate cleanup; the retention bound is in `docs/operations/data-retention.md`.
 
 Retaining a table also does not converge function ownership. A managed-bootstrap
 reupgrade can recreate the two definers under the bootstrap owner. An ordinary
@@ -311,9 +312,14 @@ them through schema ownership; the function is then unavailable (`42883`) until
 ordinary reupgrade recreates it under the ordinary owner. Record the actual
 database/schema authority and function absence or ownership at each step. Do not
 extrapolate this DROP authority to a migration login that lacks schema ownership.
-Broader caller/source validation, FK lifecycle, FORCE RLS and
-definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
-authority or waiver for those choices.
+The `bu-q7vx1q.33` items were merged into `bu-q7vx1q.32` and are settled there: caller
+validation (`core_273` makes the definer insert only for a resolved `owner_conditions` row
+with exactly that source, fingerprint and `resolved_at`), FK lifecycle (the candidate FK is
+dropped) and FORCE RLS (declined: the table owner is the migration role, so it would change
+nothing for runtime callers). Function-owner convergence is not part of that scope: a
+bootstrap-owned definer still makes `core_273`'s best-effort `CREATE OR REPLACE` a silent
+no-op, so the bound body does not reach such a database until the owner proposal above is
+adopted. This investigation adds no authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
