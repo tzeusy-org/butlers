@@ -87,6 +87,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate",
         "vo2_max",
         "workout",
+        "weight",
+        "body_fat",
     }
     assert {bundle.resource: bundle.endpoint_path for bundle in RESOURCE_BUNDLES} == {
         "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
@@ -97,6 +99,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
         "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
+        "weight": "/users/me/dataTypes/weight/dataPoints",
+        "body_fat": "/users/me/dataTypes/body-fat/dataPoints",
     }
 
 

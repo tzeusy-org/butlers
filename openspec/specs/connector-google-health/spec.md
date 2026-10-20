@@ -125,6 +125,14 @@ Scope: v1-mandatory
 - **AND** SHALL emit envelopes only for records not already observed
 - **AND** SHALL advance the cursor after successful submission
 
+#### Scenario: Body measurement resources
+
+- **WHEN** the connector runs its resource bundles
+- **THEN** it SHALL also poll `weight` and `body_fat` bundles (`dataTypes/weight` and `dataTypes/body-fat`, plain `dataPoints` list endpoints, within the already-requested `health_metrics_and_measurements.readonly` scope), each defaulting to 3600s
+- **AND** it SHALL emit one envelope per sample, with `event.external_event_id` `google_health:<email>:weight:<physicalTime>` (or `body_fat`) and `control.idempotency_key` equal to it, so a trailing-window re-poll is idempotent per sample time
+- **AND** the weight value SHALL be converted from grams to kilograms at the connector, with body fat as a percentage
+- **AND** the Health ingest SHALL write `measurement_weight` or `measurement_body_fat` with `valid_at` equal to the sample time and `metadata.source='google_health'`
+
 ### Requirement: Reconciled Stream Consumption
 
 The connector SHALL consume each supported data-type bundle through its
