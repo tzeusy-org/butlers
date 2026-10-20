@@ -396,8 +396,9 @@ def emit_helper():
 async def test_dual_emission_ordering(emit_helper) -> None:
     calls: list[str] = []
 
-    async def call_tool(tool: str, env: dict[str, Any]) -> None:
+    async def call_tool(tool: str, env: dict[str, Any]) -> dict[str, str]:
         calls.append(env["source"]["channel"])
+        return {"status": "accepted"}
 
     client = MagicMock()
     client.call_tool = AsyncMock(side_effect=call_tool)
@@ -433,8 +434,9 @@ async def test_dual_emission_ordering(emit_helper) -> None:
 async def test_no_promotion_when_disabled(emit_helper) -> None:
     calls: list[str] = []
 
-    async def call_tool(tool: str, env: dict[str, Any]) -> None:
+    async def call_tool(tool: str, env: dict[str, Any]) -> dict[str, str]:
         calls.append(env["source"]["channel"])
+        return {"status": "accepted"}
 
     client = MagicMock()
     client.call_tool = AsyncMock(side_effect=call_tool)
@@ -494,11 +496,12 @@ async def test_secondary_failure_returns_false(emit_helper) -> None:
     advance the checkpoint (returns False)."""
     calls: list[str] = []
 
-    async def call_tool(tool: str, env: dict[str, Any]) -> None:
+    async def call_tool(tool: str, env: dict[str, Any]) -> dict[str, str]:
         ch = env["source"]["channel"]
         calls.append(ch)
         if ch == "wellness":
             raise RuntimeError("transient")
+        return {"status": "accepted"}
 
     client = MagicMock()
     client.call_tool = AsyncMock(side_effect=call_tool)

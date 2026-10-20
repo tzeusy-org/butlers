@@ -469,7 +469,9 @@ async def test_process_window_event_keeps_raw_url_and_title_out_of_ingest_envelo
         ),
         db_pool=MagicMock(),
     )
-    connector._mcp_client.call_tool = AsyncMock()  # type: ignore[method-assign]
+    connector._mcp_client.call_tool = AsyncMock(  # type: ignore[method-assign]
+        return_value={"status": "accepted"}
+    )
     raw_url = "https://docs.example.test/private?token=secret"
     raw_title = "Sensitive browser tab title"
     raw_web_event = _web_event(timestamp=_TS.isoformat(), duration=60, url=raw_url, title=raw_title)

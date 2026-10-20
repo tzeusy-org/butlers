@@ -74,6 +74,7 @@ from butlers.connectors.discretion_dispatcher import (
 )
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
@@ -2063,12 +2064,7 @@ class TelegramUserClientConnector:
         Handles retries and treats accepted duplicates as success.
         """
         try:
-            result = await self._mcp_client.call_tool("ingest", envelope)
-
-            # Check for tool-level error response
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = (await submit_ingest(self._mcp_client, envelope)).response
 
             logger.info(
                 "Submitted to Switchboard ingest",

@@ -78,6 +78,7 @@ from butlers.connectors.discretion_dispatcher import (
 )
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import IngestRejected, submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
@@ -2107,9 +2108,9 @@ class WhatsAppUserClientConnector:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
         failure_class: str | None = None
         try:
-            result = await self._mcp_client.call_tool("ingest", envelope)
-            if isinstance(result, dict) and result.get("status") == "error":
-                failure_class = "ingest_error_response"
+            result = (await submit_ingest(self._mcp_client, envelope)).response
+        except IngestRejected:
+            failure_class = "ingest_error_response"
         except Exception as exc:
             failure_class = type(exc).__name__
 

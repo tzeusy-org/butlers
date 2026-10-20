@@ -81,6 +81,7 @@ from pydantic import BaseModel
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
@@ -1101,11 +1102,7 @@ class DiscordUserConnector:
         status = "error"
 
         try:
-            result = await self._mcp_client.call_tool("ingest", envelope)
-
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = (await submit_ingest(self._mcp_client, envelope)).response
 
             self._last_ingest_submit = time.time()
 

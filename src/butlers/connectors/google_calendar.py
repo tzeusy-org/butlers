@@ -61,6 +61,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
@@ -883,7 +884,7 @@ class GoogleCalendarAccountRuntime:
             raise RuntimeError("MCP client not initialized")
 
         for envelope in envelopes:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
 
 
 # ---------------------------------------------------------------------------
@@ -1630,20 +1631,7 @@ class CalendarConnectorRuntime:
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit the ingest.v1 envelope to the Switchboard via MCP."""
-        result = await self._mcp_client.call_tool("ingest", envelope)
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"Switchboard returned non-dict result for ingest envelope: result={result!r}"
-            )
-        status = result.get("status", "")
-        if not status:
-            raise RuntimeError(
-                f"Switchboard result missing or empty status for ingest envelope: result={result!r}"
-            )
-        if status not in ("accepted", "duplicate", "queued"):
-            raise RuntimeError(
-                f"Switchboard rejected envelope: status={status!r}, result={result!r}"
-            )
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # "Starting soon" synthetic notifications

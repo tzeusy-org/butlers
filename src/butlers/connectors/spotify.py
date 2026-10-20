@@ -65,6 +65,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -3112,16 +3113,10 @@ class SpotifyConnector:
         async with self._semaphore:
             start_t = time.perf_counter()
             try:
-                result = await self._mcp_client.call_tool("ingest", envelope)
+                outcome = await submit_ingest(self._mcp_client, envelope)
                 latency = time.perf_counter() - start_t
 
-                status = "success"
-                if isinstance(result, dict):
-                    resp_status = result.get("status", "")
-                    if resp_status == "duplicate":
-                        status = "duplicate"
-                    elif resp_status not in ("accepted", "queued", "duplicate"):
-                        logger.warning("SpotifyConnector: unexpected ingest response: %s", result)
+                status = "duplicate" if outcome.status == "duplicate" else "success"
 
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_ingest_submit = time.time()
@@ -3176,7 +3171,7 @@ class SpotifyConnector:
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
         """Submit directly to Switchboard (used by replay drain — skips filter gate)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # Health state callbacks
