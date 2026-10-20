@@ -44,7 +44,7 @@ async def test_config_export_reads_own_pools_into_legacy_member():
     )
     assert [c.args[0] for c in shared.fetch.await_args_list] == [
         "SELECT * FROM public.model_catalog ORDER BY id",
-        "SELECT * FROM public.permissions ORDER BY id",
+        "SELECT * FROM public.permissions ORDER BY butler, permission",
     ]
     # A genuinely census-free helper still uses its caller's local relation.
     shared.reset_mock()

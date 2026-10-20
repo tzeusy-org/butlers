@@ -131,7 +131,7 @@ _SCOPE_MAP: dict[str, list[tuple[str, str]]] = {
     "config": [
         ("{butler}.runtime_config", "SELECT * FROM runtime_config ORDER BY butler_name"),
         ("public.model_catalog", "SELECT * FROM public.model_catalog ORDER BY id"),
-        ("public.permissions", "SELECT * FROM public.permissions ORDER BY id"),
+        ("public.permissions", "SELECT * FROM public.permissions ORDER BY butler, permission"),
     ],
 }
 

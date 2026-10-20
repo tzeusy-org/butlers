@@ -144,7 +144,8 @@ async def test_all_export_matches_migrated_scope_union(export_sources, monkeypat
         assert [row["butler_name"] for row in runtime] == ["general", "switchboard"]
         assert all("id" not in row for row in runtime)
         for relation in ("audit_log", "model_catalog", "permissions"):
-            native = await admin.fetch(f"SELECT * FROM public.{relation} ORDER BY id")
+            order = "butler, permission" if relation == "permissions" else "id"
+            native = await admin.fetch(f"SELECT * FROM public.{relation} ORDER BY {order}")
             expected_rows = json.loads(
                 json.dumps(
                     [
