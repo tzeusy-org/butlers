@@ -90,3 +90,33 @@ Scope: v1-mandatory
 - **WHEN** Gmail provider connectivity is healthy but contact classification is unavailable
 - **THEN** the known-contact check remains unavailable
 - **AND** provider health and rule admission retain their existing meaning
+
+### Requirement: Known-contact drop episodes open one standing owner condition
+
+A scheduled Switchboard job SHALL read the unanswered marked drops from known contacts in the trailing seven days (statuses `filtered` and `replay_failed`) and group them by `(filter_reason, sender_identity)`. It SHALL reconcile that complete set into the owner condition ledger under source `switchboard:dropped-known`, with a fingerprint hashed from the pair, so one episode is one condition however many messages it dropped. The condition snapshot and any candidate SHALL carry only the count and window bounds: no sender address, subject, body or filter reason. On an `opened` or `reopened` transition only, the job SHALL propose exactly one insight candidate of category `dropped-known` whose premise is that condition; a later scan that only updates the count SHALL propose nothing. A condition SHALL resolve when its rows are replayed or leave the window, and a later drop from the same pair SHALL reopen it with one new candidate. While current or historical classification is unknown, or the read fails, the job SHALL change no condition and propose nothing, because an unknown read SHALL NOT resolve an episode. The job SHALL NOT use `runtime_attention_outbox` and SHALL NOT replay, narrow or alter what is dropped.
+
+ID: REQ-ingestion-policy-003
+Source: bu-q7vx1q.88.2; bu-q7vx1q.4 move #4 slice S2; src/butlers/core/owner_conditions.py state-ledger contract
+Scope: v1-mandatory
+
+#### Scenario: A drop episode opens once and notifies once
+
+- **WHEN** two marked drops from one sender by one rule are read and later a third arrives
+- **THEN** exactly one condition exists for that pair and exactly one candidate was proposed
+- **AND** the third drop updates the count without proposing again
+
+#### Scenario: Replay or aging resolves and a new drop reopens
+
+- **WHEN** the episode's rows are replayed or leave the seven day window
+- **THEN** the condition resolves
+- **AND** a later drop from the same pair reopens it with one new candidate
+
+#### Scenario: Unknown classification changes nothing
+
+- **WHEN** current classification is unavailable or a drop in the window has unknown historical classification
+- **THEN** the job opens, resolves and proposes nothing and reports a degraded run
+
+#### Scenario: Nothing private is stored
+
+- **WHEN** a condition or candidate is written for an episode
+- **THEN** neither contains the sender address, subject, body or filter reason

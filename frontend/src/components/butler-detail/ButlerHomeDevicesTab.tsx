@@ -29,6 +29,7 @@ import { useTickingNow } from "@/hooks/use-ticking-now";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
+import { HomeSafetyWatchPanel } from "@/components/butler-detail/HomeSafetyWatchPanel";
 import { HomePersonMappingPanel } from "@/components/butler-detail/HomePersonMappingPanel";
 import {
   useHomeSnapshotStatus,
@@ -620,6 +621,8 @@ export default function ButlerHomeDevicesTab() {
       />
 
       <HomeAtmosphereLocationPanel />
+
+      <HomeSafetyWatchPanel />
 
       <Panel title="Person mappings" span={4} testId="home-person-mapping-card">
         <HomePersonMappingPanel />

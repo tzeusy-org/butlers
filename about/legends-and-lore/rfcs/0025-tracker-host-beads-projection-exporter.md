@@ -5,6 +5,8 @@ activation remain owner-gated
 
 **Date:** 2026-08-13
 
+Governing doctrine: [development.md, Work Exists Only in Beads](../../heart-and-soul/development.md#work-exists-only-in-beads) and [security.md, Session Sandboxing](../../heart-and-soul/security.md#session-sandboxing) (sessions reach neither the tracker host nor tracker credentials; only a bounded projection is exposed).
+
 ## Summary
 
 Butlers will obtain the small amount of Beads data required by the Decisions

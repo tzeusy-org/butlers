@@ -17,7 +17,7 @@ class HealthModuleConfig(ToolGroupMixin, BaseModel):
 
     Tool groups
     -----------
-    measurements : measurement_log, measurement_history, measurement_latest
+    measurements : measurement_log, measurement_history, measurement_latest, workout_last
     medications  : medication_add, medication_list, medication_log_dose, medication_history,
                    medication_travel_snapshot
     conditions   : condition_add, condition_list, condition_update

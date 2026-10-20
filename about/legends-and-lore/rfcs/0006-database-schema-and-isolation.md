@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+Governing doctrine: [security.md, Schema Isolation](../../heart-and-soul/security.md#schema-isolation) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation), implementing [vision.md rule 1, the user owns the database and all data](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 

@@ -25,6 +25,7 @@ from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
     get_db_manager,
+    get_discovery_diagnostics,
     get_mcp_manager,
     get_pricing,
     init_db_manager,
@@ -303,7 +304,9 @@ async def lifespan(app: FastAPI):
                     get_db_manager().pool("switchboard"),
                     butler_configs,
                     after_cycle=controller_after_cycle(
-                        get_db_manager().pool("switchboard"), butler_configs
+                        get_db_manager().pool("switchboard"),
+                        butler_configs,
+                        get_discovery_diagnostics().is_retired,
                     ),
                 ),
             )

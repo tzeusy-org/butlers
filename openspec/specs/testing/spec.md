@@ -3,120 +3,6 @@
 ## Purpose
 Defines the test framework configuration, test categories and markers, test infrastructure (Docker PostgreSQL testcontainers, DB fixtures, resilient teardown), E2E staging harness architecture, E2E test domains (security, state, contracts, observability, approvals, resilience, flows, scheduling, performance, infrastructure), conftest fixture hierarchy, and test naming conventions.
 
-## Quick Start
-
-```bash
-# Install dependencies
-uv sync --dev
-
-# Run unit tests only (no Docker needed)
-uv run pytest tests/ --ignore=tests/e2e --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q
-
-# Run integration tests (requires Docker)
-uv run pytest roster/ -q
-
-# Run E2E tests (requires Docker + ANTHROPIC_API_KEY + claude CLI)
-uv run pytest tests/e2e/ -v -s
-
-# Run a single E2E scenario by ID
-uv run pytest tests/e2e/test_scenario_runner.py -v -k "health-weight-log" -s
-
-# Run a single E2E flow module
-uv run pytest tests/e2e/test_health_flow.py -v -s --tb=long
-
-# Maximum verbosity (all logs to console)
-uv run pytest tests/e2e/ -v -s --log-cli-level=DEBUG --tb=long
-```
-
-## Debugging E2E Tests
-
-### Inspecting Databases During a Test Run
-
-While tests are running (or paused in a debugger), connect to any butler's database via the testcontainer's exposed port:
-
-```bash
-# The ecosystem fixture logs the actual port at session start.
-psql -h localhost -p $EXPOSED_PORT -U test -d butlers   # then: SET search_path TO health;
-```
-
-The `butler_ecosystem` fixture is session-scoped. If you set a breakpoint, all butlers remain running on their ports and all databases remain accessible.
-
-### Interactive Debugging
-
-From a debugger breakpoint inside a test, you can manually call MCP tools:
-
-```python
-from fastmcp import Client as MCPClient
-
-async with MCPClient("http://localhost:41103/sse") as client:
-    result = await client.call_tool("status", {})
-    print(result)
-```
-
-### Log Triage Commands
-
-All butler logs are captured to `.tmp/e2e-logs/e2e-latest.log`:
-
-```bash
-# All errors and exceptions
-grep -i 'error\|exception\|traceback' .tmp/e2e-logs/e2e-latest.log
-
-# Errors for a specific butler
-grep -i 'error.*health\|health.*error' .tmp/e2e-logs/e2e-latest.log
-
-# LLM invocations
-grep 'spawner.*trigger\|ClaudeCodeAdapter' .tmp/e2e-logs/e2e-latest.log
-
-# MCP tool calls
-grep 'tool_span\|call_tool' .tmp/e2e-logs/e2e-latest.log
-
-# Module failures (expected for telegram, email, calendar)
-grep 'Module.*disabled\|Module.*failed' .tmp/e2e-logs/e2e-latest.log
-
-# Routing decisions
-grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
-```
-
-### Architecture Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    TEST HARNESS (pytest)                       │
-│                                                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │  conftest.py  │  │ scenarios.py │  │ test_*_flow.py   │    │
-│  │              │  │              │  │                  │    │
-│  │ Ecosystem    │  │ E2EScenario  │  │ Per-butler       │    │
-│  │ bootstrap    │  │ dataclass    │  │ complex flows    │    │
-│  │ + fixtures   │  │ registry     │  │                  │    │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘    │
-│         │                 │                    │               │
-│         ▼                 ▼                    ▼               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              BUTLER ECOSYSTEM (session-scoped)           │  │
-│  │                                                          │  │
-│  │  Switchboard ──► General ──► Relationship ──► Health     │  │
-│  │   :41100          :41101       :41102           :41103   │  │
-│  │                                                          │  │
-│  │  Messenger                                               │  │
-│  │   :41104                                                  │  │
-│  │                                                          │  │
-│  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
-│  └──────────────────────┬──────────────────────────────────┘  │
-│                         │                                      │
-│                         ▼                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
-│  │                                                          │  │
-│  │  One `butlers` database; per-butler SCHEMAS:             │  │
-│  │  switchboard  general  relationship  health  messenger   │  │
-│  │  plus shared `public`                                    │  │
-│  │  Core tables: state, scheduled_tasks, sessions           │  │
-│  │  Butler tables: measurements, contacts, butler_registry  │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-```
-
 ## Requirements
 
 ### Requirement: Test Framework Configuration
@@ -647,6 +533,23 @@ E2E infrastructure tests SHALL validate the staging environment: PostgreSQL test
 - **WHEN** the E2E session starts
 - **THEN** it validates: Docker daemon is running, `ANTHROPIC_API_KEY` is set, `claude` CLI is on PATH, and Python 3.12+ is available
 - **AND** missing prerequisites result in `pytest.skip()` with a clear message, not a confusing traceback
+
+#### Scenario: Missing claude binary skips the whole E2E session
+- **WHEN** the `claude` binary is not found on `PATH` (`shutil.which("claude")` is empty)
+- **THEN** the session-scoped autouse fixture `require_claude_binary` in `tests/e2e/conftest.py` skips every E2E test by raising `pytest.skip(..., allow_module_level=True)` from the fixture
+- **AND** the session is reported as skipped, not failed
+
+#### Scenario: A new roster butler boots with no test edits
+- **WHEN** a directory containing a `butler.toml` is added under `roster/`
+- **THEN** the E2E ecosystem bootstrap discovers it through `list_butlers()` and provisions its schema, runs its migrations, assigns its offset port, starts it and tears it down with the other butlers
+- **AND** no change to the bootstrap code or to existing E2E tests is required to boot it
+- **AND** this covers only the bootstrap: declarative scenarios in `tests/e2e/scenarios.py` and the per-butler pool convenience fixtures are written by hand and are not generated from the roster
+
+#### Scenario: LLM output is asserted loosely and routing exactly
+- **WHEN** a declarative E2E scenario is verified
+- **THEN** assertions on LLM-driven behavior are loose: expected tool calls are checked as a subset of the tool names actually called (set containment, not exact match), and a scenario that exceeds its timeout is recorded as a timeout without failing the whole run
+- **AND** the routing target must equal the expected butler exactly
+- **AND** database assertions are evaluated and logged, not enforced: a failed assertion is logged as a warning and does not fail the scenario, and dict rows are compared on the expected key subset only
 
 #### Scenario: Module degradation during E2E
 - **WHEN** modules lack external service credentials (Telegram, Email, Calendar, Memory)
