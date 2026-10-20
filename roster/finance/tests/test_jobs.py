@@ -90,6 +90,10 @@ CREATE TABLE IF NOT EXISTS finance.subscriptions (
     cancellation_url    TEXT,
     notice_period_days  INTEGER,
     cancel_by           DATE,
+    cancellation_url_source TEXT NOT NULL DEFAULT 'extracted'
+                            CHECK (cancellation_url_source IN ('owner', 'extracted')),
+    status_source       TEXT NOT NULL DEFAULT 'extracted'
+                            CHECK (status_source IN ('owner', 'extracted')),
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -290,6 +294,8 @@ async def _insert_subscription(
     notice_period_days: int | None = None,
     cancel_by: date | None = None,
     metadata: dict | None = None,
+    cancellation_url_source: str = "extracted",
+    status_source: str = "extracted",
 ) -> str:
     if next_renewal is None:
         next_renewal = _today() + timedelta(days=7)
@@ -297,8 +303,9 @@ async def _insert_subscription(
         """
         INSERT INTO finance.subscriptions
             (service, amount, currency, frequency, next_renewal, status,
-             cancellation_url, notice_period_days, cancel_by, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+             cancellation_url, notice_period_days, cancel_by, metadata,
+             cancellation_url_source, status_source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
         RETURNING id
         """,
         service,
@@ -311,6 +318,8 @@ async def _insert_subscription(
         notice_period_days,
         cancel_by,
         json.dumps(metadata or {}),
+        cancellation_url_source,
+        status_source,
     )
     return str(row_id)
 
@@ -1473,6 +1482,7 @@ async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
             cancellation_url="https://adobe.com/cancel",
             notice_period_days=7,
             cancel_by=cancel_by,
+            cancellation_url_source="owner",
         )
 
         await run_insight_scan(pool)
@@ -1482,6 +1492,7 @@ async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
         )
         assert cand["metadata"]["subscription_id"] == sub_id
         assert cand["metadata"]["unknown_door"] is False
+        assert cand["metadata"]["door_verified"] is True
         assert cand["metadata"]["cancellation_url"] == "https://adobe.com/cancel"
         assert cand["metadata"]["notice_period_days"] == 7
         assert cand["metadata"]["cancel_by"] == cancel_by.isoformat()
@@ -1489,6 +1500,127 @@ async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
         assert cand["metadata"]["days_remaining_to_act"] == 3
         assert "No cancellation door on file" not in cand["message"]
         assert "Cancel by" in cand["message"]
+
+
+async def test_insight_scan_extracted_door_is_inert_and_unverified(
+    provisioned_postgres_pool,
+):
+    """An email-derived cancellation link reaches the owner as its registrable
+    domain in plain text -- never as a URL in the message or the metadata."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        cancel_by = _today() + timedelta(days=3)
+        await _insert_subscription(
+            pool,
+            next_renewal=_today() + timedelta(days=10),
+            cancellation_url="https://login.example-phish.test/cancel?token=abc",
+            notice_period_days=7,
+            cancel_by=cancel_by,
+            cancellation_url_source="extracted",
+            metadata={
+                "expected_signal_source": {
+                    "producer": "connector:gmail",
+                    "producer_endpoint_identity": "gmail:user@example.test",
+                }
+            },
+        )
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert "example-phish[.]test (link from an email, not verified)" in cand["message"]
+        assert "http" not in cand["message"]
+        assert "/cancel" not in cand["message"]
+        assert cand["metadata"]["door_verified"] is False
+        assert cand["metadata"]["cancellation_url"] is None
+        assert cand["metadata"]["cancellation_domain"] == "example-phish[.]test"
+        assert "token=abc" not in json.dumps(cand["metadata"])
+
+
+async def test_insight_scan_extracted_cancelled_still_warns_and_asks_to_confirm(
+    provisioned_postgres_pool,
+):
+    """An email that reports a cancellation cannot silence the renewal warning."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool,
+            next_renewal=_today() + timedelta(days=10),
+            status="cancelled",
+            status_source="extracted",
+            metadata={
+                "expected_signal_source": {
+                    "producer": "connector:gmail",
+                    "producer_endpoint_identity": "gmail:user@example.test",
+                }
+            },
+        )
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert cand is not None
+        assert (
+            "An email reported this as cancelled; confirm the subscription status with Butlers."
+            in cand["message"]
+        )
+        assert cand["metadata"]["reported_status"] == "cancelled"
+
+
+async def test_insight_scan_extracted_cancelled_without_email_source_says_unverified(
+    provisioned_postgres_pool,
+):
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool,
+            next_renewal=_today() + timedelta(days=10),
+            status="paused",
+            status_source="extracted",
+        )
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert "An unverified source reported this as paused;" in cand["message"]
+
+
+async def test_insight_scan_owner_set_cancelled_suppresses_the_renewal_warning(
+    provisioned_postgres_pool,
+):
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool,
+            next_renewal=_today() + timedelta(days=10),
+            status="cancelled",
+            status_source="owner",
+        )
+
+        await run_insight_scan(pool)
+
+        count = await pool.fetchval(
+            "SELECT count(*) FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert count == 0
 
 
 async def test_insight_scan_renewal_missing_door_renders_enrichment_prompt(

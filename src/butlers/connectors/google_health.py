@@ -178,6 +178,8 @@ _DEFAULT_POLL_INTERVALS: dict[str, int] = {
     "breathing_rate": 3600,
     "vo2_max": 86400,
     "workout": 1800,
+    "weight": 3600,
+    "body_fat": 3600,
 }
 
 # Default first-run backfill window in days.
@@ -396,6 +398,29 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
         default_interval_s=_DEFAULT_POLL_INTERVALS["workout"],
         category="workout",
         normalized_summary="Workout: {activity_type} ({duration_label})",
+    ),
+    # Body measurements: one reading per sample (``category="measurement"``), keyed on
+    # the sample's physical time.  Plain ``dataPoints`` list endpoints: ``:reconcile`` is
+    # unconfirmed for these types (bu-q7vx1q.35).
+    ResourceBundle(
+        resource="weight",
+        endpoint_path="/users/me/dataTypes/weight/dataPoints",
+        data_type="weight",
+        filter_field="weight.sample_time.physical_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["weight"],
+        category="measurement",
+        normalized_summary="Weight: {value} kg",
+    ),
+    ResourceBundle(
+        resource="body_fat",
+        endpoint_path="/users/me/dataTypes/body-fat/dataPoints",
+        data_type="body-fat",
+        filter_field="body_fat.sample_time.physical_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["body_fat"],
+        category="measurement",
+        normalized_summary="Body fat: {value}%",
     ),
 )
 
@@ -1978,6 +2003,8 @@ class GoogleHealthConnector:
                     observed_at=observed_at,
                 )
             else:
+                # ``record_id`` is the date for daily summaries and the sample's physical
+                # time for ``measurement`` bundles; either way it is the key's last segment.
                 envelope = build_daily_summary_envelope(
                     endpoint_identity=endpoint_identity,
                     google_user_id=ctx.email,
@@ -2038,7 +2065,7 @@ class GoogleHealthConnector:
         Google Health v4 uses AIP-160 ``filter`` query expressions on
         ``dataPoints:list`` / ``dataPoints:reconcile``.
         """
-        if bundle.category == "sleep":
+        if bundle.category in ("sleep", "measurement"):
             start = since.isoformat()
             end = until.isoformat()
         else:
@@ -2401,6 +2428,8 @@ def _normalize_google_health_record(
         return _normalize_sleep_record(record)
     if bundle.category == "workout":
         return _normalize_workout_record(record)
+    if bundle.category == "measurement":
+        return _normalize_measurement_record(bundle, record)
     union = _DAILY_UNION_FIELDS.get(bundle.resource)
     if union is None:
         return dict(record)
@@ -2416,6 +2445,48 @@ def _normalize_google_health_record(
         normalized["date"] = date_value
     if value is not None:
         normalized["value"] = value
+    return normalized
+
+
+_MEASUREMENT_UNION_FIELDS: dict[str, tuple[str, str]] = {
+    "weight": ("weight", "weightGrams"),
+    "body_fat": ("bodyFat", "percentage"),
+}
+
+
+def _normalize_measurement_record(
+    bundle: ResourceBundle,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize a weight / body-fat data point to ``{sampleTime, value, unit}``.
+
+    Weight arrives in grams and is converted to kilograms here, the unit Health stores for
+    manual weight.  A record without a usable sample time or numeric value is returned
+    without ``sampleTime`` so ``_record_identity`` skips it.
+    """
+    union_key, value_key = _MEASUREMENT_UNION_FIELDS[bundle.resource]
+    payload = record.get(union_key)
+    if not isinstance(payload, dict):
+        return {}
+    sample_time = (payload.get("sampleTime") or {}).get("physicalTime")
+    raw_value = payload.get(value_key)
+    if (
+        not isinstance(sample_time, str)
+        or not sample_time
+        or isinstance(raw_value, bool)
+        or not isinstance(raw_value, (int, float))
+    ):
+        return {}
+    if bundle.resource == "weight":
+        value: float = round(float(raw_value) / 1000.0, 3)
+        unit = "kg"
+    else:
+        value = float(raw_value)
+        unit = "%"
+    normalized: dict[str, Any] = {"sampleTime": sample_time, "value": value, "unit": unit}
+    point_id = _data_point_id(record)
+    if point_id:
+        normalized["data_point_id"] = point_id
     return normalized
 
 
@@ -2563,6 +2634,10 @@ def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | No
     is the date portion of the ``start_time`` / ``date`` field, normalised
     to YYYY-MM-DD.
     """
+    if bundle.category == "measurement":
+        sample_time = record.get("sampleTime")
+        return str(sample_time) if sample_time else None
+
     if bundle.category in ("sleep", "workout"):
         session_id = record.get("session_id") or record.get("id")
         if session_id:

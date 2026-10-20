@@ -4,6 +4,10 @@
 > **Audience:** Operators, DevOps engineers, anyone deploying Butlers.
 > **Prerequisites:** [Environment Config](environment-config.md), Docker and Docker Compose installed.
 
+> **Production path:** Use Helm on k3s in namespace `butlers`; see
+> [Kubernetes Deployment](kubernetes-deployment.md#deploy). This page covers the retained
+> pre-cutover off-cluster Compose path, pending deletion in bu-dss7he.14.
+>
 > **Note:** The live dev stack (namespace `butlers-dev`, database butlers-db-dev) no longer runs
 > under Compose. It runs on the homelab k3s cluster from the Helm chart; see [Kubernetes
 > Deployment](kubernetes-deployment.md). `./scripts/compose.sh` dev mode refuses to start while that
@@ -41,8 +45,10 @@ sets the per-mode host ports, and configures Tailscale serve:
 `--prod` and the default `dev` run under different Compose project names
 (`butlers` vs `butlers-dev`) and different host ports (see
 [Environment Variables](#environment-variables)), so both stacks can run on the
-same machine at once. For production **redeploys**, prefer `butlers deploy` over
-any direct Compose lifecycle command -- see [Production Deploys](#production-deploys-butlers-deploy).
+same machine at once against distinct non-live databases. For the retained pre-cutover
+Compose host, `butlers deploy` replaces direct Compose redeploy commands; see
+[Production Deploys](#production-deploys-butlers-deploy). Production uses the
+[Helm workflow](kubernetes-deployment.md#deploy).
 
 Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
@@ -232,6 +238,11 @@ Host provisioning (Ansible) is outside this repository. Put the profile file, th
 step and, if used, the sysctl drop-in in that role for every host that runs `dashboard-api`.
 
 ## Production Deploys (`butlers deploy`)
+
+> Production uses Helm on k3s (`make -C deploy/helm/butlers ship-prod` or
+> `deploy-prod TAG=<tag>`); see [Kubernetes Deployment](kubernetes-deployment.md#deploy).
+> This section documents the pre-cutover Compose host only, pending deletion in
+> bu-dss7he.14. Helm deployment-ledger integration is separate work (bu-viat6h.5).
 
 `butlers deploy` (`src/butlers/core/deploy.py`) replaces the
 manual build-then-`up -d` ceremony with one idempotent command:

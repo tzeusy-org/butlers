@@ -47,7 +47,11 @@ from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
 from butlers.conversation_identity import event_conversation_identity
-from butlers.core.account_security_events import classify_ingest_record, publish_security_event
+from butlers.core.account_security_events import (
+    classify_ingest_record,
+    publish_security_event,
+    sender_authentication_verdict,
+)
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -1020,6 +1024,20 @@ async def ingest_v1(
         "metadata_ref" if ingestion_tier == "metadata" else "accepted"
     )
 
+    # Sender-authentication verdict (bu-s11n0s.20): deterministic from the topmost
+    # Authentication-Results header, stored once on the canonical event row so readers
+    # never re-parse headers. Best-effort: a verifier failure stores NULL and never
+    # fails an accepted ingest.
+    try:
+        sender_authentication = sender_authentication_verdict(
+            source_channel=envelope.source.channel,
+            sender_address=str(envelope.sender.identity or ""),
+            raw=envelope.payload.raw,
+        )
+    except Exception:
+        logger.warning("sender-authentication verdict failed (non-fatal)", exc_info=True)
+        sender_authentication = None
+
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1127,9 +1145,10 @@ async def ingest_v1(
                         ingestion_tier,
                         policy_tier,
                         triage_decision,
-                        triage_target
+                        triage_target,
+                        sender_authentication
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
                     )
                     """,
                     request_id,
@@ -1147,6 +1166,7 @@ async def ingest_v1(
                     envelope.control.policy_tier,
                     triage_decision.action if triage_decision is not None else None,
                     triage_decision.target_butler if triage_decision is not None else None,
+                    sender_authentication,
                 )
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
