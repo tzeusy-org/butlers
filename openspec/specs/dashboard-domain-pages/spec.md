@@ -1528,6 +1528,17 @@ keys.
   `until` query keys
 - **AND** the dashboard MUST build that URL itself, never navigate to `metadata.href`
 
+#### Scenario: Symptom trend insights open the matching symptom filter
+
+- **WHEN** the health insight scan generates a symptom-trend candidate for a known symptom
+- **THEN** it SHALL include that exact symptom name in the candidate's `metadata.name`
+- **AND** its attention link SHALL use the fixed `/health/symptoms` route with an encoded `name`
+  query parameter that populates the existing name filter
+- **AND** navigation to a different symptom SHALL update the filter and reset pagination while
+  ordinary rerenders preserve manual filter edits
+- **WHEN** a symptom-trend candidate has missing, blank, or non-string name metadata
+- **THEN** its attention link SHALL retain the unfiltered `/health/symptoms` fallback
+
 #### Scenario: Invalid measurement-door metadata cannot control navigation
 
 - **WHEN** a measurement insight omits a typed door or its type, dates, or date ordering are invalid

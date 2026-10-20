@@ -626,6 +626,7 @@ async def run_insight_scan(
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            metadata={"name": symptom_name},
         )
         if not should_continue:
             logger.info("Health insight scan: verbosity=off, exiting early after symptom-trend")
