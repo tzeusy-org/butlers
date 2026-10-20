@@ -83,6 +83,13 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
 
 ## Implementation Notes
 
+- Standing-condition QA suppression counts use the existing dispatch-events endpoint with
+  `decision=infra_condition_open` and each distinct infrastructure `fingerprint`. The hook reads
+  the filtered `meta.total` while requesting one event, so older matches and totals above a
+  page limit remain exact without downloading the event history. Only infrastructure rows
+  participate. Pending totals show loading; failed queries or invalid totals show degradation
+  and withhold counts, including after a failed refetch with cached data. A successful zero
+  omits the suppression chip. The existing 30-second foreground polling cadence is retained.
 - The router is created with the sanitised `import.meta.env.BASE_URL` as its basename
   (`frontend/src/router-config.tsx`), so subpath deployments work for direct loads and in-app links.
 - `SessionDetailDrawer` normalises tool-call records before rendering (name under
