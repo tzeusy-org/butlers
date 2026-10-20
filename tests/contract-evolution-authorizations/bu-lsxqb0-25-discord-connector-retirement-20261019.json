@@ -1,0 +1,61 @@
+{
+  "schema": "governing-retirement-authorization/v1",
+  "id": "bu-lsxqb0-25-discord-connector-retirement-20261019",
+  "bead": "bu-lsxqb0.25",
+  "authority": "Owner decision 2026-10-04 (bu-lsxqb0.4 option A): Discord deferred, draft connector retired (about/heart-and-soul/v1.md, PR #4343). Implementation: bu-lsxqb0.25. Provenance text grants no admission; only these exact trusted manifest bytes and the bound hashes do.",
+  "retired": [
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_message_create_schema_version",
+      "base_sha256": "2fd137727453362e7b225490e7dfc7fd660359d9c7e19eade09520ac799c27f5",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_message_create_event_fields",
+      "base_sha256": "0dd646711bc51a0997ad55b37fdde2794216e89f575fbc23e9fe278163bc5695",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_message_delete_creates_tombstone",
+      "base_sha256": "8a32ba8beb6fe8e311eeaf56816f8bcdf3557257df927a1ca9f88c4b73496c88",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_missing_id_returns_none",
+      "base_sha256": "4d310b9d9edccd1e2040c2439cbf2439030697700d1e52642fae6dca0ad052db",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_empty_content_returns_none",
+      "base_sha256": "e1ef5a8002a079cca571782fa5967f8cd67e2f78d8af9db5035f814c4594020d",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_idempotency_key_format",
+      "base_sha256": "534978fda7c52afc352c0751b247e0cfe638c6f2f092b141a6e4e9ed983f34b9",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_allowlist_block_persists_no_raw_payload",
+      "base_sha256": "adb64625a2f4b49b88d338cc85872407a182accf3a5172e11d80acc99b2521a4",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    },
+    {
+      "owner": "tests/connectors/test_discord_user_connector.py::test_submission_error_retains_raw_payload",
+      "base_sha256": "8a14b260e515ddc2cd40dcf13d670416a0d6a070b02f4c401ab2dc573eb0a66b",
+      "reason": "The Discord user connector is retired (owner decision bu-lsxqb0.4 option A, 2026-10-04; doctrine PR #4343; bead bu-lsxqb0.25); its connector-discord expectations have no honest survivor."
+    }
+  ],
+  "requirements": [
+    {
+      "path": "openspec/specs/connector-discord/spec.md",
+      "requirement": "[AS-BUILT] Shipped Bot-Token Gateway Connector",
+      "before_sha256": "9efeb8a0607b637836bda4783c6f167699527bee332ec20d617355eb3527667e"
+    },
+    {
+      "path": "openspec/specs/connector-discord/spec.md",
+      "requirement": "[TARGET-STATE] Discord Connector Scope",
+      "before_sha256": "963ccec231ecd1027cf63a9cbd5e4a77e268ecb02be1ce05701b15e8a7e85add"
+    }
+  ],
+  "replacements": []
+}

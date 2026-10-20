@@ -482,6 +482,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/ConnectorDetailPage.tsx`
 
+- Connector detail could not refresh. The last confirmed state is shown.
 - Connector
 - Connector not found
 - No connector found for {}/{}.
@@ -1036,7 +1037,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Full audit log
 - Export data
 - DASHBOARD_EXPORT_ENCRYPTION_KEY
-- All data
+- All data (supported scopes)
 - Memory
 - Audit log
 - Config
@@ -3195,8 +3196,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - ingested per hour · filtered overlay
 - Loading 24h throughput…
 - lifetime counters
-- pause poll
-- run now
+- Pause
+- Resume
+- Resume clears pause; state stays unknown until the next heartbeat.
+- Resume is available only while paused.
+- Updating connector state.
 - recent events
 - view all
 - Loading recent events…
@@ -3209,6 +3213,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - 24h statistics
 - 24h throughput
 - last checkpoint
+- Connector lifecycle
 - events · today
 - error rate
 - avg · per hour
@@ -4656,6 +4661,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Resolved
 - Detected
 - No standing conditions recorded.
+- Loading QA dispatch suppression counts.
 - High-confidence commitment (eligible for proactive surfacing)
 - Condition class
 - Standing conditions
@@ -4916,4 +4922,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3918*
+*Total strings: 3924*
