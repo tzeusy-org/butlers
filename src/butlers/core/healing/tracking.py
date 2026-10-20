@@ -887,6 +887,7 @@ async def create_dispatch_event(
     *,
     reason: str | None = None,
     attempt_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Record a dispatch decision in ``public.healing_dispatch_events``.
 
@@ -914,11 +915,54 @@ async def create_dispatch_event(
         a ``novelty_join`` decision may link to the existing active attempt that
         was joined.
 
+    event_id:
+        Optional stable decision identity for retries of the same dispatch.
+        Reuses the first durable event, including its original reason; refuses
+        an identity already bound to a different finding lineage or decision.
+
     Returns
     -------
     uuid.UUID
-        The newly created dispatch event ID.
+        The durable dispatch event ID (newly created or reused).
     """
+    if event_id is not None:
+        inserted = await pool.fetchval(
+            """
+            INSERT INTO public.healing_dispatch_events
+                (fingerprint, butler_name, decision, reason, attempt_id, id)
+            VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid)
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+            """,
+            fingerprint,
+            butler_name,
+            decision,
+            reason,
+            str(attempt_id) if attempt_id is not None else None,
+            event_id,
+        )
+        if inserted is None:
+            # A separate statement sees a concurrent inserter after its commit;
+            # a same-statement CTE can retain an older invisible snapshot.
+            existing = await pool.fetchrow(
+                """
+                SELECT fingerprint, butler_name, decision, reason, attempt_id
+                FROM public.healing_dispatch_events WHERE id = $1
+                """,
+                event_id,
+            )
+            if existing is None or any(
+                existing[key] != value
+                for key, value in (
+                    ("fingerprint", fingerprint),
+                    ("butler_name", butler_name),
+                    ("decision", decision),
+                    ("attempt_id", attempt_id),
+                )
+            ):
+                raise ValueError("dispatch event identity is bound to a different decision")
+        return event_id
+
     event_id = await pool.fetchval(
         """
         INSERT INTO public.healing_dispatch_events
