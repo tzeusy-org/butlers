@@ -1,4 +1,4 @@
-"""The retired Discord connector's channel is refused like any undeclared channel.
+"""The retired Discord connector is absent from active ingestion and OAuth surfaces.
 
 Bead bu-lsxqb0.25 (owner decision bu-lsxqb0.4 option A, 2026-10-04): Discord is deferred
 and the draft connector retired, so a Discord envelope must not validate at ingest.
@@ -12,6 +12,12 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from butlers.api.oauth_scope_registry import (
+    APPLICABILITY_MATRIX,
+    get_applicability,
+    get_scope_manifest,
+)
+from butlers.api.routers.ingestion_connectors import list_available_connectors
 from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
 pytestmark = pytest.mark.unit
@@ -39,3 +45,17 @@ def test_a_discord_channel_envelope_is_refused_as_an_undeclared_channel() -> Non
         parse_ingest_envelope(envelope)
 
     assert any(err["loc"] == ("source", "channel") for err in excinfo.value.errors())
+
+
+async def test_discord_is_absent_from_available_connectors() -> None:
+    response = await list_available_connectors()
+
+    assert "discord_user" not in {profile.connector_type for profile in response.data}
+    assert all(profile.channel != "discord" for profile in response.data)
+    assert all(profile.provider != "discord" for profile in response.data)
+
+
+def test_discord_has_no_oauth_manifest_or_auth_registration() -> None:
+    assert get_scope_manifest("discord_user") is None
+    assert "discord_user" not in APPLICABILITY_MATRIX
+    assert get_applicability("discord_user").oauth_supported is False
