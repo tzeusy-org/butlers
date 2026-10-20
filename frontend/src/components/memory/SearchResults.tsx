@@ -150,9 +150,10 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
     limit: SEARCH_LIMIT,
   });
 
-  if (isError && !response) {
+  if (isError && (!response || response.data.length === 0)) {
     // A failed search must not render "Nothing in the books." — a down inspect
-    // endpoint would read as a genuine no-match result (bu-mkd5r).
+    // endpoint would read as a genuine no-match result (bu-mkd5r), including
+    // after a refetch failure retains a previously empty response in the cache.
     return (
       <MemoryLoadError
         label="search results"

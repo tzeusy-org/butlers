@@ -136,6 +136,10 @@ describe("SearchResults degraded and paging states", () => {
     prime([episodeResult("e1")], { total: 7, pools_failed: ["finance"] });
     render({ onOffset: vi.fn() });
     expect(container.textContent).toContain("showing 1–1 of 7 (partial)");
+    expect(container.textContent).toContain("episode e1");
+    expect(
+      container.querySelector('[data-testid="memory-search-degraded"]')?.textContent,
+    ).toContain("finance");
   });
 
   it("offers the way back, not the empty verdict, when paged past the last result", () => {

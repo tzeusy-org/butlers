@@ -121,7 +121,12 @@ describe("memory registers under a partial pool outage", () => {
       expect(container.textContent).not.toContain(calm);
     });
 
-    it("marks the range partial when a pool dropped out", () => {
+    it("marks only degraded ranges partial", () => {
+      prime(hook, page([], undefined, 7));
+      render(Register);
+      expect(container.textContent).toContain("0 of 7");
+      expect(container.textContent).not.toContain("(partial)");
+
       prime(hook, page([], ["finance"], 7));
 
       render(Register);
