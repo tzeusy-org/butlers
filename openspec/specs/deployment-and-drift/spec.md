@@ -4,7 +4,10 @@
 
 The deployment-and-drift capability is the deploy spine: it keeps a running
 production deployment's database schema honest against the codebase, and gives
-operators one idempotent verb to ship a deploy safely. It covers the three-way
+operators the idempotent `butlers deploy` verb for the retained pre-cutover
+Compose host. Helm releases on k3s are the production deployment path;
+Helm deployment-ledger integration is separate work (bu-viat6h.5).
+This capability covers the three-way
 migration-drift sentinel (codebase Alembic head vs. each butler schema's
 applied revisions, hourly-checked, escalating to QA after 24h of sustained
 drift, surfaced as a red clause on the `/system` page) and the `butlers deploy`

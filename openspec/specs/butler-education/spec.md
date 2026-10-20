@@ -89,6 +89,8 @@ The education butler SHALL enable the memory and contacts modules, and SHALL NOT
 
 The education butler SHALL run five scheduled tasks: a nightly analytics job, a weekly progress digest prompt, a weekly stale-flow check, a daily spaced-repetition nudge, and a daily briefing contribution job.
 
+The weekly stale-flow check is the only sweep that can reach an unfinished mind map, so its work list SHALL be the mind map table rather than teaching-flow state. Keying it off flow state left maps whose flow state was never written permanently unreachable by cleanup.
+
 #### Scenario: Nightly analytics job configuration
 
 - **WHEN** the education butler daemon is running
@@ -105,9 +107,18 @@ The education butler SHALL run five scheduled tasks: a nightly analytics job, a 
 #### Scenario: Weekly stale-flow check configuration
 
 - **WHEN** the education butler daemon is running
-- **THEN** it includes a scheduled task (job or prompt dispatch) that checks for teaching flows with `last_session_at` older than 30 days
+- **THEN** it includes a scheduled task (job or prompt dispatch) whose work list is drawn from rows in `education.mind_maps` with `status IN ('draft', 'active')`, not from the set of `flow:*` KV keys
+- **AND** the task MUST abandon a map whose teaching flow has `last_session_at` older than 30 days
+- **AND** the task MUST abandon a `draft` map with zero nodes whose `created_at` is older than 24 hours, whether or not it has flow state
 - **AND** the task MUST clean up associated pending review schedules for abandoned flows
 - **AND** the task runs on a weekly cadence (cron expression MUST fire no more than once per day)
+
+#### Scenario: Stale-flow check reaches mind maps with no flow state
+
+- **WHEN** the weekly stale-flow check runs
+- **AND** a `draft` mind map older than 24 hours has zero nodes and no `flow:{mind_map_id}` KV entry
+- **THEN** the task MUST evaluate that map rather than skipping it
+- **AND** it MUST transition the map to `abandoned` via `mind_map_update_status()`
 
 #### Scenario: Daily spaced-repetition nudge configuration
 
@@ -126,7 +137,8 @@ The education butler SHALL run five scheduled tasks: a nightly analytics job, a 
 - **WHEN** `compute_analytics_snapshots` runs
 - **THEN** it MUST execute as a Python coroutine/function within the butler daemon process
 - **AND** it MUST NOT trigger the LLM CLI spawner
-- **AND** it MUST write one row per active mind_map into `analytics_snapshots` with `snapshot_date = today`
+- **AND** it MUST write one row per `active` mind_map into `analytics_snapshots` with `snapshot_date = today`
+- **AND** it MUST NOT write snapshot rows for `draft` mind maps, which have no nodes to measure
 
 #### Scenario: Analytics job is idempotent
 
@@ -291,6 +303,7 @@ The education butler SHALL provide six domain-specific skills plus three shared 
 - **WHEN** the `curriculum-planning` skill is loaded
 - **THEN** its `SKILL.md` MUST describe the two-phase curriculum generation process: LLM-driven concept decomposition producing nodes and prerequisite edges, followed by topological sort with depth and effort-weighting to produce a learning sequence
 - **AND** it MUST specify the DAG validation constraint (no cycles; acyclicity checked before persisting edges)
+- **AND** it MUST specify that the mind map is `draft` throughout decomposition and is activated only by `curriculum_generate()`, which refuses to activate an empty graph
 
 #### Scenario: teaching-session skill purpose
 
@@ -314,6 +327,8 @@ The education butler SHALL provide six domain-specific skills plus three shared 
 
 - **WHEN** the `stale-flow-cleanup` skill is loaded
 - **THEN** its `SKILL.md` MUST describe abandoning inactive teaching flows: identify flows whose `last_session_at` is older than 30 days and are not already completed or abandoned, transition them to abandoned, call `spaced_repetition_schedule_cleanup()` to remove pending review schedules, and record the abandonment as a memory fact
+- **AND** it MUST describe the second sweep: `draft` mind maps with zero nodes older than 24 hours, including maps that have no teaching flow state at all, transitioned via `mind_map_update_status()`
+- **AND** it MUST specify that the sweep enumerates `education.mind_maps` rows so that a map without flow state is reachable
 - **AND** it MUST specify that this skill backs the `weekly-stale-flow-check` scheduled task
 
 #### Scenario: Shared skill symlinks present
@@ -321,8 +336,6 @@ The education butler SHALL provide six domain-specific skills plus three shared 
 - **WHEN** the `roster/education/.agents/skills/` directory is inspected
 - **THEN** it MUST contain symlinks `butler-memory`, `butler-notifications`, and `routed-message-safety` pointing into the shared skills directory (`../../../shared/skills/<name>`)
 - **AND** these symlinks MUST resolve to valid SKILL.md files in the shared skills directory
-
----
 
 ### Requirement: High-Tier Complexity Rationale
 
