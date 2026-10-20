@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -58,7 +60,48 @@ def test_every_local_step_is_a_real_npm_script() -> None:
 
 
 @pytest.mark.unit
-def test_make_check_guards_invokes_the_runner() -> None:
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    guards = makefile.split("\ncheck-guards:", 1)[1].split("\n\ncheck:", 1)[0]
-    assert "scripts/frontend_guards.py" in guards
+def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> None:
+    # Execute the real recipe with recording tools; skip unrelated prerequisites.
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    log = tmp_path / "python-arguments"
+    for name, body in {
+        "python3": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ARGUMENT_LOG"\n',
+        "git": "#!/bin/sh\nexit 0\n",
+        "openspec": "#!/bin/sh\nexit 0\n",
+    }.items():
+        tool = tools / name
+        tool.write_text(body)
+        tool.chmod(0o755)
+    prerequisites = (
+        "check-lock",
+        "lint",
+        "check-format",
+        "check-for-update-joins",
+        "check-em-dashes",
+        "check-spec-overwrites",
+        "check-countable-tasks",
+        "check-duplicate-names",
+        "check-session-links",
+        "check-condensation-ledger",
+    )
+    subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "-f",
+            str(ROOT / "Makefile"),
+            *(f"--assume-old={name}" for name in prerequisites),
+            "check-guards",
+            "CONDENSATION_BASE=review-fork",
+            "BASE=unrelated-base",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PATH": f"{tools}:{os.defpath}", "ARGUMENT_LOG": str(log)},
+        check=True,
+        capture_output=True,
+    )
+    assert (
+        "scripts/frontend_guards.py --base review-fork --skip-inventory"
+        in log.read_text().splitlines()
+    )

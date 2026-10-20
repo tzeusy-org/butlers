@@ -89,7 +89,16 @@ def test_assume_changed_skips_the_diff(monkeypatch, guards, tmp_path) -> None:
 def test_stale_inventory_is_detected_without_writing(guards, tmp_path) -> None:
     real = ROOT / "frontend/COPY_INVENTORY.md"
     before = real.stat().st_mtime_ns
+    spec = importlib.util.spec_from_file_location(
+        "copy_producer", ROOT / "scripts/extract-frontend-copy.py"
+    )
+    assert spec is not None and spec.loader is not None
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    report, _ = producer.generate_report(producer.collect_tsx_files(producer.SCAN_DIRS))
     stale = tmp_path / "COPY_INVENTORY.md"
+    stale.write_text(report, encoding="utf-8")
+    assert guards.inventory_stale() is False
     stale.write_text("stale\n", encoding="utf-8")
     assert guards.inventory_stale() is True
     assert stale.read_text(encoding="utf-8") == "stale\n"
@@ -120,20 +129,30 @@ def test_changed_paths_sees_branch_commits_edits_and_untracked_not_base_moves(
     git("add", ".")
     git("commit", "-q", "-m", "fork point")
     git("checkout", "-q", "-b", "feature")
-    (repo / "frontend/committed.tsx").write_text("c")
+    (repo / "branch.py").write_text("# Python-only branch\n")
     git("add", ".")
-    git("commit", "-q", "-m", "branch commit")
+    git("commit", "-q", "-m", "Python-only branch commit")
     git("checkout", "-q", "main")
     (repo / "frontend/main.tsx").write_text("main moved")
     git("commit", "-q", "-am", "main moves frontend")
     git("checkout", "-q", "feature")
+    monkeypatch.setattr(guards, "REPO_ROOT", repo)
+    assert guards.changed_paths("main") == ["branch.py"]
+    # No tools exist in FRONTEND: inheriting main's edit would fail this real run.
+    assert guards.run("main") == 0
+    (repo / "frontend/committed.tsx").write_text("c")
+    git("add", ".")
+    git("commit", "-q", "-m", "frontend branch commit")
+    (repo / "frontend/staged.tsx").write_text("s")
+    git("add", "frontend/staged.tsx")
     (repo / "a.txt").write_text("b")
     (repo / "frontend/new.tsx").write_text("x")
-    monkeypatch.setattr(guards, "REPO_ROOT", repo)
     assert sorted(guards.changed_paths("main")) == [
         "a.txt",
+        "branch.py",
         "frontend/committed.tsx",
         "frontend/new.tsx",
+        "frontend/staged.tsx",
     ]
 
 
@@ -206,15 +225,23 @@ def test_pre_push_branch_paths_ignore_base_moves_and_keep_moves_out_of_frontend(
     git("add", ".")
     git("commit", "-q", "-m", "fork point")
     git("checkout", "-q", "-b", "feature")
-    git("mv", "frontend/widget.tsx", "widget.tsx")
-    git("commit", "-q", "-m", "move out")
+    (repo / "branch.py").write_text("# Python-only branch\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "Python branch commit")
     git("checkout", "-q", "main")
     (repo / "frontend/main.tsx").write_text("main moved")
     git("commit", "-q", "-am", "main moves frontend")
     git("checkout", "-q", "feature")
     main_oid = driver.git(repo, "rev-parse", "main").decode().strip()
     head = driver.git(repo, "rev-parse", "HEAD").decode().strip()
+    paths = driver.branch_paths(repo, main_oid, head)
+    assert paths == ["branch.py"]
+    assert "frontend-guards" not in dict(driver.guard_plan(paths))
+    git("mv", "frontend/widget.tsx", "widget.tsx")
+    git("commit", "-q", "-m", "move out")
+    head = driver.git(repo, "rev-parse", "HEAD").decode().strip()
     assert sorted(driver.branch_paths(repo, main_oid, head)) == [
+        "branch.py",
         "frontend/widget.tsx",
         "widget.tsx",
     ]
