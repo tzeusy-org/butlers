@@ -53,8 +53,9 @@ for the object map and retained off-cluster components.
 ## Port Assignments
 
 This is the single port map; other docs link here. Sources of truth: `port` in
-`roster/*/butler.toml`, connector `healthPort` entries in the shared chart values,
-and `nodePorts` in the dev/prod chart overlays.
+`roster/*/butler.toml`, connector `healthPort` entries in the shared chart values
+(or connector code defaults where no chart override is set), and `nodePorts`
+in the dev/prod chart overlays.
 
 ### Butler MCP Ports (41100-41112)
 
@@ -78,7 +79,11 @@ A new butler takes the next free port after the highest one in use.
 
 ### Connector Health Ports (40080-40092)
 
-Pod-internal; each connector serves `/health` and `/metrics` on its port.
+For chart-deployed connectors, these are pod-internal health ports unless a
+Service exposes them. Entries outside the chart retain their connector code
+defaults; live-listener remains off-cluster (see
+[retained components](../../docs/operations/kubernetes-deployment.md#what-the-chart-runs)).
+Each connector serves `/health` and `/metrics` on its port.
 
 | Connector | Port |
 |---|---|
