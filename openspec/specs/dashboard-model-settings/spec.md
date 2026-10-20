@@ -4,8 +4,6 @@
 
 Provides dashboard REST API endpoints and UI surfaces for managing the global model catalog and per-butler model overrides. Enables operators to configure which models are used at each complexity tier, create model aliases with extra runtime arguments, and override global defaults for specific butlers.
 
-Dependency note (non-normative): the attention episode reissue endpoint and its 409 (not eligible), 404 (episode not found), and 503 (reissue unavailable) responses (`src/butlers/api/routers/model_settings.py`) are specified by the unarchived change `openspec/changes/harden-runtime-auth-and-breaker-attention` (dashboard-model-settings delta, REQ-dashboard-model-settings-002). That delta does not yet specify the 404 or the reissue 503; both must be added to that change before it is archived.
-
 ## Requirements
 
 ### Requirement: Model Catalog Settings API
@@ -189,6 +187,7 @@ The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify e
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is called
 - **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency of 8
+- **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
 - **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error` are persisted
 - **AND** `last_verified_error` is set to the truncated exception text on failure (or `"verification returned an empty response"` when the probe completed with no usable output) and cleared to `NULL` on success
 - **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too Many Requests`

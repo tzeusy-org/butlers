@@ -180,6 +180,14 @@ or session context was lost (see Execution discipline §3).
      adds a new pair `git rm`s older JSONs and repoints each pruned run's md to
      `git show <sha>:docs/redesigns/<file>`, pinned to the last commit that held it. Git
      history is the archive; the tree is not.
+   - **Retention of md bodies:** a dated dossier body that nothing cites (recount at the PR base:
+     `git grep -l -F <basename> -- . ':!docs/redesigns/README.md' ':!docs/redesigns/pursuit-ledger.md'
+     ':!<file>'`) and that is older than the three newest runs leaves the tree once its Dropped
+     section is folded into `about/legends-and-lore/ideas-ledger.md`. Repoint its README and
+     pursuit-ledger rows to `git show <sha>:docs/redesigns/<file>`; open and blocked beads that
+     cite the body count as citers to name in the PR body. A body that backs a live program
+     (an active held graph or an active openspec change, such as the 2026-10-14 QA remediation
+     run) stays even with zero citers until that program closes.
 2. **Index-append (same commit as the dossier pair)** — append one row for the new run to the
    "Pursuit / audit dossiers" table in `docs/redesigns/README.md` (newest run first, numbered
    sequentially from the prior top row): `| N (YYYY-MM-DD) | [YYYY-MM-DD-jarvis-pursuit.md](YYYY-MM-DD-jarvis-pursuit.md) |`,

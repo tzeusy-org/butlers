@@ -523,3 +523,75 @@ def test_repo_scan_is_green_under_the_shipped_frozen_baseline() -> None:
     result = _run()
 
     assert result.returncode == 0, result.stdout[-4000:]
+
+
+# --- Renamed capability homes (bu-nql1kf) -----------------------------------
+
+
+def _homes(root: Path, rows: dict[str, str]) -> Path:
+    path = root / "homes.json"
+    path.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _run_with_homes(root: Path, rows: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "--root",
+        str(root),
+        "--baseline",
+        str(_empty_frozen(root)),
+        "--homes",
+        str(_homes(root, rows)),
+    )
+
+
+def test_requirement_present_under_the_mapped_current_home_counts_as_landed(
+    tmp_path: Path,
+) -> None:
+    _tree(
+        tmp_path,
+        baseline={"module-widgets": ["Widget API"]},
+        archived={"2026-01-01-add-widgets": {"old-widgets": ["Widget API"]}},
+    )
+
+    unmapped = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+    assert unmapped.returncode == 1, unmapped.stdout
+
+    mapped = _run_with_homes(tmp_path, {"old-widgets": "module-widgets"})
+    assert mapped.returncode == 0, mapped.stdout
+
+
+def test_mapped_home_does_not_credit_a_requirement_it_lacks(tmp_path: Path) -> None:
+    """Exact names only: a name in some unrelated spec must not satisfy the check."""
+    _tree(
+        tmp_path,
+        baseline={"module-widgets": ["Widget API"], "unrelated": ["Widget audit"]},
+        archived={"2026-01-01-add-widgets": {"old-widgets": ["Widget API", "Widget audit"]}},
+    )
+
+    result = _run_with_homes(tmp_path, {"old-widgets": "module-widgets"})
+
+    assert result.returncode == 1, result.stdout
+    assert "Widget audit" in result.stdout
+    assert "Widget API" not in result.stdout
+
+
+def test_map_row_pointing_at_a_missing_spec_fails_closed(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        baseline={"module-widgets": ["Widget API"]},
+        archived={"2026-01-01-add-widgets": {"old-widgets": ["Widget API"]}},
+    )
+
+    result = _run_with_homes(tmp_path, {"old-widgets": "module-gone"})
+
+    assert result.returncode == 1, result.stdout
+    assert "module-gone" in result.stdout
+    assert "failing closed" in result.stdout
+    # A row for a capability that still has its own spec would shadow it: refused too.
+    # old-widgets is mapped, so only the shadow row can make the run fail.
+    shadow = _run_with_homes(
+        tmp_path, {"old-widgets": "module-widgets", "module-widgets": "module-widgets"}
+    )
+    assert shadow.returncode == 1, shadow.stdout
+    assert "still has its own spec" in shadow.stdout

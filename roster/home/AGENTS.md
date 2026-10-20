@@ -83,6 +83,16 @@ The following scheduled tasks each have a dedicated skill defining their step-by
 - **`environment-report`** (Daily 8am): see `.agents/skills/environment-report/SKILL.md`
 - **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`
 
+### Safety sentinel (deterministic, no model)
+
+`home_safety_sentinel` (every 5 minutes) and a websocket edge hook alert the owner when a sensor
+declared in `home.safety_watch` (roles `leak`, `smoke`, `co`, `gas`) stays on for 60 seconds. They
+run in code (`src/butlers/jobs/home_safety.py`), send at high priority straight to the owner, and
+never call a Home Assistant service. There is no tool for them and no skill: do not try to
+create, resolve or mute these alerts from a session, and never infer a safety role from an
+entity's name. The owner declares sensors on the dashboard (Home, Devices, Safety sensors). If
+Home Assistant is unreachable the sentinel resolves nothing, so an open leak alert stays open.
+
 ## HA Event Response Patterns
 
 For HA event classification, safety, environmental-drift, automation-failure,

@@ -992,11 +992,11 @@ async def run_verify_all_models(
     audit_actor: str = "owner",
     caller: str = DASHBOARD_CALLER,
 ) -> VerifyAllResult:
-    """Probe every enabled model in parallel through the signed control plane.
+    """Probe every enabled model through the signed control plane.
 
-    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``, matching the
-    coordinator's own global limit so a full sweep does not shed its own
-    requests.  Each entry's outcome falls into exactly one bucket:
+    Rows sharing a (runtime, allowance account) are probed serially; groups run in parallel,
+    bounded by ``_VERIFY_ALL_CONCURRENCY``, matching the coordinator's own global limit so a
+    full sweep does not shed its own requests.  Each entry's outcome falls into exactly one bucket:
 
     * ``ok`` --- the probe ran and the model answered;
     * ``failed`` --- the probe ran and the model did not;
@@ -1015,7 +1015,7 @@ async def run_verify_all_models(
     """
     rows = await pool.fetch(
         """
-        SELECT id
+        SELECT id, runtime_type, allowance_account
         FROM public.model_catalog
         WHERE enabled = true
         """
@@ -1028,11 +1028,26 @@ async def run_verify_all_models(
     client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    async def _verify_one(row: Any) -> ProbeResult:
-        async with sem:
-            return await client.probe(row["id"])
+    # Rows that draw on one allowance account are probed one after another, so a sweep never
+    # bursts a single account into a 429.  The account is the repo identity
+    # ``COALESCE(allowance_account, runtime_type)`` (``ALLOWANCE_ACCOUNT_KEY_SQL`` in
+    # ``core.model_routing``): a label reused across runtimes shares one allowance, and a row
+    # without a label belongs to the account named like its runtime.
+    groups: dict[Any, list[Any]] = {}
+    for row in rows:
+        account = _row_value(row, "allowance_account")
+        key = account if account is not None else _row_value(row, "runtime_type")
+        groups.setdefault(key, []).append(row)
 
-    results = await asyncio.gather(*[_verify_one(row) for row in rows])
+    async def _verify_group(group: list[Any]) -> list[ProbeResult]:
+        async with sem:
+            return [await client.probe(row["id"]) for row in group]
+
+    results = [
+        result
+        for group_results in await asyncio.gather(*[_verify_group(g) for g in groups.values()])
+        for result in group_results
+    ]
 
     completed = [result for result in results if result.status is ProbeStatus.COMPLETED]
     ok_count = sum(1 for result in completed if result.ok)

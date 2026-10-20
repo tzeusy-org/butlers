@@ -393,7 +393,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "health",
         "measurements",
         "measurement_delete measurement_history measurement_latest measurement_log "
-        "measurement_update",
+        "measurement_update workout_last",
     ),
     *_declare(
         "health",
