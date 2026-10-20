@@ -205,7 +205,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   labels use
   the sentinel. Only "never connected" is non-fatal, via its own exception subclass
   (`SpotifyCredentialsUnconfiguredError`); every post-configuration fault stays loud. Env-var
-  connectors (telegram, discord, whatsapp, activitywatch) that fail `Config.from_env()` are a
+  connectors (telegram, whatsapp, activitywatch) that fail `Config.from_env()` are a
   deployment misconfiguration and should crash.
 - `switchboard.connector_registry` has two producers on one `(connector_type, endpoint_identity)`
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row

@@ -57,7 +57,8 @@ its helper modules, `pyproject.toml` script registrations and the module command
 `docker-compose.yml`. Fourteen adapter families are represented below. Home Assistant's
 WebSocket, REST fallback and recovery helpers are one family; live listener is a package.
 Console scripts register Gmail, Google Calendar, Google Drive, Steam, Telegram user-client
-and Discord user. Every listed adapter also has a module/run entrypoint, except that the
+and Discord user (the Discord connector was retired after this audit, bu-lsxqb0.25; its
+rows below are historical). Every listed adapter also has a module/run entrypoint, except that the
 live-listener entrypoint is its package `__main__.py`. This inventory describes source
 entrypoints, not a claim that every one is deployed or enabled.
 
@@ -96,7 +97,7 @@ affected inventory and needs a fresh custody trace.
 The connector-prefixed spec inventory contains 13 adapter capabilities plus six
 cross-cutting contracts: base, filtered events, lifecycle ceremony, replay idempotency,
 replay queue and state aggregates. Those six are not extra provider implementations.
-Discord's capability is named `connector-discord`; WhatsApp has an implementation and
+Discord's capability was named `connector-discord` (retired, bu-lsxqb0.25); WhatsApp has an implementation and
 [connector documentation](whatsapp.md), but no dedicated `connector-whatsapp` baseline
 spec at this SHA. It is covered by the base/credential contracts and the matrix, not
 excluded because its dedicated capability file is absent.
@@ -114,7 +115,7 @@ is retained in G4 instead of inventing a cleanup policy.
 | Adapter / source entrypoint | Volatile pre-submit custody and content | Durable custody / boundary | Scrub, retry or rehydration; failure disposition | Verdict and next evidence |
 | --- | --- | --- | --- | --- |
 | ActivityWatch: `activitywatch.py::run_activitywatch_connector` | Poll event dictionaries and `_process_window_event` hold title/URL; `build_activity_envelope` excludes both, emits coarse class/duration and full-tier app process name only. F holds filtered rows. | `persist_activity_event` -> `connectors.activitywatch_events` title and `raw_payload` **after successful ingestion**; C stores timestamp checkpoint. | Evidence insert uses idempotency key/`ON CONFLICT DO NOTHING`; title/raw bind is not scrubbed. Filtered record keeps raw `{}`. Evidence failure is nonfatal. Checkpoint advances through `_save_checkpoint`. | GAP E: evidence bind retains fixture, with explicit forensic-fidelity contract conflict in G4. SAFE-SCOPE S: title/URL excluded from normal envelope and timestamp cursor. Actual evidence readback/role/retention UNKNOWN. |
-| Discord user: `discord_user.py::run_discord_user_connector` | Gateway dispatch event; `_channel_checkpoints`, gateway session ID; `_normalize_to_ingest_v1`; F. | F error row `_process_dispatch_event` retains `event_data`; C channel message IDs. | Normal envelope has no pre-submit scrub; ordinary drops use raw `{}`. Error full payload includes event dictionary and exception string; F replay re-emits it. Operational gateway IDs are not message text. | GAP S: error copy and normal text egress; GAP E at F. SAFE-SCOPE S: ID checkpoint. Actual caller positive/negative/error harness UNKNOWN, G1/G3. |
+| Retired (bu-lsxqb0.25): Discord user: `discord_user.py::run_discord_user_connector` | Gateway dispatch event; `_channel_checkpoints`, gateway session ID; `_normalize_to_ingest_v1`; F. | F error row `_process_dispatch_event` retains `event_data`; C channel message IDs. | Normal envelope has no pre-submit scrub; ordinary drops use raw `{}`. Error full payload includes event dictionary and exception string; F replay re-emits it. Operational gateway IDs are not message text. | GAP S: error copy and normal text egress; GAP E at F. SAFE-SCOPE S: ID checkpoint. Actual caller positive/negative/error harness UNKNOWN, G1/G3. |
 | Gmail: `gmail.py::main` | `_notification_queue` contains Pub/Sub notifications/history ID/mailbox, not fetched message body; fetched MIME, attachment resolution and policy processing hold text; `_sent_ids_cache` holds IDs; F. | F drops use raw `{}` with no body text; error payload contains only message ID. C `GmailCursor` history/backfill progress. Attachment blob custody is separate. | `_build_ingest_envelope` scrubs full and metadata-only subject envelopes. `_ingest_single_message` filtered-drop logs (live and backfill, six lines) now log the message id, not the subject (`bu-rob5w5`); the preview is scrubbed separately. Poll/event processing flushes F and drains replay; cursor reloads source history. | SAFE-SCOPE E: normal full scrub (named test); metadata-only scrub S. SAFE-SCOPE S: filter-drop logs now name the message id, not the subject (`test_filter_drop_logs_message_id_not_subject`); F error_detail is not covered by content-free raw. SAFE-SCOPE S: body-free notification/cursor. Attachment/provider custody UNKNOWN, G1/G3/G4. |
 | Google Calendar: `google_calendar.py::main` | `_upcoming_events` contains event/description; `build_event_envelope` and `_build_ingest_envelope` normalize text; F. | F blocked rows raw `{}` **plus normalized_text**; submission errors retain raw/text. C sync token. | Neither builder applies bearer scrub. `_process_event` retains text even beside preview-only comments. Retry/replay goes through submit and central scrub only after the retained copy. | GAP S: F payload/error content; GAP E at shared F. SAFE-SCOPE S: sync-token cursor only. Real event error/description harness UNKNOWN, G1. |
 | Google Drive: `google_drive.py::main` | `_metadata_cache`; `_pending_batch` `_PendingChange` includes filename/owner/time; batch digest contains names. | `_save_metadata_cache_to_store` writes names to `switchboard.connector_registry.settings.metadata_cache`; F normalized filename despite raw `None`; C page token. | `_load_metadata_cache_from_store` restores the cache; submission/filter builders do not scrub names. Metadata-only content remains text-bearing. Cache/save errors are nonfatal and logged. | GAP S: F normalized text lacks scrub. UNKNOWN: governed filename-cache bearer scope/fidelity and actual readback, G4. SAFE-SCOPE S: page-token projection. |
@@ -138,7 +139,7 @@ labels. All use shared F flush/replay semantics in the next table.
 | File / symbol / record lines | Full-payload body shape | Verdict / disposition |
 | --- | --- | --- |
 | `activitywatch.py::_process_window_event` 1355 | raw `{}`, no normalized body | SAFE-SCOPE S for body; evidence separately G4 |
-| `discord_user.py::_process_dispatch_event` 832, 875, 910; error 960 | Drops raw `{}`; error raw event dictionary | Drops SAFE-SCOPE S; error GAP S, G1 |
+| Retired (bu-lsxqb0.25): `discord_user.py::_process_dispatch_event` 832, 875, 910; error 960 | Drops raw `{}`; error raw event dictionary | Drops SAFE-SCOPE S; error GAP S, G1 |
 | `gmail.py::_ingest_single_message` 2211, 2247, 2284; error 2362 | Drops raw `{}`; error message-ID-only raw | SAFE-SCOPE S body; raw subject log G3, generic error_detail G1 |
 | `google_calendar.py::_process_event` 1486, 1523; `_submit_envelope` 1603 | Drops normalized_text even with raw `{}`; error raw/text | GAP S, G1 |
 | `google_drive.py::process_change` 1710 | normalized filename, raw `None` | GAP S text, G1; cache contract G4 |

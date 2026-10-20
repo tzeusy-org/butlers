@@ -91,7 +91,6 @@ Each connector serves `/health` and `/metrics` on its port.
 | telegram-bot | 40081 |
 | gmail, whatsapp-user | 40082 (separate containers) |
 | spotify | 40083 |
-| discord-user | 40084 |
 | google-calendar | 40085 |
 | owntracks | 40086 (NodePort Service) |
 | home-assistant | 40087 |

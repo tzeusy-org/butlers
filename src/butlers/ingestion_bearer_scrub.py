@@ -326,8 +326,6 @@ def scrub_filtered_preview(
                 "telegram_bot",
                 "telegram_user",
                 "telegram_user_client",
-                "discord",
-                "discord_user",
                 "whatsapp_user_client",
                 "google_drive",
                 "google_calendar",
