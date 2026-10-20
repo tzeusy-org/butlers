@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
-from butlers.core.state import decode_jsonb, state_get, state_set
+from butlers.core.state import decode_jsonb, state_set
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,17 @@ def _normalize_stored_settings(stored: object) -> StoredGeneralSettings:
 
 
 async def load_general_settings(pool: asyncpg.Pool) -> GeneralSettings:
-    """Load general settings from the shared state table, defaulting safely."""
-    stored = await state_get(pool, GENERAL_SETTINGS_STATE_KEY)
+    """Load general settings from ``public.state``, defaulting safely.
+
+    The read is schema-qualified: a butler pool's ``search_path`` puts the butler's own
+    ``state`` table ahead of ``public``, so an unqualified read there would miss the owner's
+    settings and silently fall back to the UTC defaults (bu-ko02so).
+    """
+    raw = await pool.fetchval(
+        "SELECT value FROM public.state WHERE key = $1",
+        GENERAL_SETTINGS_STATE_KEY,
+    )
+    stored = decode_jsonb(raw) if raw is not None else None
     normalized = _normalize_stored_settings(stored)
     return {
         "timezone": normalized["timezone"],
