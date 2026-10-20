@@ -150,6 +150,8 @@ Source: RFC 0011; RFC 0029 §Initial adoption
 - **THEN** the existing `subscription-renewal` candidate policy MAY run with its current priority,
   deduplication, expiry, and wording
 - **AND** that reminder MUST NOT claim whether the future charge was or will be observed
+- **AND** the cancellation door wording and the handling of unverified cancelled or paused status
+  are governed by REQ-finance-alerts-002
 
 #### Scenario: Existing predicted-bill policy remains forward-looking
 
@@ -171,3 +173,47 @@ Source: RFC 0011; RFC 0029 §Initial adoption
 - **THEN** Finance MUST persist or expose that state only through the RFC 0029 contract
 - **AND** it MUST NOT emit a candidate until a separately approved alert requirement names that
   consumer, wording, priority, deduplication, cooldown, and expiry
+
+### Requirement: Renewal warnings treat email-derived cancellation fields as unverified
+
+A subscription's `cancellation_url` and `status` MUST be treated as trusted by the renewal warning
+only when an owner-attested session wrote them. Each field carries a stored source of `owner` or
+`extracted`; the source MUST be derived from the server-held runtime routing context, never from a
+tool argument, and a write whose attestation cannot be read MUST be stored as `extracted`. An
+`extracted` write MUST NOT overwrite a value whose stored source is `owner`, and that rule MUST hold
+under concurrent writers. Rows that predate the source columns MUST read as `extracted`.
+
+ID: REQ-finance-alerts-002
+Source: bu-svqpzo.10; RFC 0038 D6; about/heart-and-soul/security.md
+Scope: classify-and-route frozen path security fix
+
+#### Scenario: Extracted cancellation link is rendered inert
+
+- **WHEN** a yearly subscription renews within 14 days and its `cancellation_url_source` is
+  `extracted`
+- **THEN** the `subscription-renewal` message MUST name only the link's registrable domain,
+  defanged (`example[.]com`) so that no chat client can render it as a live link, followed by
+  "(link from an email, not verified)" (or "(link from an unverified source, not verified)" when
+  the last writer was not an email)
+- **AND** neither the message nor the candidate metadata MUST contain the URL, and the metadata
+  MUST carry `door_verified: false`
+
+#### Scenario: Owner-set cancellation link is unchanged
+
+- **WHEN** the `cancellation_url_source` is `owner`
+- **THEN** the message and metadata MUST carry the URL as before, with `door_verified: true`
+
+#### Scenario: Extracted cancelled or paused status still warns
+
+- **WHEN** a yearly subscription renewing within 14 days has status `cancelled` or `paused` with
+  `status_source` of `extracted`
+- **THEN** the renewal warning MUST still be proposed and MUST ask the owner to confirm the
+  subscription status with Butlers, naming an email as the reporter only when the last writer was an
+  email
+- **AND** a `cancelled` or `paused` status whose source is `owner` MUST still suppress the warning
+
+#### Scenario: Extracted write cannot displace an owner-set value
+
+- **WHEN** a session whose routing context is not owner-attested tracks a subscription whose stored
+  `cancellation_url_source` or `status_source` is `owner`
+- **THEN** the stored URL or status MUST be kept and its source MUST remain `owner`
