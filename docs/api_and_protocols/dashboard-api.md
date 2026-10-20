@@ -8,6 +8,9 @@
 
 The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves the shared and roster-specific dashboard endpoints, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
 
+`GET /api/butlers` summaries expose no schedule count. Scheduling facts remain on
+the existing schedule and board endpoints rather than an unobserved summary default.
+
 ## Application Factory
 
 `create_app()` accepts three optional parameters:
