@@ -4661,6 +4661,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Resolved
 - Detected
 - No standing conditions recorded.
+- Loading QA dispatch suppression counts.
 - High-confidence commitment (eligible for proactive surfacing)
 - Condition class
 - Standing conditions
@@ -4921,4 +4922,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3923*
+*Total strings: 3924*
