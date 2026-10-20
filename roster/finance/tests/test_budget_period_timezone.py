@@ -335,7 +335,12 @@ async def _setup_scan(pool, *, timezone: str = OWNER_TZ) -> None:
             status              TEXT NOT NULL DEFAULT 'active',
             cancellation_url    TEXT,
             notice_period_days  INTEGER,
-            cancel_by           DATE
+            cancel_by           DATE,
+            metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+            cancellation_url_source TEXT NOT NULL DEFAULT 'extracted'
+                                    CHECK (cancellation_url_source IN ('owner', 'extracted')),
+            status_source       TEXT NOT NULL DEFAULT 'extracted'
+                                    CHECK (status_source IN ('owner', 'extracted'))
         )
         """
     )
