@@ -36,10 +36,19 @@ HOSTED_ONLY: tuple[str, ...] = ("knip", "build")
 
 
 def changed_paths(base: str) -> list[str]:
-    """Paths differing from ``base`` in commits, index and worktree, plus untracked files."""
+    """Paths changed since this branch forked from ``base`` (commits, index, worktree), plus
+    untracked files. Diffing from the fork point keeps a branch that is merely behind ``base``
+    from inheriting ``base``'s own frontend changes."""
+    fork = (
+        subprocess.run(
+            ["git", "merge-base", base, "HEAD"], cwd=REPO_ROOT, check=True, capture_output=True
+        )
+        .stdout.decode()
+        .strip()
+    )
     names: list[str] = []
     for args in (
-        ["diff", "--name-only", "-z", base],
+        ["diff", "--name-only", "--no-renames", "-z", fork],
         ["ls-files", "--others", "--exclude-standard", "-z"],
     ):
         out = subprocess.run(

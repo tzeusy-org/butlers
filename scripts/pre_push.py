@@ -496,6 +496,18 @@ def tree_bodies(root: Path) -> dict:
     return result
 
 
+def branch_paths(root: Path, base_oid: str, head: str) -> list[str]:
+    """Paths this branch changed since it forked from ``base_oid``.
+
+    Branch-owned paths only: a branch behind base must not inherit base's own changes, and
+    ``--no-renames`` lists both sides of a move so a file moved out of ``frontend/`` still counts.
+    No deleted .py is passed to ruff; global predicates/collection still run.
+    """
+    fork = git(root, "merge-base", base_oid, head).decode().strip()
+    raw = git(root, "diff", "--name-only", "--no-renames", "-z", fork, head).decode()
+    return [name for name in raw.split("\0") if name]
+
+
 def check(root: Path, base: str, *, expected_head: str | None = None) -> dict:
     if git(root, "status", "--porcelain", "--untracked-files=no").strip():
         raise Refusal("uncommitted-tracked-source")
@@ -508,12 +520,7 @@ def check(root: Path, base: str, *, expected_head: str | None = None) -> dict:
     if expected_head is not None and head != expected_head:
         raise Refusal("checked-ref-head-changed")
     base_oid = git(root, "rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
-    # No deleted .py is passed to ruff; global predicates/collection still run.
-    paths = [
-        name
-        for name in git(root, "diff", "--name-only", "-z", base_oid, head).decode().split("\0")
-        if name
-    ]
+    paths = branch_paths(root, base_oid, head)
     before = tree_bodies(root)
     try:
         for name, command in guard_plan(paths, root=root):

@@ -92,13 +92,14 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
    (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
-   `guards` step locally before you push, except the hosted-only `knip` and `build`.
-   When `frontend/` changed it also runs the hosted frontend lint steps (`npm run lint`,
-   `lint:emdash`, `lint:query-coercion`, `lint:owner-time`) through
-   `scripts/frontend_guards.py`, whose `STEPS` list is pinned to `ci.yml` by
-   `tests/contracts/test_frontend_guard_steps.py`. It fails loudly ("frontend guard steps not
-   run: ...") when `frontend/node_modules` is missing (`npm ci` in `frontend/`), and
-   `scripts/pre_push.py` runs the same script for frontend paths. No frontend change: no cost.
+   `guards` step locally before you push, except the hosted-only `knip`, `build`, and node
+   `--test` tooling contract. When this branch changed `frontend/` since its fork from the base
+   it also runs the hosted frontend lint steps (`npm run lint`, `lint:emdash`,
+   `lint:query-coercion`, `lint:owner-time`) through `scripts/frontend_guards.py`, whose `STEPS`
+   list is pinned to `ci.yml` by `tests/contracts/test_frontend_guard_steps.py`. It fails loudly
+   ("frontend guard steps not run: ...") when `frontend/node_modules` is missing (`npm ci` in
+   `frontend/`), and `scripts/pre_push.py` runs the same script for frontend paths. No frontend
+   change on the branch: no cost.
 
 ### Scope names are not interchangeable
 
