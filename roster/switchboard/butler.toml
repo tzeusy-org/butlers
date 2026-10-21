@@ -85,6 +85,7 @@ job_name = "eligibility_sweep"
 [[butler.schedule]]
 name = "insight-delivery-cycle"
 cron = "15,45 6-11 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
@@ -112,6 +113,7 @@ job_name = "insight_urgent_subcycle"
 [[butler.schedule]]
 name = "commitment-escalation"
 cron = "40 5 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "commitment_escalation"
 
@@ -119,6 +121,7 @@ job_name = "commitment_escalation"
 [[butler.schedule]]
 name = "spend-rule-savings"
 cron = "15 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "spend_rule_savings"
 
@@ -154,6 +157,7 @@ job_name = "dropped_known_watch"
 [[butler.schedule]]
 name = "decision-review-digest"
 cron = "0 9 * * 1"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "decision_review_digest"
 
@@ -197,6 +201,7 @@ job_name = "domain_event_reconciliation_sweep"
 [[butler.schedule]]
 name = "fleet-case-lapse-sweep"
 cron = "10 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
 

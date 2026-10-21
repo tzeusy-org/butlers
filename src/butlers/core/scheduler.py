@@ -24,6 +24,7 @@ import asyncpg
 from croniter import croniter
 from opentelemetry import trace
 
+from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
 
@@ -190,8 +191,20 @@ def _check_notify_reference(
     contains the string ``notify`` (case-insensitive).  This is a soft check
     only — some tasks legitimately skip notify (e.g., cleanup jobs).
     """
-    if "notify" in prompt.lower():
+    if _references_notify(prompt, skills_dir):
         return
+
+    logger.warning(
+        "Scheduled task %r has dispatch_mode=prompt but prompt/skill does not reference"
+        " notify() — task results may not reach the user",
+        task_name,
+    )
+
+
+def _references_notify(prompt: str, skills_dir: Path | None) -> bool:
+    """True when the prompt, or a skill SKILL.md it names, mentions ``notify``."""
+    if "notify" in prompt.lower():
+        return True
 
     if skills_dir is not None and skills_dir.is_dir():
         for match in _SKILL_NAME_PATTERN.finditer(prompt):
@@ -200,19 +213,56 @@ def _check_notify_reference(
             if skill_md.is_file():
                 try:
                     if "notify" in skill_md.read_text(encoding="utf-8").lower():
-                        return
+                        return True
                 except OSError as exc:
                     logger.debug(
                         "Could not read skill file %s for notify check: %s",
                         skill_md,
                         exc,
                     )
+    return False
 
-    logger.warning(
-        "Scheduled task %r has dispatch_mode=prompt but prompt/skill does not reference"
-        " notify() — task results may not reach the user",
-        task_name,
-    )
+
+# A week of firings is examined for the always-suppressed lint; a cron that fires more often
+# than this inside that week is treated as irregular and never warned about.
+_QUIET_LINT_HORIZON = timedelta(days=7)
+_QUIET_LINT_MAX_FIRINGS = 2000
+
+
+def schedule_always_in_quiet_window(
+    cron: str,
+    *,
+    timezone: str,
+    quiet_policy: dict[str, Any] | None,
+    now: datetime,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> bool:
+    """True when every firing of *cron* in the next week lands inside the owner quiet window.
+
+    A firing counts as inside only when both its nominal instant and the latest instant the
+    schedule stagger can push it to are quiet. Uncertain cases return False so they never
+    warn: no usable policy, an empty window, an invalid cron, or a cron that fires more than
+    ``_QUIET_LINT_MAX_FIRINGS`` times in the horizon.
+    """
+    if quiet_policy is None or not croniter.is_valid(cron):
+        return False
+    anchor = now.astimezone(_coerce_schedule_zone(timezone))
+    iterator = croniter(cron, anchor)
+    horizon = now + _QUIET_LINT_HORIZON
+    firings = 0
+    while True:
+        firing = iterator.get_next(datetime).astimezone(UTC)
+        if firing > horizon:
+            return firings > 0
+        firings += 1
+        if firings > _QUIET_LINT_MAX_FIRINGS:
+            return False
+        latest = firing + timedelta(seconds=max_stagger_seconds)
+        if not (
+            is_policy_quiet_now(quiet_policy, now=firing)
+            and is_policy_quiet_now(quiet_policy, now=latest)
+        ):
+            return False
 
 
 def _normalize_schedule_projection_fields(
@@ -594,6 +644,7 @@ async def sync_schedules(
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     skills_dir: Path | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    quiet_policy: dict[str, Any] | None = None,
 ) -> None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
@@ -617,7 +668,16 @@ async def sync_schedules(
         default_timezone: IANA timezone used to interpret cron fields for TOML
             schedules (which have no per-row timezone).  Defaults to UTC; the
             daemon passes the owner's configured general timezone so hour-pinned
-            crons fire at the intended local time.
+            crons fire at the intended local time. A schedule dict may carry its own
+            ``timezone`` (IANA name) which overrides this; the literal ``"UTC"`` is the
+            owner-timezone sentinel, so pin real UTC with ``"Etc/UTC"``.
+        quiet_policy: Owner quiet-window policy (``quiet_start_hour``, ``quiet_end_hour``,
+            ``timezone``) from ``get_approvals_policy_quiet_hours``. Only used for the
+            warn-only lint below; ``None`` disables it.
+
+    Emits one WARNING per prompt-mode schedule that notifies the owner but whose every
+    firing in the next week falls inside the owner quiet window (the lint never rejects,
+    and uncertain cases do not warn).
     """
     # Determine whether the DB schema includes temporal intelligence columns.
     _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
@@ -711,6 +771,23 @@ async def sync_schedules(
 
         continuity = bool(schedule.get("continuity", False))
 
+        schedule_timezone = schedule.get("timezone")
+        if schedule_timezone is not None:
+            if not isinstance(schedule_timezone, str):
+                raise ValueError(f"{schedule_path}.timezone must be a string when set")
+            schedule_timezone = schedule_timezone.strip()
+            if not schedule_timezone or schedule_timezone.upper() == "UTC":
+                raise ValueError(
+                    f"{schedule_path}.timezone is the follow-the-owner sentinel; "
+                    'use "Etc/UTC" to pin UTC or omit the key'
+                )
+            try:
+                ZoneInfo(schedule_timezone)
+            except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid {schedule_path}.timezone: {schedule_timezone!r}"
+                ) from exc
+
         normalized_schedules.append(
             {
                 "name": name,
@@ -723,6 +800,7 @@ async def sync_schedules(
                 "complexity": complexity,
                 "max_token_budget": max_token_budget,
                 "continuity": continuity,
+                "timezone": schedule_timezone,
                 # Deadline-specific fields — validated above for deadline tasks,
                 # None for cron tasks; always present so the needs_update check
                 # can compare them without KeyError.
@@ -748,13 +826,17 @@ async def sync_schedules(
     _has_continuity = await _has_column(pool, "scheduled_tasks", "continuity")
     _continuity_select = ", continuity" if _has_continuity else ""
 
+    # Detect whether the per-row timezone column exists (added in core_112).
+    _has_timezone = await _has_column(pool, "scheduled_tasks", "timezone")
+    _trailing_select = _continuity_select + (", timezone" if _has_timezone else "")
+
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
     # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
         f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_trailing_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -764,7 +846,7 @@ async def sync_schedules(
     toml_only_rows = await pool.fetch(
         f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_trailing_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -789,12 +871,36 @@ async def sync_schedules(
         target_date = entry["target_date"]
         lead_time_days = entry["lead_time_days"]
         alert_thresholds = entry["alert_thresholds"]
+        # An explicit per-schedule zone wins; otherwise the owner's zone (the stored
+        # "UTC" column default is the follow-the-owner sentinel, so it is stored for unset).
+        stored_timezone = entry["timezone"] or "UTC"
+        effective_timezone = _effective_schedule_timezone(entry["timezone"], default_timezone)
         next_run_at = _next_run(
             cron,
-            timezone=default_timezone,
+            timezone=effective_timezone,
             stagger_key=stagger_key,
             max_stagger_seconds=max_stagger_seconds,
         )
+        if (
+            task_type == "cron"
+            and dispatch_mode == _DISPATCH_MODE_PROMPT
+            and prompt is not None
+            and _references_notify(prompt, skills_dir)
+            and schedule_always_in_quiet_window(
+                cron,
+                timezone=effective_timezone,
+                quiet_policy=quiet_policy,
+                now=datetime.now(UTC),
+                max_stagger_seconds=max_stagger_seconds,
+            )
+        ):
+            logger.warning(
+                "Scheduled task %r (cron %r, zone %s) only fires inside the owner quiet window; "
+                "its notifications will always be held or dropped",
+                name,
+                cron,
+                effective_timezone,
+            )
 
         if name in db_by_name:
             existing = db_by_name[name]
@@ -820,6 +926,9 @@ async def sync_schedules(
             # Also detect changes to continuity when schema supports it.
             if not needs_update and _has_continuity:
                 needs_update = bool(existing.get("continuity")) != continuity
+            # Also detect a changed per-schedule timezone when the column exists.
+            if not needs_update and _has_timezone:
+                needs_update = (existing.get("timezone") or "UTC") != stored_timezone
             # Also detect changes to deadline-specific fields when schema supports them.
             # Restrict to deadline tasks to avoid spurious updates on cron tasks that
             # may carry stale deadline-column values from a prior task_type migration.
@@ -915,6 +1024,12 @@ async def sync_schedules(
                             existing["id"],
                             continuity,
                         )
+                if _has_timezone:
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                        existing["id"],
+                        stored_timezone,
+                    )
                 logger.info("Updated TOML schedule: %s", name)
         else:
             # Insert new TOML task
@@ -1006,6 +1121,12 @@ async def sync_schedules(
                         new_id,
                         continuity,
                     )
+            if _has_timezone:
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                    new_id,
+                    stored_timezone,
+                )
             logger.info("Inserted TOML schedule: %s", name)
 
     # Disable TOML tasks no longer present in config
