@@ -16,6 +16,7 @@ import asyncpg
 import pytest
 
 import butlers.jobs._roster.finance_jobs as finance_jobs
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 
@@ -158,6 +159,16 @@ async def _entity(conn: asyncpg.Connection, name: str, posture: str) -> uuid.UUI
     return entity_id
 
 
+async def _update_claim(db_url: str, sql: str, *args: object) -> None:
+    """Run an UPDATE on cost_claims as the asserting role; row-level security hides it otherwise."""
+    conn = await asyncpg.connect(db_url)
+    try:
+        await conn.execute("SET ROLE butler_relationship_rw")
+        await conn.execute(sql, *args)
+    finally:
+        await conn.close()
+
+
 async def _claim_again(db_url: str, entity_id: uuid.UUID, *, key: str, amount: int) -> uuid.UUID:
     return await _claim(db_url, entity_id, key=key, amount=amount)
 
@@ -206,7 +217,8 @@ class TestMemorialClaimReadAndSweep:
             await _claim(db_url, others["quiet"], key="quiet-person")
             retracted = await _claim(db_url, memorial, key="retracted")
             settled = await _claim(db_url, memorial, key="settled")
-            await conn.execute(
+            await _update_claim(
+                db_url,
                 "UPDATE public.cost_claims SET retracted_at = now(), retraction_reason = 'x' "
                 "WHERE id = $1",
                 retracted,
@@ -223,7 +235,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_an_amended_claim_between_sweeps_is_not_asked_again(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=register_jsonb_codec)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
@@ -234,8 +246,8 @@ class TestMemorialClaimReadAndSweep:
             await finance_jobs.run_cost_claim_reconciliation_sweep(pool)
 
             # An amendment supersedes the row and re-asserts it under a new id, same claim_key.
-            await admin.execute(
-                "UPDATE public.cost_claims SET superseded_at = now() WHERE id = $1", old_id
+            await _update_claim(
+                db_url, "UPDATE public.cost_claims SET superseded_at = now() WHERE id = $1", old_id
             )
             await _claim_again(db_url, person, key="loan", amount=10)
             await finance_jobs.run_cost_claim_reconciliation_sweep(pool)
@@ -257,7 +269,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_the_sweep_asks_once_leaves_the_claim_alone_and_resolves_on_active(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=register_jsonb_codec)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
