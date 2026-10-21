@@ -28,7 +28,7 @@ A rejected submission SHALL record only a reason from the closed set
 
 ID: REQ-approval-attention-reminders-001
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Explicit acknowledgement closes attention without deciding
 
@@ -102,7 +102,7 @@ observational and SHALL NOT itself authorize a reminder.
 
 ID: REQ-approval-attention-reminders-002
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Owner-authenticated activity is reachable
 
@@ -171,7 +171,7 @@ SHALL NOT filter observational reachability evidence.
 
 ID: REQ-approval-attention-reminders-003
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Preferred registered channel is selected first
 
@@ -233,7 +233,7 @@ reminder ordinal.
 
 ID: REQ-approval-attention-reminders-004
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: First bounded reminder succeeds
 
@@ -316,11 +316,13 @@ the digest channel under that action's locked reminder-eligibility snapshot. A
 release at or after expiry SHALL create no handoff. Any action status other
 than `pending` (decision, expiry, abandonment, or the `cancelled` status a goal
 Stop gives a parked effect under RFC 0038) SHALL fence every unstarted
-reminder.
+reminder. An approval collapsed into a burst after that burst's digest was
+emitted starts its reminder clock at the digest's confirmed delivery, with the
+same two-reminder limit.
 
 ID: REQ-approval-attention-reminders-005
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Original expiry is a hard fence
 
@@ -375,6 +377,13 @@ Scope: proposed
 - **AND** decision/expiry may still remove a member without replaying the
   digest
 
+#### Scenario: Late-collapsed approval is still reminded
+
+- **WHEN** an approval is collapsed into a burst after that burst's digest was
+  emitted
+- **THEN** its reminder clock starts at that digest's confirmed delivery
+- **AND** it receives at most two reminders
+
 ### Requirement: Safe hold does not become ActionStatus
 
 The approval attention episode SHALL support monotonic `safe_hold` with exactly
@@ -391,7 +400,7 @@ acknowledged but SHALL NOT restore automatic send authority.
 
 ID: REQ-approval-attention-reminders-006
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Reminder budget exhaustion holds attention only
 
@@ -458,7 +467,7 @@ non-actionable.
 
 ID: REQ-approval-attention-reminders-007
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Returning owner receives one bounded summary
 
@@ -526,7 +535,7 @@ insight-policy authority.
 
 ID: REQ-approval-attention-reminders-008
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Approval delivery does not become an insight opportunity
 
@@ -581,7 +590,7 @@ separate gates.
 
 ID: REQ-approval-attention-reminders-009
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Draft merge has no runtime effect
 
@@ -619,7 +628,7 @@ recipient, and it SHALL NOT carry approve, reject, or defer controls.
 
 ID: REQ-approval-attention-reminders-010
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Reminder on a different channel discloses no action content
 
@@ -647,7 +656,7 @@ operation SHALL decide, edit, execute, or cancel an action.
 
 ID: REQ-approval-attention-reminders-011
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Model session cannot acknowledge
 
@@ -675,7 +684,7 @@ owner surface only and SHALL NOT be copied into attention state.
 
 ID: REQ-approval-attention-reminders-012
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Session-less and lineage-bearing approvals behave the same
 
