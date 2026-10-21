@@ -66,7 +66,7 @@
   while sources are degraded; test loading, error, clean empty, filter, and
   back/forward page behavior that preserves `q` and `kind` while changing
   `offset`.
-- [ ] 3.5 Add local accessible success/failure feedback to the Fact detail
+- [x] 3.5 Add local accessible success/failure feedback to the Fact detail
   Confirm and Retract footer without changing request payloads or optimistic
   rollback/cache semantics; test both actions, rollback, retryability, and
   non-duplicated screen-reader announcements.
