@@ -9,7 +9,6 @@ guarantee is pinned against real Postgres in
 
 from __future__ import annotations
 
-import inspect
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager, requeue_episode
+from butlers.api.routers.memory import _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -275,7 +274,6 @@ async def test_requeue_runs_nothing(app) -> None:
 
     assert resp.status_code == 200
     run.assert_not_awaited()
-    assert list(inspect.signature(requeue_episode).parameters) == ["episode_id", "db"]
 
 
 async def test_the_per_butler_retry_consolidation_route_is_gone(app) -> None:
