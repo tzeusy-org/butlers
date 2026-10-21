@@ -71,3 +71,18 @@ This change is specification-only. It performs no source implementation,
 migration, notification/provider call, credential access, action decision,
 deployment, runtime activation, rollout-flag change, OpenSpec archive, or live
 effect. Tests: +0 ~0 -0.
+
+## Review record and open owner questions
+
+Independent security and product review (bu-8cdl1.23) covered commit
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2`; all findings S1-S7 and P1-P7 are
+resolved in this change. The post-resolution text was independently re-reviewed
+at the exact head of the resolution PR (second pass bu-ijsbde; the exact SHA is
+in the bead and the PR, since a commit cannot name itself). The owner adopts the
+merged commit whose RFC 0035 and change contents equal that head.
+
+Owner questions (not adopted here):
+
+1. Should a reminder ever carry one-tap approve/reject/defer controls? This
+   draft proposes link-only, content-blind reminders because a reminder lands on
+   a different channel than the original and email is a weaker trust surface.

@@ -13,6 +13,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Default trusted callers for route.execute authz.
 DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
@@ -82,6 +83,10 @@ class ScheduleConfig:
     max_token_budget: int | None = None
     complexity: str | None = None
     continuity: bool = False
+    # Explicit IANA zone for this schedule's cron. None follows the owner timezone. The literal
+    # "UTC" is the owner-timezone sentinel (see scheduler._effective_schedule_timezone), so pin
+    # real UTC with the alias "Etc/UTC".
+    timezone: str | None = None
 
 
 @dataclass
@@ -503,6 +508,25 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
     if not isinstance(raw_continuity, bool):
         raise ConfigError(f"{entry_path}.continuity must be a boolean when set")
 
+    raw_timezone = entry.get("timezone")
+    schedule_timezone: str | None = None
+    if raw_timezone is not None:
+        if not isinstance(raw_timezone, str):
+            raise ConfigError(f"{entry_path}.timezone must be a string when set")
+        schedule_timezone = raw_timezone.strip()
+        if not schedule_timezone or schedule_timezone.upper() == "UTC":
+            raise ConfigError(
+                f"{entry_path}.timezone {raw_timezone!r} is the follow-the-owner sentinel and "
+                'would be silently re-resolved to the owner timezone; use "Etc/UTC" to pin UTC '
+                "or omit the key"
+            )
+        try:
+            ZoneInfo(schedule_timezone)
+        except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {entry_path}.timezone: {raw_timezone!r}. Expected an IANA zone name."
+            ) from exc
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -518,6 +542,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             max_token_budget=max_token_budget,
             complexity=complexity,
             continuity=raw_continuity,
+            timezone=schedule_timezone,
         )
 
     if prompt is not None:
@@ -535,6 +560,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
         job_args=dict(job_args) if job_args is not None else None,
         max_token_budget=max_token_budget,
         complexity=complexity,
+        timezone=schedule_timezone,
     )
 
 
