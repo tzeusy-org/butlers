@@ -367,12 +367,6 @@
       "scenario": null
     },
     {
-      "digest": "30a04520e1ed",
-      "excerpt": "\"ConversationMessage model\" is not in the block",
-      "kind": "scenario",
-      "scenario": "ConversationMessage model"
-    },
-    {
       "digest": "f3b43fd26691",
       "excerpt": "- **THEN** each entry includes the `ConversationSummary` fields plus `snippet` (the matching message content excerpt)",
       "kind": "clause",
