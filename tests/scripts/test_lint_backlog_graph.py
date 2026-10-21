@@ -176,6 +176,55 @@ def test_warning_only_cli_is_success_but_reports_actionable_finding(tmp_path):
     assert text.returncode == 0 and "warning" in text.stdout.lower() and "Fix:" in text.stdout
 
 
+@pytest.mark.parametrize(
+    ("out_of_range", "boundary", "boundary_is_stale"),
+    [
+        ("0001-01-01T00:00:00+01:00", "0001-01-01T01:00:00+01:00", True),
+        ("9999-12-31T23:59:59-01:00", "9999-12-31T22:59:59-01:00", False),
+    ],
+)
+def test_cli_unrepresentable_utc_timestamps_preserve_findings(
+    tmp_path, out_of_range, boundary, boundary_is_stale
+):
+    def heartbeat(timestamp):
+        return f"[beads-heartbeat]\nlast_heartbeat_at={timestamp}\n[/beads-heartbeat]"
+
+    path = tmp_path / "issues.json"
+    path.write_text(
+        json.dumps(
+            [
+                issue("bad-update", assignee="agent:example", updated_at=out_of_range),
+                issue(
+                    "bad-heartbeat",
+                    assignee="agent:example",
+                    updated_at="2000-01-01T00:00:00Z",
+                    notes=heartbeat(out_of_range),
+                ),
+                issue("boundary", assignee="agent:example", updated_at=boundary),
+                issue(
+                    "fresh-heartbeat",
+                    assignee="agent:example",
+                    updated_at=out_of_range,
+                    notes=heartbeat("9999-12-31T23:59:59Z"),
+                ),
+                issue("parent", dependencies=[edge("child")]),
+                issue("child", dependencies=[edge("parent", "parent-child")]),
+            ]
+        )
+    )
+    expected = {"bad-update", "bad-heartbeat"}
+    if boundary_is_stale:
+        expected.add("boundary")
+    warning_only = cli(path, "--json", "--rules", "G7")
+    assert warning_only.returncode == 0 and not warning_only.stderr
+    assert {result["id"] for result in json.loads(warning_only.stdout)} == expected
+    complete = cli(path, "--json")
+    assert complete.returncode == 1 and not complete.stderr
+    results = json.loads(complete.stdout)
+    assert {result["id"] for result in results} == expected | {"parent"}
+    assert any(result["violations"][0].startswith("G1 ") for result in results)
+
+
 @pytest.mark.parametrize("content", [None, "{broken", '[{"id":"x"}]', "[null]"])
 def test_unavailable_or_malformed_input_is_exit_two(tmp_path, content):
     path = tmp_path / "input.json"
