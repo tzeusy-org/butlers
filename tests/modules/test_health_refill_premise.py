@@ -48,8 +48,8 @@ def _health_jobs():
 
 def _migration():
     return _load(
-        _REPO / "alembic/versions/core/core_270_health_refill_premise_probe.py",
-        "_core_270_under_test",
+        _REPO / "alembic/versions/core/core_272_health_refill_premise_probe.py",
+        "_core_272_under_test",
     )
 
 

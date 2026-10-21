@@ -1,7 +1,7 @@
 """Health medication-refill premise probe: narrow definer lookup.
 
-Revision ID: core_270
-Revises: core_268
+Revision ID: core_272
+Revises: core_271
 Create Date: 2026-10-18 00:00:00.000000
 
 bu-q7vx1q.30.  A refill reminder asserts "this supply is running out".  The
@@ -34,8 +34,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_270"
-down_revision = "core_268"
+revision = "core_272"
+down_revision = "core_271"
 branch_labels = None
 depends_on = None
 

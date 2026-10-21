@@ -1,4 +1,4 @@
-"""core_270: the narrow Health refill-probe definer (bu-q7vx1q.30).
+"""core_272: the narrow Health refill-probe definer (bu-q7vx1q.30).
 
 Real PostgreSQL role matrix, modelled on core_255's finance bill probe: the Switchboard role gets
 a single nullable boolean verdict and still cannot read ``health.facts`` directly; any other runtime
@@ -26,13 +26,13 @@ pytestmark = [
 
 _PATH = (
     Path(__file__).resolve().parents[2]
-    / "alembic/versions/core/core_270_health_refill_premise_probe.py"
+    / "alembic/versions/core/core_272_health_refill_premise_probe.py"
 )
 _CALL = "SELECT public.resolve_health_medication_refill('medication:Sample', 1, 14)"
 
 
 def _migration():
-    spec = importlib.util.spec_from_file_location("_core_270_matrix", _PATH)
+    spec = importlib.util.spec_from_file_location("_core_272_matrix", _PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
