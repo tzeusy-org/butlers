@@ -227,7 +227,7 @@ this is not an access-control or deployed-schema verdict. They must remain in th
 | --- | --- |
 | `core/ingestion_events.py` reconciliation and replay/reset helpers | lifecycle/status/IDs and counts; exception strings are not certified by this no-text verdict. `ingestion_event_get_inbox_lifecycle` unrestricted decomposition reader is separately GAP above. |
 | `MessagePipeline._accept_ingress` dedupe SELECT; `process` accepted->processing lifecycle UPDATE | request ID/state only; the alternate INSERT is now scrubbed for new rows (`bu-ksao0y`); the `_update_message_inbox_lifecycle` text-descendant UPDATE is separately GAP |
-| `ingest.py` dedupe/content-hash lookups and partition ensure | ID/request context or DDL; the hash keys derive from scrubbed text, and are omitted from `request_context` when bearer material was withheld (`bu-y0cll7`; rows stored before it keep raw-text hashes until `bu-tnm8zn`); central content INSERT separately scrubbed |
+| `ingest.py` dedupe/content-hash lookups and partition ensure | ID/request context or DDL; the hash keys derive from scrubbed text, and only `content_hash_key` is omitted from `request_context` when bearer material was withheld; `dedupe_key` remains (`bu-y0cll7`; rows stored before it keep raw-text hashes until `bu-tnm8zn`); central content INSERT separately scrubbed |
 | `roster/relationship/jobs/relationship_jobs.py::run_interaction_sync`, `run_email_identity_enrichment` | sender/thread/time/identity aggregates; no normalized_text or body projection |
 | `roster/switchboard/api/router.py::get_ingestion_overview` | counts/lifecycle aggregates |
 | `roster/switchboard/modules/tools.py::correct_route` wrapper | request metadata before delegating to the text-reading correction implementation |

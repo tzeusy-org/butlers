@@ -53,8 +53,11 @@ import {
 import { insightHref } from "@/lib/health-insight-links";
 import {
   chartableMeasurementTypes,
+  CORE_KPI_SLOTS,
   selectKpiMeasurementSlots,
 } from "@/lib/measurement-vocabulary";
+import { isMeasurementUnreachable, type MeasurementSignalRead } from "@/lib/measurement-acquisition";
+import { MeasurementSignalHealthNote } from "@/components/health/MeasurementSignalHealthNote";
 import type { LatestMeasurementEntry, MeasurementSource, MeasurementTypeInfo } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
@@ -308,7 +311,7 @@ function toAttentionItems(
 const INSIGHT_PARAMS = { butler: "health", status: "pending" };
 const EMPTY_MEASUREMENT_TYPES: readonly MeasurementTypeInfo[] = [];
 
-export default function HealthOverviewPage() {
+export default function HealthOverviewPage({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   // --- Voice briefing (no refetchInterval — LLM cost guard) ---
   const {
     data: briefing,
@@ -385,10 +388,15 @@ export default function HealthOverviewPage() {
   // an alternate type KPI-eligible, the pure slot selector fills only an
   // absent core position, preserving the structural four-cell strip.
   const kpiLoading = measurementTypesLoading || latestMeasurementsLoading;
-  const kpiCells = kpiSlots.map((slot) => {
+  const kpiCells = kpiSlots.map((slot, index) => {
     const entry = slot.type ? measurements[slot.type] ?? null : null;
     const value = slot.type === "blood_pressure" ? fmtBloodPressure(entry) : fmtScalar(entry);
     const cell = buildVitalCell(slot.label, slot.type ?? "", value, entry);
+    if (!kpiLoading && !measurementTypesError && !latestMeasurementsError && !entry &&
+      isMeasurementUnreachable(expectedSignals, slot.type ?? CORE_KPI_SLOTS[index].type)) {
+      return { ...cell, delta: "Unreachable", deltaTone: "amber" as const,
+        title: "Instrument unavailable; owner-behavior nudges paused." };
+    }
     return kpiLoading ? { ...cell, delta: "Loading…" } : cell;
   }) as [
     ReturnType<typeof buildVitalCell>,
@@ -490,6 +498,7 @@ export default function HealthOverviewPage() {
               "no data logged". */}
           <Section eyebrow="Vitals">
             <KpiStrip cells={kpiCells} />
+            <MeasurementSignalHealthNote read={expectedSignals} />
             {measurementTypesError && (
               <SourceDegradedNote
                 label="Vitals"

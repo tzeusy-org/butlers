@@ -76,6 +76,13 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 _MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules", "memory_links", "episode_tombstones")
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Public lifecycle dossier columns on episodes. leased_by / leased_until are worker lease
+# internals and are never selected by any dashboard projection.
+_EPISODE_DOSSIER_COLUMNS = (
+    "consolidation_attempts, last_consolidation_error, dead_letter_reason,"
+    " next_consolidation_retry_at"
+)
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -763,7 +770,8 @@ async def list_episodes(
         rows = await pool.fetch(
             f"SELECT id, butler, session_id, content, importance, reference_count,"
             f" consolidated, consolidation_status, created_at, last_referenced_at,"
-            f" expires_at, metadata"
+            f" expires_at, metadata,"
+            f" {_EPISODE_DOSSIER_COLUMNS}"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -813,7 +821,8 @@ async def get_episode(
         return await pool.fetchrow(
             "SELECT id, butler, session_id, content, importance, reference_count,"
             " consolidated, consolidation_status, created_at, last_referenced_at,"
-            " expires_at, metadata"
+            " expires_at, metadata,"
+            f" {_EPISODE_DOSSIER_COLUMNS}"
             f" FROM {relation} WHERE id = $1",
             episode_id,
         )
@@ -2652,12 +2661,21 @@ async def promote_entity(
 # ---------------------------------------------------------------------------
 
 
+def _optional_column(r, key: str):
+    """Row value, or ``None`` when a row double omits the column."""
+    try:
+        return r[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _row_to_episode(r) -> Episode:
     """Convert an asyncpg Record to an Episode model.
 
     Expects the episodes column set used by the list/get/inspect endpoints
     (id, butler, session_id, content, importance, reference_count, consolidated,
-    consolidation_status, created_at, last_referenced_at, expires_at, metadata).
+    consolidation_status, created_at, last_referenced_at, expires_at, metadata, plus the
+    lifecycle dossier columns, which default when a row double omits them).
     """
     return Episode(
         id=str(r["id"]),
@@ -2672,6 +2690,14 @@ def _row_to_episode(r) -> Episode:
         last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
         expires_at=str(r["expires_at"]) if r["expires_at"] else None,
         metadata=_parse_jsonb(r["metadata"]),
+        consolidation_attempts=int(_optional_column(r, "consolidation_attempts") or 0),
+        last_consolidation_error=_optional_column(r, "last_consolidation_error"),
+        dead_letter_reason=_optional_column(r, "dead_letter_reason"),
+        next_consolidation_retry_at=(
+            str(retry_at)
+            if (retry_at := _optional_column(r, "next_consolidation_retry_at"))
+            else None
+        ),
     )
 
 
@@ -2856,67 +2882,98 @@ async def get_butler_memory_stats(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation
+# POST /api/memory/episodes/{episode_id}/requeue
 # ---------------------------------------------------------------------------
 
 
-@butler_memory_router.post(
-    "/{name}/memory/episodes/{episode_id}/retry-consolidation",
-    response_model=ApiResponse[Episode],
-)
-async def retry_episode_consolidation(
-    name: str,
+def _is_recovery_eligible_source(db: DatabaseManager, butler_name: str) -> bool:
+    """Whether this butler's memory relations live in its own schema.
+
+    A distinct private ``modules.memory.memory_schema`` override (Chronicler's
+    ``chronicler_mem``) is outside the recovery slice: it is neither read nor
+    mutated, and skipping it is silent (never a 503, never ``pools_failed``).
+    """
+    try:
+        domain_schema = db.schema_for_butler(butler_name)
+    except (KeyError, AttributeError):
+        domain_schema = None
+    return _memory_source_schema(db, butler_name) == domain_schema
+
+
+@router.post("/episodes/{episode_id}/requeue", response_model=ApiResponse[Episode])
+async def requeue_episode(
     episode_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[Episode]:
-    """Reset a dead_letter episode to 'pending' so it is reconsolidated.
+    """Queue one dead_letter episode for the next scheduled consolidation.
 
-    Delegates to ``storage.retry_dead_letter_episode`` on the named butler's
-    own pool — backs the daybook register's per-episode retry-consolidation
-    verb (the dead-letter action the memory attention rail card links to).
-    The reset clears the terminal retry state (attempts, dead_letter_reason,
-    lease) so the episode is unconditionally eligible for the next scheduled
-    ``run_consolidation`` sweep, not merely relabelled.
+    The only public manual recovery verb for a dead-lettered episode. It resets
+    the episode to ``pending`` with its retry state cleared (one guarded
+    conditional UPDATE plus one lifecycle event in the same transaction) and
+    starts nothing: no spawner, no ``run_consolidation``, no MCP call.
+
+    Authorization is the central dashboard-owner-auth boundary; there is no
+    per-route guard.
 
     Errors:
-    - 404: Butler is not registered, or no episode with this id exists on it.
-    - 400: ``episode_id`` is not a valid UUID.
-    - 409: The episode exists but is not in dead_letter state.
-    - 503: The butler has no reachable memory pool.
+    - 400: ``episode_id`` is not a valid UUID (before any pool access).
+    - 404: every recovery-eligible source answered and none owns the episode.
+    - 409: the episode exists but is not in dead_letter state.
+    - 503: no usable recovery-eligible source, or a failed eligible source
+      leaves the episode's owner unresolved.
     """
     from butlers.modules.memory import storage as _storage
-
-    if name not in db.butler_names:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
 
     try:
         eid = _uuid.UUID(episode_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid episode id (must be a UUID)") from exc
 
-    try:
-        pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    async def _requeue_in_pool(butler_name: str, pool: object):
+        if not _is_recovery_eligible_source(db, butler_name):
+            return None
+        try:
+            updated = await _storage.retry_dead_letter_episode(
+                pool, eid, memory_schema=_memory_source_schema(db, butler_name)
+            )
+        except _storage.EpisodeNotDeadLetterError as exc:
+            return ("conflict", exc)
+        if updated is None:
+            return ("absent", None)
+        return ("requeued", updated)
 
-    memory_schema = _memory_source_schema(db, name)
-    try:
-        updated = await _storage.retry_dead_letter_episode(pool, eid, memory_schema=memory_schema)
-    except _storage.EpisodeNotDeadLetterError as exc:
-        raise HTTPException(status_code=409, detail=exc.message) from exc
-    except Exception as exc:
-        if _is_missing_memory_schema_error(
-            exc, schema_absent_at_start=_memory_schema_absent_at_start(db, name)
-        ):
+    tracker = DegradedSources(logger)
+    outcomes = await _fan_out_memory_queries(
+        db,
+        query_name="episode_requeue",
+        query_fn=_requeue_in_pool,
+        tracker=tracker,
+    )
+
+    for kind, payload in outcomes:
+        if kind == "requeued":
+            return ApiResponse[Episode](
+                data=_row_to_episode(payload),
+                meta=ApiMeta(
+                    queued=True,
+                    consolidation_started=False,
+                    message=(
+                        "Queued for the next scheduled write-up; nothing was run by this request."
+                    ),
+                ),
+            )
+    for kind, payload in outcomes:
+        if kind == "conflict":
+            raise HTTPException(status_code=409, detail=payload.message)
+
+    if tracker.failed or not outcomes:
+        if not tracker.failed:
             raise HTTPException(
-                status_code=503, detail=f"Memory tables unavailable for butler '{name}'"
-            ) from exc
-        raise
-
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    return ApiResponse[Episode](data=_row_to_episode(updated))
+                status_code=503,
+                detail="No usable memory source is available to requeue this episode",
+            )
+        _raise_memory_detail_miss(resource="Episode", tracker=tracker)
+    raise HTTPException(status_code=404, detail="Episode not found")
 
 
 # ---------------------------------------------------------------------------
@@ -3120,7 +3177,8 @@ async def inspect_memory(
             ep_rows = await pool.fetch(
                 f"SELECT id, butler, session_id, content, importance, reference_count,"
                 f" consolidated, consolidation_status, created_at, last_referenced_at,"
-                f" expires_at, metadata"
+                f" expires_at, metadata,"
+                f" {_EPISODE_DOSSIER_COLUMNS}"
                 f" FROM {episodes_relation}{ep_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
