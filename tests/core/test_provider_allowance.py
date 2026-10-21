@@ -15,21 +15,21 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest import mock as _mock
+from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core import model_routing as _mr
 from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.model_routing import (
     ALLOWANCE_DEFAULT_WINDOW,
     ALLOWANCE_OUTCOME,
-    AllowanceAttemptContext,
     CandidateOutcome,
     Complexity,
     allowance_deferral,
-    capture_allowance_attempt,
     clear_allowance_exhaustion,
     clear_routing_decision_cache,
     get_breaker_state,
@@ -41,7 +41,6 @@ from butlers.core.model_routing import (
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
-from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -90,6 +89,12 @@ async def test_allowance_write_failure_never_raises_into_failover() -> None:
 
     assert await mark_allowance_exhausted(pool, uuid.uuid4(), reset_at=None, attempt_id=1) is None
 
+
+async def test_allowance_attempt_evidence_failures_never_raise_into_failover() -> None:
+    pool = AsyncMock()
+    pool.fetchval.return_value = "codex"
+    pool.execute.side_effect = asyncpg.PostgresError("boom")
+
     entry = uuid.uuid4()
     started = datetime(2026, 10, 3, 12, tzinfo=UTC)
     observed = started - timedelta(seconds=1)
@@ -98,11 +103,11 @@ async def test_allowance_write_failure_never_raises_into_failover() -> None:
         "started_at": started,
         "observed_rejection_at": observed,
     }
-    context = await capture_allowance_attempt(pool, entry)
-    assert context == AllowanceAttemptContext("codex", started, observed)
+    context = await _mr.capture_allowance_attempt(pool, entry)
+    assert context == _mr.AllowanceAttemptContext("codex", started, observed)
     with pytest.raises(dataclasses.FrozenInstanceError):
         context.started_at = started + timedelta(seconds=1)
-    with patch("butlers.core.model_routing.clear_routing_decision_cache") as invalidate:
+    with _mock.patch("butlers.core.model_routing.clear_routing_decision_cache") as invalidate:
         await clear_allowance_exhaustion(pool, entry, attempt_context=context)
         invalidate.assert_not_called()  # Database error cannot invalidate or escape.
         assert pool.execute.await_args.args[1:] == (entry, "codex", started, observed)
@@ -139,19 +144,19 @@ async def test_allowance_write_failure_never_raises_into_failover() -> None:
         },
     ):
         pool.fetchrow.return_value = row
-        assert await capture_allowance_attempt(pool, entry) is None
+        assert await _mr.capture_allowance_attempt(pool, entry) is None
     pool.fetchrow.side_effect = asyncpg.PostgresError("synthetic capture unavailable")
-    assert await capture_allowance_attempt(pool, entry) is None
+    assert await _mr.capture_allowance_attempt(pool, entry) is None
 
     async def blocked(*_args):
         await asyncio.Event().wait()
 
     pool.fetchrow.side_effect = blocked
-    with patch("butlers.core.model_routing.ALLOWANCE_CAPTURE_TIMEOUT_S", 0.001):
-        assert await capture_allowance_attempt(pool, entry) is None
+    with _mock.patch("butlers.core.model_routing.ALLOWANCE_CAPTURE_TIMEOUT_S", 0.001):
+        assert await _mr.capture_allowance_attempt(pool, entry) is None
     pool.fetchrow.side_effect = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
-        await capture_allowance_attempt(pool, entry)
+        await _mr.capture_allowance_attempt(pool, entry)
 
 
 @pytest.mark.unit
@@ -524,12 +529,27 @@ class TestAllowanceStateWriter:
         other = await _entry(pool, "opencode", runtime_type="opencode")
         await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
 
+        await clear_allowance_exhaustion(pool, other)  # different account: untouched
+        assert await pool.fetchval("SELECT state FROM public.provider_allowance_states") == (
+            "exhausted"
+        )
+        await clear_allowance_exhaustion(pool, entry)
+        row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
+        assert row["state"] == "available" and row["reset_at"] is None
+        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        assert nxt is not None
+
+    async def test_success_clear_requires_attempt_evidence(self, pool) -> None:
+        entry = await _entry(pool, "codex", runtime_type="codex")
+        other = await _entry(pool, "opencode", runtime_type="opencode")
+        await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
+
         original = dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states"))
         await clear_allowance_exhaustion(pool, entry)  # No evidence cannot authorize a clear.
         assert (
             dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == original
         )
-        context = await capture_allowance_attempt(pool, entry)
+        context = await _mr.capture_allowance_attempt(pool, entry)
         assert context is not None and context.started_at > context.observed_rejection_at
         await clear_allowance_exhaustion(pool, other, attempt_context=context)
         # A different current account is untouched even with otherwise valid evidence.
@@ -547,13 +567,13 @@ class TestAllowanceStateWriter:
         assert (
             dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == repeated
         )
-        context = await capture_allowance_attempt(pool, entry)
+        context = await _mr.capture_allowance_attempt(pool, entry)
         equal = dataclasses.replace(context, started_at=repeated["updated_at"])
         await clear_allowance_exhaustion(pool, entry, attempt_context=equal)
         assert (
             dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == repeated
         )
-        second_success = await capture_allowance_attempt(pool, entry)
+        second_success = await _mr.capture_allowance_attempt(pool, entry)
         await clear_allowance_exhaustion(pool, entry, attempt_context=context)
         row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
         assert row["state"] == "available" and row["reset_at"] is None
@@ -577,7 +597,7 @@ class TestAllowanceStateWriter:
             await pool.execute("DELETE FROM public.provider_allowance_states")
             if state is not None:
                 await _exhaust(pool, "codex", _later(), state=state)
-            context = await capture_allowance_attempt(pool, entry)
+            context = await _mr.capture_allowance_attempt(pool, entry)
             assert context is not None and context.observed_rejection_at is None
             await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
             before = dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states"))
@@ -598,7 +618,7 @@ class TestAllowanceStateWriter:
             )
         )
         sibling = await _entry(pool, "shared", runtime_type="opencode", allowance_account="codex")
-        context = await capture_allowance_attempt(pool, sibling)
+        context = await _mr.capture_allowance_attempt(pool, sibling)
         assert context.account_key == "codex" and context.observed_rejection_at is not None
         await clear_allowance_exhaustion(pool, sibling, attempt_context=context)
         assert (
@@ -617,7 +637,7 @@ class TestAllowanceStateWriter:
         )
 
         await mark_allowance_exhausted(pool, sibling, reset_at=_later(), attempt_id=64)
-        context = await capture_allowance_attempt(pool, sibling)
+        context = await _mr.capture_allowance_attempt(pool, sibling)
         await clear_allowance_exhaustion(pool, sibling, attempt_context=context)
         assert dict(
             await pool.fetchrow(
@@ -628,7 +648,7 @@ class TestAllowanceStateWriter:
 
         # Account relabel and catalog deletion make the captured fence ineligible.
         await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
-        context = await capture_allowance_attempt(pool, entry)
+        context = await _mr.capture_allowance_attempt(pool, entry)
         before = dict(
             await pool.fetchrow(
                 "SELECT * FROM public.provider_allowance_states WHERE account_key='codex'"
@@ -648,7 +668,7 @@ class TestAllowanceStateWriter:
             )
             == before
         )
-        assert await capture_allowance_attempt(pool, entry) is None
+        assert await _mr.capture_allowance_attempt(pool, entry) is None
 
     async def test_allowance_outcome_never_trips_the_breaker(self, pool) -> None:
         entry = await _entry(pool, "codex", runtime_type="codex")
@@ -721,6 +741,8 @@ class TestAllowanceStateWriter:
         # The production JSONB codec is required by the real serialized attempt
         # recorder. Session/control transport and selection are synthetic here;
         # allowance capture/write/clear and durable success provenance are real.
+        from butlers.db import register_jsonb_codec
+
         async with asyncpg.create_pool(
             migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
         ) as runtime_pool:
@@ -733,14 +755,14 @@ class TestAllowanceStateWriter:
                 env_optional=[],
             )
             with (
-                patch(
+                _mock.patch(
                     "butlers.core.spawner.session_create",
                     new_callable=AsyncMock,
                     return_value=session_id,
                 ),
-                patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-                patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
-                patch(
+                _mock.patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+                _mock.patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
+                _mock.patch(
                     "butlers.core.spawner.resolve_model_with_effective_tier",
                     new_callable=AsyncMock,
                     return_value=(
@@ -800,7 +822,7 @@ class TestAllowanceStateWriter:
         async with pool.acquire() as rejection_conn, pool.acquire() as success_conn:
             # Rejection owns the row first: the waiting UPDATE must recheck the
             # committed replacement fence and leave every rejection field intact.
-            context = await capture_allowance_attempt(pool, entry)
+            context = await _mr.capture_allowance_attempt(pool, entry)
             async with rejection_conn.transaction():
                 await mark_allowance_exhausted(
                     rejection_conn, entry, reset_at=_later(), attempt_id=11
@@ -825,7 +847,7 @@ class TestAllowanceStateWriter:
 
             # Success owns the row first: its eligible clear may commit, but the
             # waiting later rejection must be the final durable exhausted state.
-            context = await capture_allowance_attempt(pool, entry)
+            context = await _mr.capture_allowance_attempt(pool, entry)
             later_reset = _later() + timedelta(hours=1)
             async with success_conn.transaction():
                 await clear_allowance_exhaustion(success_conn, entry, attempt_context=context)
@@ -863,7 +885,7 @@ class TestAllowanceStateWriter:
                     await pool.execute("DELETE FROM public.provider_allowance_states")
                 async with rejection_conn.transaction():
                     began = await rejection_conn.fetchval("SELECT now()")
-                    context = await capture_allowance_attempt(success_conn, entry)
+                    context = await _mr.capture_allowance_attempt(success_conn, entry)
                     assert context.started_at > began
                     await mark_allowance_exhausted(
                         rejection_conn, entry, reset_at=later_reset, attempt_id=None
