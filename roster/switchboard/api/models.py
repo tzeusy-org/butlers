@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class RoutingEntry(BaseModel):
@@ -1047,3 +1047,13 @@ class RulePromotionStats(BaseModel):
     # rolling agreement scores those flags derive from.
     demotion_pending: int = 0
     promoted_rule_spot_checks: int = 0
+
+
+class TelegramInsightFeedbackRequest(BaseModel):
+    """Only bounded feedback and original signed callback provenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["useful", "not_now", "never"]
+    token: SecretStr = Field(min_length=1, max_length=64)
+    callback_query_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")

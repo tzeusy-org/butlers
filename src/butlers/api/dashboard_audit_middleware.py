@@ -141,9 +141,12 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         # Match privacy only; routing and callback credential scope stay unchanged.
         parsed_body: dict | None = None
         if request.method == "POST" and re.fullmatch(
-            r"/api/decisions/prompts/[^/]+/choose/?", path
+            r"/api/(?:decisions/prompts/[^/]+/choose|switchboard/insights/[^/]+/telegram-feedback)/?",
+            path,
         ):
-            parsed_body = {"redacted": "decision_callback"}
+            parsed_body = {
+                "redacted": "insight_callback" if "/insights/" in path else "decision_callback"
+            }
         else:
             # Collect the request body (bounded) without consuming it for downstream.
             raw_body: bytes = b""

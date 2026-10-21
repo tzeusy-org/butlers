@@ -49,6 +49,32 @@ keyboard; it does not ingest or error-buffer the update. Malformed `dsk1` Unicod
 the generic acknowledgement. No token expiry, routing activation or reoffer policy is introduced;
 see [Decision beads](../operations/decision-beads.md) for the transaction and refusal contract.
 
+## Insight feedback callbacks
+
+Insight deliveries use `ifb1:<candidate UUID>:<u|n|x>:<hmac16>` (60 bytes),
+with Useful, Not now and Never buttons on standalone and digest deliveries.
+The prefix is inside the RFC 0021 signature, using the existing Tier-1
+`APPROVAL_CALLBACK_SECRET`; `apr1`, `dsk1` and `ifb1` cannot cross-verify.
+The candidate's `created_at` is loaded from the server, never from the tap.
+
+Before ingestion, the connector checks the primary owner sender and matching
+private chat, loads the content-blind state, verifies the HMAC, and calls
+`POST /api/switchboard/insights/{insight_id}/telegram-feedback`. The scoped
+connector credential admits exactly that POST and
+`GET /api/switchboard/insights/{insight_id}/callback-state`, with no neighboring
+route access. POST requires `X-Butlers-Decision-Actor: owner@telegram`, an
+original signed `token`, a bounded `callback_query_id` and the bounded `verdict`.
+The server supplies the actor itself, verifies the token again under the
+candidate lock, and computes Not now's 72-hour snooze. Caller actor/snooze
+fields are rejected. Repeating a verdict or replaying a recorded query adds no row.
+
+Recorded feedback marks the chosen button while keeping reversal and sibling
+digest actions. API failures retain the keyboard for retry; a purged candidate
+removes only its own row. Callback bodies, including malformed JSON, are
+redacted before audit and validation errors never reflect tokens. No token or
+credential is persisted in feedback evidence; only the Telegram query reference
+is retained. Approval rollout gating does not govern insight feedback.
+
 ## Request Context Mapping
 
 Telegram updates are mapped to the `ingest.v1` envelope as follows:
