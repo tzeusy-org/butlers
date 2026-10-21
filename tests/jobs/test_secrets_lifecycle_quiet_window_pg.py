@@ -172,7 +172,6 @@ async def _audit(pool, action, key, note, *, minutes):
 
 
 async def test_latest_lifecycle_marker_is_the_newest_of_notified_and_parked(pool):
-    await pool.execute("DELETE FROM public.audit_log WHERE target LIKE 's:marker%'")
     notified, parked = lifecycle._LIFECYCLE_NOTIFIED_ACTION, lifecycle._LIFECYCLE_PARKED_ACTION
     # Inserted newest-first so an ASC ordering (or insert order) would pick the wrong row.
     await _audit(pool, parked, "s:marker-a", "expired|e1", minutes=20)
