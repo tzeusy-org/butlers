@@ -4,7 +4,7 @@
 
 ID: REQ-dashboard-domain-pages-060
 Source: bu-q7vx1q.26 approved dashboard outcome; REQ-module-memory-013
-Scope: v1
+Scope: v1-mandatory
 
 FactDetailPage and RuleDetailPage SHALL display content authorship from persisted server-derived authority, independently of the record's subject, request ID, and source episode availability. The existing episode provenance links, unavailable-source text, lifecycle controls, and error boundaries SHALL remain intact.
 
