@@ -242,6 +242,29 @@ def test_report_is_a_pure_function_of_the_sources(tmp_path: Path) -> None:
     assert module.generate_report([fixture]) == module.generate_report([fixture])
 
 
+def test_adding_one_string_changes_exactly_one_report_line(tmp_path: Path) -> None:
+    """bu-21bos0: concurrent copy PRs must merge cleanly AND stay current.
+
+    A file-global line (the old `*Total strings: N*` trailer) is rewritten to the same
+    N+1 by every PR that adds copy, so two such PRs merge in git without conflict and
+    the merged inventory undercounts; the CI guard then fails in the merge group.
+    """
+    module = _extractor()
+    first = tmp_path / "FirstPage.tsx"
+    second = tmp_path / "SecondPage.tsx"
+    first.write_text("<span>Hello there</span>", encoding="utf-8")
+    second.write_text("<span>Goodbye now</span>", encoding="utf-8")
+    before, _ = module.generate_report([first, second])
+
+    second.write_text("<span>Goodbye now</span><span>See you soon</span>", encoding="utf-8")
+    after, _ = module.generate_report([first, second])
+
+    removed = [line for line in before.splitlines() if line not in after.splitlines()]
+    added = [line for line in after.splitlines() if line not in before.splitlines()]
+    assert removed == []
+    assert added == ["- See you soon"]
+
+
 # ---------------------------------------------------------------------------
 # The same claim, against the real frontend rather than a fixture
 # ---------------------------------------------------------------------------

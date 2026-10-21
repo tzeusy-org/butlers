@@ -4951,6 +4951,3 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - To
 - Time window picker
 - Preset windows
-
----
-*Total strings: 3946*
