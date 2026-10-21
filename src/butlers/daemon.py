@@ -75,6 +75,7 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
 from butlers.core.tool_catalog import (
+    AUTHORIZATION_FIELDS,
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
@@ -1451,8 +1452,12 @@ class ButlerDaemon:
             module_classified = validate_tool_metadata(tool_name, actual_owner, sensitivity)
             presentation = TOOL_PRESENTATION_BY_NAME.get(tool_name)
             if presentation is None:
-                resolved[tool_name] = sensitivity
-                continue
+                if not module_classified:
+                    resolved[tool_name] = sensitivity
+                    continue
+                # Configuration-specific module tools use the existing module
+                # declaration channel; the actual daemon still binds authority.
+                presentation = sensitivity
             if actual_owner != presentation.module_name:
                 raise ToolCatalogError(
                     f"tool presentation owner mismatch for {tool_name!r}: "
@@ -1488,7 +1493,35 @@ class ButlerDaemon:
                 namespace=presentation.namespace,
                 llm_presentable=presentation.llm_presentable,
                 load_posture=presentation.load_posture,
+                **{
+                    field_name: getattr(presentation, field_name)
+                    for field_name in AUTHORIZATION_FIELDS
+                    if field_name not in {"owner_domain", "approval_policy"}
+                },
+                owner_domain=self.config.name,
+                approval_policy={},
+                read_stores=presentation.read_stores,
+                write_stores=presentation.write_stores,
+                unknown_output_source=presentation.unknown_output_source,
             )
+            policy = parse_approval_config(self.config.modules.get("approvals"))
+            if policy is not None:
+                gate = policy.gated_tools.get(tool_name)
+                resolved[tool_name].approval_policy = {
+                    "enabled": policy.enabled,
+                    "configured_gate": gate is not None,
+                    "expiry_hours": policy.get_effective_expiry(tool_name),
+                    "risk_tier": policy.get_effective_risk_tier(tool_name).value,
+                    "rule_precedence": policy.rule_precedence,
+                }
+            # Explicit new declarations cannot silently contradict the inventory.
+            for field_name in AUTHORIZATION_FIELDS:
+                supplied = getattr(sensitivity, field_name, None)
+                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                    raise ToolCatalogError(
+                        f"tool authorization metadata conflicts with central inventory for "
+                        f"{tool_name!r}: {field_name}"
+                    )
         self._resolved_tool_metadata = resolved
         return resolved
 
