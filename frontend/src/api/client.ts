@@ -1621,6 +1621,15 @@ export function getCalendarInvitations(
 }
 
 /** Authenticated owner response through canonical preparation and approval. */
+export function getCalendarResponseReceipt(
+  commandId: string, sourceButler: string, inverse = false,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  const query = new URLSearchParams({ source_butler: sourceButler, inverse: String(inverse) });
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>(
+    `/calendar/workspace/responses/${encodeURIComponent(commandId)}?${query}`,
+  );
+}
+
 export function respondToCalendarInvitation(
   body: CalendarResponseRequest,
 ): Promise<ApiResponse<CalendarResponseReceipt>> {
