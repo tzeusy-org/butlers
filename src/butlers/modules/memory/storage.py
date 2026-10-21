@@ -2991,8 +2991,9 @@ async def retry_dead_letter_episode(
             daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
-        The updated episode row (dict) if the reset succeeded, or ``None`` if
-        no episode with that id exists.
+        The updated episode row (dict, including the public lifecycle dossier
+        columns, never the lease columns) if the reset succeeded, or ``None``
+        if no episode with that id exists.
 
     Raises:
         EpisodeNotDeadLetterError: If the episode exists but its
@@ -3000,15 +3001,9 @@ async def retry_dead_letter_episode(
     """
     table = _memory_relation("episode", memory_schema)
 
-    row = await pool.fetchrow(
-        f"SELECT consolidation_status FROM {table} WHERE id = $1",
-        episode_id,
-    )
-    if row is None:
-        return None
-    if row["consolidation_status"] != "dead_letter":
-        raise EpisodeNotDeadLetterError(row["consolidation_status"])
-
+    # One schema-qualified conditional UPDATE decides the transition, so two
+    # concurrent requeues produce exactly one reset and one event; the loser
+    # observes the episode's current status in the follow-up read.
     async with pool.acquire() as conn:
         async with conn.transaction():
             updated = await conn.fetchrow(
@@ -3024,21 +3019,27 @@ async def retry_dead_letter_episode(
                 WHERE id = $1 AND consolidation_status = 'dead_letter'
                 RETURNING id, butler, session_id, content, importance, reference_count,
                           consolidated, consolidation_status, created_at,
-                          last_referenced_at, expires_at, metadata
+                          last_referenced_at, expires_at, metadata,
+                          consolidation_attempts, last_consolidation_error,
+                          dead_letter_reason, next_consolidation_retry_at
                 """,
                 episode_id,
             )
             if updated is None:
-                # Raced with a concurrent transition between the pre-check and
-                # this guarded UPDATE — report the current terminal reality.
-                raise EpisodeNotDeadLetterError("dead_letter")
+                current = await conn.fetchrow(
+                    f"SELECT consolidation_status FROM {table} WHERE id = $1",
+                    episode_id,
+                )
+                if current is None:
+                    return None
+                raise EpisodeNotDeadLetterError(current["consolidation_status"])
 
             await conn.execute(
                 """
                 INSERT INTO memory_events
                     (event_type, actor, memory_type, memory_id, payload)
                 VALUES
-                    ('episode_consolidation_retry_requested', 'dashboard_api',
+                    ('episode_consolidation_requeued', 'dashboard_api',
                      'episode', $1, $2)
                 """,
                 episode_id,
