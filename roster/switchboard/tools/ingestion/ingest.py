@@ -578,10 +578,14 @@ def _make_ingestion_envelope(
         # silently over-matching the channel's other event types.
         raw_key = str(event.get("external_event_id") or "")
 
+    control = payload.get("control") or {}
+    known_contact = control.get("known_contact") if isinstance(control, Mapping) else None
+
     return IngestionEnvelope(
         sender_address=sender_address,
         source_channel=source_channel,
         source_endpoint_identity=source_endpoint_identity,
+        known_contact=known_contact if isinstance(known_contact, bool) else None,
         headers=headers,
         mime_parts=mime_parts,
         thread_id=str(thread_id) if thread_id else None,

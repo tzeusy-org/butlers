@@ -1570,7 +1570,12 @@ class GmailConnectorRuntime:
                                 )
                             else:
                                 # Ingestion policy gate (backfill path)
-                                _bf_envelope = self._build_ingestion_envelope(message_data)
+                                _bf_envelope = self._build_ingestion_envelope(
+                                    message_data,
+                                    known_contact=self._known_contact_signal(
+                                        self._get_from_header(message_data)
+                                    ),
+                                )
 
                                 # 1. Connector-scope rules
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
@@ -1603,6 +1608,7 @@ class GmailConnectorRuntime:
                                     envelope = await self._build_ingest_envelope(
                                         message_data,
                                         policy_result=policy_result,
+                                        known_contact=_bf_envelope.known_contact,
                                     )
                                     await self._submit_to_ingest_api(envelope)
                                     rows_processed += 1
@@ -2277,7 +2283,12 @@ class GmailConnectorRuntime:
                     return
 
                 # Ingestion policy gate (runs after label filter, before envelope build)
-                _ip_envelope = self._build_ingestion_envelope(message_data)
+                _ip_envelope = self._build_ingestion_envelope(
+                    message_data,
+                    known_contact=_tier_assigner.is_known_contact(_from_header)
+                    if _snapshot.state == "loaded"
+                    else None,
+                )
 
                 # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
@@ -2366,6 +2377,7 @@ class GmailConnectorRuntime:
                 envelope = await self._build_ingest_envelope(
                     message_data,
                     policy_result=policy_result,
+                    known_contact=_ip_envelope.known_contact,
                 )
 
                 # Submit to Switchboard ingest API
@@ -2522,13 +2534,25 @@ class GmailConnectorRuntime:
             triage_action=action,
         )
 
+    def _known_contact_signal(self, from_header: str) -> bool | None:
+        """Classify a sender against the current snapshot; ``None`` unless it is loaded."""
+        snapshot = self._gmail_policy_evaluator.peek_snapshot()
+        if snapshot.state != "loaded":
+            return None
+        return replace(
+            self._policy_tier_assigner, known_contacts=snapshot.contacts
+        ).is_known_contact(from_header)
+
     @staticmethod
-    def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
+    def _build_ingestion_envelope(
+        message_data: dict[str, Any], known_contact: bool | None = None
+    ) -> IngestionEnvelope:
         """Build an IngestionEnvelope from a Gmail message payload.
 
         Populates sender_address (normalized From header), headers dict,
         labels (Gmail labelIds, for label_match rules), and raw_key (raw From
-        header value) for policy evaluation.
+        header value) for policy evaluation. ``known_contact`` is the loaded-snapshot
+        classification of the sender (``None`` when classification is unknown).
         """
         raw_headers = _message_header_entries(message_data)
         headers_dict: dict[str, str] = {}
@@ -2553,6 +2577,7 @@ class GmailConnectorRuntime:
             headers=headers_dict,
             labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
+            known_contact=known_contact,
         )
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:
@@ -2588,6 +2613,7 @@ class GmailConnectorRuntime:
         self,
         message_data: dict[str, Any],
         policy_result: MessagePolicyResult | None = None,
+        known_contact: bool | None = None,
     ) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data.
 
@@ -2604,6 +2630,11 @@ class GmailConnectorRuntime:
         policy_result:
             Result of policy evaluation (tier + policy_tier). If None, defaults to
             Tier 1 with policy_tier='default' (backward compatible).
+        known_contact:
+            The loaded-snapshot classification of the sender, carried as
+            ``control.known_contact`` so the Switchboard's global rule pass honors
+            "except people I know" too. ``None`` (snapshot not loaded) omits the field,
+            and the rule then applies. Taken from the raw From header, unauthenticated.
         """
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
@@ -2677,6 +2708,8 @@ class GmailConnectorRuntime:
             }
             if policy_result is not None and policy_result.automated_kind:
                 metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
+            if known_contact is not None:
+                metadata_envelope["control"]["known_contact"] = known_contact
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
@@ -2746,6 +2779,8 @@ class GmailConnectorRuntime:
                 "policy_tier": effective_policy_tier,
             },
         }
+        if known_contact is not None:
+            envelope["control"]["known_contact"] = known_contact
         # Bearer material (OTP codes, reset/magic links) never leaves the connector.
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed

@@ -3370,6 +3370,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - decision:
 - target:
 - rule type
+- except people I know
 - priority (lower = higher)
 - e.g. noreply.example.com
 - email address

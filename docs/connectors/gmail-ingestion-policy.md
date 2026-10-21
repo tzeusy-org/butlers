@@ -131,6 +131,20 @@ Ingestion rules are user-managed at `/ingestion/filters` (backed by the Switchbo
 `/ingestion-rules` API in `roster/switchboard/api/router.py`): rule priority, enable/disable,
 dry-run testing (`/ingestion-rules/test`), and include/exclude label configuration.
 
+A `block` or `skip` rule can carry the per-rule option "except people I know"
+(`except_known_contacts: true` in the rule's condition, off by default). The Gmail connector then
+passes a sender found in its loaded known-contact snapshot through that rule; later rules still
+apply. If the snapshot is not loaded the rule stays in force and the drop keeps its unknown
+classification. WhatsApp and Drive apply the rule as written until they carry a known-contact
+signal (bu-q7vx1q.42).
+
+The connector also sends the classification to the Switchboard as `control.known_contact` (only
+when the snapshot is loaded) so a flagged global `skip` rule is passed over there as well; an absent
+value leaves the rule in force. The classification comes from the raw `From` header with no SPF,
+DKIM or DMARC check (Gmail filters upstream), so a forged known-contact `From` on a domain without
+DMARC enforcement can bypass an "except people I know" rule, whether it matches on content, header
+or label. The impact is ingestion only: it grants no action authority.
+
 ## Metrics
 
 `src/butlers/connectors/gmail_policy.py` emits `butlers_connector_gmail_tier_assigned_total`
