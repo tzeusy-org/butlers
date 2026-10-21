@@ -2,10 +2,9 @@ import MeasurementChart from "@/components/health/MeasurementChart";
 import MeasurementTracker from "@/components/health/MeasurementTracker";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
-import { useExpectedSignals } from "@/hooks/use-health";
+import type { MeasurementSignalRead } from "@/lib/measurement-acquisition";
 
-export default function MeasurementsPage() {
-  const expectedSignals = useExpectedSignals();
+export default function MeasurementsPage({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   return (
     <div className="max-w-5xl space-y-8">
       {/* Header — Display-500 headline, no card chrome */}
