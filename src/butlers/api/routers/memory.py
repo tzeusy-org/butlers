@@ -3159,8 +3159,11 @@ async def inspect_memory(
     # importance data as browse mode.  We SELECT the same column sets the list
     # endpoints use and reuse their serialization helpers (_row_to_fact /
     # _row_to_rule / _row_to_episode) to keep the row shapes identical.
-    async def _query_pool(butler_name: str, pool: object) -> list[dict]:
+    async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[dict]]:
         results: list[dict] = []
+        # Exact match count under the same filters as the row queries below, so
+        # meta.total is independent of the bounded offset + limit row fetch.
+        pool_total = 0
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         facts_relation = _memory_relation(db, butler_name, "facts")
@@ -3174,6 +3177,10 @@ async def inspect_memory(
                 ep_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
                 ep_args.append(q)
                 idx += 1
+            pool_total += (
+                await pool.fetchval(f"SELECT count(*) FROM {episodes_relation}{ep_cond}", *ep_args)
+                or 0
+            )
             ep_rows = await pool.fetch(
                 f"SELECT id, butler, session_id, content, importance, reference_count,"
                 f" consolidated, consolidation_status, created_at, last_referenced_at,"
@@ -3207,6 +3214,10 @@ async def inspect_memory(
                 fact_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
                 fact_args.append(q)
                 idx += 1
+            pool_total += (
+                await pool.fetchval(f"SELECT count(*) FROM {facts_relation}{fact_cond}", *fact_args)
+                or 0
+            )
             fact_rows = await pool.fetch(
                 _with_source_episode_status(
                     f"SELECT id, subject, predicate, content, importance, confidence,"
@@ -3257,6 +3268,10 @@ async def inspect_memory(
                 idx += 1
             else:
                 rule_cond = f" WHERE {forgotten_clause}"
+            pool_total += (
+                await pool.fetchval(f"SELECT count(*) FROM {rules_relation}{rule_cond}", *rule_args)
+                or 0
+            )
             rule_rows = await pool.fetch(
                 _with_source_episode_status(
                     f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
@@ -3286,7 +3301,7 @@ async def inspect_memory(
                         "rule": rule,
                     }
                 )
-        return results
+        return pool_total, results
 
     tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
@@ -3296,13 +3311,13 @@ async def inspect_memory(
         tracker=tracker,
     )
 
+    total = sum(pool_total for pool_total, _ in per_pool)
     merged: list[dict] = []
-    for pool_results in per_pool:
+    for _, pool_results in per_pool:
         merged.extend(pool_results)
 
     # Sort by created_at DESC across all pools
     merged.sort(key=lambda r: r["created_at"], reverse=True)
-    total = len(merged)
     page = merged[offset : offset + limit]
 
     # Resolve entity_id → canonical_name for the embedded fact payloads, mirroring

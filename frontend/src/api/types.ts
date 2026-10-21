@@ -3139,6 +3139,24 @@ export interface GraphHealthCoverage {
 }
 
 /**
+ * Pagination metadata for the memory list routes (episodes, facts, rules,
+ * inspect). Each fans out across butler pools and, when one pool errors, drops
+ * it and names it in `pools_failed` rather than failing the request, so a page
+ * (including an empty one) may be incomplete. Absent or empty means every
+ * queried pool answered.
+ */
+export interface MemoryPaginationMeta extends PaginationMeta {
+  /** Names of memory pools whose query failed and were dropped from the page and total. */
+  pools_failed?: string[];
+}
+
+/** Paginated memory list response carrying the degraded-pool meta. */
+export interface MemoryPaginatedResponse<T> {
+  data: T[];
+  meta: MemoryPaginationMeta;
+}
+
+/**
  * Metadata for GET /api/memory/stats. Extends the base bag with the
  * degraded-envelope flag the backend emits when the per-pool fan-out drops one
  * or more memory pools (memory.py::get_stats -> `ApiMeta(pools_failed=...)`).
