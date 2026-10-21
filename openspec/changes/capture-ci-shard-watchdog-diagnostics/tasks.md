@@ -1,12 +1,12 @@
 ## 1. Diagnostic source
 
 - [x] 1.1 Implement the bounded distinct observer, collector correspondence and strict incomplete reader.
-- [ ] 1.2 Build the pinned reproducible Node20 action with isolated uploader and owned cleanup.
+- [x] 1.2 Build the pinned reproducible Node20 action with isolated uploader and owned cleanup.
 - [x] 1.3 Add the separate frozen-profile workflow, provisional job rows and operating guide.
 
 ## 2. Software verification
 
-- [ ] 2.1 Run three Python and three Node controls plus the additive execution-consumer refusal callback, preserving old source.
+- [x] 2.1 Run three Python and three Node controls plus the additive execution-consumer refusal callback, preserving old source.
 - [ ] 2.2 Run owning checks, actual collection/partition/budgets, bundle reproducibility and guards.
 
 ## 3. ROOT delivery and investigation

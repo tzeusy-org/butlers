@@ -5,9 +5,8 @@
 When a named CI watchdog investigation is released, the system SHALL capture bounded masked actual worker/item progress and available stack/process observations during execution and finalize separately identified diagnostic artifacts before provider termination. Capture source and actual subject checkout/lineage, repository/workflow/run/attempt/child, fresh nonce, complete expected file/case population and observed multiplicities SHALL remain distinct and bound. Diagnostic artifacts SHALL preserve unobserved, unavailable, truncated, failed or cancelled boundaries as UNKNOWN and SHALL NOT satisfy complete execution, duration ordering, smoke/release, coverage publishing or required gate verification. Existing item/job/UV deadlines, marker/file/loadfile fixture boundaries, worker/coverage/tracer defaults, old callbacks/assertions, finalizers and scoped owned cleanup SHALL remain intact.
 
 ID: REQ-testing-060
-ROOT allocation: complete immutable current-main and all136localheads/58nativeTrees/3059fullnativeBlobs plus whole8296canonicalrecords; no prior060claim. This is an approved additive draft for supported authoring, not a baseline edit or runtime qualification.
 Source: bu-ly3lv5.10.2; original bu-ly3lv5.10 C6/C7/P0; REQ-testing-046 actual boundaries/privacy/UNKNOWN; engineering-bar and testing-and-verification.
-Scope: v1-mandatory for explicitly released named diagnostic investigations; no standing required-main-CI or provider-authority expansion.
+Scope: v1-mandatory
 
 #### Scenario: Finalized live checkpoints survive terminal cancellation
 - **WHEN** a diagnostic step has finalized an immutable masked checkpoint while execution is still active and the provider later cancels the job

@@ -19,3 +19,9 @@ A cancelled watchdog job can lose its only terminal execution observation. Bound
 ## Impact
 
 New isolated workflow/action, Python observer, software controls and operating guide. The public artifact SDK is pinned at 2.3.2 and bundled; CI installs no npm dependencies. Required main CI is unchanged. Hosted retention, original-profile investigation and delivery remain separate ROOT-owned proof.
+
+## Adopted allocation and bounded scope
+
+ROOT allocation: complete immutable current-main and all136localheads/58nativeTrees/3059fullnativeBlobs plus whole8296canonicalrecords; no prior060claim. This is an approved additive draft for supported authoring, not a baseline edit or runtime qualification.
+
+Scope: v1-mandatory for explicitly released named diagnostic investigations; no standing required-main-CI or provider-authority expansion.

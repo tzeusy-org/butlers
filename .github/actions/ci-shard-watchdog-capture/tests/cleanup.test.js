@@ -151,21 +151,28 @@ for mode in ['composite-overflow','composite-neutralized','composite-restored','
  child=subprocess.Popen([${JSON.stringify(process.execPath)},'-e','console.log("ready");setInterval(()=>{},1000)'],stdout=subprocess.PIPE,text=True)
  child.stdout.readline();before=s.process(child.pid);original=s.os.listdir;original_limit=s.MAX_PROCESSES
  row={'mode':mode,'pid':child.pid,'before':before}
+ listed_tasks=[]
  try:
   file_mode=mode.startswith('file-')
   s.MAX_PROCESSES=original_limit if file_mode else 1
   def depart():
    os.kill(child.pid,signal.SIGKILL)
+   # A zombie leader alone does not prove every former task path vanished.
+   # Position the actual ENOENT boundary used by this negative companion.
+   former=[f'/proc/{child.pid}/task/{task}/children' for task in listed_tasks if task!=str(child.pid)]
    for _ in range(1000):
     current=s.process(child.pid)
-    if current and current[1]=='Z':break
+    if current and current[1]=='Z' and all(not os.path.exists(p) for p in former):break
     time.sleep(.001)
    assert current and current[0]==before[0] and current[1]=='Z'
+   assert former and all(not os.path.exists(p) for p in former)
+   row['former_task_paths_gone']=True
    row['after']=current
   def combined(directory):
    tasks=original(directory)
    if directory==f'/proc/{child.pid}/task':
     tasks.sort(key=lambda task:task==str(child.pid))
+    listed_tasks[:]=tasks
     row['task_count']=len(tasks);row['cap']=s.MAX_PROCESSES;row['known_overflow']=len(tasks)>s.MAX_PROCESSES;row['nonleader_first']=tasks[0]!=str(child.pid)
     assert row['nonleader_first'] and row['known_overflow']==(not file_mode)
     if not file_mode:depart()
@@ -304,7 +311,8 @@ print(json.dumps({'rows':rows,'unknown_reaped_actor_refused':True}))
     assert.equal((await acknowledged.done).code,0);assert.equal(await cleanup(acknowledged),true);
     const uploader=path.join(directory,'uploader.js');
     fs.writeFileSync(uploader, `process.on('message',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`);
-    const timeout = await boundedUpload({name:'ignored',directory},{PATH:process.env.PATH},150,uploader);
+    // Include interpreter startup and positive kernel settlement in this healthy envelope.
+    const timeout = await boundedUpload({name:'ignored',directory},{PATH:process.env.PATH},1000,uploader);
     assert.equal(timeout.result.code,'failed'); assert.equal(timeout.cleanup_complete,true);
     assert.ok(numericProcess(sentinel.pid));
     const abort=new AbortController();
