@@ -1,6 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Bounded Explicit Insight Feedback
+
+ID: REQ-proactive-insight-engine-034
+Source: bu-kqme7f.4; telegram-insight-feedback/design.md
+Scope: v1-mandatory
+
 The broker SHALL expose useful, not-now, and never owner-feedback verbs without
 adding another global verbosity control. Feedback attribution SHALL be derived by
 the server and the persisted evidence SHALL remain content-blind.

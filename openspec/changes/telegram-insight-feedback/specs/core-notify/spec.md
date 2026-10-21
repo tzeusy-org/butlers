@@ -2,6 +2,10 @@
 
 ### Requirement: notify.v1 Envelope Schema
 
+ID: REQ-core-notify-034
+Source: bu-kqme7f.4; telegram-insight-feedback/design.md
+Scope: v1-mandatory
+
 The notify envelope SHALL include `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
 
 #### Scenario: Send intent envelope
