@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ComponentType } from "react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Link, MemoryRouter, Route, Routes } from "react-router";
 
 import type { InsightCandidate, SymptomParams } from "@/api/types";
 import { insightHref } from "@/lib/health-insight-links";
-import SymptomsPage from "@/pages/SymptomsPage";
+import { getShellCapability } from "@/lib/shell-capability";
+
+let SymptomsRoute: ComponentType;
+
+beforeAll(async () => {
+  ({ default: SymptomsRoute } = await getShellCapability("/health/symptoms")!.loader());
+});
 
 const useSymptoms = vi.fn().mockReturnValue({
   data: { data: [], meta: { total: 100, has_more: true } },
@@ -49,7 +56,7 @@ function page(initialEntry: string, nextEntry = href({ name: "Migraine" })) {
     <MemoryRouter initialEntries={[initialEntry]}>
       <Link to={nextEntry}>Next insight</Link>
       <Routes>
-        <Route path="/health/symptoms" element={<SymptomsPage />} />
+        <Route path="/health/symptoms" element={<SymptomsRoute />} />
       </Routes>
     </MemoryRouter>
   );
