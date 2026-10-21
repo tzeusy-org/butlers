@@ -18,6 +18,7 @@
 
 import { type ReactElement, useState } from "react";
 import { Link, useParams } from "react-router";
+import { ApiError } from "@/api/client";
 
 import {
   DetailEyebrow,
@@ -152,8 +153,9 @@ interface FactDetailPageProps {
 export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
   const tz = useTimezone();
   const { factId } = useParams<{ factId: string }>();
-  const { data, isLoading } = useFact(factId ?? null);
-  const fact = data?.data;
+  const { data, isLoading, error, refetch } = useFact(factId ?? null);
+  const notFound = error instanceof ApiError && error.status === 404;
+  const fact = notFound ? undefined : data?.data;
 
   // Title: content is the record identity; truncate to 80 chars per spec.
   const title = fact
@@ -224,6 +226,8 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
         ) : undefined
       }
       loading={isLoading}
+      error={notFound ? null : error}
+      onRetry={() => void refetch()}
       empty={
         !fact && !isLoading
           ? {
