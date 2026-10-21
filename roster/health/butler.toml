@@ -60,6 +60,15 @@ cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "baseline_watch"
 
+# Pre-appointment visit brief (bu-jv1moa.15): deterministic, zero LLM. Briefs the owner once,
+# up to two days before each appointment on Health's own calendar, for the period since the
+# previous visit. Owner-only; nothing reaches the clinic.
+[[butler.schedule]]
+name = "health_visit_brief"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "health_visit_brief"
+
 # Atmosphere health advisory (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1):
 # reads the shared home-location atmosphere feed and surfaces an advisory
 # when outdoor AQI or pollen is elevated. No-op when the feed is not
