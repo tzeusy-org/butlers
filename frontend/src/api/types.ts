@@ -3001,6 +3001,15 @@ export interface Episode {
   last_referenced_at: string | null;
   expires_at: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Recovery-safe lifecycle dossier (bu-kqnum.14.3). The error and reason strings are the
+   * sanitized category summaries the consolidator stores; worker lease internals are never
+   * exposed. The API always returns all four.
+   */
+  consolidation_attempts: number;
+  last_consolidation_error: string | null;
+  dead_letter_reason: string | null;
+  next_consolidation_retry_at: string | null;
 }
 
 /** Availability of a durable reference to an episode source. */

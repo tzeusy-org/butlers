@@ -71,6 +71,12 @@ class Episode(BaseModel):
     last_referenced_at: str | None = None
     expires_at: str | None = None
     metadata: dict = {}
+    # Recovery-safe lifecycle dossier. The error and reason strings are the sanitized
+    # category summaries the consolidator stores; lease columns are never exposed.
+    consolidation_attempts: int = 0
+    last_consolidation_error: str | None = None
+    dead_letter_reason: str | None = None
+    next_consolidation_retry_at: str | None = None
 
 
 class Fact(BaseModel):

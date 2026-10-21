@@ -146,9 +146,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            f"/api/butlers/atlas/memory/episodes/{episode_id}/retry-consolidation"
-        )
+        resp = await client.post(f"/api/memory/episodes/{episode_id}/requeue")
 
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -158,7 +156,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
     # memory_events INSERT; the RETURNING reset itself is a fetchrow).
     assert len(pool.execute_calls) == 1
     assert "memory_events" in pool.execute_calls[0][0]
-    assert "episode_consolidation_retry_requested" in pool.execute_calls[0][0]
+    assert "episode_consolidation_requeued" in pool.execute_calls[0][0]
 
 
 async def test_retry_consolidation_404_unknown_butler(app) -> None:
@@ -169,9 +167,7 @@ async def test_retry_consolidation_404_unknown_butler(app) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            f"/api/butlers/ghost/memory/episodes/{uuid.uuid4()}/retry-consolidation"
-        )
+        resp = await client.post(f"/api/memory/episodes/{uuid.uuid4()}/requeue")
 
     assert resp.status_code == 404
 
@@ -184,9 +180,7 @@ async def test_retry_consolidation_400_malformed_episode_id(app) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            "/api/butlers/atlas/memory/episodes/not-a-uuid/retry-consolidation"
-        )
+        resp = await client.post("/api/memory/episodes/not-a-uuid/requeue")
 
     assert resp.status_code == 400
 
@@ -199,9 +193,7 @@ async def test_retry_consolidation_404_unknown_episode(app) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            f"/api/butlers/atlas/memory/episodes/{uuid.uuid4()}/retry-consolidation"
-        )
+        resp = await client.post(f"/api/memory/episodes/{uuid.uuid4()}/requeue")
 
     assert resp.status_code == 404
 
@@ -218,9 +210,7 @@ async def test_retry_consolidation_409_when_not_dead_letter(app) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            f"/api/butlers/atlas/memory/episodes/{episode_id}/retry-consolidation"
-        )
+        resp = await client.post(f"/api/memory/episodes/{episode_id}/requeue")
 
     assert resp.status_code == 409
     assert "dead_letter" in resp.json()["detail"]

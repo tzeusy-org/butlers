@@ -218,10 +218,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
                     // target, not a collapse/expand trigger.
                     e.preventDefault();
                     e.stopPropagation();
-                    retryConsolidation.mutate({
-                      butler: episode.butler,
-                      episodeId: episode.id,
-                    });
+                    retryConsolidation.mutate({ episodeId: episode.id });
                   }}
                   disabled={retryConsolidation.isPending}
                   className="inline-block font-mono text-[11px] text-[var(--red-text)] underline [text-underline-offset:3px] hover:text-fg disabled:opacity-50"
