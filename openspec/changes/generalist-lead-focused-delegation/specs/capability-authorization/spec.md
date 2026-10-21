@@ -60,6 +60,20 @@ Scope: v1-mandatory
 - **WHEN** a module registers a calendar tool that can add attendees but declares no party arguments
 - **THEN** the catalog check fails in CI
 
+#### Scenario: Recovery and owner steering keep their actual effect
+- **WHEN** the catalog describes `correct`, an owner identity/profile/channel steering write, or `remind`
+- **THEN** `correct` is `administer` with owner authority, owner steering writes declare owner authority, and `remind` is `administer` because it creates a scheduling obligation
+- **AND** ordinary attributed fact recording remains `record`; no handler behavior changes
+
+#### Scenario: A Drive write inherits shared-folder parties
+- **WHEN** the catalog describes an existing Drive file, folder or move write that can inherit shared-parent recipients
+- **THEN** it declares `communicate` and undeterminable inherited recipients, without inventing a sharing handler or treating unknown parties as the owner
+
+#### Scenario: The Home Assistant gateway and attachments retain conservative declarations
+- **WHEN** the catalog describes `ha_call_service` and `attachment_view`
+- **THEN** the gateway declares `target` as its resource parameter and `target` and `data` as safety-critical recipient-bearing parameters
+- **AND** the attachment reader declares untrusted, sensitive output; arguments outside resource and recipient selectors remain content-bearing by default; an fnmatch pattern on a content argument counts as free text
+
 ### Requirement: Authority ceilings derive from verified origin
 Goal admission SHALL derive the goal's authority ceiling deterministically from
 server-held origin context: owner, obligation, third party or staffer. Message

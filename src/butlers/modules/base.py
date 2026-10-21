@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel
+
+from butlers.core.tool_catalog import (
+    EffectClass,
+    Idempotency,
+    OutputSensitivity,
+    OutputTrust,
+    RecipientParameters,
+)
 
 
 class ToolGroupMixin(BaseModel):
@@ -62,7 +71,10 @@ class ToolMeta:
 
     Presentation fields are optional so an unclassified legacy module keeps
     its eager, presentable compatibility behavior while native classification
-    remains incomplete.
+    remains incomplete. Optional RFC0038 authorization fields describe future
+    broker eligibility only. The central inventory supplies them, while the
+    daemon binds owner_domain and the existing approval_policy. Sensitivity
+    declarations still control current approvals; authorization adds no gate.
     """
 
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
@@ -72,6 +84,19 @@ class ToolMeta:
     namespace: str | None = None
     llm_presentable: bool | None = None
     load_posture: Literal["eager", "deferred"] | None = None
+    owner_domain: str | None = None
+    effect_class: EffectClass | None = None
+    output_trust: OutputTrust | None = None
+    output_sensitivity: OutputSensitivity | None = None
+    resource_params: tuple[str, ...] | None = None
+    safety_args: tuple[str, ...] | None = None
+    approval_policy: Mapping[str, Any] | None = None
+    idempotency: Idempotency | None = None
+    owner_authority: bool | None = None
+    recipient_params: RecipientParameters | None = None
+    read_stores: tuple[str, ...] = ()
+    write_stores: tuple[str, ...] = ()
+    unknown_output_source: bool = True
 
 
 class Module(abc.ABC):
