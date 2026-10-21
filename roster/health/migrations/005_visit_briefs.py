@@ -1,7 +1,7 @@
 """visit_briefs
 
-Revision ID: health_004
-Revises: health_003
+Revision ID: health_005
+Revises: health_004
 Create Date: 2026-10-18 00:00:00.000000
 
 bu-jv1moa.15 (S1). Records the pre-appointment health brief sent for each appointment on
@@ -19,8 +19,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "health_004"
-down_revision = "health_003"
+revision = "health_005"
+down_revision = "health_004"
 branch_labels = None
 depends_on = None
 

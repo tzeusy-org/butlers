@@ -36,9 +36,8 @@ import statistics
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -47,6 +46,7 @@ from butlers.core.baselines import BaselineMetric, BaselineState, compute_baseli
 from butlers.core.state import decode_jsonb
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.jobs.briefing import owner_briefing_zone
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,6 @@ logger = logging.getLogger(__name__)
 LEAD = timedelta(days=2)
 #: Period covered when the owner has no earlier visit on Health's calendar.
 DEFAULT_LOOKBACK_DAYS = 90
-#: Settings key the fleet timezone lives under (``public.state``).
-_GENERAL_SETTINGS_KEY = "settings.general"
-#: Documented fallback owner zone (matches the daily briefing): SGT.
-_SGT = timezone(timedelta(hours=8))
 
 #: Session advisory-lock key serializing visit-brief runs (any fixed bigint).
 _RUN_LOCK_KEY = 7_411_550_015
@@ -209,26 +205,6 @@ class _Figures:
         self.figures.append(
             {"section": section, "label": label, "value": value, "fact_ids": sorted(fact_ids)}
         )
-
-
-async def owner_zone(pool: asyncpg.Pool) -> tzinfo:
-    """The owner's saved timezone from ``public.state``, else SGT.
-
-    ``public.state`` is read explicitly: the Health pool's ``search_path`` puts
-    ``health.state`` first, so an unqualified ``state`` read would miss the shared
-    ``settings.general`` row (bu-ko02so).
-    """
-    try:
-        raw = await pool.fetchval(
-            "SELECT value FROM public.state WHERE key = $1", _GENERAL_SETTINGS_KEY
-        )
-        stored = decode_jsonb(raw) if raw is not None else None
-        name = stored.get("timezone") if isinstance(stored, dict) else None
-        if isinstance(name, str) and name.strip():
-            return ZoneInfo(name.strip())
-    except Exception:
-        logger.warning("Could not resolve owner timezone for visit brief; using SGT", exc_info=True)
-    return _SGT
 
 
 def _schedule_list(raw: Any) -> list[str]:
@@ -685,7 +661,7 @@ async def _run_locked(
 ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     send = notify_fn or (lambda message: send_owner_brief(pool, message))
-    zone = await owner_zone(pool)
+    zone = await owner_briefing_zone(pool)
     result: dict[str, Any] = {"considered": 0, "sent": 0, "skipped": 0, "retry": 0}
 
     for appt in await pool.fetch(_UPCOMING_SQL, now, now + LEAD):

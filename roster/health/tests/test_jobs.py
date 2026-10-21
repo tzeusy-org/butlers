@@ -1681,10 +1681,10 @@ def _load_migration(name: str, root: str):
 
 
 async def _setup_visit_brief_tables(pool) -> None:
-    """Calendar ledger (core_003) and ``visit_briefs`` (health_004) in the default schema."""
+    """Calendar ledger (core_003) and ``visit_briefs`` (health_005) in the default schema."""
     for name, root in (
         ("core_003_calendar.py", "alembic/versions/core"),
-        ("004_visit_briefs.py", "roster/health/migrations"),
+        ("005_visit_briefs.py", "roster/health/migrations"),
     ):
         migration = _load_migration(name, root)
         statements: list[str] = []
