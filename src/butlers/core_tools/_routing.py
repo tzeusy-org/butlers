@@ -409,26 +409,8 @@ async def _build_routed_delivery_command(
     subject: str | None,
     notify_context: Any,
     render_links_inert: bool = False,
-    emoji: str | None = None,
 ) -> _RoutedDeliveryCommand | None:
     """Materialize the registered native command before approval evaluation."""
-    if intent == "react" and channel == "telegram":
-        thread = _parse_telegram_thread_identity(
-            notify_context.source_thread_identity if notify_context else None
-        )
-        if thread is None:
-            return None
-        chat_id, message_id = thread
-        module = modules_by_name.get("telegram")
-        if module is None:
-            raise RuntimeError("Messenger telegram adapter is unavailable.")
-        return _RoutedDeliveryCommand(
-            channel=channel,
-            approval_target=chat_id,
-            tool_name="telegram_react_to_message",
-            tool_args={"chat_id": chat_id, "message_id": message_id, "emoji": emoji},
-            execute=partial(module._react_to_message, chat_id, message_id, emoji),
-        )
     if intent not in {"send", "reply"}:
         return None
     if channel not in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
@@ -1864,7 +1846,6 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 subject=notify_request.delivery.subject,
                 notify_context=notify_context,
                 render_links_inert=notify_request.render_links_inert,
-                emoji=notify_request.delivery.emoji,
             )
 
             decision = await _check_routed_delivery_approval(
