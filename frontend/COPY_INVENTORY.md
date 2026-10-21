@@ -3062,6 +3062,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Nothing saved yet. Add a research note above, or tell your Health butler.
 - Previous
 - Next
+- Collapse
+- Expand
 - Edit {}
 - Delete {}
 - Search research...
@@ -4922,4 +4924,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3924*
+*Total strings: 3926*
