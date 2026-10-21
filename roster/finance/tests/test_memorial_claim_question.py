@@ -159,12 +159,14 @@ async def _entity(conn: asyncpg.Connection, name: str, posture: str) -> uuid.UUI
     return entity_id
 
 
-async def _tolerant_jsonb_codec(conn: asyncpg.Connection) -> None:
-    """Accept both Python objects (owner-condition insert) and pre-encoded JSON text.
+async def _finance_pool_init(conn: asyncpg.Connection) -> None:
+    """Run as the finance role, as the daemon does, and accept Python objects and JSON text.
 
-    ``cost_claims.record_resolution`` hands asyncpg a ``json.dumps`` string, which the shared
-    binary codec would encode a second time and trip ``match_refs`` being an array.
+    The owner-condition insert passes a dict, while ``cost_claims.record_resolution`` hands
+    asyncpg a ``json.dumps`` string; the shared binary codec would encode that a second time
+    and trip ``match_refs`` being an array.
     """
+    await conn.execute("SET ROLE butler_finance_rw")
     await conn.set_type_codec(
         "jsonb",
         encoder=lambda value: value if isinstance(value, str) else json.dumps(value),
@@ -250,7 +252,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_an_amended_claim_between_sweeps_is_not_asked_again(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_tolerant_jsonb_codec)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_finance_pool_init)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
@@ -284,7 +286,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_the_sweep_asks_once_leaves_the_claim_alone_and_resolves_on_active(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_tolerant_jsonb_codec)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_finance_pool_init)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
