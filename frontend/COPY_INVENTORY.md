@@ -666,6 +666,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Confirm
 - Re-inks the fact: resets decay from today.
 - Marks the record incorrect; agents stop retrieving it.
+- Could not confirm this fact:
+- Could not retract this fact:
+- Confirmed.
+- Retracted.
+- Retry confirm
+- Retry retract
+- Fact action outcome
 - derived from episode {}
 - supersedes {}
 - superseded by {}
@@ -4934,4 +4941,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3930*
+*Total strings: 3937*
