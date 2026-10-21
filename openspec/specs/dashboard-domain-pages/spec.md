@@ -1516,6 +1516,19 @@ keys.
 - **THEN** the measurements tab SHALL render instrument unavailability and state that owner-behavior nudges are paused
 - **WHEN** the endpoint returns `available=false` with `signals=null`
 - **THEN** the tab SHALL render signal-health degradation, never an empty all-clear
+- **AND** the routed Health Overview and measurement chart SHALL consume the same expected-signal
+  read contract without changing its query identity or cadence
+- **WHEN** a successful available read contains an `unmeasurable` signal with the exact key
+  `health:measurement-gap:<type>` for an absent displayed vital or the selected empty chart type
+- **THEN** that absence SHALL visibly state that the instrument is unreachable
+- **AND** a vacant core KPI slot MAY use only its established core type identity for this state;
+  expected signals MUST NOT add a requested measurement type, change eligibility, or displace a slot
+- **AND** actual readings and trend data MUST remain visible regardless of acquisition state
+- **WHEN** no exact signal matches, its state is `present` or `absent`, or the signal read is pending
+- **THEN** the ordinary dash or empty chart state SHALL remain without an instrument-failure claim
+- **WHEN** the signal read fails, returns `available=false`, or returns `signals=null`
+- **THEN** the ordinary absent state SHALL remain with a named signal-health degradation note and
+  paused absence nudges, never an invented value or an unreachable claim about every instrument
 
 #### Scenario: Voice line carries the honesty pill
 
