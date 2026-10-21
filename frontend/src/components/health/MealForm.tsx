@@ -131,7 +131,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
             notes: trimmedNotes === "" ? null : trimmedNotes,
           },
         });
-        if (draft.session?.mounted) toast.success("Meal updated.");
+        if (draft.current(submission)) toast.success("Meal updated.");
       } else {
         await createMutation.mutateAsync({
           type,
@@ -140,11 +140,11 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
           nutrition,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        if (draft.session?.mounted) toast.success("Meal logged.");
+        if (draft.current(submission)) toast.success("Meal logged.");
       }
       await draft.submitted(submission, onDone);
     } catch (err) {
-      if (draft.session?.mounted) handleError(err);
+      if (draft.current(submission)) handleError(err);
     } finally { draft.finish(); }
   }
 

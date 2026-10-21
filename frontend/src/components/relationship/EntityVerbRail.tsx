@@ -301,9 +301,9 @@ export function EntityVerbRail({
           </Button>
         ))}
       </div>
-      {open === "log-interaction" && <LogInteractionForm entityId={entityId} />}
-      {open === "gift-idea" && <GiftIdeaForm entityId={entityId} />}
-      {open === "note" && <NoteForm entityId={entityId} />}
+      {open === "log-interaction" && <LogInteractionForm key={entityId} entityId={entityId} />}
+      {open === "gift-idea" && <GiftIdeaForm key={entityId} entityId={entityId} />}
+      {open === "note" && <NoteForm key={entityId} entityId={entityId} />}
     </section>}</DraftDismissBoundary>
   );
 }

@@ -36,6 +36,7 @@ export function useDraft<T extends DraftFields>(surface: DraftSurface, context: 
     useEffect(() => { session?.edit(fields); });
     return {
         session,
+        current: (submission: DraftSubmission | null) => !session || (!!submission && session.current(submission)),
         capture: (): DraftSubmission | null => session?.capture(fields) ?? null,
         flush: () => session?.flush(),
         prepare: () => session?.prepare() ?? true,

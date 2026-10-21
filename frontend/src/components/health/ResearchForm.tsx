@@ -97,7 +97,7 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
             source_url: trimmedSource === "" ? null : trimmedSource,
           },
         });
-        if (draft.session?.mounted) toast.success("Research note updated.");
+        if (draft.current(submission)) toast.success("Research note updated.");
       } else {
         await createMutation.mutateAsync({
           title: trimmedTitle,
@@ -105,11 +105,11 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
           tags: parsedTags,
           source_url: trimmedSource === "" ? null : trimmedSource,
         });
-        if (draft.session?.mounted) toast.success("Research note added.");
+        if (draft.current(submission)) toast.success("Research note added.");
       }
       await draft.submitted(submission, onDone);
     } catch (err) {
-      if (draft.session?.mounted) handleError(err);
+      if (draft.current(submission)) handleError(err);
     } finally { draft.finish(); }
   }
 

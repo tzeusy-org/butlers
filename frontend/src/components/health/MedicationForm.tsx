@@ -143,7 +143,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           id: medication.id,
           body,
         });
-        if (draft.session?.mounted) toast.success("Medication updated.");
+        if (draft.current(submission)) toast.success("Medication updated.");
       } else {
         const body = {
           name: trimmedName,
@@ -154,11 +154,11 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           ...(parsedQuantity.value != null ? { quantity: parsedQuantity.value } : {}),
         };
         await createMutation.mutateAsync(body);
-        if (draft.session?.mounted) toast.success("Medication added.");
+        if (draft.current(submission)) toast.success("Medication added.");
       }
       await draft.submitted(submission, onDone);
     } catch (err) {
-      if (draft.session?.mounted) handleError(err);
+      if (draft.current(submission)) handleError(err);
     } finally { draft.finish(); }
   }
 

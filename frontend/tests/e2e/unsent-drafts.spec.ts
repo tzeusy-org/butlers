@@ -10,6 +10,7 @@ async function api(context: BrowserContext) {
     if (pathname.endsWith("/auth/owner/status")) data = { state: "configured_key", authenticated: true, session_expires_at: expires };
     else if (pathname.endsWith("/auth/owner/csrf")) data = { csrf_token: "browser-test-csrf", csrf_expires_at: expires, session_expires_at: expires };
     else if (pathname === "/api/health") data = { status: "ok" };
+    else if (pathname === "/api/butlers/board") data = { rows: [], aggregates: {} };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, meta: { total: 0, limit: 50, offset: 0 } }) });
   });
 }
@@ -291,4 +292,311 @@ test("actual owner-session loss retires stored content and advances the stale-wr
   const after = (await rows(page))[0];
   expect(after.storeEpoch as number).toBeGreaterThan(before.storeEpoch as number);
   expect(after).not.toHaveProperty("fields");
+});
+
+// REQ-dashboard-chat-ui-004: empty or whitespace text is an ordered deletion.
+test("whitespace-only chat edits tombstone committed text and never restore an affordance", async ({ page, context }) => {
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } } }));
+  for (const posture of ["page", "dock", "floating", "panel"] as const) {
+    const open = async () => {
+      await page.setViewportSize({ width: posture === "floating" || posture === "panel" ? 1100 : 1440, height: 900 });
+      await page.goto(posture === "panel" ? "/butlers/switchboard?tab=system&section=state" : "/chat");
+      if (posture === "floating") await page.getByRole("button", { name: "Talk to Butlers", exact: true }).click();
+      if (posture === "panel") await page.getByRole("button", { name: "Chat", exact: true }).click();
+      const surface = posture === "page" ? page.getByTestId("chat-page") : posture === "dock" ? page.getByTestId("chat-dock") : posture === "floating" ? page.getByTestId("floating-chat-panel") : page.getByRole("dialog", { name: "Chat with switchboard", exact: true });
+      return { surface, input: surface.getByRole("textbox", { name: "Type a message...", exact: true }) };
+    };
+    const { input } = await open();
+    await input.fill(" \t ");
+    await expect.poll(async () => (await rows(page))[0]?.state).toBe("tombstone");
+    const message = `  Previously committed ${posture} text  `;
+    await input.fill(message);
+    await expect.poll(async () => (await rows(page))[0]?.fields).toEqual({ message });
+    const before = (await rows(page))[0];
+    await input.fill(" \n\t ");
+    await expect.poll(async () => (await rows(page))[0].state).toBe("tombstone");
+    const after = (await rows(page))[0];
+    expect(after.deletionReason).toBe("empty");
+    expect(after.writeRevision as number).toBeGreaterThan(before.writeRevision as number);
+    expect(after).not.toHaveProperty("fields");
+    const reopened = await open();
+    await expect(reopened.input).toHaveValue("");
+    await expect(reopened.surface.getByText("Draft restored", { exact: true })).toHaveCount(0);
+  }
+});
+
+// REQ-dashboard-shell-004: explicit replacement is a new identity, even for identical bytes.
+test("explicit override creates a successor revision protected from an older successful submit", async ({ page, context }) => {
+  let accept: (() => void) | undefined;
+  let started = false;
+  await context.route((url) => url.pathname === "/api/health/conditions", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    started = true;
+    await new Promise<void>((resolve) => { accept = resolve; });
+    await route.fulfill({ json: { data: { id: "accepted-condition", name: "Submitted content", status: "active" } } });
+  });
+  const first = await form(page);
+  await first.getByLabel("Name", { exact: true }).fill("Submitted content"); await named(page, "Submitted content");
+  const original = (await rows(page))[0].contentRevision;
+  const secondPage = await context.newPage(); const second = await form(secondPage);
+  await expect(second.getByLabel("Name", { exact: true })).toHaveValue("Submitted content");
+  await first.getByRole("button", { name: "Add condition", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await second.getByLabel("Name", { exact: true }).fill("Other tab content"); await named(secondPage, "Other tab content");
+  await expect(first.getByRole("group", { name: "Draft conflict" })).toBeVisible();
+  await first.getByRole("button", { name: "Use this tab", exact: true }).click();
+  await named(page, "Submitted content");
+  const successor = (await rows(page))[0].contentRevision;
+  try {
+    expect(successor).not.toBe(original);
+  } finally { accept?.(); }
+  await expect(first.getByRole("button", { name: "Add condition", exact: true })).toBeEnabled();
+  await expect(first).toBeVisible();
+  await expect(first.getByLabel("Name", { exact: true })).toHaveValue("Submitted content");
+  expect((await rows(page))[0]).toMatchObject({ state: "live", contentRevision: successor });
+});
+
+// REQ-dashboard-chat-ui-004: legacy whitespace rows retire before exposure.
+test("a legacy whitespace chat record becomes an ordered tombstone before restore", async ({ page }) => {
+  await page.goto("/chat");
+  const input = page.getByTestId("chat-page").getByRole("textbox", { name: "Type a message...", exact: true });
+  await input.fill("Seed an old valid record");
+  await expect.poll(async () => (await rows(page))[0]?.state).toBe("live");
+  const before = (await rows(page))[0];
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("butlers-drafts", 1); r.onsuccess = () => resolve(r.result); });
+    await new Promise<void>((resolve) => { const tx = db.transaction("drafts", "readwrite"); const store = tx.objectStore("drafts"); const r = store.getAll(); r.onsuccess = () => { const old = r.result[0]; old.fields.message = " \n\t "; store.put(old, old.draftKey); }; tx.oncomplete = () => resolve(); });
+    db.close();
+  });
+  await page.reload();
+  await expect(input).toHaveValue("");
+  await expect.poll(async () => (await rows(page))[0].state).toBe("tombstone");
+  const after = (await rows(page))[0];
+  expect(after.deletionReason).toBe("empty");
+  expect(after.writeRevision as number).toBeGreaterThan(before.writeRevision as number);
+  expect(after).not.toHaveProperty("fields");
+  await expect(page.getByText("Draft restored", { exact: true })).toHaveCount(0);
+});
+
+// REQ-dashboard-shell-004: empty overrides fence stale ordinary writes.
+test("explicit whitespace override fences another tab until its deliberate new-content choice", async ({ page, context }) => {
+  await page.goto("/chat");
+  const first = page.getByTestId("chat-page"); const input = first.getByRole("textbox", { name: "Type a message...", exact: true });
+  await input.fill("First text");
+  await expect.poll(async () => (await rows(page))[0]?.fields).toEqual({ message: "First text" });
+  const other = await context.newPage(); await other.goto("/chat");
+  const second = other.getByTestId("chat-page"); const otherInput = second.getByRole("textbox", { name: "Type a message...", exact: true });
+  await expect(otherInput).toHaveValue("First text");
+  await otherInput.fill("Other text");
+  await expect.poll(async () => (await rows(other))[0]?.fields).toEqual({ message: "Other text" });
+  const otherRevision = (await rows(other))[0].contentRevision;
+  await expect(first.getByRole("group", { name: "Draft conflict" })).toBeVisible();
+  await input.fill(" \n\t ");
+  await first.getByRole("button", { name: "Use this tab", exact: true }).click();
+  await expect.poll(async () => (await rows(page))[0].state).toBe("tombstone");
+  const tombstone = (await rows(page))[0];
+  await expect(second.getByRole("group", { name: "Draft conflict" })).toBeVisible();
+  await otherInput.fill("An ordinary stale edit");
+  await other.bringToFront();
+  await expect(second.getByRole("group", { name: "Draft conflict" })).toBeVisible();
+  expect((await rows(other))[0]).toMatchObject({ state: "tombstone", writeRevision: tombstone.writeRevision });
+  await second.getByRole("button", { name: "Use this tab", exact: true }).click();
+  await expect.poll(async () => (await rows(other))[0]?.fields).toEqual({ message: "An ordinary stale edit" });
+  expect((await rows(other))[0].contentRevision).not.toBe(otherRevision);
+});
+
+
+// REQ-dashboard-shell-003/004: cleanup may neither hide nor implicitly overwrite a foreign successor.
+test("a successful submit reconciles a queued other-tab successor before the next edit", async ({ page, context }) => {
+  let accept: (() => void) | undefined;
+  let started = false;
+  await context.route((url) => url.pathname === "/api/health/conditions", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    started = true;
+    await new Promise<void>((resolve) => { accept = resolve; });
+    await route.fulfill({ json: { data: { id: "accepted-condition", name: "Submitted C", status: "active" } } });
+  });
+  const first = await form(page);
+  await first.getByLabel("Name", { exact: true }).fill("Submitted C"); await named(page, "Submitted C");
+  const other = await context.newPage(); const second = await form(other);
+  await expect(second.getByLabel("Name", { exact: true })).toHaveValue("Submitted C");
+  await first.getByRole("button", { name: "Add condition", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  // The second tab commits through native IndexedDB while submitted-C cleanup queues behind it.
+  // Holding the transaction, rather than sleeping the test, fixes the ordering of both real transactions.
+  await other.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("butlers-drafts", 1); r.onsuccess = () => resolve(r.result); });
+    const tx = db.transaction("drafts", "readwrite"); const store = tx.objectStore("drafts");
+    const until = Date.now() + 600;
+    const request = store.getAll(); request.onsuccess = () => {
+      const record = request.result[0]; record.fields.name = "Other tab D";
+      record.contentRevision = crypto.randomUUID(); record.writeRevision += 1;
+      store.put(record, record.draftKey);
+      const occupy = () => { const r = store.get("queue-lock"); r.onsuccess = () => { if (Date.now() < until) occupy(); }; }; occupy();
+    };
+    tx.oncomplete = () => { db.close(); const channel = new BroadcastChannel("butlers-drafts-v1"); channel.postMessage({ changed: true }); channel.close(); };
+  });
+  accept?.();
+  await expect(first.getByLabel("Name", { exact: true })).toHaveValue("");
+  await named(other, "Other tab D");
+  await expect(first).toBeVisible();
+  await expect(first.getByRole("button", { name: "Add condition", exact: true })).toBeEnabled();
+  // Either explicit conflict or adoption must precede writing against D's fence.
+  const input = first.getByLabel("Name", { exact: true });
+  await expect.poll(async () => await input.inputValue() === "Other tab D" || await first.getByRole("group", { name: "Draft conflict" }).isVisible()).toBe(true);
+  if (await first.getByRole("group", { name: "Draft conflict" }).isVisible()) {
+    await input.fill("A later local edit");
+    await expect(first.getByRole("group", { name: "Draft conflict" })).toBeVisible();
+    expect((await rows(page))[0].fields).toMatchObject({ name: "Other tab D" });
+    await first.getByRole("button", { name: "Load other draft", exact: true }).click();
+    await expect(input).toHaveValue("Other tab D");
+  }
+});
+
+// REQ-dashboard-shell-002/003: reopening a mounted create view cannot turn unsent input into its baseline.
+test("a kept state-create draft remains dirty on reopen and clearing the full bundle tombstones it", async ({ page, context }) => {
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  await page.goto("/butlers/switchboard?tab=system&section=state");
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Set value", exact: true });
+  await dialog.getByLabel("Key", { exact: true }).fill("draft.key");
+  await dialog.getByLabel("Value (JSON)", { exact: true }).fill('"local value"');
+  await expect.poll(async () => (await rows(page))[0]?.fields).toEqual({ key: "draft.key", value: '"local value"' });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("draft.key");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog.getByRole("group", { name: "Unsaved draft" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Keep editing", exact: true }).click();
+  await dialog.getByLabel("Key", { exact: true }).fill("");
+  await dialog.getByLabel("Value (JSON)", { exact: true }).fill("");
+  await expect.poll(async () => (await rows(page))[0]?.state).toBe("tombstone");
+  expect((await rows(page))[0]).not.toHaveProperty("fields");
+});
+
+
+// REQ-dashboard-shell-006: an old failure belongs to its retired view, not a reopened successor.
+test("a late state-save failure cannot announce into the reopened state form", async ({ page, context }) => {
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  let rejectSave: (() => void) | undefined; let started = false;
+  await context.route((url) => url.pathname.startsWith("/api/butlers/switchboard/state/"), async (route) => {
+    if (route.request().method() === "GET") return route.fallback();
+    started = true;
+    await new Promise<void>((resolve) => { rejectSave = resolve; });
+    await route.fulfill({ status: 503, json: { error: { code: "unavailable", message: "Old request failed" } } });
+  });
+  await page.goto("/butlers/switchboard?tab=system&section=state");
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Set value", exact: true });
+  await dialog.getByLabel("Key", { exact: true }).fill("pending.key");
+  await dialog.getByLabel("Value (JSON)", { exact: true }).fill('"pending value"');
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await dialog.press("Escape");
+  await dialog.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("pending.key");
+  rejectSave?.();
+  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(dialog.getByText("Could not save the value. Your changes are still here. Try again.", { exact: true })).toHaveCount(0);
+});
+
+
+// REQ-dashboard-shell-006: parent-owned schedule feedback must use the submitted view's lifetime.
+test("a late schedule success cannot announce or close a reopened schedule", async ({ page, context }) => {
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  let finish: (() => void) | undefined; let started = false;
+  await context.route((url) => url.pathname === "/api/butlers/switchboard/schedules", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    started = true; await new Promise<void>((resolve) => { finish = resolve; });
+    await route.fulfill({ json: { data: { id: "created-schedule" } } });
+  });
+  await page.goto("/butlers/switchboard?tab=system&section=schedules");
+  await page.getByRole("button", { name: "Add schedule", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Schedule", exact: true });
+  await dialog.getByLabel("Name", { exact: true }).fill("Old schedule");
+  await dialog.getByLabel("Cron Expression", { exact: true }).fill("0 9 * * *");
+  await dialog.getByLabel("Prompt", { exact: true }).fill("An ordinary scheduled task");
+  await dialog.getByRole("button", { name: "Create Schedule", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await dialog.press("Escape");
+  await dialog.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.getByRole("button", { name: "Add schedule", exact: true }).click();
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("Old schedule");
+  finish?.();
+  await expect(dialog.getByRole("button", { name: "Create Schedule", exact: true })).toBeEnabled();
+  await expect(page.getByText('Schedule "Old schedule" created', { exact: true })).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+});
+
+
+// REQ-dashboard-shell-006: the calendar parent must not announce retired dialog requests.
+test("late butler-calendar outcomes leave a reopened event draft alone", async ({ page, context }) => {
+  await context.route((url) => url.pathname === "/api/calendar/workspace/invitations", (route) => route.fulfill({ json: { data: { entries: [], issues_available: true, conflicts_available: true, sources_degraded: [], has_more: false, next_cursor: null } } }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace/conflicts", (route) => route.fulfill({ json: { data: { issues: [], issues_available: true, sources_degraded: [] } } }));
+  const lane = { lane_id: "general", butler_name: "general", title: "General lane", source_keys: ["internal_reminders:general"] };
+  await context.route((url) => url.pathname === "/api/calendar/workspace/meta", (route) => route.fulfill({ json: { data: { capabilities: { views: ["user", "butler"], filters: {}, sync: { global: true, by_source: true } }, connected_sources: [], writable_calendars: [], lane_definitions: [lane], default_timezone: "UTC", primary_calendar_id: null } } }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace", (route) => route.fulfill({ json: { data: { entries: [], source_freshness: [], lanes: [lane], next_cursor: null, has_more: false } } }));
+  let release: (() => void) | undefined; let started = false;
+  await context.route((url) => url.pathname === "/api/calendar/workspace/butler-events", async (route) => {
+    started = true; await new Promise<void>((resolve) => { release = resolve; });
+    await route.fulfill({ json: { data: { result: { status: "ok" } } } });
+  });
+  await page.goto("/calendar?view=butler");
+  await page.getByRole("button", { name: "Create butler event", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create butler event", exact: true });
+  await dialog.getByLabel("Title", { exact: true }).fill("Old calendar draft");
+  await dialog.getByRole("button", { name: "Create event", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await dialog.press("Escape");
+  await dialog.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.getByRole("button", { name: "Create butler event", exact: true }).click();
+  await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue("Old calendar draft");
+  release?.();
+  await expect(dialog.getByRole("button", { name: "Create event", exact: true })).toBeEnabled();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue("Old calendar draft");
+  await expect(page.getByText("Butler event created", { exact: true })).toHaveCount(0);
+});
+
+
+// REQ-dashboard-chat-ui-004: an explicit existing Retry retains the exact submitted C binding.
+test("accepted Retry clears the failed submission's C and preserves a newer composer D", async ({ page, context }) => {
+  const posts: { message: string; message_id: string }[] = [];
+  let failNext = true;
+  await context.route((url) => /\/butlers\/[^/]+\/conversations$/.test(url.pathname), async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    posts.push(route.request().postDataJSON());
+    if (failNext) { failNext = false; await route.fulfill({ status: 503, json: { error: { code: "unavailable", message: "Please retry" } } }); }
+    else await route.fulfill({ status: 200, contentType: "text/event-stream", body: "event: done\ndata: {}\n\n" });
+  });
+  await page.goto("/chat");
+  const chat = page.getByTestId("chat-page"); const input = chat.getByRole("textbox", { name: "Type a message...", exact: true });
+  for (const newer of [false, true]) {
+    failNext = true;
+    await input.fill(newer ? "Second failed submission C" : "First failed submission C");
+    await expect.poll(async () => (await rows(page))[0]?.state).toBe("live");
+    const submitted = (await rows(page))[0].contentRevision;
+    await chat.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(chat.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    expect((await rows(page))[0].contentRevision).toBe(submitted);
+    if (newer) {
+      await input.fill("Newer unsent D");
+      await expect.poll(async () => (await rows(page))[0]?.fields).toEqual({ message: "Newer unsent D" });
+    }
+    const successor = (await rows(page))[0].contentRevision;
+    const response = page.waitForResponse((r) => r.request().method() === "POST" && /\/conversations$/.test(new URL(r.url()).pathname));
+    await chat.getByRole("button", { name: "Retry", exact: true }).click(); await (await response).finished();
+    await expect(chat.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+    expect(posts.at(-1)?.message_id).toBe(posts.at(-2)?.message_id);
+    if (newer) {
+      expect((await rows(page))[0]).toMatchObject({ state: "live", contentRevision: successor, fields: { message: "Newer unsent D" } });
+      await expect(input).toHaveValue("Newer unsent D");
+    } else await expect.poll(async () => (await rows(page))[0]?.state).toBe("tombstone");
+  }
 });

@@ -88,7 +88,7 @@ export default function ChatPage() {
   const [composer, setComposer] = useState({ context: "", value: "" });
   const inputValue = composer.context === composerContext ? composer.value : "";
   const setInputValue = (value: string) => setComposer({ context: composerContext, value });
-  const draft = useDraft("chat.message", [butlerName ?? "unresolved", activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), !!butlerName && !isDetailError);
+  const draft = useDraft("chat.message", [butlerName ?? "unresolved", activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), !!butlerName && !isDetailError, { message: "" });
   const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
   const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
@@ -171,7 +171,8 @@ export default function ChatPage() {
     }
     setInputValue("");
     void sendText(text).finally(() => {
-      for (const [id, sent] of sentDrafts.current) if (sent.submission === submission) sentDrafts.current.delete(id);
+      // Keep failed pre-acceptance bindings for the existing explicit Retry/message_id.
+      // Only onMessageAccepted consumes C; a retry must never capture newer input.
       draft.finish();
     });
   }

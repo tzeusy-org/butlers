@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { Schedule, ScheduleToggleResult } from "@/api/types.ts";
@@ -48,6 +48,9 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   // Form dialog state
   const [formOpen, setFormOpen] = useState(false);
+  const formEpoch = useRef(0);
+  const [formError, setFormError] = useState<string | null>(null);
+  useEffect(() => () => { formEpoch.current++; }, []);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
 
   // Delete confirmation dialog state
@@ -71,11 +74,13 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
   // ---------------------------------------------------------------------------
 
   function handleAddClick() {
+    formEpoch.current++; setFormError(null);
     setEditingSchedule(null);
     setFormOpen(true);
   }
 
   function handleEdit(schedule: Schedule) {
+    formEpoch.current++; setFormError(null);
     setEditingSchedule(schedule);
     setFormOpen(true);
   }
@@ -139,16 +144,22 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
   }
 
   async function handleFormSubmit(values: ScheduleFormValues) {
+    const epoch = formEpoch.current;
+    setFormError(null);
     try {
       if (editingSchedule) {
         await updateMutation.mutateAsync({ scheduleId: editingSchedule.id, body: values });
-        toast.success(`Schedule "${values.name}" updated`);
+        if (epoch === formEpoch.current) toast.success(`Schedule "${values.name}" updated`);
       } else {
         await createMutation.mutateAsync(values);
-        toast.success(`Schedule "${values.name}" created`);
+        if (epoch === formEpoch.current) toast.success(`Schedule "${values.name}" created`);
       }
     } catch (err) {
-      toast.error(`Failed to ${editingSchedule ? "update" : "create"} schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+      if (epoch === formEpoch.current) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setFormError(message);
+        toast.error(`Failed to ${editingSchedule ? "update" : "create"} schedule: ${message}`);
+      }
       throw err;
     }
   }
@@ -213,22 +224,13 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
         schedule={editingSchedule}
         open={formOpen}
         onOpenChange={(open) => {
+          formEpoch.current++; setFormError(null);
           setFormOpen(open);
           if (!open) setEditingSchedule(null);
         }}
         onSubmit={handleFormSubmit}
         isSubmitting={createMutation.isPending || updateMutation.isPending}
-        error={
-          createMutation.error
-            ? createMutation.error instanceof Error
-              ? createMutation.error.message
-              : "Failed to create schedule"
-            : updateMutation.error
-              ? updateMutation.error instanceof Error
-                ? updateMutation.error.message
-                : "Failed to update schedule"
-              : null
-        }
+        error={formError}
       />
 
       {/* Delete confirmation dialog */}

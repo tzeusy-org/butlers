@@ -40,7 +40,7 @@ const EMPTY_FORM = {
 export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [constraintsError, setConstraintsError] = useState<string | null>(null);
-  const draft = useDraft("approvals.rule.create", ["create"], { tool_name: form.tool_name, description: form.description, arg_constraints_text: form.arg_constraints_text, max_uses: form.max_uses, expires_days: form.expires_days }, (v) => setForm((current) => ({ ...current, ...v })), open);
+  const draft = useDraft("approvals.rule.create", ["create"], { tool_name: form.tool_name, description: form.description, arg_constraints_text: form.arg_constraints_text, max_uses: form.max_uses, expires_days: form.expires_days }, (v) => setForm((current) => ({ ...current, ...v })), open, { tool_name: EMPTY_FORM.tool_name, description: EMPTY_FORM.description, arg_constraints_text: EMPTY_FORM.arg_constraints_text, max_uses: EMPTY_FORM.max_uses, expires_days: EMPTY_FORM.expires_days });
   const createMutation = useCreateRule();
   const butlersQuery = useButlers();
   const butlerNames = butlersQuery.data

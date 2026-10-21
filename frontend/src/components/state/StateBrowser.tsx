@@ -14,6 +14,7 @@ import { DraftNotice } from "@/components/ui/draft-notice";
  */
 
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import type { StateEntry } from "@/api/types.ts";
 import { Button } from "@/components/ui/button";
@@ -117,7 +118,7 @@ function EditStateDialog({
   const [value, setValue] = useState(editValue);
   const [parseError, setParseError] = useState<string | null>(null);
 
-  const draft = useDraft("butler-state.edit", [butlerName ?? "", "edit", editKey], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open && !!butlerName);
+  const draft = useDraft("butler-state.edit", [butlerName ?? "", "edit", editKey], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open && !!butlerName, { key: editKey, value: editValue });
 
   // Reset when dialog opens with new values
   const handleOpenChange = (nextOpen: boolean) => {
@@ -140,9 +141,10 @@ function EditStateDialog({
     if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       await onSave(key, value);
+      if (draft.current(submission)) toast.success(`State key "${key}" saved`);
       await draft.submitted(submission, () => onOpenChange(false));
     } catch {
-      setParseError("Could not save the value. Your changes are still here. Try again.");
+      if (draft.current(submission)) setParseError("Could not save the value. Your changes are still here. Try again.");
     } finally { draft.finish(); }
   }
 

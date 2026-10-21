@@ -186,7 +186,7 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
           id: measurement.id,
           body,
         });
-        if (draft.session?.mounted) toast.success("Measurement updated.");
+        if (draft.current(submission)) toast.success("Measurement updated.");
       } else {
         if (!isCoreMeasurementType(type)) {
           toast.error("Choose a supported measurement type.");
@@ -198,11 +198,11 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
           measured_at: measuredIso,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        if (draft.session?.mounted) toast.success("Measurement logged.");
+        if (draft.current(submission)) toast.success("Measurement logged.");
       }
       await draft.submitted(submission, onDone);
     } catch (err) {
-      if (draft.session?.mounted) handleError(err);
+      if (draft.current(submission)) handleError(err);
     } finally { draft.finish(); }
   }
 

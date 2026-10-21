@@ -1,4 +1,4 @@
-import { DRAFT_FIELDS, validDraftFields, type DraftFields, type DraftSurface } from "./draft-surfaces";
+import { emptyChatDraft, DRAFT_FIELDS, validDraftFields, type DraftFields, type DraftSurface } from "./draft-surfaces";
 const LIFETIME = 24 * 60 * 60 * 1000;
 const TOMBSTONE_LIFETIME = 30 * LIFETIME;
 const LIMIT = 64 * 1024;
@@ -228,6 +228,11 @@ export class DraftStore {
                 store.put(expired, key);
                 return { record: expired, fence: fence(expired, epoch), rejected: false };
             }
+            if (raw.state === "live" && emptyChatDraft(surface, raw.fields!)) {
+                const empty = this.tombstone(raw, epoch, "empty");
+                store.put(empty, key);
+                return { record: empty, fence: fence(empty, epoch), rejected: false };
+            }
             return { record: raw, fence: fence(raw, epoch), rejected: raw.state === "tombstone" && raw.deletionReason === "invalid" };
         });
     }
@@ -246,6 +251,11 @@ export class DraftStore {
             const actual = fence(current ?? null, epoch);
             if (expected.storeEpoch !== actual.storeEpoch || (!override && !same(expected, actual)))
                 throw new DraftFailure("conflict");
+            if (emptyChatDraft(surface, fields)) {
+                const empty = this.tombstone(current ?? { draftKey: key, surfaceId: surface, context, writeRevision: 0 } as DraftRecord, epoch, "empty");
+                store.put(empty, key);
+                return { record: empty, fence: fence(empty, epoch), rejected: false };
+            }
             const now = Date.now();
             const record: DraftRecord = { schemaVersion: 1, state: "live", draftKey: key, surfaceId: surface, context,
                 fields, contentRevision, sourceBaseline, storeEpoch: epoch, writeRevision: actual.writeRevision + 1, updatedAt: now, expiresAt: now + LIFETIME };

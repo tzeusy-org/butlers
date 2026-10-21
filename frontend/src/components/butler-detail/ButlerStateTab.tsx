@@ -9,6 +9,7 @@ import { DraftNotice } from "@/components/ui/draft-notice";
  */
 
 import { useState } from "react";
+import { toast } from "sonner";
 
 import StateBrowser from "@/components/state/StateBrowser";
 import { Button } from "@/components/ui/button";
@@ -60,7 +61,7 @@ function SetValueDialog({
   const [value, setValue] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
 
-  const draft = useDraft("butler-state.set", [butlerName, "create"], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open);
+  const draft = useDraft("butler-state.set", [butlerName, "create"], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open, { key: "", value: "" });
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -83,9 +84,10 @@ function SetValueDialog({
     if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       await onSave(key, parsed);
+      if (draft.current(submission)) toast.success(`State key "${key}" saved`);
       await draft.submitted(submission, () => onOpenChange(false));
     } catch {
-      setParseError("Could not save the value. Your changes are still here. Try again.");
+      if (draft.current(submission)) setParseError("Could not save the value. Your changes are still here. Try again.");
     } finally { draft.finish(); }
   }
 
@@ -152,7 +154,7 @@ function SetValueDialog({
 
 export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
   const { data: stateResponse, isLoading, isError, error } = useButlerState(butlerName);
-  const setStateMutation = useSetState(butlerName);
+  const setStateMutation = useSetState(butlerName, { notify: false });
   const deleteStateMutation = useDeleteState(butlerName);
   const [setDialogOpen, setSetDialogOpen] = useState(false);
 

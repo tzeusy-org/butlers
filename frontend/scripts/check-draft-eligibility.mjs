@@ -77,7 +77,7 @@ export function checkDraftModule(filename, source) {
     }
     if (OWNERS[filename] && ts.isJsxAttribute(node) && ['type', 'autoComplete', 'data-purpose'].includes(node.name.getText(tree))) {
       const value = node.initializer?.getText(tree) ?? ''
-      if ((node.initializer && !ts.isStringLiteral(node.initializer)) || /password|credential|api[-_]?key|secret|token/i.test(value)) report(node, 'credential-purpose controls cannot share a registered draft owner')
+      if ((node.initializer && !ts.isStringLiteral(node.initializer)) || /password|credential|api[-_ ]?key|secret|token|private[-_ ]?key|recovery[-_ ]?code|auth[-_ ]?session|copy[-_ ]?once/i.test(value)) report(node, 'credential-purpose controls cannot share a registered draft owner')
     }
     ts.forEachChild(node, visit)
   }

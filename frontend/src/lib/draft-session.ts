@@ -1,5 +1,5 @@
 import { browserDrafts, DraftFailure, type DraftFence, type DraftRead } from "./draft-store";
-import { draftBundle, type DraftFields, type DraftSurface } from "./draft-surfaces";
+import { emptyChatDraft, draftBundle, type DraftFields, type DraftSurface } from "./draft-surfaces";
 export type DraftPresentation = {
     restored: boolean;
     unavailable: boolean;
@@ -29,7 +29,7 @@ export class DraftSession {
     private revision: string = crypto.randomUUID();
     private savedRevision: string | null = null;
     private pending: Promise<void> | null = null;
-    private clearingSubmission = false;
+    private clearingSubmission: string | null = null;
     private resolving = false;
     private suppressEmpty = false;
     private submittedReset = false;
@@ -68,7 +68,8 @@ export class DraftSession {
     }
     private get requiresBaseline() { return this.context.includes("edit"); }
     get mounted() { return this.active; }
-    get dirty() { return draftBundle(this.fields) !== this.initial; }
+    current(submission: DraftSubmission) { return this.active && submission.instance === this.instance && submission.revision === this.revision; }
+    get dirty() { return !emptyChatDraft(this.surface, this.fields) && draftBundle(this.fields) !== this.initial; }
     private async initialize(generation: number) {
         try {
             this.key = await browserDrafts.key(this.surface, this.context);
@@ -80,10 +81,10 @@ export class DraftSession {
             this.fence = read.fence;
             this.show({ corrupt: read.rejected });
             if (read.record?.state === "live") {
-                if (this.dirty)
-                    this.show({ conflict: true });
-                else if (this.requiresBaseline && read.record.sourceBaseline !== this.baseline)
+                if (this.requiresBaseline && read.record.sourceBaseline !== this.baseline)
                     this.show({ baselineMismatch: true });
+                else if (this.dirty && draftBundle(read.record.fields!) !== draftBundle(this.fields))
+                    this.show({ conflict: true });
                 else
                     this.adopt(read);
             }
@@ -172,13 +173,14 @@ export class DraftSession {
             return;
         }
         const fields = structuredClone(this.fields);
+        const empty = emptyChatDraft(this.surface, fields) || draftBundle(fields) === this.initial;
         this.pending = (async () => {
-            if (draftBundle(fields) === this.initial)
+            if (empty)
                 await browserDrafts.remove(this.key, this.fence!, "empty", this.surface, this.context);
             else
                 await browserDrafts.write(this.key, this.surface, this.context, fields, revision, this.baseline, this.fence!);
             const read = await browserDrafts.read(this.key, this.surface, this.context);
-            if (draftBundle(fields) !== this.initial && read.record?.contentRevision !== revision)
+            if (!empty && read.record?.contentRevision !== revision)
                 throw new DraftFailure("conflict");
             this.fence = read.fence;
             this.savedRevision = revision;
@@ -211,7 +213,9 @@ export class DraftSession {
     async chooseThis() {
         if (this.resolving) return;
         this.resolving = true;
-        const revision = this.revision;
+        // An explicit replacement is a successor even when its bytes match an old submission.
+        const revision = crypto.randomUUID();
+        this.revision = revision;
         const fields = structuredClone(this.fields);
         try {
             await this.ready;
@@ -311,11 +315,11 @@ export class DraftSession {
     async submitted(submission: DraftSubmission, complete: () => void): Promise<void> {
         if (submission.instance !== this.instance)
             return;
-        this.clearingSubmission = true;
-        this.cleanupRevision = submission.revision;
         // The domain effect is real even when browser cleanup is not confirmed.
         // Reset only this submitted view; preserve the private identity until cleanup resolves.
         if (this.active && this.revision === submission.revision) {
+            this.clearingSubmission = submission.revision;
+            this.cleanupRevision = submission.revision;
             this.submittedReset = true;
             this.restore(JSON.parse(this.initial) as DraftFields);
         }
@@ -337,6 +341,13 @@ export class DraftSession {
             if (!this.active || this.revision !== submission.revision)
                 return;
             this.cleanupRevision = null;
+            // A failed conditional deletion means someone else owns the key. Adopt that
+            // successor before accepting further edits; never borrow its fence invisibly.
+            if (read.record?.state === "live") {
+                this.adopt(read);
+                this.show({ cleanup: false, closing: false, deletion: false });
+                return;
+            }
             this.fence = read.fence;
             this.fields = JSON.parse(this.initial) as DraftFields;
             this.revision = crypto.randomUUID();
@@ -354,8 +365,11 @@ export class DraftSession {
         }
         finally {
             clearTimeout(timer);
-            this.clearingSubmission = false;
-            this.finish();
+            if (this.clearingSubmission === submission.revision) {
+                this.clearingSubmission = null;
+                this.finish();
+                void this.reconcile();
+            }
         }
     }
     requestClose(chat = false): Promise<boolean> {

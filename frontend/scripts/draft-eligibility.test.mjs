@@ -15,6 +15,6 @@ it('refuses forbidden paths, credential controls, aliases, unknown identities an
     registration.replace('notes }', 'notes, password }'),
     registration + '<input type="password" />',
     registration + '<input type={purpose} />',
-    registration + '<input data-purpose="credential" />',
+    ...["credential", "private-key", "recovery-code", "auth-session", "copy-once"].map((purpose) => registration + `<input data-purpose="${purpose}" />`),
   ]) expect(checkDraftModule('src/components/health/ConditionForm.tsx', source).length).toBeGreaterThan(0)
 })

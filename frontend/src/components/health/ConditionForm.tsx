@@ -106,7 +106,7 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
             notes: trimmedNotes === "" ? null : trimmedNotes,
           },
         });
-        if (draft.session?.mounted) toast.success("Condition updated.");
+        if (draft.current(submission)) toast.success("Condition updated.");
       } else {
         await createMutation.mutateAsync({
           name: trimmedName,
@@ -114,11 +114,11 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
           diagnosed_at: diagnosedIso,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        if (draft.session?.mounted) toast.success("Condition added.");
+        if (draft.current(submission)) toast.success("Condition added.");
       }
       await draft.submitted(submission, onDone);
     } catch (err) {
-      if (draft.session?.mounted) handleError(err);
+      if (draft.current(submission)) handleError(err);
     } finally { draft.finish(); }
   }
 

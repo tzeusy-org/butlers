@@ -13,7 +13,9 @@ restoration portions. The backend exact-message resolver and trusted durable
 turn projection are absent. Chat therefore does not persist attempts, recover
 outcomes, search message text, or resend automatically. Its existing successful
 POST response can clear that request's submitted content revision; an unknown
-request leaves its locally committed text recoverable. Existing `message_id`,
+request leaves its locally committed text recoverable. The existing explicit
+Retry keeps its in-memory message-ID binding to the submitted revision, so actual
+acceptance clears that revision while preserving newer unsent input. Existing `message_id`,
 retry, page-context capture, and Stop behavior remain authoritative.
 
 ## Enrolled bundles
@@ -67,7 +69,9 @@ does not extend it. The complete serialized record must fit 64 KiB; oversized
 input stays in the form without truncation or replacement of the last committed
 bundle. Expiry and invalid records are removed before exposure. Empty/reset,
 submission success, explicit discard, and authentication reset produce ordered,
-content-free tombstones. Tombstones are compacted at 256 records or when the
+content-free tombstones. Empty or whitespace-only chat text is empty; meaningful
+message bytes and form bundles stay exact. Legacy whitespace chat records retire
+before restoration. Tombstones are compacted at 256 records or when the
 oldest reaches 30 days. One transaction advances the epoch, preserves live
 content identities and timestamps, and removes tombstones. Old writers remain
 fenced even after deletion or compaction.
@@ -81,7 +85,11 @@ BroadcastChannel messages contain only a change signal. Notifications, focus,
 and visibility regain cause native reads. Untouched views adopt the durable
 winner; locally edited views suspend writes and offer **Use this tab**, **Load
 other draft**, or **Discard draft**. There is no field merge. An explicit
-replacement rereads the current epoch, and a subsequent epoch still refuses it.
+replacement rereads the current epoch and receives a new content revision even
+for identical bytes; a subsequent epoch still refuses it. A successful submission
+that finds another tab's successor adopts it before further editing. Reopening a
+create form keeps its fresh-task baseline rather than treating prior unsent input
+as initial data. Callback feedback is bound to the submitted view and revision.
 
 ## Dismissal and submission
 

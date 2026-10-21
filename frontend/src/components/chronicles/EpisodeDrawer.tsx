@@ -569,6 +569,7 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           Correct this episode
         </h3>
         <CorrectionForm
+          key={ep.id}
           episodeId={ep.id}
           currentPrivacy={ep.canonical_privacy}
           isSensitive={isSensitive}

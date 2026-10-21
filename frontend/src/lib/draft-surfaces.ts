@@ -47,3 +47,8 @@ export function validDraftFields(surface: DraftSurface, fields: unknown): fields
 export function draftBundle(fields: DraftFields): string {
     return JSON.stringify(Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))));
 }
+
+/** Only chat treats whitespace as empty; meaningful message bytes and form bundles stay exact. */
+export function emptyChatDraft(surface: DraftSurface, fields: DraftFields): boolean {
+    return surface === "chat.message" && typeof fields.message === "string" && fields.message.trim().length === 0;
+}

@@ -3930,7 +3930,7 @@ export default function CalendarWorkspacePage() {
     const snapshot = pendingMutation.draft;
     // A retired dialog may still perform conditional storage cleanup, but cannot
     // announce results, render conflicts, or close a successor dialog.
-    if (snapshot && !snapshot.session.mounted) {
+    if (snapshot && !snapshot.session.current(snapshot.submission)) {
       if (isCalendarMutationOk(rawResult)) void snapshot.session.submitted(snapshot.submission, () => {});
       return;
     }
@@ -4080,6 +4080,7 @@ export default function CalendarWorkspacePage() {
       });
       _handleUserMutationResult(result.data, action, pendingMutation);
     } catch (error) {
+      if (!userDraft.current(submission)) return;
       toast.error(
         error instanceof Error
           ? error.message
@@ -4645,6 +4646,10 @@ export default function CalendarWorkspacePage() {
       },
       {
         onSuccess: (response) => {
+          if (!butlerDraft.current(submission)) {
+            if (isCalendarMutationOk(response.data.result)) void butlerDraft.submitted(submission, () => {});
+            return;
+          }
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
             const detail = calendarMutationErrorMessage(
@@ -4667,6 +4672,7 @@ export default function CalendarWorkspacePage() {
         },
         onSettled: butlerDraft.finish,
         onError: (error) => {
+          if (!butlerDraft.current(submission)) return;
           toast.error(
             error instanceof Error ? error.message : "Event mutation failed",
           );

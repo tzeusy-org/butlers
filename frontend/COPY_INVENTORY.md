@@ -2044,6 +2044,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Cancel
 - State Store
 - e.g. config.theme
+- State key "{}" saved
 
 ## `frontend/src/components/butler-detail/ButlerStatusBadge.tsx`
 
@@ -4553,6 +4554,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Edit
 - e.g. config.theme
 - Filter by key prefix...
+- State key "{}" saved
 
 ## `frontend/src/components/switchboard/RegistryTable.tsx`
 
@@ -4966,4 +4968,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3956*
+*Total strings: 3958*
