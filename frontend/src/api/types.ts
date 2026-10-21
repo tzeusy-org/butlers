@@ -5759,6 +5759,32 @@ export interface OverdueContactsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Pending meeting debriefs (bu-q7vx1q.63)
+// ---------------------------------------------------------------------------
+
+export interface PendingDebriefAttendee {
+  entity_id: string | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface PendingDebrief {
+  debrief_id: string;
+  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
+  number: number | null;
+  event_title: string | null;
+  occurrence_start: string;
+  prompted_at: string;
+  attendees: PendingDebriefAttendee[];
+}
+
+/** Response from GET /api/relationship/meeting-debriefs/pending */
+export interface PendingDebriefsResponse {
+  debriefs: PendingDebrief[];
+  debriefs_available: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard conversations
 // ---------------------------------------------------------------------------
 
