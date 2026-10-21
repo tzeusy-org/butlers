@@ -189,10 +189,13 @@ conflicts with the inventory is refused rather than silently replaced.
 
 Recipient selectors and resources can overlap. Calendar attendees identify
 parties; `calendar_id` selects a calendar. Email `to` and `thread_id` select
-destinations; subject and body are content. HA resources are selected by `target`; `target` and `data` are safety-critical
-recipient-bearing arguments. Domain and service identify the existing service operation.
-All arguments outside resource and recipient selectors remain content by default. An inherited thread, shared folder or implicit service target remains
-undeterminable even when a named selector resolves to the owner.
+destinations; subject and body are content. HA resources are selected by
+`target`; `target` and `data` are safety-critical recipient-bearing arguments.
+Domain and service identify the existing service operation. All arguments
+outside resource and recipient selectors remain content-bearing by default;
+an fnmatch pattern on a content argument counts as free text. An inherited
+thread, shared folder or implicit service target remains undeterminable even
+when a named selector resolves to the owner.
 
 The recipient carrier's condition text describes a native branch, not an
 executable permission. Future broker evaluation must resolve each named party

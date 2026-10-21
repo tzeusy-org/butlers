@@ -70,9 +70,9 @@ Key requirements:
 - Privacy-aware errors with actionable `hint` fields
 - `tool_metadata()` marking credentials as sensitive
 - Declare every LLM-presentable canonical tool's RFC0038 D4 authorization fields in
-  the existing `tool_presentation_inventory.py` declaration, including named and
-  inherited recipients, resource selectors, current sensitivity pins and store
-  writers. Keep owner-decision/private-custody tools nonpresentable and transact
+  `tool_presentation_inventory.py`, or through complete `ToolMeta` declarations
+  for configuration-specific module registrations. Include named and inherited
+  recipients, resource selectors, current sensitivity pins and store writers. Keep owner-decision/private-custody tools nonpresentable and transact
   nongrantable. Extend the actual post-approval catalog gate for every affected
   roster and registration variant; never use missing lexical writers as a trust
   proof. See [the metadata guide](../../../../../docs/concepts/mcp-model.md#authorization-declarations-rfc-0038-d4).

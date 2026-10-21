@@ -72,7 +72,7 @@ Scope: v1-mandatory
 #### Scenario: The Home Assistant gateway and attachments retain conservative declarations
 - **WHEN** the catalog describes `ha_call_service` and `attachment_view`
 - **THEN** the gateway declares `target` as its resource parameter and `target` and `data` as safety-critical recipient-bearing parameters
-- **AND** the attachment reader declares untrusted, sensitive output; arguments outside resource and recipient selectors remain content-bearing by default
+- **AND** the attachment reader declares untrusted, sensitive output; arguments outside resource and recipient selectors remain content-bearing by default; an fnmatch pattern on a content argument counts as free text
 
 ### Requirement: Authority ceilings derive from verified origin
 Goal admission SHALL derive the goal's authority ceiling deterministically from
