@@ -138,31 +138,18 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
     });
   }
 
-  function handleFormSubmit(values: ScheduleFormValues) {
-    if (editingSchedule) {
-      updateMutation.mutate(
-        { scheduleId: editingSchedule.id, body: values },
-        {
-          onSuccess: () => {
-            toast.success(`Schedule "${values.name}" updated`);
-            setFormOpen(false);
-            setEditingSchedule(null);
-          },
-          onError: (err) => {
-            toast.error(`Failed to update schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-          },
-        },
-      );
-    } else {
-      createMutation.mutate(values, {
-        onSuccess: () => {
-          toast.success(`Schedule "${values.name}" created`);
-          setFormOpen(false);
-        },
-        onError: (err) => {
-          toast.error(`Failed to create schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-        },
-      });
+  async function handleFormSubmit(values: ScheduleFormValues) {
+    try {
+      if (editingSchedule) {
+        await updateMutation.mutateAsync({ scheduleId: editingSchedule.id, body: values });
+        toast.success(`Schedule "${values.name}" updated`);
+      } else {
+        await createMutation.mutateAsync(values);
+        toast.success(`Schedule "${values.name}" created`);
+      }
+    } catch (err) {
+      toast.error(`Failed to ${editingSchedule ? "update" : "create"} schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+      throw err;
     }
   }
 
@@ -222,6 +209,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
       {/* Create / Edit form dialog */}
       <ScheduleForm
+        butlerName={butlerName}
         schedule={editingSchedule}
         open={formOpen}
         onOpenChange={(open) => {

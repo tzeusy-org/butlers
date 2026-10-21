@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Global floating chat widget (bu-p6ey8.3) — a compact popover chat panel
  * reachable from every dashboard route, mounted once in RootLayout.tsx.
@@ -94,7 +97,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // wrong-focus-target fix); `obscureGuard` covers WCAG 2.2 2.4.11 for
   // elements the non-trapping panel could otherwise visually cover.
   const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLTextAreaElement>({
-    onClose,
+    onClose: () => draft.dismiss(onClose),
     trapFocus: false,
     obscureGuard: true,
   });
@@ -117,7 +120,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // Set by a message-search jump-to-message result (bu-0ynlk.9); consumed
   // once that message's bubble has rendered (see the effect below).
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([WIDGET_BUTLER, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [WIDGET_BUTLER, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message));
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
@@ -156,6 +165,15 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // Resume the most recent open conversation ONCE per mount (== once per
@@ -177,18 +195,30 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
 
-  function handleSendClick() {
+  async function handleSendClick() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      for (const [id, sent] of sentDrafts.current) if (sent.submission === submission) sentDrafts.current.delete(id);
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
-    abandonCurrentStream();
+    draft.dismiss(() => {
+      abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
     setViewMode("thread");
+    });
   }
 
   function handleCheckAgain() {
@@ -276,7 +306,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={onClose}
+            onClick={() => draft.dismiss(onClose)}
             aria-label="Close chat"
             title="Close"
             data-testid="chat-widget-close-button"
@@ -293,11 +323,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             activeConversationId={activeConversationId}
             collapsible={false}
             onSelectConversation={(id, messageId) => {
+              draft.dismiss(() => {
               abandonCurrentStream();
               setActiveConversationId(id);
               setPendingScrollMessageId(messageId ?? null);
               setSendError(null);
               setViewMode("thread");
+              });
             }}
             onNewConversation={handleNewConversation}
           />
@@ -340,6 +372,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             />
           )}
 
+          <DraftNotice session={draft.session} />
           <MessageInput
             ref={initialFocusRef}
             value={inputValue}
@@ -357,7 +390,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
                     ? `Could not stop this turn: ${streaming.cancelError}`
                     : null
             }
-            disabled={isLoadingConversations}
+            disabled={isLoadingConversations || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
             isStreaming={hasActiveRuntime}
             contextChip={{
               label: contextPreview.label,

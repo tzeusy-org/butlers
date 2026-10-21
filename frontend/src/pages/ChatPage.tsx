@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Full-page chat posture (bu-0ynlk.11): `/chat` and `/chat/:conversationId`.
  *
@@ -81,7 +84,13 @@ export default function ChatPage() {
   // conversation can be deep-linked here, unlike the dock/popover.
   const butlerName = routeId != null ? (conversationDetail?.butler_name ?? null) : WIDGET_BUTLER;
 
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([butlerName ?? "unresolved", activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [butlerName ?? "unresolved", activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), !!butlerName && !isDetailError);
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
@@ -118,6 +127,15 @@ export default function ChatPage() {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // A brand-new conversation (bare /chat) gets its id from the first send;
@@ -141,18 +159,30 @@ export default function ChatPage() {
     scrollToMessageAnchor(hash.slice(3));
   }, [isLoadingMessages, visibleMessages, location.hash]);
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      for (const [id, sent] of sentDrafts.current) if (sent.submission === submission) sentDrafts.current.delete(id);
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
+    draft.dismiss(() => {
     abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
     navigate("/chat", { replace: true });
+    });
   }
 
   function handleCheckAgain() {
@@ -269,6 +299,7 @@ export default function ChatPage() {
           />
         )}
 
+        <DraftNotice session={draft.session} />
         <MessageInput
           value={inputValue}
           onChange={setInputValue}
@@ -285,7 +316,7 @@ export default function ChatPage() {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={isLoadingDetail}
+          disabled={isLoadingDetail || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,

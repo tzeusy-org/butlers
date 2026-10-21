@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Slide-out chat panel for the butler detail page.
  *
@@ -59,7 +62,13 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
   // has rendered (see the effect below).
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([butlerName, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [butlerName, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message));
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
 
   // Pricing is optional decoration: keep the existing null behavior while
   // loading or after an error, with a cache shared by both chat surfaces.
@@ -100,6 +109,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
@@ -112,6 +130,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // no-editable-field-guard behavior.
   function switchConversation(direction: 1 | -1) {
     if (conversations.length === 0) return;
+    draft.dismiss(() => {
     abandonCurrentStream();
     const idx = conversations.findIndex((c) => c.id === activeConversationId);
     if (direction === -1) {
@@ -121,6 +140,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       const next = idx < 0 || idx >= conversations.length - 1 ? 0 : idx + 1;
       setActiveConversationId(conversations[next].id);
     }
+    });
   }
 
   const conversationShortcuts = useMemo<ShortcutBinding[]>(
@@ -198,17 +218,29 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     }
   }, [pendingScrollMessageId, visibleMessages.length]);
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      for (const [id, sent] of sentDrafts.current) if (sent.submission === submission) sentDrafts.current.delete(id);
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
-    abandonCurrentStream();
+    draft.dismiss(() => {
+      abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
+    });
   }
 
   function handleCheckAgain() {
@@ -232,10 +264,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         butlerName={butlerName}
         activeConversationId={activeConversationId}
         onSelectConversation={(id, messageId) => {
+          draft.dismiss(() => {
           abandonCurrentStream();
           setActiveConversationId(id);
           setPendingScrollMessageId(messageId ?? null);
           setSendError(null);
+          });
         }}
         onNewConversation={handleNewConversation}
       />
@@ -278,6 +312,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           />
         )}
 
+        <DraftNotice session={draft.session} />
         <MessageInput
           value={inputValue}
           onChange={setInputValue}
@@ -294,7 +329,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={isLoadingConversations}
+          disabled={isLoadingConversations || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,

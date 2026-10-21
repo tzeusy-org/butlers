@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -2929,6 +2932,7 @@ export default function CalendarWorkspacePage() {
       action: CalendarWorkspaceUserMutationAction;
       payload: Record<string, unknown>;
       request_id: string;
+      draft?: { session: DraftSession; submission: DraftSubmission };
     };
   } | null>(null);
   const [butlerEventDialogOpen, setButlerEventDialogOpen] = useState(false);
@@ -2942,6 +2946,26 @@ export default function CalendarWorkspacePage() {
   // Live recurrence dry-run preview for the butler-event dialog. Debounced so we
   // don't fire a request on every keystroke; only runs when a recurrence is set.
   const recurrencePreview = usePreviewCalendarWorkspaceButlerEvent();
+  const initialUserForm = useRef<UserEventFormState | null>(null);
+  const initialButlerForm = useRef<ButlerEventDraft | null>(null);
+  const userDraft = useDraft("calendar.user-event", [userEventForm?.sourceKey || "unselected", userEventDialogMode, activeUserEntry?.provider_event_id ?? "new"], {
+    sourceKey: userEventForm?.sourceKey ?? "", title: userEventForm?.title ?? "", startAtLocal: userEventForm?.startAtLocal ?? "", endAtLocal: userEventForm?.endAtLocal ?? "",
+    timezone: userEventForm?.timezone ?? "", description: userEventForm?.description ?? "", location: userEventForm?.location ?? "", entityIds: userEventForm?.people.map((person) => person.entity_id) ?? [],
+  }, (v) => setUserEventForm((current) => current ? { ...current, sourceKey: v.sourceKey, title: v.title, startAtLocal: v.startAtLocal, endAtLocal: v.endAtLocal, timezone: v.timezone, description: v.description, location: v.location,
+    // Labels are current view decoration, never persisted identity evidence.
+    people: v.entityIds.map((id) => current.people.find((person) => person.entity_id === id) ?? { entity_id: id, canonical_name: id }),
+  } : current), userEventDialogOpen && !!userEventForm?.sourceKey, {
+    sourceKey: initialUserForm.current?.sourceKey ?? "", title: initialUserForm.current?.title ?? "", startAtLocal: initialUserForm.current?.startAtLocal ?? "", endAtLocal: initialUserForm.current?.endAtLocal ?? "",
+    timezone: initialUserForm.current?.timezone ?? "", description: initialUserForm.current?.description ?? "", location: initialUserForm.current?.location ?? "", entityIds: initialUserForm.current?.people.map((person) => person.entity_id) ?? [],
+  });
+  const butlerDraft = useDraft("calendar.butler-event", [butlerEventDraft?.butlerName || "unselected", butlerEventDialogMode, editingButlerEntry?.entry_id ?? "new"], {
+    butlerName: butlerEventDraft?.butlerName ?? "", eventKind: butlerEventDraft?.eventKind ?? "scheduled_task", title: butlerEventDraft?.title ?? "", startAtLocal: butlerEventDraft?.startAtLocal ?? "", endAtLocal: butlerEventDraft?.endAtLocal ?? "", timezone: butlerEventDraft?.timezone ?? "",
+    recurrenceFrequency: butlerEventDraft?.recurrenceFrequency ?? "NONE", cron: butlerEventDraft?.cron ?? "", hasUntilAt: butlerEventDraft?.hasUntilAt ?? false, untilAtLocal: butlerEventDraft?.untilAtLocal ?? "",
+  }, (v) => setButlerEventDraft((current) => current ? { ...v, eventKind: v.eventKind as ButlerEventKind, recurrenceFrequency: v.recurrenceFrequency as RecurrenceFrequency } : current), butlerEventDialogOpen && !!butlerEventDraft?.butlerName, {
+    butlerName: initialButlerForm.current?.butlerName ?? "", eventKind: initialButlerForm.current?.eventKind ?? "scheduled_task", title: initialButlerForm.current?.title ?? "", startAtLocal: initialButlerForm.current?.startAtLocal ?? "", endAtLocal: initialButlerForm.current?.endAtLocal ?? "", timezone: initialButlerForm.current?.timezone ?? "",
+    recurrenceFrequency: initialButlerForm.current?.recurrenceFrequency ?? "NONE", cron: initialButlerForm.current?.cron ?? "", hasUntilAt: initialButlerForm.current?.hasUntilAt ?? false, untilAtLocal: initialButlerForm.current?.untilAtLocal ?? "",
+  });
+
   const debouncedButlerDraft = useDebounce(butlerEventDraft, 400);
   const recurrencePreviewRequest =
     useMemo<CalendarWorkspaceButlerEventPreviewRequest | null>(() => {
@@ -3413,7 +3437,7 @@ export default function CalendarWorkspacePage() {
 
     setUserEventDialogMode("create");
     setActiveUserEntry(null);
-    setUserEventForm({
+    const initialForm: UserEventFormState = {
       sourceKey: preferredSource,
       title: "",
       startAtLocal,
@@ -3422,7 +3446,9 @@ export default function CalendarWorkspacePage() {
       description: "",
       location: "",
       people: [],
-    });
+    };
+    initialUserForm.current = initialForm;
+    setUserEventForm(initialForm);
     setUserEventDialogOpen(true);
   }
 
@@ -3897,9 +3923,17 @@ export default function CalendarWorkspacePage() {
       action: CalendarWorkspaceUserMutationAction;
       payload: Record<string, unknown>;
       request_id: string;
+      draft?: { session: DraftSession; submission: DraftSubmission };
     },
   ) {
     const rawResult = responseData.result;
+    const snapshot = pendingMutation.draft;
+    // A retired dialog may still perform conditional storage cleanup, but cannot
+    // announce results, render conflicts, or close a successor dialog.
+    if (snapshot && !snapshot.session.mounted) {
+      if (isCalendarMutationOk(rawResult)) void snapshot.session.submitted(snapshot.submission, () => {});
+      return;
+    }
     const status = maybeText(rawResult?.status);
 
     if (status === "conflict") {
@@ -3938,9 +3972,9 @@ export default function CalendarWorkspacePage() {
           ? `Updated event (${status}).`
           : "Updated calendar event.",
     );
-    setUserEventDialogOpen(false);
-    setUserEventForm(null);
-    setActiveUserEntry(null);
+    const complete = () => { setUserEventDialogOpen(false); setUserEventForm(null); setActiveUserEntry(null); };
+    if (snapshot) void snapshot.session.submitted(snapshot.submission, complete);
+    else complete();
   }
 
   async function submitUserEventForm(event: React.FormEvent<HTMLFormElement>) {
@@ -4025,12 +4059,16 @@ export default function CalendarWorkspacePage() {
     // Clear any stale conflict state from a previous attempt.
     setUserEventConflict(null);
 
+    const submission = userDraft.capture();
+    const preparation = userDraft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     const requestId = buildRequestId(action);
     const pendingMutation = {
       butler_name: butlerName,
       action,
       payload,
       request_id: requestId,
+      draft: userDraft.session && submission ? { session: userDraft.session, submission } : undefined,
     };
 
     try {
@@ -4047,7 +4085,7 @@ export default function CalendarWorkspacePage() {
           ? error.message
           : "Failed to save calendar event.",
       );
-    }
+    } finally { userDraft.finish(); }
   }
 
   /**
@@ -4340,16 +4378,15 @@ export default function CalendarWorkspacePage() {
     const butlerName = initialButler ?? availableButlers[0] ?? "";
     setEditingButlerEntry(null);
     setButlerEventDialogMode("create");
-    setButlerEventDraft(createDefaultButlerDraft(timezone, butlerName));
+    const initialForm = createDefaultButlerDraft(timezone, butlerName);
+    initialButlerForm.current = initialForm;
+    setButlerEventDraft(initialForm);
     setButlerEventDialogOpen(true);
   }
 
   function closeButlerEventDialog(open: boolean) {
-    setButlerEventDialogOpen(open);
-    if (!open) {
-      setEditingButlerEntry(null);
-      setButlerEventDraft(null);
-    }
+    if (open) { setButlerEventDialogOpen(true); return; }
+    butlerDraft.dismiss(() => { setButlerEventDialogOpen(false); setEditingButlerEntry(null); setButlerEventDraft(null); });
   }
 
   function handleButlerToggle(entry: UnifiedCalendarEntry) {
@@ -4508,7 +4545,7 @@ export default function CalendarWorkspacePage() {
     );
   }
 
-  function handleSaveButlerEvent() {
+  async function handleSaveButlerEvent() {
     if (!butlerEventDraft) {
       return;
     }
@@ -4596,6 +4633,9 @@ export default function CalendarWorkspacePage() {
       payload.source_hint = target.sourceHint;
     }
 
+    const submission = butlerDraft.capture();
+    const preparation = butlerDraft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     butlerMutation.mutate(
       {
         butler_name: butlerEventDraft.butlerName,
@@ -4623,8 +4663,9 @@ export default function CalendarWorkspacePage() {
               ? "Butler event created"
               : "Butler event updated",
           );
-          closeButlerEventDialog(false);
+          void butlerDraft.submitted(submission, () => { setButlerEventDialogOpen(false); setEditingButlerEntry(null); setButlerEventDraft(null); });
         },
+        onSettled: butlerDraft.finish,
         onError: (error) => {
           toast.error(
             error instanceof Error ? error.message : "Event mutation failed",
@@ -6528,12 +6569,8 @@ export default function CalendarWorkspacePage() {
       <Dialog
         open={userEventDialogOpen}
         onOpenChange={(open) => {
-          setUserEventDialogOpen(open);
-          if (!open) {
-            setUserEventForm(null);
-            setActiveUserEntry(null);
-            setUserEventConflict(null);
-          }
+          if (open) setUserEventDialogOpen(true);
+          else userDraft.dismiss(() => { setUserEventDialogOpen(false); setUserEventForm(null); setActiveUserEntry(null); setUserEventConflict(null); });
         }}
       >
         <DialogContent className="sm:max-w-xl">
@@ -6552,6 +6589,7 @@ export default function CalendarWorkspacePage() {
 
           {userEventForm ? (
             <form className="space-y-4" onSubmit={submitUserEventForm}>
+              <DraftNotice session={userDraft.session} />
               <div className="space-y-2">
                 <label htmlFor="event-source" className="text-sm font-medium">
                   Calendar Source
@@ -6801,7 +6839,7 @@ export default function CalendarWorkspacePage() {
 
               <DialogFooter>
                 <PillButton
-                  onClick={() => setUserEventDialogOpen(false)}
+                  onClick={() => userDraft.dismiss(() => setUserEventDialogOpen(false))}
                   disabled={userEventMutation.isPending}
                 >
                   Cancel
@@ -6827,6 +6865,7 @@ export default function CalendarWorkspacePage() {
         onOpenChange={closeButlerEventDialog}
       >
         <DialogContent className="sm:max-w-lg">
+          <DraftNotice session={butlerDraft.session} />
           <DialogHeader>
             <DialogTitle>
               {butlerEventDialogMode === "create"

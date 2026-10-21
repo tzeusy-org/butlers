@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 /**
  * ButlerStateTab — state store tab for the butler detail page.
  *
@@ -42,6 +44,7 @@ interface ButlerStateTabProps {
 // ---------------------------------------------------------------------------
 
 function SetValueDialog({
+  butlerName,
   open,
   onOpenChange,
   onSave,
@@ -49,12 +52,15 @@ function SetValueDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (key: string, value: unknown) => void;
+  butlerName: string;
+  onSave: (key: string, value: unknown) => Promise<unknown>;
   isPending: boolean;
 }) {
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
+
+  const draft = useDraft("butler-state.set", [butlerName, "create"], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -62,18 +68,25 @@ function SetValueDialog({
       setValue("");
       setParseError(null);
     }
-    onOpenChange(nextOpen);
+    if (!nextOpen) draft.dismiss(() => onOpenChange(false)); else onOpenChange(true);
   };
 
-  function handleSave() {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      setParseError(null);
-      onSave(key, parsed);
-      onOpenChange(false);
-    } catch {
+  async function handleSave() {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); } catch {
       setParseError("Invalid JSON. Please check the value and try again.");
+      return;
     }
+    setParseError(null);
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    try {
+      await onSave(key, parsed);
+      await draft.submitted(submission, () => onOpenChange(false));
+    } catch {
+      setParseError("Could not save the value. Your changes are still here. Try again.");
+    } finally { draft.finish(); }
   }
 
   return (
@@ -85,6 +98,7 @@ function SetValueDialog({
             Create or overwrite a key-value pair in the state store
           </DialogDescription>
         </DialogHeader>
+        <DraftNotice session={draft.session} />
         <div className="space-y-4">
           <div className="space-y-2">
             <label htmlFor="new-state-key" className="text-sm font-medium">
@@ -117,12 +131,12 @@ function SetValueDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => draft.dismiss(() => onOpenChange(false))}>
             Cancel
           </Button>
           <Button
             onClick={handleSave}
-            disabled={!key.trim() || !value.trim() || isPending}
+            disabled={!key.trim() || !value.trim() || isPending || draft.session?.presentation.submitting || draft.session?.presentation.cleanup}
           >
             {isPending ? "Saving..." : "Save"}
           </Button>
@@ -145,7 +159,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
   const entries = stateResponse?.data ?? [];
 
   function handleEdit(key: string, value: unknown) {
-    setStateMutation.mutate({ key, value });
+    return setStateMutation.mutateAsync({ key, value });
   }
 
   function handleDelete(key: string) {
@@ -153,7 +167,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
   }
 
   function handleSetValue(key: string, value: unknown) {
-    setStateMutation.mutate({ key, value });
+    return setStateMutation.mutateAsync({ key, value });
   }
 
   if (isError) {
@@ -185,6 +199,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
         </SectionHeader>
         <SectionContent>
           <StateBrowser
+            butlerName={butlerName}
             entries={entries}
             isLoading={isLoading}
             onEdit={handleEdit}
@@ -195,6 +210,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
 
       {/* Set value dialog */}
       <SetValueDialog
+        butlerName={butlerName}
         open={setDialogOpen}
         onOpenChange={setSetDialogOpen}
         onSave={handleSetValue}

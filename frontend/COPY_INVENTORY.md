@@ -1997,9 +1997,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Schedule "{}" deleted
 - Failed to delete schedule: {}
 - Schedule "{}" updated
-- Failed to update schedule: {}
 - Schedule "{}" created
-- Failed to create schedule: {}
+- Failed to {} schedule: {}
 
 ## `frontend/src/components/butler-detail/ButlerSessionsTab.tsx`
 
@@ -2037,6 +2036,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerStateTab.tsx`
 
+- Promise
 - Set value
 - Create or overwrite a key-value pair in the state store
 - Key
@@ -4160,6 +4160,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/schedules/ScheduleForm.tsx`
 
+- void | Promise
 - Name
 - Cron Expression
 - Standard 5-field cron: minute hour day-of-month month day-of-week
@@ -4533,6 +4534,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/state/StateBrowser.tsx`
 
+- void | Promise
 - Key
 - Value (JSON)
 - Cancel
@@ -4881,6 +4883,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Loading {}
 - {} needs attention
 
+## `frontend/src/components/ui/draft-notice.tsx`
+
+- Browser draft privacy
+- Drafts stay in this browser profile for up to 24 hours. People using this profile and scripts on this origin can read them. Drafts are not encrypted or synced to the server.
+- Discard draft
+- Use this tab
+- Keep editing
+- Discard and close
+- Draft conflict
+- Unsaved draft
+
 ## `frontend/src/components/ui/expandable-detail.tsx`
 
 - Hide full {}
@@ -4947,4 +4960,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3940*
+*Total strings: 3950*

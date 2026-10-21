@@ -1,3 +1,4 @@
+import { installDraftNavigationGuard } from "./lib/draft-navigation"
 /**
  * Browser router instance.
  *
@@ -226,3 +227,5 @@ export const router = createBrowserRouter(
   ],
   { basename: _baseUrl },
 )
+
+installDraftNavigationGuard(router)

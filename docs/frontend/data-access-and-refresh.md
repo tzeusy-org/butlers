@@ -112,3 +112,10 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
 - [Response Conventions](../api_and_protocols/response-conventions.md) -- Envelopes, pagination,
   degraded-source flags
 - [Information Architecture](information-architecture.md) -- Navigation rationale
+
+### Browser-local unsent input
+
+Approved unsent form bundles use the native IndexedDB task seam, independent of
+QueryClient and API response caches. See [browser-local unsent drafts](unsent-drafts.md)
+for the exact allowlist, one-second dismissal contract, stale-writer fences, privacy
+boundary, and the explicitly unavailable chat outcome-recovery prerequisite.

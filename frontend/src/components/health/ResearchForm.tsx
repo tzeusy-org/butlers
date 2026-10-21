@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // ResearchForm — reusable add/edit form for health research notes [bu-wamzk]
 //
@@ -51,9 +53,11 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
   const [tags, setTags] = useState((research?.tags ?? []).join(", "));
   const [sourceUrl, setSourceUrl] = useState(research?.source_url ?? "");
 
+  const draft = useDraft("health.research", [isEdit ? "edit" : "create", research?.id ?? "new"], { title, content, tags, sourceUrl }, (next) => { setTitle(next.title as typeof title); setContent(next.content as typeof content); setTags(next.tags as typeof tags); setSourceUrl(next.sourceUrl as typeof sourceUrl); }, true, undefined, research?.updated_at);
+
   const createMutation = useCreateResearch();
   const updateMutation = useUpdateResearch();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -79,6 +83,9 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
     const parsedTags = parseTags(tags);
     const trimmedSource = sourceUrl.trim();
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         await updateMutation.mutateAsync({
@@ -90,7 +97,7 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
             source_url: trimmedSource === "" ? null : trimmedSource,
           },
         });
-        toast.success("Research note updated.");
+        if (draft.session?.mounted) toast.success("Research note updated.");
       } else {
         await createMutation.mutateAsync({
           title: trimmedTitle,
@@ -98,16 +105,17 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
           tags: parsedTags,
           source_url: trimmedSource === "" ? null : trimmedSource,
         });
-        toast.success("Research note added.");
+        if (draft.session?.mounted) toast.success("Research note added.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.session?.mounted) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="research-form">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <Label htmlFor="research-title">Title</Label>
         <Input
@@ -153,7 +161,7 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>
