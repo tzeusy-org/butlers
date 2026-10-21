@@ -14,6 +14,8 @@
 // ---------------------------------------------------------------------------
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
+import { formatOwnerDateTime } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useModelAllowance } from "@/hooks/use-model-catalog";
 import type { AllowanceAccount } from "@/api/types.ts";
 import { formatAllowanceCountdown, readAllowance } from "@/lib/allowance";
@@ -49,7 +51,7 @@ function formatBackupRecency(lastBackupAt: string | null): string {
 }
 
 /** The verdict clause for one account, or null when it needs nothing (available). */
-function allowanceClause(account: AllowanceAccount): string | null {
+function allowanceClause(account: AllowanceAccount, timezone: string): string | null {
   const reading = readAllowance(account, Date.now());
   switch (reading.kind) {
     case "available":
@@ -61,10 +63,7 @@ function allowanceClause(account: AllowanceAccount): string | null {
     case "exhausted-no-reset":
       return `${account.account_key} out of allowance, reset unknown`;
     case "countdown": {
-      const clock = new Date(account.reset_at as string).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      const clock = formatOwnerDateTime(account.reset_at as string, timezone, "time");
       return `${account.account_key} out of allowance until ${clock} (${formatAllowanceCountdown(reading.msRemaining)})`;
     }
   }
@@ -93,6 +92,7 @@ export function SystemVerdictBanner() {
   const drift = useDriftFacts();
   const deployments = useDeploymentFacts();
   const allowance = useModelAllowance();
+  const timezone = useTimezone();
 
   const sources = [
     { label: "fleet status", isLoading: board.isLoading, isError: board.isError, href: "/butlers" },
@@ -259,7 +259,7 @@ export function SystemVerdictBanner() {
     });
   } else if (allowanceData) {
     for (const account of allowanceData.accounts) {
-      const text = allowanceClause(account);
+      const text = allowanceClause(account, timezone);
       if (text) {
         problems.push({
           key: `allowance-${account.account_key}`,
