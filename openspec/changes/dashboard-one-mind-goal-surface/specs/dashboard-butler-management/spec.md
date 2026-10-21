@@ -111,12 +111,6 @@ Scope: post-v1
 - **THEN** the full original requirement and every original scenario remain binding at the existing dashboard-butler-management boundary
 - **AND** the new surface does not establish source clearance, execute a retired unit control or infer a successful future replacement.
 
-#### Scenario: Existing Tools & Scope API remains authoritative
-
-- **WHEN** D19 artifacts are added before the complete owner-allocated M6 semantic migration of Tools & Scope API
-- **THEN** the full original requirement and every original scenario remain binding at the existing dashboard-butler-management boundary
-- **AND** the new surface does not establish source clearance, execute a retired unit control or infer a successful future replacement.
-
 #### Scenario: Existing Memory Access Tiles API remains authoritative
 
 - **WHEN** D19 artifacts are added before the complete owner-allocated M6 semantic migration of Memory Access Tiles API
