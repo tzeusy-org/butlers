@@ -91,6 +91,8 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
         response = catalog["calendar_respond"]
         assert {"calendar_respond", "calendar_response_fence_status"} <= set(catalog)
         assert response.classification_complete
+        assert response.group_name == "core"
+        assert catalog["calendar_response_fence_status"].group_name == "direct"
         assert all(getattr(response, field, None) is not None for field in _D4_FIELDS)
         assert response.effect_class == "communicate"
         assert response.owner_domain == name
@@ -209,7 +211,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     roster = Path(__file__).resolve().parents[2] / "roster"
     registry = default_registry()
     await _provider_catalogs()
-    for variant in ("general", "switchboard", "messenger", "relationship"):
+    for variant in ("general", "switchboard", "messenger", "relationship", "chronicler"):
         synthetic = await _complete_core_catalog(variant)
         validate_authorization_catalog(synthetic, store_writers=STORE_WRITERS)
     # Native private-memory pool construction is part of registration; opening
