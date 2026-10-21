@@ -330,14 +330,22 @@ export default function EntityFinder() {
   // Empty-query owner-pinned set: owner's top neighbours by summed weight.
   // Only resolved while the Finder is open AND the query is empty.
   // -------------------------------------------------------------------------
-  const { data: ownerStatus } = useQuery({
+  const {
+    data: ownerStatus,
+    isError: ownerStatusError,
+    refetch: refetchOwnerStatus,
+  } = useQuery({
     queryKey: ["owner-setup-status"],
     queryFn: getOwnerSetupStatus,
     enabled: open && isEmptyQuery,
   });
   const ownerId = ownerStatus?.entity_id ?? undefined;
 
-  const { data: ownerNeighbours } = useEntityNeighbours(
+  const {
+    data: ownerNeighbours,
+    isError: ownerNeighboursError,
+    refetch: refetchOwnerNeighbours,
+  } = useEntityNeighbours(
     open && isEmptyQuery ? ownerId : undefined,
     undefined,
   );
@@ -345,9 +353,15 @@ export default function EntityFinder() {
   // The ranked neighbours endpoint truncates *each predicate* before this
   // cross-predicate aggregation runs. Request the complete owner set so the
   // pinned count and overflow row remain truthful after deduplication.
+  // A failed owner lookup must never read as "the owner has no inner circle":
+  // the pinned set is withheld and an explicit unavailable note replaces it.
+  const ownerPinnedUnavailable = ownerStatusError || ownerNeighboursError;
   const allPinned = useMemo(
-    () => aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
-    [ownerNeighbours, ownerId],
+    () =>
+      ownerPinnedUnavailable
+        ? []
+        : aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
+    [ownerNeighbours, ownerId, ownerPinnedUnavailable],
   );
   const pinned = allPinned.slice(0, PINNED_LIMIT);
 
@@ -760,6 +774,18 @@ export default function EntityFinder() {
              * neighbours by summed weight (spec: "Finder empty-query state").
              * Typing replaces this set with search results.
              * --------------------------------------------------------------- */}
+            {isEmptyQuery && ownerPinnedUnavailable && (
+              <div data-testid="entity-finder-pinned-unavailable" className="mb-1">
+                <SourceDegradedNote
+                  label="Owner shortcuts"
+                  detail="unavailable"
+                  onRetry={() => {
+                    if (ownerStatusError) void refetchOwnerStatus();
+                    else void refetchOwnerNeighbours();
+                  }}
+                />
+              </div>
+            )}
             {isEmptyQuery && pinned.length > 0 && (
               <PaletteGroup
                 heading="Pinned"
