@@ -297,6 +297,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   const maturityFilter = maturity === "all" ? undefined : maturity;
 
   const { data: response, isError, refetch } = useRules({
+    ...(state.held === true ? { held: true } : {}),
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
@@ -320,6 +321,12 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   return (
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
+      {state.held === true && <div className="flex items-center gap-3">
+        <Voice>Guidance waiting for you</Voice>
+        <Pill selected={false} onClick={() => setState({ held: undefined, offset: 0 })}>
+          Show all guidance
+        </Pill>
+      </div>}
 
       {isError && ordered.length === 0 ? (
         // An errored fetch must not render "No standing orders yet." — a down
@@ -331,7 +338,9 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
         />
       ) : ordered.length === 0 ? (
         <Voice variant="italic" className="py-6">
-          {maturity === "all"
+          {state.held === true
+            ? "No guidance waiting for you."
+            : maturity === "all"
             ? "No standing orders yet."
             : "Nothing of this maturity."}
         </Voice>

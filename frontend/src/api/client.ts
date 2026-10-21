@@ -2674,6 +2674,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
 /** Build URLSearchParams from rule query parameters. */
 function ruleSearchParams(params?: RuleParams): URLSearchParams {
   const sp = new URLSearchParams();
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.q) sp.set("q", params.q);
   if (params?.scope) sp.set("scope", params.scope);
   if (params?.maturity) sp.set("maturity", params.maturity);

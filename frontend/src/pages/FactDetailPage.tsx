@@ -1,3 +1,4 @@
+import { MemoryProvenanceLine } from "@/components/memory/MemoryProvenanceLine";
 // ---------------------------------------------------------------------------
 // FactDetailPage — the fact's detail page. (bu-2ix8d.7)
 //
@@ -295,6 +296,7 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
       {fact && (
         <div className="mx-auto flex max-w-[680px] flex-col gap-6">
           <DetailEyebrow kind="fact" id={fact.id} />
+          <MemoryProvenanceLine record={fact} />
 
           {/* State line — lifecycle in the API's words. */}
           <StateLine

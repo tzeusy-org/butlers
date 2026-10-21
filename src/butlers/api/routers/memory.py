@@ -348,9 +348,10 @@ def _row_to_memory_link(row: dict) -> MemoryLink:
 
 
 async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[Fact]:
-    """Batch-resolve entity_id and object_entity_id → canonical_name for a list of Facts."""
+    """Resolve subject, object and author independently from canonical entity records."""
     entity_ids = {f.entity_id for f in facts if f.entity_id}
     entity_ids |= {f.object_entity_id for f in facts if f.object_entity_id}
+    entity_ids |= {f.authority_entity_id for f in facts if f.authority_entity_id}
     if not entity_ids:
         return facts
     pool = _any_pool(db)
@@ -364,7 +365,22 @@ async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[
             f.entity_name = name_map[f.entity_id]
         if f.object_entity_id and f.object_entity_id in name_map:
             f.object_entity_name = name_map[f.object_entity_id]
+        f.authority_entity_name = name_map.get(f.authority_entity_id)
     return facts
+
+
+async def _resolve_rule_provenance(db: DatabaseManager, rule: Rule) -> Rule:
+    """Resolve author and endorser names without substituting the rule's subject or request."""
+    entity_ids = {eid for eid in (rule.authority_entity_id, rule.endorsed_by) if eid}
+    if entity_ids:
+        rows = await _any_pool(db).fetch(
+            "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1)",
+            [_uuid.UUID(eid) for eid in sorted(entity_ids)],
+        )
+        names = {str(row["id"]): row["canonical_name"] for row in rows}
+        rule.authority_entity_name = names.get(rule.authority_entity_id)
+        rule.endorsed_by_name = names.get(rule.endorsed_by)
+    return rule
 
 
 # ---------------------------------------------------------------------------
@@ -960,7 +976,8 @@ async def list_facts(
         record_query = (
             f"SELECT id, subject, predicate, content, importance, confidence,"
             f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            f" entity_id, object_entity_id, validity, scope, reference_count,"
+            f" entity_id, object_entity_id, content_authority, authority_entity_id,"
+            " validity, scope, reference_count,"
             f" created_at, last_referenced_at,"
             f" last_confirmed_at, tags, metadata"
             f" FROM {relation}{where}"
@@ -1022,7 +1039,8 @@ async def get_fact(
             _with_source_episode_status(
                 "SELECT id, subject, predicate, content, importance, confidence,"
                 " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-                " entity_id, object_entity_id, validity, scope, reference_count,"
+                " entity_id, object_entity_id, content_authority, authority_entity_id,"
+                " validity, scope, reference_count,"
                 " created_at, last_referenced_at,"
                 " last_confirmed_at, tags, metadata"
                 f" FROM {relation} WHERE id = $1",
@@ -1066,7 +1084,8 @@ async def get_fact(
 _FACT_SELECT_COLUMNS = (
     "SELECT id, subject, predicate, content, importance, confidence,"
     " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-    " entity_id, object_entity_id, validity, scope, reference_count,"
+    " entity_id, object_entity_id, content_authority, authority_entity_id,"
+    " validity, scope, reference_count,"
     " created_at, last_referenced_at,"
     " last_confirmed_at, tags, metadata"
 )
@@ -1322,7 +1341,7 @@ async def list_rules(
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
             f" last_evaluated_at, tags, metadata, retired_at,"
-            " content_authority, authority_entity_id, endorsed_at"
+            " content_authority, authority_entity_id, endorsed_at, endorsed_by"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1383,7 +1402,7 @@ async def get_rule(
                 " effectiveness_score, applied_count, success_count, harmful_count,"
                 " source_episode_id, source_butler, created_at, last_applied_at,"
                 " last_evaluated_at, tags, metadata, retired_at,"
-                " content_authority, authority_entity_id, endorsed_at"
+                " content_authority, authority_entity_id, endorsed_at, endorsed_by"
                 f" FROM {relation} WHERE id = $1",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
@@ -1401,7 +1420,8 @@ async def get_rule(
     if not rows:
         _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
-    return ApiResponse[Rule](data=_row_to_rule(rows[0]))
+    rule = await _resolve_rule_provenance(db, _row_to_rule(rows[0]))
+    return ApiResponse[Rule](data=rule)
 
 
 # ---------------------------------------------------------------------------
@@ -1463,7 +1483,7 @@ async def retire_rule(
                     " effectiveness_score, applied_count, success_count, harmful_count,"
                     " source_episode_id, source_butler, created_at, last_applied_at,"
                     " last_evaluated_at, tags, metadata, retired_at,"
-                    " content_authority, authority_entity_id, endorsed_at"
+                    " content_authority, authority_entity_id, endorsed_at, endorsed_by"
                     f" FROM {relation} WHERE id = $1",
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
@@ -2179,7 +2199,8 @@ async def get_entity(
             "SELECT f.id, f.subject, f.predicate, f.content, f.importance, f.confidence,"
             " f.decay_rate, f.permanence, f.source_butler, f.source_episode_id,"
             " ep.session_id, f.supersedes_id,"
-            " f.entity_id, f.object_entity_id, f.validity, f.scope, f.reference_count,"
+            " f.entity_id, f.object_entity_id, f.content_authority, f.authority_entity_id,"
+            " f.validity, f.scope, f.reference_count,"
             " f.created_at, f.last_referenced_at,"
             " f.last_confirmed_at, f.tags, f.metadata"
             ", CASE WHEN f.source_episode_id IS NULL THEN NULL"
@@ -2724,6 +2745,10 @@ def _row_to_fact(r) -> Fact:
         supersedes_id=str(r["supersedes_id"]) if r["supersedes_id"] else None,
         entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
         object_entity_id=str(r["object_entity_id"]) if r.get("object_entity_id") else None,
+        content_authority=r.get("content_authority"),
+        authority_entity_id=(
+            str(r["authority_entity_id"]) if r.get("authority_entity_id") else None
+        ),
         validity=r["validity"],
         scope=r["scope"],
         reference_count=r["reference_count"],
@@ -2768,6 +2793,7 @@ def _row_to_rule(r) -> Rule:
             str(r["authority_entity_id"]) if r.get("authority_entity_id") else None
         ),
         endorsed_at=str(r["endorsed_at"]) if r.get("endorsed_at") else None,
+        endorsed_by=str(r["endorsed_by"]) if r.get("endorsed_by") else None,
         held=not is_rule_admitted(r.get("content_authority"), r.get("endorsed_at")),
     )
 
@@ -3211,7 +3237,8 @@ async def inspect_memory(
                 _with_source_episode_status(
                     f"SELECT id, subject, predicate, content, importance, confidence,"
                     f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-                    f" entity_id, object_entity_id, validity, scope, reference_count,"
+                    f" entity_id, object_entity_id, content_authority, authority_entity_id,"
+                    " validity, scope, reference_count,"
                     f" created_at, last_referenced_at,"
                     f" last_confirmed_at, tags, metadata"
                     f" FROM {facts_relation}{fact_cond}"
@@ -3263,7 +3290,7 @@ async def inspect_memory(
                     f" effectiveness_score, applied_count, success_count, harmful_count,"
                     f" source_episode_id, source_butler, created_at, last_applied_at,"
                     f" last_evaluated_at, tags, metadata, retired_at,"
-                    " content_authority, authority_entity_id, endorsed_at"
+                    " content_authority, authority_entity_id, endorsed_at, endorsed_by"
                     f" FROM {rules_relation}{rule_cond}"
                     f" ORDER BY created_at DESC"
                     f" LIMIT ${idx}",

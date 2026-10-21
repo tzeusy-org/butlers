@@ -3033,6 +3033,9 @@ export interface Fact {
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
   superseded_by?: string | null;
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
   entity_id: string | null;
   entity_name: string | null;
   object_entity_id: string | null;
@@ -3074,6 +3077,9 @@ export interface MemoryRule {
   /** Server-derived authorship of the content this rule came from (null on legacy rows). */
   content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
   authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
+  endorsed_by?: string | null;
+  endorsed_by_name?: string | null;
   /** Set when the owner endorsed a held rule. */
   endorsed_at?: string | null;
   /** True while the rule is invisible to sessions, awaiting owner endorsement. */
@@ -3292,6 +3298,8 @@ export interface FactParams {
 
 /** Query parameters for rule list endpoints. */
 export interface RuleParams {
+  /** Restrict the register to unendorsed held guidance. */
+  held?: boolean;
   q?: string;
   scope?: string;
   maturity?: string;

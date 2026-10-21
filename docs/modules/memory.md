@@ -355,6 +355,13 @@ None. The memory module is a leaf module with no dependencies on other modules.
 
 ## Implementation Notes
 
+- Fact and rule dashboard details read persisted `content_authority` and `authority_entity_id`;
+  rule endorsement reads `endorsed_at` and `endorsed_by`. Canonical entity names are resolved
+  independently of a fact's subject. Request IDs never identify an author, a system stamp does
+  not imply scheduled execution, and NULL stamps do not establish record age. The held-guidance
+  link opens the existing rules register with `held=true`; source-episode availability retains
+  its separate link/expired/unresolved presentation.
+
 - Importing Memory storage or tools leaves `sentence_transformers`, `transformers` and `torch`
   unloaded. `EmbeddingEngine` pays that dependency/model cost at first construction; registered
   async tools acquire it with `asyncio.to_thread`. The per-model synchronized cache, default/configured
