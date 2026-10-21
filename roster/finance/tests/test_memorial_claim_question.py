@@ -7,6 +7,7 @@ All people and amounts are synthetic.
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from types import SimpleNamespace
@@ -16,7 +17,6 @@ import asyncpg
 import pytest
 
 import butlers.jobs._roster.finance_jobs as finance_jobs
-from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 
@@ -159,6 +159,21 @@ async def _entity(conn: asyncpg.Connection, name: str, posture: str) -> uuid.UUI
     return entity_id
 
 
+async def _tolerant_jsonb_codec(conn: asyncpg.Connection) -> None:
+    """Accept both Python objects (owner-condition insert) and pre-encoded JSON text.
+
+    ``cost_claims.record_resolution`` hands asyncpg a ``json.dumps`` string, which the shared
+    binary codec would encode a second time and trip ``match_refs`` being an array.
+    """
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=lambda value: value if isinstance(value, str) else json.dumps(value),
+        decoder=json.loads,
+        schema="pg_catalog",
+        format="text",
+    )
+
+
 async def _update_claim(db_url: str, sql: str, *args: object) -> None:
     """Run an UPDATE on cost_claims as the asserting role; row-level security hides it otherwise."""
     conn = await asyncpg.connect(db_url)
@@ -235,7 +250,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_an_amended_claim_between_sweeps_is_not_asked_again(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=register_jsonb_codec)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_tolerant_jsonb_codec)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
@@ -269,7 +284,7 @@ class TestMemorialClaimReadAndSweep:
 
     async def test_the_sweep_asks_once_leaves_the_claim_alone_and_resolves_on_active(self, db_url):
         admin = await asyncpg.connect(db_url)
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=register_jsonb_codec)
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2, init=_tolerant_jsonb_codec)
         try:
             await admin.execute(
                 "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
