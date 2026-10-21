@@ -1,7 +1,7 @@
-"""Integration tests for Lifestyle as the sole butler with the Steam module.
+"""Integration tests for the Steam module wired into the Lifestyle and General butlers.
 
 Covers bu-s2fo.7 acceptance criteria:
-1. Lifestyle declares [modules.steam]; General does not (owner decision bu-ys9hdx.7)
+1. roster/lifestyle/butler.toml and roster/general/butler.toml declare [modules.steam]
 2. SteamModule loads and registers all 9 tools (module loads without error)
 3. Module in degraded mode (no Steam account) returns actionable errors on private tools
 4. Public tools (game_news, current_players) work without auth via mocked Steam API
@@ -108,13 +108,15 @@ def _make_mock_steam_client(
 
 # ===========================================================================
 # Test Category 1: butler.toml Config Validation
-# Verify Lifestyle owns Steam and General retains its ordinary module profile.
+# Verify both butler.toml files declare [modules.steam].
+# Superseded for General by bu-ys9hdx.7: Lifestyle is the sole Steam butler, so the General
+# tests below assert exclusion instead.
 # ===========================================================================
 
 
 @pytest.mark.unit
 class TestButlerTomlSteamConfig:
-    """Lifestyle owns Steam; General neither configures nor loads it."""
+    """AC1: butler.toml files for lifestyle and general declare [modules.steam]."""
 
     def test_lifestyle_butler_toml_has_steam_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.steam]."""
