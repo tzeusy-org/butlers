@@ -2,8 +2,10 @@ import MeasurementChart from "@/components/health/MeasurementChart";
 import MeasurementTracker from "@/components/health/MeasurementTracker";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { useExpectedSignals } from "@/hooks/use-health";
 
 export default function MeasurementsPage() {
+  const expectedSignals = useExpectedSignals();
   return (
     <div className="max-w-5xl space-y-8">
       {/* Header — Display-500 headline, no card chrome */}
@@ -18,7 +20,7 @@ export default function MeasurementsPage() {
 
       {/* Trend + chart — the leading surface */}
       <section className="space-y-3" aria-label="Trends">
-        <MeasurementChart />
+        <MeasurementChart expectedSignals={expectedSignals} />
       </section>
 
       {/* Reading log — direct add/edit/delete */}
