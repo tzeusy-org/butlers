@@ -104,6 +104,7 @@ import type {
   NotificationStats,
   NotificationStatsParams,
   NotificationSummary,
+  MemoryPaginatedResponse,
   PaginatedResponse,
   Schedule,
   ScheduleCreate,
@@ -2698,9 +2699,9 @@ export function getMemoryStats(): Promise<MemoryStatsResponse> {
 /** Fetch a paginated list of episodes. */
 export function getEpisodes(
   params?: EpisodeParams,
-): Promise<PaginatedResponse<Episode>> {
+): Promise<MemoryPaginatedResponse<Episode>> {
   const qs = episodeSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Episode>>(
+  return apiFetch<MemoryPaginatedResponse<Episode>>(
     qs ? `/memory/episodes?${qs}` : "/memory/episodes",
   );
 }
@@ -2731,9 +2732,9 @@ export function retryEpisodeConsolidation(
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
-): Promise<PaginatedResponse<Fact>> {
+): Promise<MemoryPaginatedResponse<Fact>> {
   const qs = factSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Fact>>(
+  return apiFetch<MemoryPaginatedResponse<Fact>>(
     qs ? `/memory/facts?${qs}` : "/memory/facts",
   );
 }
@@ -2819,9 +2820,9 @@ export function getLifestyleTasteVerdicts(
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,
-): Promise<PaginatedResponse<MemoryRule>> {
+): Promise<MemoryPaginatedResponse<MemoryRule>> {
   const qs = ruleSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<MemoryRule>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryRule>>(
     qs ? `/memory/rules?${qs}` : "/memory/rules",
   );
 }
@@ -2907,14 +2908,14 @@ export function runReembed(
 /** Search memory (inspect). */
 export function inspectMemory(
   params?: MemoryInspectParams,
-): Promise<PaginatedResponse<MemoryInspectResult>> {
+): Promise<MemoryPaginatedResponse<MemoryInspectResult>> {
   const sp = new URLSearchParams();
   if (params?.q) sp.set("q", params.q);
   if (params?.kind) sp.set("kind", params.kind);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<MemoryInspectResult>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryInspectResult>>(
     qs ? `/memory/inspect?${qs}` : "/memory/inspect",
   );
 }

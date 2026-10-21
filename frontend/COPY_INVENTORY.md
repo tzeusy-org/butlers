@@ -3554,6 +3554,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - open ↗
 - Retry failed. Still dead-lettered.
+- Episodes
 - the daybook
 - dead letter
 
@@ -3563,6 +3564,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Fact: {} {}
 - from episode {}
 - Source {}
+- Facts
 - the ledger
 
 ## `frontend/src/components/memory/HousekeepingBand.tsx`
@@ -3630,12 +3632,16 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Guidance waiting for you
 - Show all guidance
 - Rule: {}
+- Rules
 - standing orders
 
 ## `frontend/src/components/memory/SearchResults.tsx`
 
+- Searching the books…
+- Nothing on this page.
 - Nothing in the books.
 - search results
+- Search results
 
 ## `frontend/src/components/notifications/notification-feed.tsx`
 
@@ -4957,4 +4963,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3947*
+*Total strings: 3953*

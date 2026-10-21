@@ -206,6 +206,45 @@ Switchboard.
 - **AND** `idempotency_key` follows
   `activitywatch:<machine_id>:<bucket_id>:<ts_iso>`
 
+### Requirement: Evidence retention purge
+
+While the connector has a database pool it SHALL run a background purge that deletes rows of
+`connectors.activitywatch_events` whose event timestamp `ts` is older than the retention period,
+every 6 hours, with the first purge one interval after the connector starts. The retention period
+is `ACTIVITYWATCH_RETENTION_DAYS` days, default 14 and minimum 1. The purge SHALL NOT delete
+Chronicler projections. A purge failure SHALL be logged at WARNING and SHALL NOT stop the connector;
+consecutive failures SHALL degrade the connector's reported health until a purge succeeds.
+
+ID: REQ-connector-activitywatch-retention-001
+Source: add-activitywatch-connector task 5.4 (delivered by bu-il04h, PR #3559); [Observed] src/butlers/connectors/activitywatch.py ActivityWatchRetention, ActivityWatchConnector.start phase 7, ActivityWatchConfig.from_env
+Scope: v1-mandatory
+
+#### Scenario: Default retention
+
+- **WHEN** the connector starts with `ACTIVITYWATCH_RETENTION_DAYS` unset or blank
+- **THEN** it purges evidence rows older than 14 days every 6 hours
+
+#### Scenario: Owner override
+
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to an integer of 1 or more
+- **THEN** the purge uses that many days as the cutoff
+
+#### Scenario: Below-minimum value refuses to start
+
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to an integer below 1
+- **THEN** configuration loading raises an error and the connector does not start
+
+#### Scenario: Non-integer value falls back
+
+- **WHEN** `ACTIVITYWATCH_RETENTION_DAYS` is set to a value that is not an integer
+- **THEN** the connector logs a warning and uses the default of 14 days
+
+#### Scenario: Failed purge is non-fatal
+
+- **WHEN** a purge cycle raises a database error
+- **THEN** it is logged at WARNING and the next cycle still runs
+- **AND** the connector reports degraded health until a purge succeeds
+
 ### Requirement: Bounded First-Run Backfill
 
 The very first poll (no checkpoint yet) MUST NOT flood the system with a

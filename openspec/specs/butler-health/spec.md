@@ -622,3 +622,96 @@ clinical classification rule.
 - **WHEN** the migration encounters a Health measurement fact outside the
   condition, symptom, medication, and dose predicate set
 - **THEN** it MUST leave that fact and any catalog entry unchanged
+
+### Requirement: Pre-Appointment Visit Brief
+
+The Health butler SHALL run a deterministic scheduled job (`health_visit_brief`, no model) that,
+once a day, briefs the owner before each appointment Health booked. Health has no calendar of its
+own: its butler-specific source is the one Butlers calendar every calendar butler shares. An
+appointment is therefore identified by Health's own record of the booking, an applied
+`workspace_user_create` row in `calendar_action_log` whose `origin_ref` is the provider event id,
+and not by the event title, so a renamed booking is still briefed. It is a timed, non-cancelled,
+non-all-day event on the butler-specific source whose butler name is `health` that the owner has
+not declined; a recurring series contributes its instances. An appointment is briefed once, when it
+starts within the next two days. Events on any other calendar source (primary, shared or
+subscribed), other butlers' bookings, Health's own scheduled-task and reminder mirror events, and
+events the owner added themselves SHALL trigger nothing (owner tags are a later slice).
+
+The brief SHALL be one plain-text message sent only to the owner through the owner notify boundary
+(the owner's resolved chat, never an address taken from event text). The job SHALL emit no
+communicate effect and SHALL NOT send anything to the clinic or any other party. Event text SHALL be
+used only as the appointment title shown to the owner, without the `BUTLER:` prefix or any URL, and
+SHALL NOT be interpreted as an instruction. The brief SHALL NOT diagnose: it states what the owner recorded and
+ends with a line saying it is a record, not medical advice.
+
+The brief SHALL cover the period from the end of the previous Health-booked visit to now,
+and when there is no earlier visit SHALL cover the last 90 days and say so. It SHALL contain
+symptoms by name, severity and frequency; adherence per active medication with missed doses, using
+the same missed-dose definition as the daily briefing (owner-local time, as-needed medications
+without scheduled doses); weight, blood pressure and resting heart rate against the owner's own
+usual range, rendered as the range the verdict itself uses (for example `usual range 69.0 to 71.6 kg`), stating when there is not enough history for a baseline; and conditions whose record
+changed in the period. Every figure SHALL be traceable: the brief's stored digest records the fact
+ids behind each figure. A feed with no reading in the period SHALL read "no data since <date>"
+(or "no data recorded"), never zero.
+
+Each brief SHALL be recorded in `health.visit_briefs` keyed by the calendar event id. A delivered
+brief SHALL NOT be sent again; a rescheduled event SHALL re-anchor its existing record to the new
+start without a second send; a suppressed or failed delivery SHALL leave the record undelivered so
+a later run retries while the appointment is still within two days. Overlapping runs SHALL be
+serialized by a run-scoped advisory lock held for the whole run, and a run that cannot take it
+SHALL send nothing and report `skipped_concurrent`. The owner timezone for local
+days SHALL be read from `public.state` (`settings.general`) with SGT as the fallback.
+
+#### Scenario: Brief covers the days since the previous visit
+
+- **WHEN** an appointment starts within two days and an earlier visit ended 10 days ago
+- **THEN** the owner receives one brief covering the period since that visit ended
+- **AND** each symptom, medication, measurement and condition figure lists the fact ids it rests on
+
+#### Scenario: No earlier visit falls back to 90 days
+
+- **WHEN** an appointment starts within two days and Health has no earlier booked visit
+- **THEN** the brief covers the last 90 days and states that no earlier visit was found
+
+#### Scenario: Stale feed is not zero
+
+- **WHEN** blood pressure has no reading in the period but an older reading exists
+- **THEN** the brief reads "no data since <date of the older reading>"
+- **AND** it does not report a zero or an empty value
+
+#### Scenario: Owner only
+
+- **WHEN** a brief is delivered
+- **THEN** the notify recipient is the owner's resolved chat
+- **AND** no communicate effect and no message to any other party is emitted
+
+#### Scenario: Briefed once, re-anchored on reschedule
+
+- **WHEN** the job runs again for an already-briefed appointment, or the appointment is rescheduled
+- **THEN** nothing is sent
+- **AND** a reschedule updates the recorded start of the existing record
+
+#### Scenario: Failed delivery is retried
+
+- **WHEN** delivery is suppressed or fails
+- **THEN** the record stays undelivered and the next run retries the same appointment
+
+#### Scenario: Other events trigger nothing
+
+- **WHEN** an event is on a primary, shared, subscribed or butler-lane calendar source, was booked
+  by another butler, is one of Health's own scheduled-task or reminder mirror events (even with a
+  `BUTLER:` title), was added by the owner, is all-day, is cancelled, is declined by the owner, or
+  starts more than two days away
+- **THEN** no brief is composed or sent
+
+#### Scenario: Only Health bookings are briefed
+
+- **WHEN** an appointment has an applied Health `workspace_user_create` record, whatever its current title
+- **THEN** the owner receives a brief for it
+- **AND** another butler's `BUTLER:` booking on the shared calendar is neither briefed nor chosen as the previous visit
+
+#### Scenario: Overlapping runs send once
+
+- **WHEN** two runs overlap, such as the scheduler tick and the dashboard Trigger button
+- **THEN** exactly one delivery is made
+- **AND** the other run reports `skipped_concurrent`
