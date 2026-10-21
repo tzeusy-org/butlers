@@ -845,8 +845,13 @@ async def _assert_no_raw_destination(pool, raw_values) -> None:
         needles.add(raw.lower())
         needles.add("".join(ch for ch in raw if ch.isalnum() or ch in "$@").lower())
     scanned = 0
-    for table in ("bills", "payment_destinations", "public.facts"):
-        rows = await pool.fetch(f"SELECT row_to_json(t)::text AS doc FROM {table} t")
+    scans = {
+        "bills": "SELECT row_to_json(t)::text AS doc FROM bills t",
+        "payment_destinations": "SELECT row_to_json(t)::text AS doc FROM payment_destinations t",
+        "public.facts": "SELECT row_to_json(t)::text AS doc FROM public.facts t",
+    }
+    for table, query in scans.items():
+        rows = await pool.fetch(query)
         for row in rows:
             scanned += 1
             doc = row["doc"].lower()
