@@ -1102,3 +1102,18 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
     finally:
         await own.close()
         await peer.close()
+
+
+async def test_empty_string_inverse_of_is_treated_as_no_inverse(pool_factory, session_hook):
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    forward = f"kg_narrative_{uuid.uuid4().hex}"
+    await pool.execute(
+        "INSERT INTO predicate_registry"
+        " (name, is_edge, is_temporal, inverse_of, is_symmetric, status)"
+        " VALUES ($1, true, false, '', false, 'active')",
+        forward,
+    )
+    await _internal_edge(pool, left, right, forward, sender=owner)
+    assert await pool.fetchval("SELECT count(*) FROM facts WHERE predicate = ''") == 0

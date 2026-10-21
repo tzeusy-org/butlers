@@ -1805,7 +1805,7 @@ async def store_fact(
                 if _registry_row.get("is_symmetric"):
                     _inverse_predicate = predicate
                 else:
-                    _inverse_predicate = _registry_row.get("inverse_of")
+                    _inverse_predicate = _registry_row.get("inverse_of") or None
                 if _inverse_predicate is not None:
                     _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
                         conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
