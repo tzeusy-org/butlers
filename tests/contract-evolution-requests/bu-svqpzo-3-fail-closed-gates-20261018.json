@@ -1,0 +1,22 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-svqpzo-3-fail-closed-gates-20261018",
+  "owners": [
+    "tests/core/test_model_routing_quota.py::test_check_monthly_ceiling_unit_behaviors",
+    "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source",
+    "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling",
+    "tests/core/test_model_routing_quota.py::test_price_mtd_from_ledger_raises_rather_than_fails_open",
+    "tests/core/test_model_routing_quota.py::test_quota_no_limits_row_fast_path",
+    "tests/core/test_model_routing_quota.py::test_quota_reset_and_window_exclusion",
+    "tests/core/test_model_routing_quota.py::test_quota_unit_behaviors",
+    "tests/core/test_model_routing_quota.py::test_quota_within_limits_and_exceeded",
+    "tests/core/test_model_routing_quota.py::test_record_token_usage_and_reflected_in_quota",
+    "tests/core/test_permissions_enforcer.py::test_effect_permission_policy_is_transient_and_rechecks",
+    "tests/core/test_permissions_enforcer.py::test_granted_row_allows",
+    "tests/core/test_permissions_enforcer.py::test_no_row_is_default_allow",
+    "tests/core/test_permissions_enforcer.py::test_require_permission_passes_on_grant",
+    "tests/core/test_permissions_enforcer.py::test_require_permission_raises_on_deny",
+    "tests/core/test_permissions_enforcer.py::test_revoked_row_denies"
+  ],
+  "timeout_s": 300
+}
