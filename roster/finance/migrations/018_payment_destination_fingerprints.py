@@ -1,7 +1,7 @@
 """payment_destination_fingerprints
 
-Revision ID: finance_017
-Revises: finance_016
+Revision ID: finance_018
+Revises: finance_017
 Create Date: 2026-10-18 00:00:00.000000
 
 bu-s11n0s.21 (slice S1 of bu-s11n0s.9, payment-redirect guard). Finance
@@ -17,8 +17,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "finance_017"
-down_revision = "finance_016"
+revision = "finance_018"
+down_revision = "finance_017"
 branch_labels = None
 depends_on = None
 
