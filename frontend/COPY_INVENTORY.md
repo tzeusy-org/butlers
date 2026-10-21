@@ -3538,6 +3538,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - PROVENANCE
 - METADATA
 
+## `frontend/src/components/memory/EpisodeRecoveryControls.tsx`
+
+- Promise
+- Queues one episode for a future scheduled write-up. Nothing runs now.
+
 ## `frontend/src/components/memory/EpisodesRegister.tsx`
 
 - open ↗
@@ -4929,4 +4934,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3928*
+*Total strings: 3930*

@@ -49,10 +49,10 @@
 
 ## 3. Truthful and accessible dashboard surfaces
 
-- [ ] 3.1 Update EpisodeDetailPage, FactDetailPage, and RuleDetailPage so only
+- [x] 3.1 Update EpisodeDetailPage, FactDetailPage, and RuleDetailPage so only
   true 404s render not-found copy; render named 503 and other query failures as
   visible retryable errors, with focused regression coverage.
-- [ ] 3.2 Add the episode lifecycle dossier and owner/dead-letter-only requeue
+- [x] 3.2 Add the episode lifecycle dossier and owner/dead-letter-only requeue
   control, including queued-not-running, conflict, and failure landing states;
   test keyboard operation, visible focus, disabled-in-flight behavior, and live
   announcements.

@@ -262,6 +262,12 @@ lint-decision-beads:
 lint-decision-beads-strict:
 	python3 scripts/lint_decision_beads.py --check-unlabeled-markers
 
+# Backlog graph hygiene (bu-1mbyoa.1): read-only, manual/local only.
+# Needs the local Dolt server; never part of `check` or CI.
+.PHONY: lint-backlog-graph
+lint-backlog-graph:
+	python3 scripts/lint_backlog_graph.py
+
 # Version management — single source of truth is pyproject.toml
 # Usage: make bump-version VERSION=1.2.3
 # Increments the patch segment if VERSION is not specified:
