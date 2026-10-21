@@ -36,7 +36,10 @@ import type { ConversationSummary } from "@/api/types.ts";
 import { ApiError } from "@/api/index.ts";
 import { ConversationHeader } from "@/components/chat/ConversationHeader.tsx";
 import { ConversationReadError } from "@/components/chat/ConversationReadError.tsx";
-import { MessageThread, MessageThreadSkeleton } from "@/components/chat/MessageThread.tsx";
+import {
+  MessageThread,
+  MessageThreadSkeleton,
+} from "@/components/chat/MessageThread.tsx";
 import { MessageInput } from "@/components/chat/MessageInput.tsx";
 import { SendErrorBanner } from "@/components/chat/send-error.tsx";
 import { WIDGET_BUTLER } from "@/components/chat/chat-constants.ts";
@@ -50,12 +53,16 @@ import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 
 export default function ChatPage() {
-  const { conversationId: routeConversationId } = useParams<{ conversationId?: string }>();
+  const { conversationId: routeConversationId } = useParams<{
+    conversationId?: string;
+  }>();
   const navigate = useNavigate();
   const location = useLocation();
   const routeId = routeConversationId ?? null;
 
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(routeId);
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(routeId);
 
   // A route param change while ChatPage stays mounted (sidebar click, cmdk
   // recall, copy-link navigation) must resync local turn state.
@@ -68,6 +75,7 @@ export default function ChatPage() {
     isLoading: isLoadingDetail,
     isError: isDetailError,
     error: detailError,
+    refetch: refetchDetail,
   } = useConversationById(routeId);
 
   const notFound =
@@ -79,7 +87,26 @@ export default function ChatPage() {
   // WIDGET_BUTLER for a not-yet-created conversation (bare /chat); otherwise
   // whichever butler the cross-butler lookup resolved — any butler's
   // conversation can be deep-linked here, unlike the dock/popover.
-  const butlerName = routeId != null ? (conversationDetail?.butler_name ?? null) : WIDGET_BUTLER;
+  // Send authority (bu-p5umi2.1): an existing conversation's owner is known only once the
+  // lookup has resolved FOR THIS route. A result for another id never counts, and local
+  // turn state must have caught up with the route before anything is fetched or sent.
+  const ownerResolved =
+    routeId == null ||
+    (conversationDetail != null && conversationDetail.id === routeId);
+  const butlerName =
+    routeId == null
+      ? WIDGET_BUTLER
+      : ownerResolved
+        ? (conversationDetail?.butler_name ?? null)
+        : null;
+  const routeSynced = routeId == null || activeConversationId === routeId;
+  const sendReady = ownerResolved && routeSynced;
+  const ownerLookupFailed =
+    routeId != null && isDetailError && !notFound && !ownerResolved;
+  const ownerStale =
+    routeId != null && isDetailError && !notFound && ownerResolved;
+  const gatedConversationId =
+    routeId != null && !sendReady ? null : activeConversationId;
 
   const [inputValue, setInputValue] = useState("");
   const { data: pricingMapData } = usePricingMap();
@@ -98,7 +125,7 @@ export default function ChatPage() {
     isLoading: isLoadingMessages,
     isError: isMessagesError,
     refetch: refetchMessages,
-  } = useConversationMessages(butlerName ?? "", activeConversationId);
+  } = useConversationMessages(butlerName ?? "", gatedConversationId);
 
   const {
     streaming,
@@ -143,7 +170,7 @@ export default function ChatPage() {
 
   function handleSend() {
     const text = inputValue.trim();
-    if (!text) return;
+    if (!text || !sendReady) return;
     setInputValue("");
     void sendText(text);
   }
@@ -161,10 +188,15 @@ export default function ChatPage() {
   }
 
   const activeConversation =
-    conversationDetail ?? recentConversations.find((c) => c.id === activeConversationId) ?? null;
+    conversationDetail ??
+    recentConversations.find((c) => c.id === activeConversationId) ??
+    null;
 
   const visibleDispatchReceipt =
-    streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
+    streaming &&
+    !streaming.cancelling &&
+    !streaming.cancelled &&
+    !streaming.interrupted
       ? streaming.dispatchReceipt
       : undefined;
 
@@ -240,7 +272,7 @@ export default function ChatPage() {
           routedButler={visibleDispatchReceipt?.routedButler}
         />
 
-        {(isLoadingDetail || (isLoadingMessages && !!activeConversationId)) &&
+        {(isLoadingDetail || (isLoadingMessages && !!gatedConversationId)) &&
         visibleMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
@@ -249,7 +281,27 @@ export default function ChatPage() {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
-            suppressEmptyState={isMessagesError}
+            suppressEmptyState={isMessagesError || ownerLookupFailed}
+          />
+        )}
+
+        {ownerLookupFailed && (
+          <SourceDegradedNote
+            className="mx-3 mb-2"
+            label="Conversation owner"
+            detail="could not be resolved, so history and sending are unavailable"
+            onRetry={() => void refetchDetail()}
+            testId="chat-page-owner-unresolved"
+          />
+        )}
+
+        {ownerStale && (
+          <SourceDegradedNote
+            className="mx-3 mb-2"
+            label="Conversation owner"
+            detail="could not be refreshed; showing the last known owner"
+            onRetry={() => void refetchDetail()}
+            testId="chat-page-owner-stale"
           />
         )}
 
@@ -263,7 +315,9 @@ export default function ChatPage() {
         {sendError && (
           <SendErrorBanner
             error={sendError}
-            onRetry={(error) => void sendText(error.failedText, error.messageId)}
+            onRetry={(error) => {
+              if (sendReady) void sendText(error.failedText, error.messageId);
+            }}
             onCheckAgain={handleCheckAgain}
             onDismiss={() => setSendError(null)}
           />
@@ -285,7 +339,7 @@ export default function ChatPage() {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={isLoadingDetail}
+          disabled={!sendReady}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,
