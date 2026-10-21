@@ -222,6 +222,7 @@ import type {
   ContactSearchResponse,
   ModelCatalogEntry,
   ModelDeleteImpact,
+  AllowanceObservation,
   ModelAttentionObservation,
   ModelAttentionReissueResult,
   FleetHaltAttentionObservation,
@@ -5202,6 +5203,10 @@ export function testModelCatalogEntry(
 
 export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservation>> {
   return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
+}
+
+export function getModelAllowance(): Promise<ApiResponse<AllowanceObservation>> {
+  return apiFetch<ApiResponse<AllowanceObservation>>("/settings/models/allowance");
 }
 
 export function reissueModelAttention(
