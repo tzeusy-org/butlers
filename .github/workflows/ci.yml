@@ -684,6 +684,7 @@ jobs:
             --input "${RUNNER_TEMP}/ci-artifacts/smoke/raw-junit.xml" \
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/smoke/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/smoke/top-durations.txt" \
+            --failed-nodes-output "${RUNNER_TEMP}/ci-artifacts/smoke/failed-nodes.txt" \
             --limit 25
 
       - name: Upload smoke release evidence
@@ -704,6 +705,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/smoke/junit.xml
             ${{ runner.temp }}/ci-artifacts/smoke/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/smoke/failed-nodes.txt
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -802,6 +804,7 @@ jobs:
             --input "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/raw-junit.xml" \
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt" \
+            --failed-nodes-output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/failed-nodes.txt" \
             --limit 25
 
       - name: Upload unit shard ${{ matrix.shard }} test evidence
@@ -812,6 +815,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/failed-nodes.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/runner-observation.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/condensation-refusal-*.json
@@ -946,6 +950,7 @@ jobs:
             --input "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/raw-junit.xml" \
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/top-durations.txt" \
+            --failed-nodes-output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/failed-nodes.txt" \
             --limit 25
 
       - name: Upload integration shard ${{ matrix.shard }} test evidence
@@ -956,6 +961,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/failed-nodes.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/runner-observation.json
           retention-days: 14
@@ -1031,6 +1037,7 @@ jobs:
             --input "${RUNNER_TEMP}/ci-artifacts/affected/raw-junit.xml" \
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/affected/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/affected/top-durations.txt" \
+            --failed-nodes-output "${RUNNER_TEMP}/ci-artifacts/affected/failed-nodes.txt" \
             --limit 25
 
       - name: Upload affected-test evidence
@@ -1041,6 +1048,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/affected/junit.xml
             ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/affected/failed-nodes.txt
             ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json

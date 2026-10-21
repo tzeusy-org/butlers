@@ -5,6 +5,14 @@ The raw JUnit report can include assertion text and captured output. CI retains
 only a normalized report with test identifiers, outcomes, and durations, plus
 a short list of the slowest tests. That is enough to target future suite work
 without making test payloads durable artifacts.
+
+With ``--failed-nodes-output`` the script also writes the sorted pytest node ids
+of failing and erroring tests, one per line, so a red run can be reproduced
+without opening job logs. The file holds node ids only, with the parametrize
+suffix stripped and the result deduplicated (``path::Class::test_func``, the
+same privacy rule as the sanitized JUnit: raw parameter strings are never
+published), and never assertion text or captured output. It is empty when
+nothing failed.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ class _Testcase:
     name: str
     duration_s: float
     outcome: str
+    node_id: str = ""
 
     @property
     def label(self) -> str:
@@ -34,6 +43,26 @@ def _redact_parameter_values(value: str) -> str:
     if "[" not in value:
         return value
     return f"{value.split('[', maxsplit=1)[0]}[...]"
+
+
+def _node_id(classname: str, name: str) -> str:
+    """Rebuild a rerunnable ``path::Class::name`` from a JUnit dotted classname.
+
+    Leading lowercase segments are the module path; segments from the first
+    capitalised one on are classes. A collection failure has an empty classname
+    and the dotted module path as its name (its node id is the bare file), so it
+    is turned back into ``path/to/module.py``. Any other unnamed case yields the
+    bare name.
+    """
+    if not classname and "." in name and "::" not in name and "[" not in name:
+        return f"{name.replace('.', '/')}.py"
+    parts = [part for part in classname.split(".") if part]
+    split = next((i for i, part in enumerate(parts) if part[0].isupper()), len(parts))
+    module = "/".join(parts[:split])
+    segments = [f"{module}.py"] if module else []
+    segments.extend(parts[split:])
+    segments.append(name)
+    return "::".join(segments)
 
 
 def _duration(value: str | None) -> float:
@@ -68,6 +97,7 @@ def _parse_testcases(raw_report: Path) -> tuple[list[_Testcase], str | None]:
             name=_redact_parameter_values(testcase.get("name", "unknown")),
             duration_s=_duration(testcase.get("time")),
             outcome=_outcome(testcase),
+            node_id=_node_id(testcase.get("classname", ""), testcase.get("name", "unknown")),
         )
         for testcase in root.findall(".//testcase")
     ]
@@ -127,13 +157,37 @@ def _write_duration_report(cases: list[_Testcase], *, output_path: Path, limit: 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_failed_nodes(cases: list[_Testcase], *, output_path: Path) -> None:
+    """Sorted, unique, parameter-free node ids of failing or erroring tests.
+
+    The parametrize suffix is stripped (several failing parameters of one test collapse to
+    one line) so no raw parameter string becomes durable evidence; empty when all passed.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    failed = sorted(
+        {
+            case.node_id.split("[", maxsplit=1)[0]
+            for case in cases
+            if case.outcome in {"failure", "error"}
+        }
+    )
+    output_path.write_text("".join(f"{node}\n" for node in failed), encoding="utf-8")
+
+
 def sanitize_junit_report(
-    *, raw_report: Path, sanitized_report: Path, duration_report: Path, limit: int
+    *,
+    raw_report: Path,
+    sanitized_report: Path,
+    duration_report: Path,
+    limit: int,
+    failed_nodes_report: Path | None = None,
 ) -> None:
     """Produce durable timing evidence without raw failure or stdout payloads."""
     cases, error_type = _parse_testcases(raw_report)
     _write_sanitized_junit(cases, error_type=error_type, output_path=sanitized_report)
     _write_duration_report(cases, output_path=duration_report, limit=limit)
+    if failed_nodes_report is not None:
+        _write_failed_nodes(cases, output_path=failed_nodes_report)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -151,6 +205,12 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Output path for the slowest-test duration table",
     )
+    parser.add_argument(
+        "--failed-nodes-output",
+        type=Path,
+        default=None,
+        help="Optional output path for the sorted failing/erroring pytest node ids",
+    )
     parser.add_argument("--limit", type=int, default=25, help="Number of slowest tests to retain")
     args = parser.parse_args()
     if args.limit < 1:
@@ -165,6 +225,7 @@ def main() -> None:
         sanitized_report=args.sanitized_junit,
         duration_report=args.durations_output,
         limit=args.limit,
+        failed_nodes_report=args.failed_nodes_output,
     )
 
 
