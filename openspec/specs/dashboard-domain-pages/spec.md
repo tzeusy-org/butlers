@@ -194,6 +194,16 @@ The page MUST contain:
 - **THEN** the row MUST expand in place to show the full content
 - **AND** clicking it again MUST collapse it
 
+#### Scenario: Blank research titles keep readable names without changing note identity
+
+- **WHEN** a research note has an empty or whitespace-only title
+- **THEN** its topic SHALL display `Untitled note`, and its expand, edit, delete, and confirmation
+  controls SHALL retain readable names
+- **AND** the presentation fallback SHALL NOT replace the original title or note identity passed
+  to editing and deletion; existing form validation and mutation payload semantics remain unchanged
+- **WHEN** a research title is nonblank
+- **THEN** its existing title presentation SHALL be preserved
+
 ---
 
 ### Requirement: Health data hooks with auto-refresh
