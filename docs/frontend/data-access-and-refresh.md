@@ -83,6 +83,14 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
 
 ## Implementation Notes
 
+- `EventBusProvider` supplies the snapshot cache policy to `useEventStream`: the existing
+  event registry plans the same targeted filters, and `applyFleetEventBatch` unions filters
+  only when their refetch policies match. Ingestion retains `cancelRefetch: false`; activity
+  streams and histograms remain covered. Live messages still use `applyFleetEvent`, with a
+  250ms fixed window for ingestion. Snapshot callbacks keep replay order and metadata, and
+  reentrant live frames wait until the entire replay completes. Invalid entries are isolated;
+  malformed outer envelopes cannot establish healthy freshness. Disconnect, replacement and
+  unmount discard pending work from the old socket.
 - Standing-condition QA suppression counts use the existing dispatch-events endpoint with
   `decision=infra_condition_open` and each distinct infrastructure `fingerprint`. The hook reads
   the filtered `meta.total` while requesting one event, so older matches and totals above a
