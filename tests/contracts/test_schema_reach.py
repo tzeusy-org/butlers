@@ -399,6 +399,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{tbl}>",
     ): "dynamic-local: local migration table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/relationship/tests/test_interaction_sync_automated.py",
+        "switchboard.message_inbox",
+    ): "burn-down: test fixture seeds switchboard.message_inbox directly; route through owning service or make local schema authority explicit",
+    (
         "roster/relationship/tests/test_jobs.py",
         "<dynamic:{schema}.calendar_events>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
@@ -506,6 +510,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/api/routers/data_ops.py",
         "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
+    (
+        "src/butlers/api/routers/data_ops.py",
+        "<dynamic:{rel}>",
+    ): "dynamic-review: closed memory-relation export template; per-butler pool, never a shared schema",
+    (
+        "src/butlers/api/routers/data_ops.py",
+        "<dynamic:{source}>",
+    ): "dynamic-review: closed memory-relation export source expanded per butler on its own pool",
     (
         "src/butlers/api/routers/identity.py",
         "relationship.entity_facts",
