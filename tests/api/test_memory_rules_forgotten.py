@@ -237,6 +237,27 @@ async def test_inspect_rule_search_excludes_forgotten(provisioned_postgres_pool)
         assert ids == {str(live_id)}
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_inspect_rule_total_counts_exactly_the_rows_it_returns(
+    provisioned_postgres_pool,
+) -> None:
+    """meta.total comes from a count(*) under the row filter, so a forgotten rule
+    is neither returned nor counted (bu-kqnum.14.5)."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_RULES_SCHEMA_SQL)
+
+        await _insert_rule(pool, content="visible rule", maturity="proven")
+        await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
+
+        db = _SinglePoolDB("memory", pool)
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == len(body["data"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # bu-rjdihn — retired rules (retired_at, bu-6t8ix.3) are annotated, not
 # hidden, in list/inspect, and excluded from active-rule counts in stats.

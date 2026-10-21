@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3209,3 +3210,98 @@ async def test_gaps_reject_a_malformed_cursor(app, monkeypatch):
     _wire_gaps(app, monkeypatch, {"atlas": [], "memory": [], "broken": []})
 
     assert (await _get_gaps(app, cursor="not-a-cursor")).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Exact totals: episode/fact/rule registers and inspect (bu-kqnum.14.5)
+# ---------------------------------------------------------------------------
+
+_RELATION_RE = re.compile(r"FROM\s+(?:\w+\.)?(episodes|facts|rules)\b")
+
+
+def _where_tail(query: str) -> str:
+    """The filter text between WHERE and the ordering/limit clause ('' if none)."""
+    m = re.search(r"WHERE (.*?)(?: ORDER BY| LIMIT|$)", query, re.S)
+    return m.group(1) if m else ""
+
+
+class _CountingPool:
+    """Answers count(*) and row queries from one row list per relation.
+
+    Records both so a test can compare the count filter with the row filter.
+    """
+
+    def __init__(self, **rows: list[dict]) -> None:
+        self._rows = {rel: [_make_record(r) for r in rs] for rel, rs in rows.items()}
+        self.count_calls: list[tuple[str, tuple]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
+
+    def _for(self, query: str) -> list[_Record]:
+        m = _RELATION_RE.search(query)
+        return self._rows.get(m.group(1) if m else "", [])
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        self.count_calls.append((query, args))
+        return len(self._for(query))
+
+    async def fetch(self, query: str, *args: object) -> list[_Record]:
+        self.fetch_calls.append((query, args))
+        return self._for(query)[: int(args[-1])]
+
+
+_REGISTER_CASES = [
+    ("/api/memory/episodes", {}, "episodes", lambda: _make_episode_row()),
+    ("/api/memory/facts", {}, "facts", lambda: _make_fact_row(fact_id=uuid.uuid4())),
+    ("/api/memory/rules", {}, "rules", lambda: _make_rule_row(rule_id=uuid.uuid4())),
+    ("/api/memory/inspect", {"kind": "episode"}, "episodes", lambda: _make_episode_row()),
+]
+
+
+@pytest.mark.parametrize(("path", "params", "relation", "make_row"), _REGISTER_CASES)
+async def test_memory_lists_report_exact_total_has_more_and_degraded_count(
+    path: str, params: dict, relation: str, make_row, app
+) -> None:
+    """Two healthy pools plus a failed one: total is the exact reachable count, not
+    the page size, has_more follows it, and the failed pool is named."""
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _CountingPool(**{relation: [make_row() for _ in range(3)]}),
+            "health": _CountingPool(**{relation: [make_row() for _ in range(2)]}),
+            "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = (await client.get(path, params={**params, "limit": 2})).json()
+        last = (await client.get(path, params={**params, "offset": 4, "limit": 2})).json()
+
+    assert first["meta"]["total"] == last["meta"]["total"] == 5
+    assert first["meta"]["pools_failed"] == ["finance"]
+    assert (len(first["data"]), first["meta"]["has_more"]) == (2, True)
+    assert (len(last["data"]), last["meta"]["has_more"]) == (1, False)
+
+
+@pytest.mark.parametrize("q", ["dentist", None])
+@pytest.mark.parametrize("kind", ["episode", "fact", "rule"])
+async def test_inspect_count_filters_exactly_like_the_row_query(
+    kind: str, q: str | None, app
+) -> None:
+    """meta.total is only exact while count(*) and the row fetch share one filter."""
+    pool = _CountingPool()
+    app.dependency_overrides[_get_db_manager] = lambda: _MemoryFanOutDB({"atlas": pool})
+    params = {"kind": kind, **({"q": q} if q else {})}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params=params)
+
+    assert resp.status_code == 200
+    (count_query, count_args), (row_query, row_args) = pool.count_calls[0], pool.fetch_calls[0]
+    assert _where_tail(count_query) == _where_tail(row_query)
+    assert count_args == row_args[:-1]
+    # Guard against comparing two empty filters: q, or the rule forgotten clause.
+    assert (q is not None or kind == "rule") == bool(_where_tail(count_query))
