@@ -109,7 +109,7 @@ refuse with exit2. A missing referenced blocker never proves that all blockers a
 | G3 stale-blocked | A blocked bead's recorded blockers are all closed. | Reopen it or add the real blocker. |
 | G4 blocked-without-reason | Unassigned blocked work has no blocks edge or exempt label. | Add a real edge or reopen it. Assigned manual blocks and `pr-review`, `pr-review-task`, `owner-gated`, `external-gate` labels are exempt. |
 | G5 claimable-parent | An open non-epic bead has live children and appears claimable. | Retype the parent to epic. |
-| G6 label-only-owner-gate | Open unassigned `owner-gated` work has no open owner-assigned or `decision`-labelled blocker. | Add the owner decision edge, or decide it and remove the label. |
+| G6 label-only-owner-gate | Open unassigned `owner-gated` work has no unresolved owner-assigned or `decision`-labelled blocker. | Add the owner decision edge, or decide it and remove the label. |
 | G7 stale-claim (warning) | A nonclosed agent claim has neither an update nor a latest heartbeat newer than24h. | The coordinator verifies and releases it. |
 
 Owner assignment recognizes the repository owner handle `tze` or the bead's native `owner`
@@ -118,6 +118,11 @@ identity. Agent claims recognize `coordinator`, `agent`, `worker`, `codex`, `cla
 `updated_at` and the last `[beads-heartbeat]` block's `last_heartbeat_at` in UTC; unknown times
 do not establish a fresh claim. Parent edges use native `parent-child` (or legacy `parent`)
 dependencies and the live-list `parent` projection; ancestor walks tolerate cycles.
+
+G6 recognizes native `open`, `in_progress`, `blocked`, and `deferred` blocker states as
+unresolved. A real owner/decision edge in any of those states still gates dispatch; only the
+dependent must be `open` for G6 to apply. Closed or unrecognized blocker states cannot establish
+an unresolved owner gate, and malformed records still refuse input validation.
 
 Exit0 means clean or G7 warnings only; exit1 means a G1-G6 finding; exit2 means unavailable
 or malformed input. `--report-only` suppresses exit1, never exit2. `--json` emits only findings,

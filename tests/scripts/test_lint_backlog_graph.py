@@ -100,8 +100,20 @@ def test_owner_label_requires_open_decision_or_owner_blocker():
     assert len(findings([task, issue("gate")], "G6")) == 1
     for gate in [issue("gate", labels=["decision"]), issue("gate", assignee="tze")]:
         assert findings([task, gate], "G6") == []
+        for status in ("in_progress", "blocked", "deferred"):
+            gate["status"] = status
+            assert findings([task, gate], "G6") == []
         gate["status"] = "closed"
         assert len(findings([task, gate], "G6")) == 1
+        gate["status"] = "unknown"
+        assert len(findings([task, gate], "G6")) == 1
+        for status in (None, "", []):
+            with pytest.raises(lint.InputUnavailableError):
+                findings([task, {**gate, "status": status}], "G6")
+    assert len(findings([task], "G6")) == 1
+    assert len(findings([{**task, "dependencies": []}], "G6")) == 1
+    for status in ("open", "in_progress", "blocked", "deferred"):
+        assert len(findings([task, issue("gate", status=status)], "G6")) == 1
     assert findings([{**task, "assignee": "tze"}], "G6") == []
     assert findings([{**task, "status": "blocked"}], "G6") == []
 

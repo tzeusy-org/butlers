@@ -232,7 +232,7 @@ def lint_issues(
             )
         has_owner_gate = any(
             b in index
-            and index[b]["status"] == "open"
+            and index[b]["status"] in {"open", "in_progress", "blocked", "deferred"}
             and (_is_owner(index[b]) or "decision" in index[b].get("labels", []))
             for b in blockers
         )
@@ -246,7 +246,7 @@ def lint_issues(
                 issue,
                 "G6",
                 "label-only-owner-gate",
-                "the owner-gated label has no open owner/decision blocker.",
+                "the owner-gated label has no unresolved owner/decision blocker.",
                 "Add the owner decision edge, or decide it and remove the label.",
             )
         if _AGENT_ACTOR.match(issue.get("assignee") or ""):
