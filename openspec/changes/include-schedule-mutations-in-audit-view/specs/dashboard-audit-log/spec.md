@@ -5,6 +5,10 @@
 ### Requirement: Audit Log Read API
 The dashboard SHALL expose paginated read access to the audit log.
 
+ID: REQ-dashboard-audit-log-001
+Source: bu-q7vx1q.57; owner schedule mutations in the privileged audit view
+Scope: v1-mandatory
+
 #### Scenario: List audit entries
 - **WHEN** `GET /api/audit-log?since=&from_date=&to_date=&actor=&action=&key=&result=&kind=&limit=` is called
 - **THEN** the response is `PaginatedResponse[AuditLogEntry]` with rows ordered `ts DESC`
