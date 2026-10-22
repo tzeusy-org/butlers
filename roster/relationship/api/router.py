@@ -1682,6 +1682,8 @@ async def promote_entity(
                         conn=conn,
                     )
                 except ValueError as exc:
+                    if _is_entity_tombstoned(exc):
+                        raise _entity_tombstoned_response(exc) from exc
                     raise HTTPException(
                         status_code=422,
                         detail={"code": "invalid_predicate", "message": str(exc)},
@@ -2244,7 +2246,8 @@ async def dismiss_queue_entity(
 
     # Write the state-marker triple via the central writer.
     try:
-        result = await relationship_assert_fact(
+        result = await _assert_fact_http(
+            relationship_assert_fact,
             pool,
             subject=body.entity_id,
             predicate=_QUEUE_DISMISSED_PREDICATE,
@@ -3068,6 +3071,37 @@ def _duplicate_response(code: str, message: str, existing_id: str | None) -> HTT
     return HTTPException(
         status_code=409,
         detail={"code": code, "message": message, "existing_id": existing_id},
+    )
+
+
+def _is_entity_tombstoned(exc: BaseException) -> bool:
+    return getattr(exc, "code", None) == "entity_tombstoned"
+
+
+async def _assert_fact_http(writer: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run the central writer, mapping its merge-tombstone refusal to a 409."""
+    try:
+        return await writer(*args, **kwargs)
+    except ValueError as exc:
+        if _is_entity_tombstoned(exc):
+            raise _entity_tombstoned_response(exc) from exc
+        raise
+
+
+def _entity_tombstoned_response(exc: Any) -> HTTPException:
+    """Map the writer's merge-tombstone refusal onto a 409 naming the survivor.
+
+    The caller re-resolves to ``survivor_id`` and retries; nothing is redirected.
+    """
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "entity_tombstoned",
+            "message": str(exc),
+            "side": exc.side,
+            "entity_id": str(exc.entity_id),
+            "survivor_id": exc.survivor_id,
+        },
     )
 
 
@@ -4749,7 +4783,8 @@ async def add_entity_contact(
     if await _entity_has_owner_role(pool, entity_id):
         src = "owner-self"
 
-    result = await relationship_assert_fact(
+    result = await _assert_fact_http(
+        relationship_assert_fact,
         pool,
         subject=entity_id,
         predicate=body.predicate,
@@ -5027,7 +5062,8 @@ async def update_entity_contact(
     # via the central writer — retraction is not needed. An ordinary
     # reassertion preserves the occurrence's stored effective packet.
     if new_value == old_value:
-        result = await relationship_assert_fact(
+        result = await _assert_fact_http(
+            relationship_assert_fact,
             pool,
             subject=entity_id,
             predicate=predicate,
@@ -5117,7 +5153,8 @@ async def update_entity_contact(
                 )
 
                 # 3. Assert new row via central writer (pass conn= to avoid nested tx).
-                result = await relationship_assert_fact(
+                result = await _assert_fact_http(
+                    relationship_assert_fact,
                     pool,
                     subject=entity_id,
                     predicate=predicate,
@@ -5216,6 +5253,8 @@ async def set_entity_preferred_channel(
     try:
         result = await assert_prefers_channel(pool, entity_id, body.channel, src="relationship")
     except ValueError as exc:
+        if _is_entity_tombstoned(exc):
+            raise _entity_tombstoned_response(exc) from exc
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_preferred_channel", "message": str(exc)},

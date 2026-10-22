@@ -449,6 +449,17 @@ relationship butler's schema role.
 - The adapter SHALL select `src=contacts-backfill` and a fresh `third_party` FactWriteContext in the registered target, restore the prior context on every exit, and preserve all existing source/subject/owner/candidate/temporal/evidence and approval checks. This is a new bounded server-owned report producer within the existing trusted-runtime premise; generic dispatch, a copied source capability or the unidentified-sender tool SHALL NOT be claimed as existing known-contact authority. Known non-transitory channel reports SHALL remain candidates under REQ-relationship-facts-007; owner-subject reports SHALL retain the central owner gate; genuine approval/adoption SHALL use the existing private bound decision/executor paths rather than this ingress accepting an approval claim. Actual inserted, unchanged, superseded, candidate and pending_approval outcomes SHALL be returned without collapsing candidate/parked work into active success. Duplicate, concurrent, rollback and uncertain delivery SHALL preserve existing idempotency, row-lock order and atomic fact/evidence/coverage effects without any new automatic retry, role/grant change or distributed transaction.
 - The coupled owner-read boundary SHALL use Relationship's ordinary pool and complete eligible-match/ambiguity evaluation for the contacts resolution contract. It SHALL NOT broaden foreign access or make returned identity evidence an authentication or owner-approval exemption. Existing generic identity and temporary-sender operations SHALL keep their present contracts and callers unchanged.
 
+**Merge-tombstone refusal (bu-gm93xc):** the central writer SHALL refuse a fact write whose subject, or whose
+object when `object_kind` is `entity`, is tombstoned by a merge (`public.entities.metadata.merged_into`).
+The check SHALL run after the entity rows are locked and before any fact or evidence row is written,
+so a write that waited on a committing merge sees the tombstone. The refusal SHALL be one typed error
+with code `entity_tombstoned` that names the side (subject or object), the tombstoned entity id and the
+survivor id, so the caller can re-resolve to the survivor and retry. The writer SHALL NOT redirect the
+write to the survivor, and an approved action executed after a merge SHALL be refused the same way and
+surface as a failed execution. Retract, confirm and merge paths are unaffected. A caller that writes
+many facts SHALL treat the refusal as a per-item result and continue; HTTP surfaces SHALL map it to 409
+with the same code.
+
 ID: REQ-relationship-facts-002
 Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
 Scope: v1-mandatory
@@ -661,3 +672,22 @@ Scope: v1-mandatory
 - **WHEN** the contacts resolver receives a unique identity or empty/ambiguous/unavailable result from the owner read
 - **THEN** it SHALL consume only the typed lookup outcome and preserve the existing candidate/liveness rules
 - **AND** returned roles or locators SHALL not grant authentication, owner bypass or trusted reporter authority
+
+#### Scenario: Tombstoned subject is refused
+- **WHEN** a fact is asserted for a subject that a merge tombstoned
+- **THEN** the writer raises `entity_tombstoned` naming the survivor
+- **AND** no fact row and no evidence row is written
+
+#### Scenario: Tombstoned edge object is refused
+- **WHEN** an edge fact names a tombstoned entity as its object
+- **THEN** the writer raises `entity_tombstoned` with the object side and the survivor
+- **AND** no fact row is written
+
+#### Scenario: A write queued behind a committing merge is refused
+- **WHEN** a write waits on the entity lock while `merge_entity_pair` commits
+- **THEN** it is refused with `entity_tombstoned` once the lock is granted
+- **AND** nothing is left active on the tombstoned entity
+
+#### Scenario: Live entities write unchanged
+- **WHEN** the subject and any entity object are not tombstoned
+- **THEN** the write proceeds exactly as before

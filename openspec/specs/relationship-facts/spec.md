@@ -161,6 +161,17 @@ facts without a human approval hop.
 
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
 
+**Merge-tombstone refusal (bu-gm93xc):** the central writer SHALL refuse a fact write whose subject, or whose
+object when `object_kind` is `entity`, is tombstoned by a merge (`public.entities.metadata.merged_into`).
+The check SHALL run after the entity rows are locked and before any fact or evidence row is written,
+so a write that waited on a committing merge sees the tombstone. The refusal SHALL be one typed error
+with code `entity_tombstoned` that names the side (subject or object), the tombstoned entity id and the
+survivor id, so the caller can re-resolve to the survivor and retry. The writer SHALL NOT redirect the
+write to the survivor, and an approved action executed after a merge SHALL be refused the same way and
+surface as a failed execution. Retract, confirm and merge paths are unaffected. A caller that writes
+many facts SHALL treat the refusal as a per-item result and continue; HTTP surfaces SHALL map it to 409
+with the same code.
+
 ID: REQ-relationship-facts-002
 Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
 Scope: v1-mandatory
@@ -169,6 +180,25 @@ Scope: v1-mandatory
 - **WHEN** any butler other than relationship attempts `INSERT INTO relationship.entity_facts`
 - **THEN** PostgreSQL MUST reject the statement on role permissions
 - **AND** the only successful write path MUST be `relationship_assert_fact()` via MCP
+
+#### Scenario: Tombstoned subject is refused
+- **WHEN** a fact is asserted for a subject that a merge tombstoned
+- **THEN** the writer raises `entity_tombstoned` naming the survivor
+- **AND** no fact row and no evidence row is written
+
+#### Scenario: Tombstoned edge object is refused
+- **WHEN** an edge fact names a tombstoned entity as its object
+- **THEN** the writer raises `entity_tombstoned` with the object side and the survivor
+- **AND** no fact row is written
+
+#### Scenario: A write queued behind a committing merge is refused
+- **WHEN** a write waits on the entity lock while `merge_entity_pair` commits
+- **THEN** it is refused with `entity_tombstoned` once the lock is granted
+- **AND** nothing is left active on the tombstoned entity
+
+#### Scenario: Live entities write unchanged
+- **WHEN** the subject and any entity object are not tombstoned
+- **THEN** the write proceeds exactly as before
 
 ### Requirement: Switchboard `resolve_contact_by_channel()` re-points to triples
 
