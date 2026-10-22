@@ -26,7 +26,6 @@ import type {
   CalendarFindTimeConstraints,
   CalendarFindTimePartOfDay,
   CalendarSuggestedSlot,
-  CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceReadResponse,
@@ -55,12 +54,9 @@ import {
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
   useFindCalendarWorkspaceTime,
-  useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
   useUndoCalendarWorkspaceMutation,
-  usePreviewCalendarWorkspaceButlerEvent,
 } from "@/hooks/use-calendar-workspace";
-import { useDebounce } from "@/hooks/use-debounce";
 import {
   Dialog,
   DialogContent,
@@ -131,7 +127,10 @@ import {
 import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarEntryDetailPanel } from "@/pages/calendar/CalendarEntryDetailPanel";
 import { CalendarSearchPalette } from "@/pages/calendar/CalendarSearchPalette";
+import { ButlerEventDialog } from "@/pages/calendar/ButlerEventDialog";
 import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
+import { useButlerEventEditor } from "@/pages/calendar/use-butler-event-editor";
+import { useButlerLaneActions } from "@/pages/calendar/use-butler-lane-actions";
 import { useCalendarSync } from "@/pages/calendar/use-calendar-sync";
 import { useSourceControls } from "@/pages/calendar/use-source-controls";
 import { RecurrenceScopeFieldset } from "@/pages/calendar/RecurrenceScopeFieldset";
@@ -152,19 +151,15 @@ import {
   SOURCE_TYPE_FACET_OPTIONS,
   STATUS_FACET_OPTIONS,
   VIEW_OPTIONS,
-  buildRRule,
   capLaneEntriesByDay,
-  createDefaultButlerDraft,
   formatLaneTitle,
   headlineLabel,
   isCancelledEntry,
   isOverflowSentinel,
   isPausedEntry,
   isRecurringUserEntry,
-  newButlerRequestId,
   occurrenceImpactText,
   parseAnchor,
-  parseLocalDateTimeInput,
   parseRange,
   parseView,
   resolveButlerEventTarget,
@@ -174,12 +169,8 @@ import {
   sourceName,
   titleize,
   truncateCalendarId,
-  type ButlerEventDialogMode,
-  type ButlerEventDraft,
-  type ButlerEventKind,
   type ButlerLaneRows,
   type CalendarRange,
-  type RecurrenceFrequency,
   type RecurrenceScope,
 } from "@/pages/calendar/workspace-model";
 
@@ -815,7 +806,6 @@ export default function CalendarWorkspacePage() {
       !conflictsQuery.isError &&
       conflictsQuery.isFetching);
 
-  const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
   const queryClient = useQueryClient();
 
@@ -968,19 +958,7 @@ export default function CalendarWorkspacePage() {
       draft?: { session: DraftSession; submission: DraftSubmission };
     };
   } | null>(null);
-  const [butlerEventDialogOpen, setButlerEventDialogOpen] = useState(false);
-  const [butlerEventDialogMode, setButlerEventDialogMode] =
-    useState<ButlerEventDialogMode>("create");
-  const [butlerEventDraft, setButlerEventDraft] =
-    useState<ButlerEventDraft | null>(null);
-  const [editingButlerEntry, setEditingButlerEntry] =
-    useState<UnifiedCalendarEntry | null>(null);
-
-  // Live recurrence dry-run preview for the butler-event dialog. Debounced so we
-  // don't fire a request on every keystroke; only runs when a recurrence is set.
-  const recurrencePreview = usePreviewCalendarWorkspaceButlerEvent();
   const initialUserForm = useRef<UserEventFormState | null>(null);
-  const initialButlerForm = useRef<ButlerEventDraft | null>(null);
   const userDraft = useDraft("calendar.user-event", [userEventForm?.sourceKey || "unselected", userEventDialogMode, activeUserEntry?.provider_event_id ?? "new"], {
     sourceKey: userEventForm?.sourceKey ?? "", title: userEventForm?.title ?? "", startAtLocal: userEventForm?.startAtLocal ?? "", endAtLocal: userEventForm?.endAtLocal ?? "",
     timezone: userEventForm?.timezone ?? "", description: userEventForm?.description ?? "", location: userEventForm?.location ?? "", entityIds: userEventForm?.people.map((person) => person.entity_id) ?? [],
@@ -991,63 +969,6 @@ export default function CalendarWorkspacePage() {
     sourceKey: initialUserForm.current?.sourceKey ?? "", title: initialUserForm.current?.title ?? "", startAtLocal: initialUserForm.current?.startAtLocal ?? "", endAtLocal: initialUserForm.current?.endAtLocal ?? "",
     timezone: initialUserForm.current?.timezone ?? "", description: initialUserForm.current?.description ?? "", location: initialUserForm.current?.location ?? "", entityIds: initialUserForm.current?.people.map((person) => person.entity_id) ?? [],
   });
-  const butlerDraft = useDraft("calendar.butler-event", [butlerEventDraft?.butlerName || "unselected", butlerEventDialogMode, editingButlerEntry?.entry_id ?? "new"], {
-    butlerName: butlerEventDraft?.butlerName ?? "", eventKind: butlerEventDraft?.eventKind ?? "scheduled_task", title: butlerEventDraft?.title ?? "", startAtLocal: butlerEventDraft?.startAtLocal ?? "", endAtLocal: butlerEventDraft?.endAtLocal ?? "", timezone: butlerEventDraft?.timezone ?? "",
-    recurrenceFrequency: butlerEventDraft?.recurrenceFrequency ?? "NONE", cron: butlerEventDraft?.cron ?? "", hasUntilAt: butlerEventDraft?.hasUntilAt ?? false, untilAtLocal: butlerEventDraft?.untilAtLocal ?? "",
-  }, (v) => setButlerEventDraft((current) => current ? { ...v, eventKind: v.eventKind as ButlerEventKind, recurrenceFrequency: v.recurrenceFrequency as RecurrenceFrequency } : current), butlerEventDialogOpen && !!butlerEventDraft?.butlerName, {
-    butlerName: initialButlerForm.current?.butlerName ?? "", eventKind: initialButlerForm.current?.eventKind ?? "scheduled_task", title: initialButlerForm.current?.title ?? "", startAtLocal: initialButlerForm.current?.startAtLocal ?? "", endAtLocal: initialButlerForm.current?.endAtLocal ?? "", timezone: initialButlerForm.current?.timezone ?? "",
-    recurrenceFrequency: initialButlerForm.current?.recurrenceFrequency ?? "NONE", cron: initialButlerForm.current?.cron ?? "", hasUntilAt: initialButlerForm.current?.hasUntilAt ?? false, untilAtLocal: initialButlerForm.current?.untilAtLocal ?? "",
-  });
-
-  const debouncedButlerDraft = useDebounce(butlerEventDraft, 400);
-  const recurrencePreviewRequest =
-    useMemo<CalendarWorkspaceButlerEventPreviewRequest | null>(() => {
-      if (!debouncedButlerDraft) return null;
-      const startAt = parseLocalDateTimeInput(
-        debouncedButlerDraft.startAtLocal,
-      );
-      if (!startAt) return null;
-      const untilAt = debouncedButlerDraft.hasUntilAt
-        ? parseLocalDateTimeInput(debouncedButlerDraft.untilAtLocal)
-        : null;
-      const tz = debouncedButlerDraft.timezone.trim() || timezone;
-      if (debouncedButlerDraft.recurrenceFrequency !== "NONE") {
-        return {
-          rrule: buildRRule(debouncedButlerDraft.recurrenceFrequency, untilAt),
-          start_at: startAt.toISOString(),
-          timezone: tz,
-          limit: 6,
-        };
-      }
-      if (
-        debouncedButlerDraft.eventKind === "scheduled_task" &&
-        debouncedButlerDraft.cron.trim()
-      ) {
-        return {
-          cron: debouncedButlerDraft.cron.trim(),
-          start_at: startAt.toISOString(),
-          until_at: untilAt ? untilAt.toISOString() : null,
-          timezone: tz,
-          limit: 6,
-        };
-      }
-      return null;
-    }, [debouncedButlerDraft, timezone]);
-  const { mutate: runRecurrencePreview, reset: resetRecurrencePreview } =
-    recurrencePreview;
-  useEffect(() => {
-    if (!butlerEventDialogOpen || !recurrencePreviewRequest) {
-      resetRecurrencePreview();
-      return;
-    }
-    runRecurrencePreview(recurrencePreviewRequest);
-  }, [
-    recurrencePreviewRequest,
-    butlerEventDialogOpen,
-    runRecurrencePreview,
-    resetRecurrencePreview,
-  ]);
-  const recurrencePreviewData = recurrencePreview.data?.data ?? null;
   const timeGridRef = useRef<HTMLDivElement>(null);
   // Detail panel — replaces modal-only editing with a right-docked panel
   const [selectedEntry, setSelectedEntry] =
@@ -1397,6 +1318,15 @@ export default function CalendarWorkspacePage() {
     });
     return [...names].sort((a, b) => a.localeCompare(b));
   }, [butlerLaneRows, connectedSources]);
+
+  const butlerEditor = useButlerEventEditor({ timezone, availableButlers });
+  const { butlerMutation, openButlerCreateDialog } = butlerEditor;
+  const {
+    handleButlerToggle,
+    handleButlerDelete,
+    handleButlerSnooze,
+    handleButlerDismiss,
+  } = useButlerLaneActions(butlerMutation, defaultTimezone);
 
   function resolveSourceForForm(
     sourceKey: string,
@@ -2342,312 +2272,6 @@ export default function CalendarWorkspacePage() {
       );
       failRecurringEdit();
     }
-  }
-
-  function openButlerCreateDialog(initialButler?: string) {
-    const butlerName = initialButler ?? availableButlers[0] ?? "";
-    setEditingButlerEntry(null);
-    setButlerEventDialogMode("create");
-    const initialForm = createDefaultButlerDraft(timezone, butlerName);
-    initialButlerForm.current = initialForm;
-    setButlerEventDraft(initialForm);
-    setButlerEventDialogOpen(true);
-  }
-
-  function closeButlerEventDialog(open: boolean) {
-    if (open) { setButlerEventDialogOpen(true); return; }
-    butlerDraft.dismiss(() => { setButlerEventDialogOpen(false); setEditingButlerEntry(null); setButlerEventDraft(null); });
-  }
-
-  function handleButlerToggle(entry: UnifiedCalendarEntry) {
-    const target = resolveButlerEventTarget(entry);
-    if (!target || !entry.butler_name) {
-      toast.error("Missing butler event linkage for toggle");
-      return;
-    }
-
-    const enabled = isPausedEntry(entry);
-    butlerMutation.mutate(
-      {
-        butler_name: entry.butler_name,
-        action: "toggle",
-        request_id: newButlerRequestId("toggle"),
-        payload: {
-          event_id: target.eventId,
-          enabled,
-          source_hint: target.sourceHint,
-        },
-      },
-      {
-        onSuccess: (response) => {
-          const mutationResult = response.data.result;
-          if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(
-              mutationResult,
-              "Toggle failed",
-            );
-            toast.error(`${enabled ? "Resume" : "Pause"} failed: ${detail}`);
-            return;
-          }
-          toast.success(enabled ? "Event resumed" : "Event paused");
-        },
-        onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Toggle failed");
-        },
-      },
-    );
-  }
-
-  function handleButlerDelete(entry: UnifiedCalendarEntry) {
-    const target = resolveButlerEventTarget(entry);
-    if (!target || !entry.butler_name) {
-      toast.error("Missing butler event linkage for delete");
-      return;
-    }
-
-    if (!globalThis.confirm(`Delete "${entry.title}"?`)) {
-      return;
-    }
-
-    butlerMutation.mutate(
-      {
-        butler_name: entry.butler_name,
-        action: "delete",
-        request_id: newButlerRequestId("delete"),
-        payload: {
-          event_id: target.eventId,
-          source_hint: target.sourceHint,
-        },
-      },
-      {
-        onSuccess: (response) => {
-          const mutationResult = response.data.result;
-          if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(
-              mutationResult,
-              "Delete failed",
-            );
-            toast.error(`Delete failed: ${detail}`);
-            return;
-          }
-          toast.success("Event deleted");
-        },
-        onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Delete failed");
-        },
-      },
-    );
-  }
-
-  function handleButlerSnooze(entry: UnifiedCalendarEntry, iso: string) {
-    const target = resolveButlerEventTarget(entry);
-    if (!target || !entry.butler_name) {
-      toast.error("Missing butler event linkage for snooze");
-      return;
-    }
-
-    butlerMutation.mutate(
-      {
-        butler_name: entry.butler_name,
-        action: "snooze",
-        request_id: newButlerRequestId("snooze"),
-        payload: {
-          event_id: target.eventId,
-          source_hint: target.sourceHint,
-          due_at: iso,
-        },
-      },
-      {
-        onSuccess: (response) => {
-          const mutationResult = response.data.result;
-          if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(
-              mutationResult,
-              "Snooze failed",
-            );
-            toast.error(`Snooze failed: ${detail}`);
-            return;
-          }
-          toast.success(
-            `Snoozed to ${formatEventTime(iso, defaultTimezone, "MMM d, HH:mm")}`,
-          );
-        },
-        onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Snooze failed");
-        },
-      },
-    );
-  }
-
-  function handleButlerDismiss(entry: UnifiedCalendarEntry) {
-    const target = resolveButlerEventTarget(entry);
-    if (!target || !entry.butler_name) {
-      toast.error("Missing butler event linkage for dismiss");
-      return;
-    }
-
-    butlerMutation.mutate(
-      {
-        butler_name: entry.butler_name,
-        action: "dismiss",
-        request_id: newButlerRequestId("dismiss"),
-        payload: { event_id: target.eventId },
-      },
-      {
-        onSuccess: (response) => {
-          const mutationResult = response.data.result;
-          if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(
-              mutationResult,
-              "Dismiss failed",
-            );
-            toast.error(`Dismiss failed: ${detail}`);
-            return;
-          }
-          toast.success("Reminder dismissed");
-        },
-        onError: (error) => {
-          toast.error(
-            error instanceof Error ? error.message : "Dismiss failed",
-          );
-        },
-      },
-    );
-  }
-
-  async function handleSaveButlerEvent() {
-    if (!butlerEventDraft) {
-      return;
-    }
-
-    const startAt = parseLocalDateTimeInput(butlerEventDraft.startAtLocal);
-    const endAt = parseLocalDateTimeInput(butlerEventDraft.endAtLocal);
-    const untilAt = butlerEventDraft.hasUntilAt
-      ? parseLocalDateTimeInput(butlerEventDraft.untilAtLocal)
-      : null;
-
-    if (!butlerEventDraft.butlerName.trim()) {
-      toast.error("Select a butler lane before saving");
-      return;
-    }
-    if (!butlerEventDraft.title.trim()) {
-      toast.error("Title is required");
-      return;
-    }
-    if (!startAt) {
-      toast.error("Start time is required");
-      return;
-    }
-    if (butlerEventDraft.eventKind === "scheduled_task") {
-      if (!endAt) {
-        toast.error("End time is required for scheduled events");
-        return;
-      }
-      if (endAt <= startAt) {
-        toast.error("End time must be after start time");
-        return;
-      }
-      if (
-        butlerEventDraft.recurrenceFrequency === "NONE" &&
-        !butlerEventDraft.cron.trim()
-      ) {
-        toast.error(
-          "Scheduled events require either a recurrence frequency or cron expression",
-        );
-        return;
-      }
-    }
-    if (butlerEventDraft.hasUntilAt && !untilAt) {
-      toast.error("Until boundary is invalid");
-      return;
-    }
-
-    const recurrenceRule = buildRRule(
-      butlerEventDraft.recurrenceFrequency,
-      untilAt,
-    );
-    const payload: Record<string, unknown> = {
-      title: butlerEventDraft.title.trim(),
-      start_at: startAt.toISOString(),
-      timezone: butlerEventDraft.timezone.trim() || timezone,
-      source_hint: butlerEventDraft.eventKind,
-    };
-
-    if (butlerEventDraft.eventKind === "scheduled_task") {
-      payload.end_at = (endAt ?? addDays(startAt, 0)).toISOString();
-      if (!recurrenceRule && butlerEventDraft.cron.trim()) {
-        payload.cron = butlerEventDraft.cron.trim();
-      }
-    }
-
-    if (recurrenceRule) {
-      payload.recurrence_rule = recurrenceRule;
-    }
-    if (butlerEventDraft.hasUntilAt && untilAt) {
-      payload.until_at = untilAt.toISOString();
-    }
-
-    const action: "create" | "update" =
-      butlerEventDialogMode === "create" ? "create" : "update";
-    if (action === "update") {
-      if (!editingButlerEntry) {
-        toast.error("Missing event context for update");
-        return;
-      }
-      const target = resolveButlerEventTarget(editingButlerEntry);
-      if (!target) {
-        toast.error("Missing butler event linkage for update");
-        return;
-      }
-      payload.event_id = target.eventId;
-      payload.source_hint = target.sourceHint;
-    }
-
-    const submission = butlerDraft.capture();
-    const preparation = butlerDraft.prepare();
-    if (preparation instanceof Promise ? !await preparation : !preparation) return;
-    butlerMutation.mutate(
-      {
-        butler_name: butlerEventDraft.butlerName,
-        action,
-        request_id: newButlerRequestId(action),
-        payload,
-      },
-      {
-        onSuccess: (response) => {
-          if (!butlerDraft.current(submission)) {
-            if (isCalendarMutationOk(response.data.result)) void butlerDraft.submitted(submission, () => {});
-            return;
-          }
-          const mutationResult = response.data.result;
-          if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(
-              mutationResult,
-              "Event mutation failed",
-            );
-            toast.error(
-              action === "create"
-                ? `Failed to create butler event: ${detail}`
-                : `Failed to update butler event: ${detail}`,
-            );
-            return;
-          }
-          toast.success(
-            action === "create"
-              ? "Butler event created"
-              : "Butler event updated",
-          );
-          void butlerDraft.submitted(submission, () => { setButlerEventDialogOpen(false); setEditingButlerEntry(null); setButlerEventDraft(null); });
-        },
-        onSettled: butlerDraft.finish,
-        onError: (error) => {
-          if (!butlerDraft.current(submission)) return;
-          toast.error(
-            error instanceof Error ? error.message : "Event mutation failed",
-          );
-        },
-      },
-    );
   }
 
   const canCreateUserEvents =
@@ -4540,386 +4164,11 @@ export default function CalendarWorkspacePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={butlerEventDialogOpen}
-        onOpenChange={closeButlerEventDialog}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DraftNotice session={butlerDraft.session} />
-          <DialogHeader>
-            <DialogTitle>
-              {butlerEventDialogMode === "create"
-                ? "Create butler event"
-                : "Edit butler event"}
-            </DialogTitle>
-            <DialogDescription>
-              Create or update schedule/reminder events in butler lanes,
-              including recurring-until boundaries.
-            </DialogDescription>
-          </DialogHeader>
-
-          {butlerEventDraft ? (
-            <div className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-butler-name"
-                    className="text-sm font-medium"
-                  >
-                    Butler lane
-                  </label>
-                  <select
-                    id="calendar-butler-name"
-                    value={butlerEventDraft.butlerName}
-                    disabled={butlerEventDialogMode === "edit"}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              butlerName: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                    className={FIELD_SELECT_CLASS}
-                  >
-                    {availableButlers.length === 0 ? (
-                      <option value="">No butlers available</option>
-                    ) : null}
-                    {availableButlers.map((butlerName) => (
-                      <option key={butlerName} value={butlerName}>
-                        {formatLaneTitle(butlerName)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-event-kind"
-                    className="text-sm font-medium"
-                  >
-                    Event type
-                  </label>
-                  <select
-                    id="calendar-event-kind"
-                    value={butlerEventDraft.eventKind}
-                    disabled={butlerEventDialogMode === "edit"}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              eventKind: event.target.value as ButlerEventKind,
-                            }
-                          : current,
-                      )
-                    }
-                    className={FIELD_SELECT_CLASS}
-                  >
-                    <option value="butler_reminder">Reminder</option>
-                    <option value="scheduled_task">Scheduled task</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label
-                  htmlFor="calendar-event-title"
-                  className="text-sm font-medium"
-                >
-                  Title
-                </label>
-                <Input
-                  id="calendar-event-title"
-                  value={butlerEventDraft.title}
-                  onChange={(event) =>
-                    setButlerEventDraft((current) =>
-                      current
-                        ? {
-                            ...current,
-                            title: event.target.value,
-                          }
-                        : current,
-                    )
-                  }
-                  placeholder="e.g. Daily medication"
-                  disabled={butlerMutation.isPending}
-                />
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-start-at"
-                    className="text-sm font-medium"
-                  >
-                    Start
-                  </label>
-                  <Input
-                    id="calendar-start-at"
-                    type="datetime-local"
-                    value={butlerEventDraft.startAtLocal}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              startAtLocal: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                    disabled={butlerMutation.isPending}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-timezone"
-                    className="text-sm font-medium"
-                  >
-                    Timezone
-                  </label>
-                  <Input
-                    id="calendar-timezone"
-                    value={butlerEventDraft.timezone}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              timezone: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                    disabled={butlerMutation.isPending}
-                  />
-                </div>
-              </div>
-
-              {butlerEventDraft.eventKind === "scheduled_task" ? (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <label
-                      htmlFor="calendar-end-at"
-                      className="text-sm font-medium"
-                    >
-                      End
-                    </label>
-                    <Input
-                      id="calendar-end-at"
-                      type="datetime-local"
-                      value={butlerEventDraft.endAtLocal}
-                      onChange={(event) =>
-                        setButlerEventDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                endAtLocal: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      disabled={butlerMutation.isPending}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label
-                      htmlFor="calendar-cron"
-                      className="text-sm font-medium"
-                    >
-                      Cron (optional)
-                    </label>
-                    <Input
-                      id="calendar-cron"
-                      value={butlerEventDraft.cron}
-                      onChange={(event) =>
-                        setButlerEventDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                cron: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="0 9 * * *"
-                      disabled={butlerMutation.isPending}
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-frequency"
-                    className="text-sm font-medium"
-                  >
-                    Recurrence
-                  </label>
-                  <select
-                    id="calendar-frequency"
-                    value={butlerEventDraft.recurrenceFrequency}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              recurrenceFrequency: event.target
-                                .value as RecurrenceFrequency,
-                            }
-                          : current,
-                      )
-                    }
-                    className={FIELD_SELECT_CLASS}
-                    disabled={butlerMutation.isPending}
-                  >
-                    <option value="NONE">None</option>
-                    <option value="DAILY">Daily</option>
-                    <option value="WEEKLY">Weekly</option>
-                    <option value="MONTHLY">Monthly</option>
-                    <option value="YEARLY">Yearly</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 pt-7 text-sm font-medium">
-                    <input
-                      type="checkbox"
-                      checked={butlerEventDraft.hasUntilAt}
-                      onChange={(event) =>
-                        setButlerEventDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                hasUntilAt: event.target.checked,
-                                untilAtLocal: event.target.checked
-                                  ? current.untilAtLocal || current.startAtLocal
-                                  : "",
-                              }
-                            : current,
-                        )
-                      }
-                      disabled={butlerMutation.isPending}
-                    />
-                    Set until boundary
-                  </label>
-                </div>
-              </div>
-
-              {butlerEventDraft.hasUntilAt ? (
-                <div className="space-y-2">
-                  <label
-                    htmlFor="calendar-until-at"
-                    className="text-sm font-medium"
-                  >
-                    Until
-                  </label>
-                  <Input
-                    id="calendar-until-at"
-                    type="datetime-local"
-                    value={butlerEventDraft.untilAtLocal}
-                    onChange={(event) =>
-                      setButlerEventDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              untilAtLocal: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                    disabled={butlerMutation.isPending}
-                  />
-                </div>
-              ) : null}
-
-              {recurrencePreviewRequest ? (
-                <div
-                  data-testid="recurrence-preview"
-                  className="space-y-1.5 rounded-[3px] border border-[var(--border)] p-3"
-                >
-                  <Eyebrow>
-                    Preview ({Intl.DateTimeFormat().resolvedOptions().timeZone})
-                  </Eyebrow>
-                  {recurrencePreview.isError ? (
-                    <p className="text-sm text-[var(--mfg)]">
-                      Couldn’t preview this recurrence. Check the rule or cron
-                      expression.
-                    </p>
-                  ) : recurrencePreviewData ? (
-                    recurrencePreviewData.occurrences.length === 0 ? (
-                      <p className="text-sm text-[var(--mfg)]">
-                        No occurrences in the next 90 days.
-                      </p>
-                    ) : (
-                      <>
-                        <ul className="space-y-0.5 text-sm tabular-nums text-fg">
-                          {recurrencePreviewData.occurrences.map((iso) => (
-                            <li key={iso}>
-                              {formatEventTime(
-                                iso,
-                                defaultTimezone,
-                                "EEE, MMM d · h:mm a",
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                        {recurrencePreviewData.more_count > 0 ? (
-                          <p
-                            data-testid="recurrence-preview-more"
-                            className="font-serif text-[13px] italic text-[var(--mfg)]"
-                          >
-                            +{recurrencePreviewData.more_count} more in 90 days
-                          </p>
-                        ) : null}
-                        {recurrencePreviewData.notes.length > 0 ? (
-                          <div className="space-y-0.5 pt-1">
-                            {recurrencePreviewData.notes.map((note) => (
-                              <p
-                                key={note}
-                                data-testid="recurrence-preview-note"
-                                className="text-xs italic text-[var(--mfg)]"
-                              >
-                                {note}
-                              </p>
-                            ))}
-                          </div>
-                        ) : null}
-                      </>
-                    )
-                  ) : (
-                    <p className="text-sm text-[var(--mfg)]">Calculating…</p>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <DialogFooter>
-            <PillButton
-              onClick={() => closeButlerEventDialog(false)}
-              disabled={butlerMutation.isPending}
-            >
-              Cancel
-            </PillButton>
-            <CommitButton
-              onClick={handleSaveButlerEvent}
-              disabled={butlerMutation.isPending || !butlerEventDraft}
-            >
-              {butlerMutation.isPending
-                ? butlerEventDialogMode === "create"
-                  ? "Creating..."
-                  : "Saving..."
-                : butlerEventDialogMode === "create"
-                  ? "Create event"
-                  : "Save changes"}
-            </CommitButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ButlerEventDialog
+        editor={butlerEditor}
+        availableButlers={availableButlers}
+        defaultTimezone={defaultTimezone}
+      />
 
       <Dialog
         open={!!deleteCandidate}
