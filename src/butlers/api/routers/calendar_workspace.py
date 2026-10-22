@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import logging
 import re
@@ -87,6 +85,7 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
+from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from butlers.api.read_models.calendar_workspace_v1 import (
     DEDUP_STRATEGIES,
     CalendarDedupRules,
@@ -210,37 +209,6 @@ _OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
 # natural DB id (they live inside a JSONB envelope), so the entry_id is derived
 # from (butler, date, index, kind, label) — stable across reads of the same view.
 _OVERLAY_ENTRY_NAMESPACE = uuid5(NAMESPACE_URL, "butlers/calendar/overlay-contribution")
-
-
-def _encode_workspace_cursor(starts_at: datetime, entry_id: UUID) -> str:
-    """Encode a ``(starts_at, id)`` keyset position into an opaque cursor token."""
-    payload = json.dumps({"s": starts_at.isoformat(), "i": str(entry_id)})
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
-
-
-def _decode_workspace_cursor(raw: str) -> tuple[datetime, UUID]:
-    """Decode an opaque workspace cursor into ``(starts_at, id)``.
-
-    Raises :class:`ValueError` on any malformed/unparseable token so the caller
-    can surface a 400.
-    """
-    try:
-        decoded = base64.urlsafe_b64decode(raw.encode("ascii"))
-        payload = json.loads(decoded)
-        starts_at = _coerce_datetime(payload["s"])
-        entry_id = UUID(str(payload["i"]))
-    except (
-        KeyError,
-        ValueError,
-        TypeError,
-        binascii.Error,
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-    ) as exc:
-        raise ValueError(f"Malformed cursor: {raw!r}") from exc
-    if starts_at is None:
-        raise ValueError(f"Malformed cursor: {raw!r}")
-    return starts_at, entry_id
 
 
 # Regex for hashed Google Calendar IDs like "ae06dba...@group.calendar.google.com"
@@ -1314,12 +1282,7 @@ async def get_workspace(
     if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
         raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
 
-    cursor_pos: tuple[datetime, UUID] | None = None
-    if cursor is not None:
-        try:
-            cursor_pos = _decode_workspace_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Malformed cursor") from exc
+    cursor_pos = decode_cursor(cursor, (datetime, UUID)) if cursor is not None else None
 
     display_tz: ZoneInfo | None = None
     if timezone is not None:
@@ -1472,7 +1435,7 @@ async def get_workspace(
         last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
         last_instance_id = last_row.get("instance_id")
         if last_starts_at is not None and isinstance(last_instance_id, UUID):
-            next_cursor = _encode_workspace_cursor(last_starts_at, last_instance_id)
+            next_cursor = encode_cursor((last_starts_at, last_instance_id))
 
     # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
     # batch-join over calendar_event_entities → public.entities, keyed by
@@ -1542,22 +1505,17 @@ async def get_workspace_invitations(
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise HTTPException(400, "Invalid timezone") from exc
 
-    window = {"start": start.isoformat(), "end": end.isoformat(), "timezone": timezone}
+    # The cursor carries the window it was minted for, so replaying it against a
+    # different window is a 400 rather than a seek into the wrong range.
+    window = (start.isoformat(), end.isoformat(), timezone)
     position = None
     if cursor is not None:
-        try:
-            raw = base64.b64decode(cursor, altchars=b"-_", validate=True)
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or set(payload) != {"window", "position", "v"}:
-                raise ValueError
-            if type(payload["v"]) is not int or payload["v"] != 1 or payload["window"] != window:
-                raise ValueError
-            if not isinstance(payload["position"], str):
-                raise ValueError
-            position = _decode_workspace_cursor(payload["position"])
-        except (ValueError, TypeError, KeyError, binascii.Error, UnicodeDecodeError) as exc:
-            raise HTTPException(400, "Invalid invitation cursor for this window") from exc
-
+        starts_at, instance_id, *cursor_window = decode_cursor(
+            cursor, (datetime, UUID, str, str, str | None)
+        )
+        if tuple(cursor_window) != window:
+            raise InvalidCursorError()
+        position = (starts_at, instance_id)
     invitation_read = await query_calendar_invitations(
         db,
         start=start,
@@ -1641,12 +1599,7 @@ async def get_workspace_invitations(
     next_cursor = None
     if has_more:
         last = invitation_read.rows[limit - 1]
-        payload = {
-            "v": 1,
-            "window": window,
-            "position": _encode_workspace_cursor(last["instance_starts_at"], last["instance_id"]),
-        }
-        next_cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+        next_cursor = encode_cursor((last["instance_starts_at"], last["instance_id"], *window))
     return ApiResponse(
         data=CalendarInvitationsResponse(
             entries=entries,

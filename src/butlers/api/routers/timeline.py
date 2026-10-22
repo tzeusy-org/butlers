@@ -36,12 +36,11 @@ from butlers.api.models.timeline import (
     TimelineMeta,
     TimelineResponse,
 )
+from butlers.api.pagination import decode_cursor, encode_cursor
 from butlers.api.read_models.timeline_v1 import (
     TIMELINE_ATTENTION_LIMIT,
     TimelineNotificationRow,
     TimelineSessionRow,
-    decode_cursor,
-    encode_cursor,
     query_timeline_attention_notifications_single,
     query_timeline_attention_sessions_fan_out,
     query_timeline_notification_histogram_single,
@@ -197,9 +196,8 @@ async def list_timeline(
         None,
         description=(
             "Pagination cursor from the previous page's ``meta.cursor`` field: "
-            "an opaque composite (timestamp, id) keyset position. A bare "
-            "ISO-8601 timestamp is also accepted for backward compatibility, "
-            "without the same-timestamp tiebreak the composite cursor provides."
+            "an opaque composite (timestamp, id) keyset position; a malformed "
+            "one is a 400."
         ),
     ),
     limit: int = Query(50, ge=1, le=200, description="Max events to return"),
@@ -250,10 +248,7 @@ async def list_timeline(
     before_ts: datetime | None = None
     before_id: UUID | None = None
     if before is not None:
-        try:
-            before_ts, before_id = decode_cursor(before)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid 'before' cursor: {exc}") from exc
+        before_ts, before_id = decode_cursor(before, (datetime, UUID))
 
     trace_id = trace.strip() if trace is not None and trace.strip() else None
 
@@ -347,7 +342,7 @@ async def list_timeline(
 
     cursor: str | None = None
     if has_more and page:
-        cursor = encode_cursor(page[-1].timestamp, page[-1].id)
+        cursor = encode_cursor((page[-1].timestamp, page[-1].id))
 
     heartbeat_events = [e for e in page if e.is_heartbeat]
     heartbeat_rollup = TimelineHeartbeatRollup(

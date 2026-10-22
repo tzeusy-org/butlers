@@ -3173,18 +3173,18 @@ async def test_gaps_keyset_pages_merge_pools_newest_first(app, monkeypatch):
     )
 
     first = (await _get_gaps(app, limit=2)).json()
-    second = (await _get_gaps(app, limit=2, cursor=first["meta"]["next_cursor"])).json()
-    last = (await _get_gaps(app, limit=2, cursor=second["meta"]["next_cursor"])).json()
+    second = (await _get_gaps(app, limit=2, cursor=first["next_cursor"])).json()
+    last = (await _get_gaps(app, limit=2, cursor=second["next_cursor"])).json()
 
-    ids = [g["gap_id"] for page in (first, second, last) for g in page["data"]]
+    ids = [g["gap_id"] for page in (first, second, last) for g in page["items"]]
     assert ids == [str(r["id"]) for r in rows]
-    assert [first["meta"]["has_more"], second["meta"]["has_more"], last["meta"]["has_more"]] == [
+    assert first["limit"] == 2
+    assert [bool(first["next_cursor"]), bool(second["next_cursor"]), bool(last["next_cursor"])] == [
         True,
         True,
         False,
     ]
-    assert last["meta"]["next_cursor"] is None
-    assert {g["butler"] for g in first["data"]} == {"atlas", "memory"}
+    assert {g["butler"] for g in first["items"]} == {"atlas", "memory"}
 
 
 async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeypatch):
@@ -3202,8 +3202,8 @@ async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeyp
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["data"]) == 1
-    assert body["meta"]["sources_degraded"] == ["broken"]
+    assert len(body["items"]) == 1
+    assert body["sources_degraded"] == ["broken"]
 
 
 async def test_gaps_reject_a_malformed_cursor(app, monkeypatch):

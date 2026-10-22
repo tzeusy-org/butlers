@@ -9,10 +9,8 @@ Covers:
 
 from __future__ import annotations
 
-import base64
 import datetime
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -21,6 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.pagination import encode_cursor
 
 pytestmark = pytest.mark.unit
 
@@ -137,9 +136,9 @@ async def test_list_cases_happy_path_maps_all_fields(app):
 
     assert resp.status_code == 200
     body = resp.json()
-    data = body["data"]
-    assert len(data) == 1
-    item = data[0]
+    items = body["items"]
+    assert len(items) == 1
+    item = items[0]
     assert item["id"] == "22222222-2222-2222-2222-222222222222"
     assert item["correlation_key"] == "health:owner:respiratory-illness"
     assert item["state"] == "open"
@@ -148,8 +147,8 @@ async def test_list_cases_happy_path_maps_all_fields(app):
     assert item["opened_at"] is not None
     assert item["updated_at"] is not None
     assert item["closed_at"] is None
-    assert body["meta"]["has_more"] is False
-    assert body["meta"]["next_cursor"] is None
+    assert body["next_cursor"] is None
+    assert body["limit"] == 50
 
 
 async def test_list_cases_state_filter_adds_condition(app):
@@ -194,17 +193,15 @@ async def test_list_cases_has_more_emits_next_cursor(app):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["data"]) == 2
-    assert body["meta"]["has_more"] is True
-    assert body["meta"]["next_cursor"] is not None
+    assert len(body["items"]) == 2
+    assert body["next_cursor"] is not None
 
 
 # Spec: REQ-fleet-case-file-007
 # Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_cursor_round_trips_into_where_clause(app):
     app, mock_pool = _app_with_mock(app, fetch_rows=[])
-    cursor_payload = {"ua": "2026-09-01T00:00:00+00:00", "id": "some-id"}
-    cursor = base64.urlsafe_b64encode(json.dumps(cursor_payload).encode()).decode()
+    cursor = encode_cursor((datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC), "some-id"))
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -240,13 +237,13 @@ async def test_list_cases_invalid_posture_422(app):
     assert resp.status_code == 422
 
 
-async def test_list_cases_invalid_cursor_422(app):
+async def test_list_cases_invalid_cursor_400(app):
     _app_with_mock(app, fetch_rows=[])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/switchboard/cases", params={"cursor": "not-valid-base64!!"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
 
 
 async def test_list_cases_limit_out_of_range_422(app):
@@ -266,9 +263,8 @@ async def test_list_cases_graceful_degrade_when_table_missing(app):
         resp = await client.get("/api/switchboard/cases")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["data"] == []
-    assert body["meta"]["has_more"] is False
-    assert body["meta"]["next_cursor"] is None
+    assert body["items"] == []
+    assert body["next_cursor"] is None
 
 
 # ---------------------------------------------------------------------------

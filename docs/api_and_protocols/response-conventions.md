@@ -8,7 +8,7 @@
 
 The shared wrappers live in `src/butlers/api/models/__init__.py`: `ApiResponse[T]`
 (`{"data": T, "meta": {...}}`), `PaginatedResponse[T]` (offset/limit with `meta.total`),
-`CursorPaginatedResponse[T]` (see below), and `ErrorResponse` (`{"error": {"code", "message",
+`Page[T]` from `src/butlers/api/pagination.py` (cursor lists, see below), and `ErrorResponse` (`{"error": {"code", "message",
 "butler"?, "details"?}}`). New endpoints use these wrappers. A few domain routers (for example
 timeline and relationship) return unwrapped typed payloads; each route's `response_model` is the
 authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
@@ -29,23 +29,42 @@ Frontend requests use `apiFetch`; browser navigation or download links returned 
 
 ## Cursor pagination
 
-`GET /api/ingestion/events` uses **cursor pagination** — the `page` and `offset` params are gone
-(use `limit` and the opaque `cursor` from the preceding response instead). For the default
-recent sort, the cursor is a keyset position ordered by `received_at DESC, id DESC`.
-
-Response envelope:
+Every cursor-paginated list returns the one **`Page[T]`** envelope and builds its cursor with the
+one codec, both in `src/butlers/api/pagination.py`. A new list endpoint uses them; it does not add a
+second envelope or a second codec.
 
 ```json
-{"data": [...], "meta": {"next_cursor": "<opaque>", "has_more": true}}
+{"items": [...], "next_cursor": "<opaque>", "limit": 50}
 ```
 
-- Pass `cursor=<next_cursor>` to fetch the next page; `next_cursor` is `null` on the last page.
-- `has_more: false` means you are at the last page.
-- No `total` or `offset` field is returned.
-- The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
-  a page offset; do not mix cursors between sort modes.
-- `GET /api/memory/gaps` follows the same keyset shape (`asked_at DESC, id DESC`, merged across
-  memory pools) and adds `meta.limit` and `meta.sources_degraded` for pools that failed.
+- Pass `cursor=<next_cursor>` to fetch the next page. `next_cursor` is `null` on the last page, so
+  "is there more" is `next_cursor !== null`; there is no `has_more`, `total` or `offset`.
+- `limit` echoes the effective page size. `sources_degraded` (omitted when every source answered)
+  names fan-out sources that failed, so a partial page never reads as the whole truth.
+- An endpoint that returns more than the page subclasses `Page` and adds sibling fields; it does
+  not wrap the page in a second object.
+- The cursor is `encode_cursor(values)` / `decode_cursor(cursor, shape)`: a versioned, URL-safe,
+  checksummed token over the last row's keyset values (`datetime`, `UUID`, `str`, numbers).
+  `decode_cursor` returns the same types it was given and raises `InvalidCursorError`, a 400, for
+  anything malformed, edited, from another codec version, or minted by an endpoint with a
+  different `shape`. Treat cursors as opaque; they are not stable across deployments that change
+  the codec version, and a 400 means "start again from the first page".
+- `GET /api/ingestion/events` orders by `received_at DESC, id DESC`. Its optional `sort=cost` view
+  keeps the same envelope but its cursor encodes a page offset, so a cursor from one sort mode is a
+  400 in the other.
+- `GET /api/memory/gaps` orders by `asked_at DESC, id DESC`, merged across memory pools.
+
+**Offset pagination** (`PaginatedResponse[T]`, `meta.total/offset/limit`) stays on the many list
+endpoints whose pages are random-access with an exact `total` (health and finance registers,
+approvals, audit log and the like). A new offset endpoint uses `PaginatedResponse`; a new
+cursor endpoint uses `Page`.
+
+**Routes still off `Page`** are listed, with reasons, in
+`tests/api/test_pagination.py` (`test_every_paginated_route_uses_page_or_a_listed_exception`), which
+fails when a paginated route uses any other envelope or when a listed route converts without
+dropping its entry. Today that is `GET /api/sessions` (`KeysetResponse`, retires at the RFC 0038
+D19 switch), `GET /api/timeline`, the calendar workspace read and invitations routes, and the QA
+case journal tail-follow, plus a handful of bespoke offset envelopes.
 
 Channel filtering uses `channels` (comma-separated); there is no single-value channel alias.
 

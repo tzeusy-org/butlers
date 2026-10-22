@@ -11,7 +11,6 @@ the inspect search bar (§10.2).
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -28,8 +27,6 @@ from butlers.api.degraded import DegradedSources
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
-    KeysetMeta,
-    KeysetResponse,
     PaginatedResponse,
     PaginationMeta,
 )
@@ -63,6 +60,7 @@ from butlers.api.models.memory import (
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
 )
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as _audit
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
@@ -1587,20 +1585,7 @@ async def endorse_held_rule(
 # ---------------------------------------------------------------------------
 
 
-def _encode_gap_cursor(asked_at: str, gap_id: str) -> str:
-    raw = json.dumps([asked_at, gap_id]).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _decode_gap_cursor(cursor: str) -> tuple[datetime, _uuid.UUID]:
-    try:
-        asked_at, gap_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-        return datetime.fromisoformat(asked_at), _uuid.UUID(gap_id)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
-
-
-@router.get("/gaps", response_model=KeysetResponse[MemoryGap])
+@router.get("/gaps", response_model=Page[MemoryGap])
 async def list_memory_gaps(
     status: Literal["open", "answerable", "delivered", "dismissed", "expired"] | None = Query(
         None, description="One lifecycle state; default is open plus answerable"
@@ -1608,7 +1593,7 @@ async def list_memory_gaps(
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None, description="Opaque `next_cursor` from the previous page"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> KeysetResponse[MemoryGap]:
+) -> Page[MemoryGap]:
     """Owner questions no butler could answer yet, newest first, across memory pools.
 
     ``coverage_state`` keeps "never looked" (`unknown`) apart from "looked and nothing is
@@ -1616,7 +1601,7 @@ async def list_memory_gaps(
     rather than reading as an empty page.
     """
     statuses = ("open", "answerable") if status is None else (status,)
-    after = _decode_gap_cursor(cursor) if cursor else None
+    after = decode_cursor(cursor, (datetime, _uuid.UUID)) if cursor else None
 
     async def _query_pool(butler_name: str, pool: object) -> list[tuple[str, dict]]:
         gaps = await knowledge_gaps.list_gaps(
@@ -1640,19 +1625,15 @@ async def list_memory_gaps(
     page = merged[:limit]
 
     data = [MemoryGap(butler=butler, **knowledge_gaps.public_view(gap)) for butler, gap in page]
-    has_more = len(merged) > limit
-    return KeysetResponse[MemoryGap](
-        data=data,
-        meta=KeysetMeta(
-            limit=limit,
-            has_more=has_more,
-            next_cursor=(
-                _encode_gap_cursor(data[-1].asked_at, data[-1].gap_id)
-                if has_more and data
-                else None
-            ),
-            sources_degraded=tracker.names or None,
-        ),
+    next_cursor = None
+    if len(merged) > limit and page:
+        last = page[-1][1]
+        next_cursor = encode_cursor((last["asked_at"], last["id"]))
+    return Page[MemoryGap](
+        items=data,
+        next_cursor=next_cursor,
+        limit=limit,
+        sources_degraded=tracker.names or None,
     )
 
 

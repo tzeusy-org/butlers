@@ -164,12 +164,7 @@ from butlers.api.conversations import (
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import (
-    CursorPaginatedResponse,
-    CursorPaginationMeta,
-    PaginatedResponse,
-    PaginationMeta,
-)
+from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
@@ -182,6 +177,7 @@ from butlers.api.models.conversation import (
     MessageCreateRequest,
     MessageSearchResult,
 )
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.core.dashboard_turns import (
     DashboardTurnResult,
     bind_ingress,
@@ -1612,7 +1608,7 @@ async def search_conversations(
 
 @messages_search_router.get(
     "/messages/search",
-    response_model=CursorPaginatedResponse[MessageSearchResult],
+    response_model=Page[MessageSearchResult],
 )
 async def search_messages(
     q: str = Query(..., min_length=1, max_length=512, description="Full-text search query."),
@@ -1637,7 +1633,7 @@ async def search_messages(
         None, description="ISO-8601 exclusive upper bound on message created_at."
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[MessageSearchResult]:
+) -> Page[MessageSearchResult]:
     """Owner-scoped full-text search across every butler's dashboard messages.
 
     Unlike ``GET /api/butlers/{name}/conversations/search`` (per-butler,
@@ -1653,8 +1649,9 @@ async def search_messages(
     even if a new message is inserted between page fetches.
 
     Returns:
-        200 — ``{"data": [...], "meta": {"next_cursor", "has_more"}}``
-        422 — malformed ``cursor``, or ``from``/``to`` is not valid ISO-8601
+        200 — ``{"items": [...], "next_cursor", "limit"}``
+        400 — malformed ``cursor``
+        422 — ``from``/``to`` is not valid ISO-8601
         503 — shared database pool unavailable
     """
     try:
@@ -1686,12 +1683,15 @@ async def search_messages(
             limit=limit,
             cursor=cursor,
         )
+    except InvalidCursorError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return CursorPaginatedResponse[MessageSearchResult](
-        data=[MessageSearchResult(**item) for item in result["items"]],
-        meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
+    return Page[MessageSearchResult](
+        items=[MessageSearchResult(**item) for item in result["items"]],
+        next_cursor=result["next_cursor"],
+        limit=limit,
     )
 
 

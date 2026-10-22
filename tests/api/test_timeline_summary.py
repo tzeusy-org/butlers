@@ -26,8 +26,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.read_models.timeline_v1 import (
-    decode_cursor,
-    encode_cursor,
     query_timeline_notifications_single,
     query_timeline_sessions_fan_out,
 )
@@ -656,37 +654,6 @@ async def test_query_timeline_notifications_single_only_failed_pushes_status_fil
     await query_timeline_notifications_single(pool2, limit=10, only_failed=False)
     sql2, _args2 = pool2.calls[0]
     assert "status = 'failed'" not in sql2
-
-
-# ---------------------------------------------------------------------------
-# Fix 2: composite cursor encode/decode round-trip
-# ---------------------------------------------------------------------------
-
-
-def test_encode_decode_cursor_round_trip():
-    ts = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
-    event_id = uuid4()
-
-    token = encode_cursor(ts, event_id)
-    decoded_ts, decoded_id = decode_cursor(token)
-
-    assert decoded_ts.isoformat() == ts.isoformat()
-    assert decoded_id == event_id
-
-
-def test_decode_cursor_accepts_legacy_bare_timestamp():
-    """A pre-fix (timestamp-only) cursor still decodes, with no id tiebreak."""
-    ts = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
-
-    decoded_ts, decoded_id = decode_cursor(ts.isoformat())
-
-    assert decoded_ts.isoformat() == ts.isoformat()
-    assert decoded_id is None
-
-
-def test_decode_cursor_raises_on_garbage():
-    with pytest.raises(ValueError):
-        decode_cursor("not-a-valid-cursor-or-timestamp")
 
 
 # ---------------------------------------------------------------------------

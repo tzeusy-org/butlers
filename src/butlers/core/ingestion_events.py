@@ -13,10 +13,6 @@ Functions
 ingestion_event_get             — fetch a single event by id
 ingestion_events_list           — paginated list; sort="recent" keyset, sort="cost" offset
 ingestion_events_histogram      — grouped per-bucket status counts for a time window (bu-4utdw.6)
-encode_cursor                   — encode (received_at, id) tuple to opaque cursor string
-decode_cursor                   — decode opaque cursor string to (received_at, id) tuple
-encode_cost_cursor              — encode page offset for cost-sort cursor
-decode_cost_cursor              — decode cost-sort cursor back to page offset
 ingestion_event_set_cost_usd    — write computed cost_usd back to public.ingestion_events
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_events_request_ids_for_trace — resolve a trace_id to its matching event ids
@@ -38,7 +34,6 @@ ingestion_event_replay_history  — query public.audit_log for replay attempts o
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -49,6 +44,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from butlers.connectors.known_contact_state import (
     CLASSIFICATION_KEY,
     current_available,
@@ -337,81 +333,6 @@ async def ingestion_event_get(
     return _decode_event_row(row)
 
 
-def encode_cursor(received_at: datetime, row_id: UUID | str) -> str:
-    """Encode a keyset position into an opaque cursor string.
-
-    The cursor encodes the ``(received_at, id)`` tuple of the last row returned.
-    It is base64url-encoded JSON so it is safe to use as a query parameter.
-
-    Args:
-        received_at: Timestamp of the last row (``received_at`` column).
-        row_id: Primary key of the last row.
-
-    Returns:
-        An opaque string suitable for the ``cursor`` query parameter.
-    """
-    payload = {
-        "ra": received_at.isoformat(),
-        "id": str(row_id),
-    }
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def encode_cost_cursor(offset: int) -> str:
-    """Encode an offset-based cursor for cost-sorted pagination.
-
-    Cost sort uses offset pagination (not keyset) because the ORDER BY
-    includes a nullable column (cost_usd) where keyset comparisons with
-    NULLs are complex and the issue brief explicitly permits offset for
-    this view.
-
-    The payload type sentinel ``"c"`` distinguishes cost cursors from the
-    default keyset cursors (which carry ``"ra"`` and ``"id"``).
-    """
-    return base64.urlsafe_b64encode(json.dumps({"t": "c", "o": offset}).encode()).decode()
-
-
-def decode_cost_cursor(cursor: str) -> int:
-    """Decode a cost cursor back to its page offset.
-
-    Raises:
-        ValueError: If the cursor is not a valid cost cursor.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        if not isinstance(payload, dict) or payload.get("t") != "c":
-            raise ValueError("not a cost cursor")
-        offset = int(payload["o"])
-        if offset < 0:
-            raise ValueError("offset cannot be negative")
-        return offset
-    except (KeyError, ValueError, TypeError, AttributeError) as exc:
-        raise ValueError(f"Invalid cost cursor: {exc}") from exc
-
-
-def decode_cursor(cursor: str) -> tuple[datetime, str]:
-    """Decode an opaque cursor string back to ``(received_at, id)``.
-
-    Args:
-        cursor: Opaque cursor string as returned by :func:`encode_cursor`.
-
-    Returns:
-        A ``(received_at, row_id)`` tuple.
-
-    Raises:
-        ValueError: If the cursor is malformed or cannot be decoded.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        received_at = datetime.fromisoformat(payload["ra"])
-        row_id: str = payload["id"]
-        return received_at, row_id
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
 async def ingestion_event_set_cost_usd(
     pool: asyncpg.Pool,
     event_id: str | UUID,
@@ -506,7 +427,9 @@ async def ingestion_events_list(
         A dict with:
         - ``items``: list of event dicts
         - ``next_cursor``: opaque cursor string for the next page, or ``None`` if last page
-        - ``has_more``: ``True`` when there are more rows after this page
+
+    Raises:
+        InvalidCursorError: ``cursor`` is malformed or belongs to the other sort mode.
     """
     args: list[Any] = []
     where_parts: list[str] = []
@@ -556,7 +479,9 @@ async def ingestion_events_list(
         # offset so callers see a consistent opaque cursor interface.
         page_offset = 0
         if cursor is not None:
-            page_offset = decode_cost_cursor(cursor)
+            (page_offset,) = decode_cursor(cursor, (int,))
+            if page_offset < 0:
+                raise InvalidCursorError()
 
         where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
@@ -583,15 +508,15 @@ async def ingestion_events_list(
 
         next_cursor: str | None = None
         if has_more:
-            next_cursor = encode_cost_cursor(page_offset + limit)
+            next_cursor = encode_cursor((page_offset + limit,))
 
-        return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+        return {"items": items, "next_cursor": next_cursor}
 
     # ── default sort: keyset pagination on (received_at DESC, id DESC) ───────
     if cursor is not None:
-        cursor_received_at, cursor_id = decode_cursor(cursor)
+        cursor_received_at, cursor_id = decode_cursor(cursor, (datetime, UUID))
         args.append(cursor_received_at)
-        args.append(UUID(cursor_id))
+        args.append(cursor_id)
         n_ra = len(args) - 1
         n_id = len(args)
         # Descending keyset: strictly older than cursor position
@@ -633,9 +558,9 @@ async def ingestion_events_list(
             last_ra_dt = datetime.fromisoformat(last_ra)
         else:
             last_ra_dt = last_ra
-        next_cursor_out = encode_cursor(last_ra_dt, last_id_uuid)
+        next_cursor_out = encode_cursor((last_ra_dt, last_id_uuid))
 
-    return {"items": items, "next_cursor": next_cursor_out, "has_more": has_more}
+    return {"items": items, "next_cursor": next_cursor_out}
 
 
 async def ingestion_events_histogram(

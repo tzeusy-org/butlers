@@ -8,7 +8,6 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import importlib.util
 import json
@@ -30,6 +29,7 @@ from butlers.api.deps import (
     MCPClientManager,
     get_mcp_manager,
 )
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
@@ -128,7 +128,6 @@ if _models_path.exists():
         ActivityEntry = _models_module.ActivityEntry
         ActivityResponse = _models_module.ActivityResponse
         EntityFactEntry = _models_module.EntityFactEntry
-        EntityFactsResponse = _models_module.EntityFactsResponse
         ActivityBin = _models_module.ActivityBin
         ActivityBinsResponse = _models_module.ActivityBinsResponse
         ViewMarkResponse = _models_module.ViewMarkResponse
@@ -5263,30 +5262,6 @@ async def clear_entity_preferred_channel(
 # ---------------------------------------------------------------------------
 
 
-def _encode_facts_cursor(created_at: datetime, fact_id: UUID | str) -> str:
-    """Encode a ``(created_at, id)`` keyset position into an opaque cursor.
-
-    Base64url-encoded JSON so it is safe as a query parameter.  Mirrors the
-    repo cursor convention (``src/butlers/core/ingestion_events.py``) for the
-    facts drill's ``created_at DESC, id DESC`` keyset.
-    """
-    payload = {"ca": created_at.isoformat(), "id": str(fact_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def _decode_facts_cursor(cursor: str) -> tuple[datetime, str]:
-    """Decode an opaque facts cursor back to ``(created_at, id)``.
-
-    Raises ``ValueError`` if the cursor is malformed (caller maps to HTTP 422).
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        return datetime.fromisoformat(payload["ca"]), str(payload["id"])
-    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
 async def _fetch_narrative_drill_facts(
     pool,
     entity_id: UUID,
@@ -5345,7 +5320,7 @@ async def _fetch_narrative_drill_facts(
 
 @router.get(
     "/entities/{entity_id}/facts",
-    response_model=EntityFactsResponse,
+    response_model=Page[EntityFactEntry],
 )
 async def list_entity_facts(
     entity_id: UUID,
@@ -5365,7 +5340,7 @@ async def list_entity_facts(
         description="Opaque keyset cursor from a prior response's next_cursor.",
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> EntityFactsResponse:
+) -> Page[EntityFactEntry]:
     """Drill endpoint: fact-level read for an entity with full provenance.
 
     The canonical fact-level read for the Workbench grid and Editorial
@@ -5387,15 +5362,14 @@ async def list_entity_facts(
     ``store`` of origin.
 
     Pagination is keyset (cursor) per the repo convention — ordered
-    ``created_at DESC, id DESC`` with the envelope ``{items, next_cursor,
-    has_more}`` (no ``total``).  ``store=all`` paginates the identity store;
+    ``created_at DESC, id DESC`` with the ``Page`` envelope ``{items, next_cursor,
+    limit}`` (no ``total``).  ``store=all`` paginates the identity store;
     narrative rows are appended to the page (they are the Workbench grid's
     secondary layer and are not independently cursored in v1).
 
     Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
     if no owner entity is registered.  Returns 404 if the entity does not exist.
-    Returns ``{"items": [], "next_cursor": null, "has_more": false}`` when no
-    facts match.
+    Returns ``{"items": [], "next_cursor": null, "limit": N}`` when no facts match.
     """
     from butlers.tools.relationship.fact_identity_decisions import (
         attribution_response,
@@ -5412,12 +5386,7 @@ async def list_entity_facts(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    keyset: tuple[datetime, str] | None = None
-    if cursor is not None:
-        try:
-            keyset = _decode_facts_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    keyset = decode_cursor(cursor, (datetime, UUID)) if cursor is not None else None
 
     # --- Identity store (relationship.entity_facts) -----------------------
     # Keyset over (created_at, id): page one row past the limit to detect more.
@@ -5466,7 +5435,7 @@ async def list_entity_facts(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = _encode_facts_cursor(last["created_at"], last["id"])
+        next_cursor = encode_cursor((last["created_at"], last["id"]))
 
     items = [
         EntityFactEntry(
@@ -5526,7 +5495,7 @@ async def list_entity_facts(
             for r in narrative_rows
         )
 
-    return EntityFactsResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return Page[EntityFactEntry](items=items, next_cursor=next_cursor, limit=limit)
 
 
 # ---------------------------------------------------------------------------
