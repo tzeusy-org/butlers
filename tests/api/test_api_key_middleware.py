@@ -12,10 +12,10 @@ from fastapi import FastAPI, Request
 from butlers.api.app import create_app
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.owner_auth.config import OwnerAuthConfig
-from butlers.api.owner_auth.context import in_http_request, verified_http_principal
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
 pytestmark = pytest.mark.unit
 ORIGIN = "https://butlers.example.test"

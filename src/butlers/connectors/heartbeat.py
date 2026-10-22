@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
-from butlers.connectors.known_contact_state import (
+from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,
     KnownContactSnapshot,
     parse_ack,

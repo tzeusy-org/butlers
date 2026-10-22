@@ -212,14 +212,14 @@ from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.models import ApiMeta, ApiResponse
-from butlers.api.models.audit import (
-    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
-)
-from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
+from butlers.core.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
@@ -5422,7 +5422,7 @@ async def disconnect_user_credential(
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
 #
-# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# The tuple itself now lives in ``butlers.core.audit`` (bu-vhie6): the
 # same closed vocabulary is what ``public.audit_log.failure_category`` stores
 # at rest, and ``routers/audit`` cannot import this router.  It is re-exported
 # here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every

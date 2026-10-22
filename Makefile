@@ -8,6 +8,7 @@ BASE ?= origin/main
 
 lint:
 	uv run ruff check src/ tests/
+	uv run --no-sync lint-imports
 
 # Identical nonmutating static survivors in the hosted guards job.
 check-lock:

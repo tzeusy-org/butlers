@@ -671,7 +671,7 @@ async def test_health_state_clears_on_next_successful_call(
 
     # Actual startup composition publishes bounded unloaded evidence before
     # provider work. Provider/network boundaries alone are synthetic here.
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
 
     runtime._config = gmail_config.model_copy(
         update={
