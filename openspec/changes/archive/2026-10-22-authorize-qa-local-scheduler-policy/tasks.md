@@ -48,7 +48,13 @@
   pipeline tests named in design.md. Preserve each unique race, role, owner
   stop, rollback, and no-double-dispatch invariant; condense rather than
   silently raise the at-limit integration budget.
-- [ ] 3.2 Report each implementation PR's measured `Tests: +a ~b -c`,
+- [x] 3.2 Report each implementation PR's measured `Tests: +a ~b -c`,
   run test-plan, focused real-Postgres nodes and collection, Ruff, strict
   OpenSpec, overwrite/countable/guards/budget, and terminal exact-head hosted
   CI. Archive only after the adopted contract and implementation reconcile.
+  Evidence (bu-u5euwb.4, 2026-10-22): both implementation PRs merged through
+  hosted CI and carry their measured line: PR #4243 (`bu-ch4p1v`, Switchboard
+  migration `038_qa_local_schedule_policy.py`) `Tests: +0 ~1 -0`; PR #4253
+  (`bu-fvw4ap.1`, QA consumer in `src/butlers/core/scheduler.py`)
+  `Tests: +2 ~1 -0`. The producer migration and the consumer are both present on
+  main, so the adopted contract and implementation reconcile.

@@ -346,7 +346,6 @@
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Multi-Butler Fan-Out from Single Ingestion": "e49f213d646d6b21e440d3baa614e4261f761f93bb6c53e59cab9d7158e35e30",
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Signal Extraction for Decomposition": "5519098eced36eab1150a57f492a026658d14f95f84f92527027e3b7e9172c84",
   "restore-butler-control-plane-liveness/dashboard-butler-management/Butler List Page": "35a1e6311b783d8526411e6b8d9293fe2f454eee72443216309c2f89e7cc7a23",
-  "scrub-before-hash-dedupe-keys/connector-base-spec/Deduplication Strategy": "2c74b5d394adf9f99ea5ffe78b9fc89bd4ced0d9bb23f741bf37a69dcddbb125",
   "specify-github-owner-activity-connector-contract/connector-github/Account Isolation": "1e636dbd74f78701b61b4c626e15dab268a7b2d8de87e5f567a2dbcbbab918cc",
   "specify-github-owner-activity-connector-contract/connector-github/Account and Credential Storage Model": "1ff38439486374e4558003e06086c5471e0eacf5ec16f0bf84c3e556a4f3e631",
   "specify-github-owner-activity-connector-contract/connector-github/Credential Type and Least Privilege": "41b067d9d937475d93238aa9b82c19e92cab0a588d5fe71e723aaf09b72c99cf",
