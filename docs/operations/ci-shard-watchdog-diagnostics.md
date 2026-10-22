@@ -34,7 +34,10 @@ runner before executing its original UV command. Both provisional job caps are
 listed in `scripts/ci-job-timeouts.json`; there is no healthy calibration claim.
 
 Both jobs use real Python3.12.15 environments and the original finite frozen
-editable repair. The unit-1 entry retains three workers, loadfile, lexical collection,
+editable repair. The capture checkout supplies the current owned uv installer:
+its unchanged five attempts,120-second attempt envelope and10-second backoffs
+preserve the original retry profile while its process-group cleanup also applies
+to these separately named diagnostic steps. The unit-1 entry retains three workers, loadfile, lexical collection,
 maxfail1, coverage0, default tracer selection, item300 watchdog, original UV640
 nominal reserve, fixture boundaries and finalizers. With coverage disabled the
 actual tracer can be null. Original callbacks and all normal CI consumers remain
@@ -89,6 +92,17 @@ process identity. Permission failures, malformed data, unknown or reused actors
 and actual truncation remain incomplete. A subsequent same-start departure
 cannot clear task-count or children-file overflow already observed during that
 scan; kernel reaping still closes settlement.
+One bounded terminal control record distinguishes a latched scan or population
+refusal from the existing settlement deadline. Its fixed counters saturate at
+65535 and report saturation explicitly; it contains no paths, arguments, process
+names or exception text. The Node owner validates the exact schema and retains
+only those closed values, control validity, capped byte/process counts and helper
+exit state. The branch-owned numeric regression prints that closed diagnostic on
+cleanup failure so its actual CI failure carrier can preserve the observed cause.
+The local terminal transport record retains the subject diagnostic and at most
+eight uploader diagnostics; sealed snapshot and manifest membership is unchanged.
+Missing or malformed control remains incomplete. These observations neither
+change cleanup acceptance or deadlines nor identify a historical failure's cause.
 Cancellation enters bounded cleanup immediately. Supervisor ownership also
 settles if the action process disappears or its control reader closes. Descriptor
 health is checked independently on every bounded supervisor loop, even when a

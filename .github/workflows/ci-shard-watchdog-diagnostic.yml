@@ -54,15 +54,7 @@ jobs:
         with:
           python-version: "3.12.15"
       - name: Original bounded UV installer
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "$max_attempts"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then break; fi
-            if [ "$attempt" -eq "$max_attempts" ]; then exit 1; fi
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+        run: python3 capture/scripts/install_ci_uv.py
       - name: Preserve original request file-access observer dependency
         run: |
           set -euo pipefail
@@ -115,15 +107,7 @@ jobs:
         with:
           python-version: "3.12.15"
       - name: Original bounded UV installer
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "$max_attempts"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then break; fi
-            if [ "$attempt" -eq "$max_attempts" ]; then exit 1; fi
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+        run: python3 capture/scripts/install_ci_uv.py
       - name: Preserve original request file-access observer dependency
         run: |
           set -euo pipefail

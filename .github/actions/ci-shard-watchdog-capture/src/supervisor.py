@@ -19,6 +19,23 @@ MAX_PROCESSES = 256
 MAX_CONTROL_BYTES = 4096
 TERM_GRACE = 0.02
 SETTLEMENT_BOUND = 1.5
+COUNT_LIMIT = 65535
+REFUSAL_KEYS = (
+    "scan_refused",
+    "task_overflow",
+    "children_overflow",
+    "owned_overflow",
+    "pending_overflow",
+    "walk_overflow",
+)
+
+
+def count_refusal(diagnostics, key):
+    if diagnostics is not None:
+        if diagnostics["counts"][key] < COUNT_LIMIT:
+            diagnostics["counts"][key] += 1
+        else:
+            diagnostics["counts_saturated"] = True
 
 
 def emit(value):
@@ -42,7 +59,7 @@ def process(pid):
         return None
 
 
-def children(pid):
+def children(pid, diagnostics=None):
     identity = process(pid)
     truncated = False
     try:
@@ -50,13 +67,18 @@ def children(pid):
         result = set()
         tasks = os.listdir(f"/proc/{pid}/task")
         truncated = len(tasks) > MAX_PROCESSES
+        if truncated:
+            count_refusal(diagnostics, "task_overflow")
         for task in tasks[:MAX_PROCESSES]:
             if task.isdecimal():
                 with open(f"/proc/{pid}/task/{task}/children") as stream:
                     raw = stream.read(65536)
                     truncated = truncated or len(raw) == 65536
+                    if len(raw) == 65536:
+                        count_refusal(diagnostics, "children_overflow")
                     for n in raw.split():
                         if len(result) >= MAX_PROCESSES:
+                            count_refusal(diagnostics, "children_overflow")
                             return result, True
                         result.add(int(n))
         return result, truncated
@@ -77,6 +99,7 @@ def children(pid):
             return set(), truncated
         # Permission, malformed data, unknown/reused identity and live actors
         # remain unobserved/truncated; never turn them into a positive scan.
+        count_refusal(diagnostics, "scan_refused")
         return set(), True
 
 
@@ -126,6 +149,22 @@ def main():
     if ipc == "3":
         os.close(3)
     owned = {}
+    diagnostics = {"counts": dict.fromkeys(REFUSAL_KEYS, 0), "counts_saturated": False}
+
+    def diagnostic(reason, direct, no_children):
+        # Closed categories and saturated numeric counts only. This explains
+        # an existing refusal; it never supplies missing ownership evidence.
+        emit(
+            {
+                "event": "diagnostic",
+                "reason": reason,
+                **diagnostics,
+                "owned_remaining": min(MAX_PROCESSES, len(owned)),
+                "direct_remaining": min(MAX_PROCESSES, len(direct)),
+                "kernel_children_closed": no_children,
+            }
+        )
+
     overflow = False
     outcome = None
     stopping_at = None
@@ -158,7 +197,7 @@ def main():
             current = process(pid)
             if not current or current[0] != start or current[1] in ("Z", "X"):
                 owned.pop(pid, None)
-        direct, truncated = children(os.getpid())
+        direct, truncated = children(os.getpid(), diagnostics)
         overflow = overflow or truncated
         todo = list(direct)
         seen = set()
@@ -173,14 +212,19 @@ def main():
                     owned[pid] = current[0]
                 else:
                     overflow = True
-                descendants, truncated = children(pid)
+                    count_refusal(diagnostics, "owned_overflow")
+                descendants, truncated = children(pid, diagnostics)
                 overflow = overflow or truncated
                 room = max(0, MAX_PROCESSES - len(todo))
                 remaining = descendants - seen
                 overflow = overflow or len(remaining) > room
+                if len(remaining) > room:
+                    count_refusal(diagnostics, "pending_overflow")
                 todo.extend(list(remaining)[:room])
             if len(seen) >= MAX_PROCESSES:
                 overflow = overflow or bool(todo)
+                if todo:
+                    count_refusal(diagnostics, "walk_overflow")
                 break
         for pid, start in list(owned.items()):
             current = process(pid)
@@ -230,12 +274,14 @@ def main():
                             cancel(signal.SIGTERM, None)
             except ChildProcessError:
                 no_children = True
-            direct, truncated = children(os.getpid())
+            direct, truncated = children(os.getpid(), diagnostics)
             overflow = overflow or truncated
             if outcome is not None and no_children and not direct and not owned:
+                diagnostic("latched_refusal" if overflow else "settled", direct, no_children)
                 emit({"event": "settled", "complete": not overflow})
                 return 0 if not overflow else 2
             if elapsed >= SETTLEMENT_BOUND:
+                diagnostic("settlement_deadline", direct, no_children)
                 emit({"event": "settled", "complete": False})
                 return 2
         time.sleep(0.01)

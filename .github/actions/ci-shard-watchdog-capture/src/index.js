@@ -111,6 +111,21 @@ function descendantSamples(rootPid) {
   return {samples: result, truncated: truncated || todo.length > 0};
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const REFUSAL_KEYS = ['scan_refused', 'task_overflow', 'children_overflow',
+  'owned_overflow', 'pending_overflow', 'walk_overflow'];
+function supervisorDiagnostic(value) {
+  if (Object.keys(value).sort().join() !==
+      'counts,counts_saturated,direct_remaining,event,kernel_children_closed,owned_remaining,reason' ||
+      !['settled', 'latched_refusal', 'settlement_deadline'].includes(value.reason) ||
+      typeof value.counts_saturated !== 'boolean' || typeof value.kernel_children_closed !== 'boolean' ||
+      !value.counts || typeof value.counts !== 'object' || Array.isArray(value.counts) ||
+      Object.keys(value.counts).sort().join() !== [...REFUSAL_KEYS].sort().join() ||
+      !REFUSAL_KEYS.every(key => Number.isSafeInteger(value.counts[key]) && value.counts[key] >= 0 && value.counts[key] <= 65535) ||
+      ![value.owned_remaining, value.direct_remaining].every(count => Number.isSafeInteger(count) && count >= 0 && count <= MAX_PROCESSES)) return null;
+  return {reason: value.reason, counts: {...value.counts}, counts_saturated: value.counts_saturated,
+    owned_remaining: value.owned_remaining, direct_remaining: value.direct_remaining,
+    kernel_children_closed: value.kernel_children_closed};
+}
 function managed(command, args, options = {}) {
   const {ipc = false, ...launch} = options;
   const owner = numericProcess(process.pid);
@@ -120,6 +135,7 @@ function managed(command, args, options = {}) {
   const owned = new Map();
   let exited = false, overflow = false, settled = false, settlementSeen = false, valid = true, outcome = null;
   let buffer = '', controlBytes = 0, ready = false;
+  let diagnostic = null, helperExitCode = null, helperSignal = null;
   const collect = () => {
     for (const [pid, start] of owned) { const current = numericProcess(pid);
       if (!current || current.start_ticks !== start || ['Z', 'X'].includes(current.state)) owned.delete(pid); }
@@ -148,6 +164,9 @@ function managed(command, args, options = {}) {
           outcome = {code: value.code, signal: value.signal}; resolveOutcome(outcome);
         } else if (value.event === 'settled' && keys === 'complete,event' && outcome && typeof value.complete === 'boolean' && !settlementSeen) {
           settlementSeen = true; settled = value.complete;
+        } else if (value.event === 'diagnostic' && ready && !diagnostic && !settlementSeen) {
+          diagnostic = supervisorDiagnostic(value);
+          if (!diagnostic) valid = false;
         } else valid = false;
       } catch (_) { valid = false; }
     }
@@ -155,9 +174,17 @@ function managed(command, args, options = {}) {
   collect();
   const timer = setInterval(collect, 20);
   child.once('error', () => { valid = false; exited = true; resolveReady(false); resolveOutcome({code: null, signal: null}); });
-  child.once('close', () => { exited = true; resolveReady(false); if (!outcome) resolveOutcome({code: null, signal: null}); });
+  child.once('close', (code, signal) => { exited = true;
+    helperExitCode = Number.isSafeInteger(code) && code >= 0 && code <= 255 ? code : null;
+    helperSignal = Object.hasOwn(require('node:os').constants.signals, signal) ? signal : null;
+    resolveReady(false); if (!outcome) resolveOutcome({code: null, signal: null}); });
   return {child, owned, done, collect, timer, isExited: () => exited, overflow: () => overflow,
-    launched, ownershipComplete: () => valid && settled && buffer === ''};
+    launched, ownershipComplete: () => valid && settled && buffer === '',
+    diagnostic: () => ({supervisor: diagnostic, control_valid: valid, control_bytes: Math.min(controlBytes, 4097),
+      ownership_overflow: overflow, ready_seen: ready, outcome_seen: outcome !== null,
+      settlement_seen: settlementSeen, settled, helper_exited: exited,
+      helper_exit_code: helperExitCode, helper_signal: helperSignal,
+      live_owned_count: Math.min(MAX_PROCESSES, liveOwned({collect, owned}).length)})};
 }
 function liveOwned(handle) {
   handle.collect();
@@ -211,7 +238,8 @@ async function boundedUpload(message, environment, milliseconds = 60000, entry =
   abortSignal?.removeEventListener("abort", onAbort);
   clearTimeout(timeout);
   const completed = await cleanup(handle, Math.max(20, Math.min(2000, deadline - performance.now())));
-  return {result: completed && messages === 1 ? output : unknown(), cleanup_complete: completed};
+  return {result: completed && messages === 1 ? output : unknown(), cleanup_complete: completed,
+    cleanup_diagnostic: handle.diagnostic()};
 }
 function writeAtomic(file, value) {
   const temporary = file + '.staging';
@@ -252,6 +280,7 @@ async function runAction() {
     '--lane', 'unit', '--shard', '1', '--inventory-dir', inventory], {cwd: subject, env: environment});
   const transports = SCHEDULE.map((time, sequence) => ({sequence, scheduled_s: time, transport: 'pending',
     artifact_id: null, digest: null, size: null}));
+  const uploaderDiagnostics = SCHEDULE.map(() => null);
   const transportFile = path.join(directory, 'transport.json');
   const samplesFile = path.join(directory, 'samples.json');
   const sampleTimer = setInterval(() => {
@@ -292,6 +321,7 @@ async function runAction() {
       uploader = boundedUpload({name, directory: slot}, process.env, 60000, __filename, helperAbort.signal);
       const publication = await uploader;
       uploaderCleanup &&= publication.cleanup_complete;
+      uploaderDiagnostics[sequence] = publication.cleanup_diagnostic;
       const result = publication.result;
       transports[sequence] = {sequence, scheduled_s: SCHEDULE[sequence], transport: result.code,
         artifact_id: result.id, digest: result.digest, size: result.size};
@@ -320,7 +350,8 @@ async function runAction() {
   for (const slot of transports) if (slot.transport === 'pending') slot.transport = signal ? 'cancelled' : 'unavailable';
   writeAtomic(path.join(directory, 'transport-final.json'), {complete: false, slots: transports,
     subject_status: outcome.code, subject_signal: outcome.signal, owned_subject_cleanup: completed,
-    owned_uploader_cleanup: !uploader && uploaderCleanup, diagnostic_only: true});
+    owned_uploader_cleanup: !uploader && uploaderCleanup, diagnostic_only: true,
+    cleanup_diagnostics: {subject: subjectChild.diagnostic(), uploaders: uploaderDiagnostics}});
   if (signal || outcome.code === null) return 2;
   return outcome.code === 0 && !completed ? 2 : outcome.code;
 }

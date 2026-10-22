@@ -89,6 +89,10 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
         const final=JSON.parse(fs.readFileSync(path.join(output,'transport-final.json')));
         assert.equal(final.complete,false);assert.equal(final.owned_subject_cleanup,true);
         assert.equal(final.owned_uploader_cleanup,true);assert.equal(final.subject_signal,'SIGTERM');
+        assert.equal(final.cleanup_diagnostics.subject.supervisor.reason,'settled');
+        assert.equal(final.cleanup_diagnostics.subject.helper_exited,true);
+        assert.equal(final.cleanup_diagnostics.uploaders.length,8);
+        assert.ok(JSON.stringify(final.cleanup_diagnostics).length<16384);
         assert.ok(numericProcess(sentinel.pid));
       } finally {if(pid){try{process.kill(-pid,'SIGKILL')}catch(_){}}action.kill('SIGKILL');}
     }

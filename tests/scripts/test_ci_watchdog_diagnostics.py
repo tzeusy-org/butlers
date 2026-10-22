@@ -409,6 +409,13 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
             assert not marker.exists()
             assert not marker.with_suffix(marker.suffix + ".constructed").exists()
             return "failed"
+        if not receipt["upload"]["cleanup_complete"]:
+            # Keep the closed refusal cause in the actual failure carrier; tmp
+            # lifecycle files alone are not uploaded by an ordinary CI shard.
+            print(
+                "CI_WATCHDOG_CLEANUP_DIAGNOSTIC="
+                + json.dumps(receipt["upload"]["cleanup_diagnostic"], sort_keys=True)
+            )
         assert receipt["upload"]["cleanup_complete"] is True, {
             "slot": str(slot),
             "receipt": receipt,
