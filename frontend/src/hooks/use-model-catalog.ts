@@ -20,9 +20,12 @@ import {
   resetModelUsage,
   getModelUsageDetail,
   verifyAllModels,
+  getModelAllowance,
   getModelAttention,
   reissueModelAttention,
+  ApiError,
 } from "@/api/index.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy.ts";
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
@@ -49,6 +52,21 @@ export function useModelAttention() {
     queryKey: ["model-catalog", "runtime-attention"],
     queryFn: getModelAttention,
   });
+}
+
+/** Provider allowance state per account (owner-only; a 403 is not retried). */
+export function useModelAllowance() {
+  const query = useQuery({
+    queryKey: ["model-catalog", "allowance"],
+    queryFn: getModelAllowance,
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 403) return false;
+      return failureCount < 3;
+    },
+    refetchInterval: POLL_BUS_RECONCILE_MS,
+  });
+  const isForbidden = query.error instanceof ApiError && query.error.status === 403;
+  return { ...query, isForbidden };
 }
 
 export function useReissueModelAttention() {

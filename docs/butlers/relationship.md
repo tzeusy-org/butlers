@@ -107,9 +107,14 @@ commitment only when the owner declares it. The next calendar prep envelope for 
 carries the commitment.
 
 Three consecutive unanswered batches drop the cadence to once a week (the batch that crosses the
-threshold says so); any answer restores the daily cadence. Not built yet: the dashboard Debrief
-card with a pinned reply (replies go through ordinary routing today), a "work commitments" filter
-on the condition ledger, and deriving `sphere` from endpoint custody.
+threshold says so); any answer restores the daily cadence.
+
+The Calendar page shows a Debrief card fed by `GET /api/relationship/meeting-debriefs/pending`,
+which returns what `meeting_debrief_pending` returns (a failed read is `debriefs_available: false`,
+never an empty list). A reply from the card is sent as `"<number>: <text>"` to the Relationship
+pinned dashboard conversation, so it reaches the `meeting-debrief` skill without classification.
+Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
+endpoint custody.
 
 ## Implementation Notes
 

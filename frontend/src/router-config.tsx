@@ -12,9 +12,11 @@ import { installDraftNavigationGuard } from "./lib/draft-navigation"
  */
 
 import { lazy, type ReactNode } from 'react'
-import { createBrowserRouter, Navigate } from 'react-router'
+import { createBrowserRouter, Navigate, type RouteObject } from 'react-router'
 import { RouteSuspense } from './components/layout/RouteSuspense.tsx'
+import { RouteErrorFallback } from './components/layout/RouteErrorFallback.tsx'
 import RootLayout from './layouts/RootLayout.tsx'
+import NotFoundPage from './pages/NotFoundPage.tsx'
 import { getShellCapability } from './lib/shell-capability'
 import {
   ColumnsToPlexRedirect,
@@ -85,10 +87,10 @@ function routeElement(page: ReactNode) {
   return <RouteSuspense>{page}</RouteSuspense>
 }
 
-export const router = createBrowserRouter(
-  [
+export const routes: RouteObject[] = [
     {
       element: <RootLayout />,
+      errorElement: <RouteErrorFallback />,
       children: [
         { path: '/', element: routeElement(<DashboardPage />) },
         { path: '/chat', element: routeElement(<ChatPage />) },
@@ -222,10 +224,13 @@ export const router = createBrowserRouter(
           path: '/connectors/:connectorType/:endpointIdentity',
           element: <ConnectorDetailRedirect />,
         },
+        // Unmatched paths render an explicit not-found page in the shell. Registered routes and
+        // compatibility redirects keep precedence because `*` ranks last.
+        { path: '*', element: <NotFoundPage /> },
       ],
     },
-  ],
-  { basename: _baseUrl },
-)
+]
+
+export const router = createBrowserRouter(routes, { basename: _baseUrl })
 
 installDraftNavigationGuard(router)

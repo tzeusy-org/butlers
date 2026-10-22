@@ -5349,6 +5349,29 @@ export interface ModelAttentionObservation {
   episodes: Record<string, ModelAttentionEpisode>;
 }
 
+export interface AllowanceEntry {
+  id: string;
+  alias: string;
+}
+
+export type AllowanceState = "available" | "exhausted" | "unknown";
+export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
+
+export interface AllowanceAccount {
+  account_key: string;
+  state: AllowanceState;
+  reset_at: string | null;
+  reset_source: AllowanceResetSource;
+  first_seen_at: string;
+  updated_at: string;
+  entries: AllowanceEntry[];
+}
+
+export interface AllowanceObservation {
+  available: boolean;
+  accounts: AllowanceAccount[];
+}
+
 export interface ModelAttentionReissueResult {
   original_episode_id: string;
   successor_episode_id: string;
@@ -5733,6 +5756,32 @@ export interface OverdueContactsResponse {
   contacts: OverdueContact[];
   cadence_available: boolean;
   unmeasurable_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Pending meeting debriefs (bu-q7vx1q.63)
+// ---------------------------------------------------------------------------
+
+export interface PendingDebriefAttendee {
+  entity_id: string | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface PendingDebrief {
+  debrief_id: string;
+  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
+  number: number | null;
+  event_title: string | null;
+  occurrence_start: string;
+  prompted_at: string;
+  attendees: PendingDebriefAttendee[];
+}
+
+/** Response from GET /api/relationship/meeting-debriefs/pending */
+export interface PendingDebriefsResponse {
+  debriefs: PendingDebrief[];
+  debriefs_available: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -7945,7 +7994,7 @@ export interface ConditionEntry {
  * "sending" and "uncertain" never do, and nothing here can resend.
  */
 export interface ConditionAttention {
-  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" */
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
   status: string;
   episode_id: string | null;
   created_at: string | null;

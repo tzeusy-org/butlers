@@ -387,6 +387,32 @@ class OverdueContactsResponse(BaseModel):
     unmeasurable_count: int
 
 
+class PendingDebriefAttendee(BaseModel):
+    """An attendee frozen into a debrief snapshot (active-posture entities only)."""
+
+    entity_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class PendingDebrief(BaseModel):
+    """One prompted, unanswered meeting debrief."""
+
+    debrief_id: str
+    number: int | None = None
+    event_title: str | None = None
+    occurrence_start: str
+    prompted_at: str
+    attendees: list[PendingDebriefAttendee]
+
+
+class PendingDebriefsResponse(BaseModel):
+    """Pending debriefs; ``debriefs_available`` is false when the read failed."""
+
+    debriefs: list[PendingDebrief]
+    debriefs_available: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Entity-level tab API models (entity-keyed, facts-based)
 # ---------------------------------------------------------------------------

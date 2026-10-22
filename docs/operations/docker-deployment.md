@@ -191,12 +191,14 @@ sudo apparmor_parser -r /etc/apparmor.d/butlers-dashboard-api
 sudo aa-status | grep butlers-dashboard-api
 ```
 
-Then, in `docker-compose.yml`, edit the `security_opt` of BOTH the `dashboard-api` and
-`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`): replace
-`apparmor:unconfined` with `apparmor=butlers-dashboard-api` (the other two entries stay). The profile
-is otherwise unconfined, so the container's confinement is the same as today; only user-namespace
-creation is newly allowed, and only for these containers. Reload the stack with the launcher or
-`butlers deploy`.
+Then set `BUTLERS_DASHBOARD_APPARMOR_PROFILE=butlers-dashboard-api` in the environment file the
+launcher sources (`.env.dev` / `.env.prod`); do not edit the tracked `docker-compose.yml`. The
+variable feeds the `apparmor` entry of the `security_opt` of BOTH the `dashboard-api` and
+`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`); the
+other two entries stay, and with the variable unset the entry remains `apparmor:unconfined`. The
+profile is otherwise unconfined, so the container's confinement is the same as today; only
+user-namespace creation is newly allowed, and only for these containers. Reload the stack with the
+launcher or `butlers deploy`.
 
 Verify from the container that is actually running, `dashboard-api` or `dashboard-api-hotreload`
 (this proves user-namespace creation only, not the full sandbox):

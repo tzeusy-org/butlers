@@ -456,6 +456,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - This conversation may have been deleted, or the link is incorrect.
 - New conversation
 - Recent conversations
+- Conversation owner
 - conversation history
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
@@ -765,6 +766,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - health · medications
 - Medications
 
+## `frontend/src/pages/NotFoundPage.tsx`
+
+- Nothing is registered at
+- Press
+- to search, or go back to the dashboard.
+- Back to the dashboard
+- Page not found
+
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
@@ -1003,6 +1012,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Reset {} usage for {}
 - Reset {} usage
 - Set {} limit for {}
+- Declared capabilities
 - verification failed
 - Excluded by breaker after {} consecutive dispatch failures
 - insufficient dispatch history
@@ -1810,6 +1820,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Shutdown
 - Identity & routing
 - Session timeout
+- Memory read ceiling
 - System prompt
 - Prompt diff · v{} to v{} · {}
 - Edit system prompt · {}
@@ -2350,6 +2361,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - No domain context for this day. Tomorrow is clear.
 - Nothing scheduled across your domains. Tomorrow is clear.
 - Day briefing
+
+## `frontend/src/components/calendar/DebriefCard.tsx`
+
+- Sent. View conversation
+- e.g. "send Sam the deck by Friday", or "nothing agreed"
+- Meeting debriefs
 
 ## `frontend/src/components/calendar/LinkedPeopleAvatars.tsx`
 
@@ -3360,6 +3377,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - decision:
 - target:
 - rule type
+- except people I know
 - priority (lower = higher)
 - e.g. noreply.example.com
 - email address
@@ -3482,6 +3500,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - inner circle
 - Search entities, pages, butlers, actions…
 - Sessions & state
+- Owner shortcuts
 - Entities
 
 ## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
@@ -4507,6 +4526,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Pending
 - Unknown
 
+## `frontend/src/components/settings/ModelAllowanceStrip.tsx`
+
+- Allowance
+
 ## `frontend/src/components/settings/QaStafferCard.tsx`
 
 - system · qa staffer
@@ -4713,6 +4736,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Owner alert not delivered
 - Owner alert may not have arrived; it is not resent automatically
 - Owner alert status unknown
+- No owner alert has been raised for this condition
+- Owner alert waits for the attention grace
 - Owner alert status: {}
 - All
 - Commitments
@@ -4966,6 +4991,3 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - To
 - Time window picker
 - Preset windows
-
----
-*Total strings: 3958*
