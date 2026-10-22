@@ -84,6 +84,10 @@ def test_local_ci_targets_are_receipt_producing_and_keep_full_lane_scope(
         assert fragment in dry_run, f"`make {target}` lost CI fragment {fragment!r}:\n{dry_run}"
 
 
+PYTHON_ENVIRONMENT_STEP = "Set up the CI Python environment"
+PYTHON_ENVIRONMENT_ACTION = "./.github/actions/ci-python-environment"
+
+
 def _workflow_step(*, job: dict, name: str) -> dict:
     for step in job["steps"]:
         if step.get("name") == name:
@@ -816,17 +820,37 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     jobs = workflow["jobs"]
     # A structurally passing topology is unusable if GitHub cannot admit a job.
     assert all(job.get("runs-on") for job in jobs.values() if "steps" in job)
-    # Inventory and children must install the same full interpreter identity.
+    # Inventory and children must install the same full interpreter identity, and
+    # every Python job gets it from the one composite action (bu-29wkwj.2).
     assert workflow.get("env", {}).get("UV_PYTHON") == "3.12.15"
-    python_steps = [
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+    )
+    action_python = [
         step
-        for job in jobs.values()
-        for step in job.get("steps", [])
+        for step in action["runs"]["steps"]
         if step.get("uses", "").startswith("actions/setup-python@")
     ]
-    assert python_steps and all(
-        step["with"]["python-version"] == workflow["env"]["UV_PYTHON"] for step in python_steps
+    assert [step["with"]["python-version"] for step in action_python] == [
+        workflow["env"]["UV_PYTHON"]
+    ]
+    assert not any(
+        step.get("uses", "").startswith("actions/setup-python@")
+        or "install_ci_uv.py" in step.get("run", "")
+        or "ci_environment.py" in step.get("run", "")
+        for job in jobs.values()
+        for step in job.get("steps", [])
     )
+    python_jobs = {
+        name
+        for name, job in jobs.items()
+        if any("uv run" in step.get("run", "") for step in job.get("steps", []))
+    }
+    assert python_jobs
+    for name in python_jobs:
+        assert _workflow_step(job=jobs[name], name=PYTHON_ENVIRONMENT_STEP)["uses"] == (
+            PYTHON_ENVIRONMENT_ACTION
+        )
     preflight = jobs["check-preflight"]
     unit_jobs = [
         json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.shard }}", str(index)))
@@ -949,19 +973,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     for name, command in static_commands.items():
         assert _workflow_step(job=guards, name=name)["run"] == command
         assert not any(step.get("name") == name for step in preflight["steps"])
-    assert (
-        _workflow_step(job=guards, name="Install uv")["run"]
-        == _workflow_step(job=preflight, name="Install uv")["run"]
-    )
-    assert (
-        _workflow_step(job=guards, name="Install dependencies")["run"]
-        == "python3 scripts/ci_environment.py prepare"
-    )
     ordered = [step.get("name") for step in guards["steps"]]
     assert (
-        ordered.index("Install uv")
+        ordered.index(PYTHON_ENVIRONMENT_STEP)
         < ordered.index("Check lock file is up to date")
-        < ordered.index("Install dependencies")
         < ordered.index("Lint")
     )
     dry_run = subprocess.run(
@@ -1012,16 +1027,9 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     }
     assert inventory["steps"].index(collect) < inventory["steps"].index(upload)
     assert not any("ci_partition.py" in step.get("run", "") for step in guards["steps"])
-    for step_name in (
-        "Set up Python 3.12",
-        "Install uv",
-        "Compute exact environment cache key",
-        "Restore advisory environment cache",
-        "Install dependencies",
-    ):
-        assert _workflow_step(job=inventory, name=step_name) == _workflow_step(
-            job=guards, name=step_name
-        )
+    assert _workflow_step(job=inventory, name=PYTHON_ENVIRONMENT_STEP) == _workflow_step(
+        job=guards, name=PYTHON_ENVIRONMENT_STEP
+    )
 
     # Enumerate weighted antichains of the actual job DAG. Matrix aggregates
     # carry their full concurrent row counts; affected cannot run in full mode.
@@ -1455,7 +1463,7 @@ else:
         "uv" in step.get("run", "") or "checkout" in str(step) for step in check_job["steps"]
     )
     for step_name in (
-        "Install dependencies",
+        PYTHON_ENVIRONMENT_STEP,
         "Smoke tests (fast gate + release evidence)",
         "Reconcile eleven logical execution populations and derive smoke evidence",
     ):
@@ -1466,12 +1474,8 @@ else:
     for job in [preflight, *unit_jobs, *integration_jobs, jobs["check-affected"]]:
         assert "postgres" not in job.get("services", {})
         assert "DATABASE_URL" not in job.get("env", {})
-        install = _workflow_step(job=job, name="Install dependencies")
-        assert install["run"] == "python3 scripts/ci_environment.py prepare"
-        cache = _workflow_step(job=job, name="Restore advisory environment cache")
-        assert cache["with"]["path"] == ".venv"
-        assert "restore-keys" not in cache["with"]
-        assert cache["continue-on-error"] is True
+        environment = _workflow_step(job=job, name=PYTHON_ENVIRONMENT_STEP)
+        assert environment["uses"] == PYTHON_ENVIRONMENT_ACTION
 
     expected_coverage_artifacts: list[tuple[str, str, str, str]] = []
     for index, job in enumerate(unit_jobs, start=1):
@@ -1920,13 +1924,12 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         '--output "${RUNNER_TEMP}/ci-inventory"'
     )
     main_jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    for producer, collection_name, repaired_name in (
+    for producer, collection_name in (
         (
             main_jobs["inventory"],
             "Collect one fresh installed pytest inventory and enforce both budgets",
-            "Install dependencies",
         ),
-        (jobs["coverage-inventory"], "Collect full current inventory", None),
+        (jobs["coverage-inventory"], "Collect full current inventory"),
     ):
         assert producer["permissions"] == {"contents": "read", "actions": "read"}
         restore = _workflow_step(job=producer, name="Restore compatible advisory file weights")
@@ -1936,14 +1939,8 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
             '--output "${RUNNER_TEMP}/ci-weights"'
         )
         assert "if" not in restore and "continue-on-error" not in restore
-        repaired = (
-            _workflow_step(job=producer, name=repaired_name)
-            if repaired_name
-            else next(
-                step
-                for step in producer["steps"]
-                if step.get("uses") == "./.github/actions/ci-python-environment"
-            )
+        repaired = next(
+            step for step in producer["steps"] if step.get("uses") == PYTHON_ENVIRONMENT_ACTION
         )
         assert producer["steps"].index(repaired) < producer["steps"].index(restore)
         assert producer["steps"].index(restore) < producer["steps"].index(
@@ -2025,20 +2022,18 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
     assert action["runs"]["using"] == "composite"
     assert "inputs" not in action
     action_steps = {"steps": action["runs"]["steps"]}
-    original = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
-        "guards"
-    ]
-    for name in (
-        "Set up Python 3.12",
-        "Install uv",
-        "Compute exact environment cache key",
-        "Restore advisory environment cache",
-        "Install dependencies",
-    ):
-        actual = _workflow_step(job=action_steps, name=name)
-        old = _workflow_step(job=original, name=name)
-        assert actual.get("run") == old.get("run")
-        assert actual.get("with") == old.get("with")
+    assert _workflow_step(job=action_steps, name="Install uv")["run"] == (
+        "python3 scripts/install_ci_uv.py"
+    )
+    assert _workflow_step(job=action_steps, name="Install dependencies")["run"] == (
+        "python3 scripts/ci_environment.py prepare"
+    )
+    cache = _workflow_step(job=action_steps, name="Restore advisory environment cache")
+    assert cache["with"] == {
+        "path": ".venv",
+        "key": "${{ steps.environment-key.outputs.key }}",
+    }
+    assert cache["continue-on-error"] is True
     assert all(
         any(step.get("uses") == "./.github/actions/ci-python-environment" for step in job["steps"])
         for name, job in jobs.items()

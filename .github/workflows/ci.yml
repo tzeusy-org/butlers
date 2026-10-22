@@ -82,30 +82,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Restore compatible advisory file weights
         env:
@@ -149,13 +127,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Set up Node 24
         uses: actions/setup-node@v6
@@ -169,23 +142,6 @@ jobs:
         id: lock
         if: ${{ !cancelled() }}
         run: uv lock --check
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
 
       - name: Install lint tools
         run: make install-lint-tools
@@ -540,30 +496,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Download fresh full inventory
         if: needs.route.outputs.mode == 'full'
@@ -703,30 +637,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Download current inventory and computed assignment
         uses: actions/download-artifact@v4
@@ -805,30 +717,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Free disk space before testcontainers
         # Runner disk capacity varies. Preserve the cleanup that eliminated
@@ -940,30 +830,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Affected tests (scoped plan)
         id: selected-execution
