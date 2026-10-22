@@ -3491,13 +3491,16 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Select a result to preview.
 - Top relations
+- Loading relations…
 - No relations.
 - Command menu
 - Search entities, pages, butlers, and actions, then choose a result.
 - ESC
 - Search failed. Try again in a moment.
+- Searching sessions & state…
 - Searching…
 - inner circle
+- Relations
 - Search entities, pages, butlers, actions…
 - Sessions & state
 - Owner shortcuts
@@ -3505,7 +3508,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
 
-- Run {}
+- Butler discovery failed; cached actions are stale. Retry discovery
+- Butler actions unavailable. Retry discovery
+- Run {}{}
+- (stale)
 - Started {}
 - Failed to run {}
 
@@ -3544,6 +3550,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expand sidebar
 - Today&apos;s spend
 - Spend source unavailable
+- Spend
 - Collapse sidebar
 - Main navigation
 

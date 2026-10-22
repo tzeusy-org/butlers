@@ -207,7 +207,7 @@ function PreviewPane({ active }: PreviewPaneProps) {
     return () => clearTimeout(timer);
   }, [active?.entity_id]);
 
-  const { data: neighboursData } = useEntityNeighbours(debouncedId, {
+  const { data: neighboursData, isLoading: neighboursLoading, isError: neighboursError, refetch: refetchNeighbours } = useEntityNeighbours(debouncedId, {
     rank: "weight",
     per_predicate: 5,
   });
@@ -240,7 +240,6 @@ function PreviewPane({ active }: PreviewPaneProps) {
     <div
       className="hidden w-64 shrink-0 flex-col gap-3 border-l border-border p-4 sm:flex"
       data-testid="entity-finder-preview"
-      aria-hidden="true"
     >
       {/* Header: mark + name + type */}
       <div className="flex items-start gap-2">
@@ -269,8 +268,17 @@ function PreviewPane({ active }: PreviewPaneProps) {
         <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           Top relations
         </p>
-        {topRelations.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No relations.</p>
+        {debouncedId === active.entity_id && neighboursError && (
+          <SourceDegradedNote
+            label="Relations"
+            detail={neighboursData ? "unavailable; showing stale relations" : "unavailable"}
+            onRetry={() => void refetchNeighbours()}
+          />
+        )}
+        {neighboursLoading || debouncedId !== active.entity_id ? (
+          <p className="text-xs text-muted-foreground" role="status">Loading relations…</p>
+        ) : topRelations.length === 0 ? (
+          !neighboursError && <p className="text-xs text-muted-foreground">No relations.</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {topRelations.map((rel) => (
@@ -475,7 +483,12 @@ export default function EntityFinder() {
   // included, see matchKindLabel's "contact_fact" case) and a second,
   // differently-ranked entity list would just be a confusing duplicate.
   // -------------------------------------------------------------------------
-  const { data: genericSearchData, isFetching: genericFetching } = useSearch(trimmedQuery);
+  const {
+    data: genericSearchData,
+    isFetching: genericFetching,
+    isError: genericError,
+    refetch: refetchGenericSearch,
+  } = useSearch(trimmedQuery);
   // useMemo (not a bare `?? []`) so a stable empty-array reference doesn't
   // churn the highlightedPath useMemo's deps below on every render.
   const sessionMatches = useMemo(
@@ -707,12 +720,27 @@ export default function EntityFinder() {
             {!isLoading &&
               !isEmptyQuery &&
               !isError &&
+              !genericError &&
+              !genericFetching &&
               !hasResults &&
               genericDegraded.length === 0 && (
                 <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
                   No results for &ldquo;{query}&rdquo;
                 </Command.Empty>
               )}
+
+            {trimmedQuery.length >= 2 && genericError && (
+              <SourceDegradedNote
+                testId="entity-finder-generic-error"
+                label="Sessions & state"
+                detail={genericSearchData ? "unavailable; showing stale results" : "unavailable"}
+                onRetry={() => void refetchGenericSearch()}
+                className="mb-1"
+              />
+            )}
+            {trimmedQuery.length >= 2 && genericFetching && (
+              <p className="py-2 text-xs text-muted-foreground" role="status">Searching sessions & state…</p>
+            )}
 
             {/* Sessions/state degraded note (bu-tpudw.4) — rendered whether or
              * not any session/state rows survived, so a half-down fleet is
