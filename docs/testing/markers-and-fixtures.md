@@ -211,12 +211,11 @@ Tests can use this to skip gracefully when Docker is not installed.
   permission, and malformed verdict/classifier/planner evidence fails closed.
 - Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
   recovery policy and frozen dev synchronization. Their command scopes match the former
-  preflight commands and local `make check-guards`. Fresh collection and both budgets belong
-  to early inventory; exact-once manifests, smoke/release cmd/SHA/duration/status/skips and
-  sanitized artifacts stay in preflight. Required check contains only the verdict step.
-  The independent owned `coverage-report` job waits for fresh inventory, all eleven covered
-  shards and complete-identity preflight, reads each raw CoverageData
-  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  preflight commands and local `make check-guards`. Fresh collection, the lane-group totals, both budgets, smoke/release
+  cmd/SHA/duration/status/skips and sanitized artifacts belong to preflight. Required check contains only the verdict step.
+  The independent owned `coverage-report` job waits for all eleven covered groups and preflight,
+  reads each raw CoverageData database and its checkout/run/attempt/lane/group/config/digest
+  metadata, requires the
   complete measured source population and compatible tracing, then combines and publishes
   the report; only scheduled/manual main success may update the badge. Missing, empty,
   corrupt, stale or mismatched inputs fail
@@ -292,10 +291,10 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
 coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
-decision bu-w72da2 = A retired the former PR-path workflow). It runs the same fresh full inventory,
-five unit and six integration commands, complete execution reconciliation and
-smoke fallback before the strict CoverageData reader. Inventory, execution and
-coverage metadata preserve the actual event, checkout, run and attempt. Both
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same five unit and
+six integration pytest-split groups, the lane totals against fresh collect-only
+counts and the smoke command before the strict CoverageData reader. Coverage
+metadata preserves the actual event, checkout, run, attempt, lane and group. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
 unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from

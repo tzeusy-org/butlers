@@ -63,7 +63,7 @@ the exact tree about to land. A pull request's own CI run is narrower on
 purpose: a docs/spec-only diff skips the backend shards and frontend jobs, and
 a push to `main` skips the shards because the queue already ran them. The
 suite also has a size budget: `scripts/check_test_budget.py` fails
-`inventory` when a lane collects more tests than
+`check-preflight` when a lane collects more tests than
 `scripts/test-budget-baseline.json` allows, so a change that grows the suite
 past its headroom condenses tests in the same PR or raises the budget with a
 stated net test delta and reason. Tests are production code with a run-time
@@ -99,15 +99,16 @@ A boolean is never an integer count/exit, and an equal floating-point number is 
 Both scoped and full-matrix consumers reject malformed representations without coercion;
 finite nonnegative integer or floating-point phase timers remain valid numeric durations.
 
-The dedicated bounded `inventory` job begins after route, in parallel with static guards, and performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
-collection. Exact inherited markers establish both populations; advisory weights never do.
-Missing, malformed, nonobject or duplicate-key advisory weight files fall back to the same
-finite deterministic costs and set assignment degradation; inventory, assignment and execution
-evidence still use strict JSON admission in every entrypoint. Both unchanged lane budgets consume this inventory. Full backend children await route and successful inventory, while affected and Vitest may start after route; every final required verdict still requires successful guards. Required check admits inventory success only for full/main-push and inventory skips only for scoped/docs modes. Browser still awaits the guards-built artifact. Deterministic LPT assigns whole files to
-five unit and six integration children. Each child independently recollects its assignment;
-preflight reconciles complete nonce-hashed identity multiplicity, logical starts and phases
-across all eleven children. Missing/extra/stale receipts cannot hide behind a matrix aggregate.
-Raw parameter identities stay in RAM; public nonces limit linkability, not guessing or trust.
+The backend lanes run as pytest-split groups: five unit and six integration children, each
+selecting its slice of the lane's fresh marker selection with `duration_based_chunks` over the
+committed `.test_durations`. Durations only balance the groups; a test without one gets the
+average and still runs. Each child records how many tests it collected, and check-preflight sums
+each lane's groups and compares the sum with one fresh `--collect-only` count of the same
+selection, so a group that drops or duplicates a test fails the run. Those same fresh counts feed
+both lane budgets. Lane children, affected, Vitest and the browser job (which builds its own
+bundle) start after route; every final required verdict still requires successful guards. The
+nightly covered groups measure per-test durations, and its `durations-refresh` job opens a pull
+request with the merged file instead of pushing to main (bu-29wkwj.2).
 
 The read-only scheduled weight observer retains closed provenance for both CANDIDATE and
 UNKNOWN: known selected run/attempt/head, completed and unavailable bounded index reads,
