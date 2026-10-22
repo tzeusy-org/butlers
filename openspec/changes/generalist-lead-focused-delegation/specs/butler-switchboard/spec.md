@@ -24,6 +24,7 @@ Configuration loading SHALL apply this canonical Switchboard destination resolut
 
 In ISOLATED_CANDIDATE and SWITCHED_RELEASE the same endpoint-resolution contract SHALL apply to brokered capability forwarding and the service-plane relay in `butlers-control`, preserving registered-agent reachability after the separate cutover of classification and route dispatch. KEY_ABSENT_STAGE SHALL retain the current route and delivery callers above.
 
+ID: REQ-butler-switchboard-009
 Source: RFC 0038 D1 and D7
 Scope: v1-mandatory
 
