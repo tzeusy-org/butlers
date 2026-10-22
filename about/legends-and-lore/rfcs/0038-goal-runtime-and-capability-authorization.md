@@ -290,7 +290,8 @@ effect_class          read | record | communicate | transact | actuate | adminis
 output_trust          trusted | untrusted | stamped
                       (stamped: trust is read from each returned item's stamp, D6)
 output_sensitivity    ordinary | sensitive
-resource_params       argument names that select a resource (entity, account, device)
+resource_params       argument names that select a resource (entity, account, device),
+                      each optionally selection-bound (D7)
 safety_args           argument names an approval must pin (RFC 0021)
 approval_policy       existing approvals gating config for the tool, plus an
                       approval mode: default | always_per_event (D13)
@@ -496,6 +497,32 @@ lead epoch matching:
 Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
 Stop or is refused after it. The broker then forwards the call to the owning
 domain with an `X-Butlers-Assertion` header and records the result.
+
+**Owner selection records.** Some resource scopes must be exactly what the
+owner picked, such as the sources an owner checklist may read. A capability
+opts in by declaring those resource parameters selection-bound in its catalog
+entry (D4). The control plane holds a **selection record** for each owner
+pick: id, subject (owning domain and subject reference), capability, an exact,
+bounded set of resource identifiers, the authenticated owner action that wrote
+it (actor, owner surface, request id, time), and state `active` or `revoked`
+with revoke time and actor. Only an authenticated owner action on the D19
+owner surface, through a control-plane endpoint, writes or revokes a record;
+the request id makes a repeated submit resolve to one record, and a record is
+immutable except for that one-way revoke. Goals, standing rules, approvals,
+service-plane relays, domains and connectors cannot write one, and no tool that
+writes one is LLM-presentable or grantable (D4). A selection reaches a goal
+only through the owner-origin admission (D5) of the owner-surface action that
+wrote or referenced it; third-party, obligation, staffer and caused admissions
+carry none, and a selection named in message text, model output, arguments,
+envelopes or rule slots is ignored. When minting a grant, the broker sets the
+scope of each selection-bound parameter to exactly the identifiers of that
+active record; with no record the scope is empty and the capability is neither
+listed nor callable. Delegation intersects that scope (D9). Step 2 of the
+per-call check also requires the record to be active, so a revoke refuses the
+next call in the same transaction that serializes Stop; reads already returned
+are not recalled. A selection is not an effect, so no approval, "Approve all"
+tap or standing rule creates or extends one, and selection-bound reads keep
+their effect class, output trust and sensitivity.
 
 **Assertion.** An Ed25519 signature, with key id `kid`, over:
 
@@ -1093,6 +1120,7 @@ hard-cutover gates or alter the private-custody boundary.
 | Recorded | Decision | Effect on this RFC |
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
+| 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 
 ## Alternatives considered
 
@@ -1145,3 +1173,4 @@ hard-cutover gates or alter the private-custody boundary.
 | `capability-authorization` 015 `transact` disabled | D4, D5, D9, owner decision 8 |
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
 | `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
+| `capability-authorization` 018 owner selection records bind selection-bound resource scopes | D4, D5, D7, D9, later owner decision `bu-p5umi2.4` (OQ1) |
