@@ -223,6 +223,20 @@ def _restore_approval_hook_runtimes():
         _hooks._approval_hooks_by_pool.update(saved_runtimes)
 
 
+@pytest.fixture(autouse=True)
+def _restore_fact_source_registry(monkeypatch):
+    """Keep a registry that a test's daemon start registers within that test.
+
+    ``ButlerDaemon.start`` registers the process-wide fact source registry, and
+    a leaked one reroutes later pipelines' identity resolution through the
+    owning-role MCP resolver. Capture the actual prior object; teardown restores
+    it without clearing its live reports or replacing it with None.
+    """
+    from butlers.core import fact_authority
+
+    monkeypatch.setattr(fact_authority, "_source_registry", fact_authority.source_registry())
+
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
     from testcontainers.postgres import PostgresContainer
