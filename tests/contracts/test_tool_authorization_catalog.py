@@ -131,7 +131,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
 async def _complete_core_catalog(name):
     daemon = ButlerDaemon(_ROOT / "roster" / name, db=SimpleNamespace(pool=AsyncMock()))
     daemon.config = load_config(_ROOT / "roster" / name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=None)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(update={"core_groups": None})
     daemon.config.modules = {}
     daemon.mcp = FastMCP(f"authorization-core-{name}")
     daemon.spawner = MagicMock()
@@ -314,7 +314,6 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
 
 
 async def test_authorization_catalog_rejects_real_definition_mutations() -> None:
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import (
         AUTHORIZATION_FIELDS,
@@ -425,7 +424,6 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:
     policy = {"enabled": True, "constraints": {"recipient": ["owner"]}}
     parties = ["query"]
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import RecipientParameters
 
@@ -531,7 +529,6 @@ asyncio.run(main())
 
 
 async def test_module_declarations_cannot_override_actual_owner_or_policy(monkeypatch) -> None:
-    from dataclasses import replace
 
     from butlers.modules.calendar import CalendarModule
 

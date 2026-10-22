@@ -784,7 +784,5 @@ name = "daily-check"
 cron = "0 9 * * *"
 prompt = "Do the daily check"
 """)
-        with pytest.raises(
-            ConfigError, match=r"butler\.security\.trusted_route_callers must be a list of strings"
-        ):
+        with pytest.raises(ConfigError, match=r"Invalid butler\.security\.trusted_route_callers"):
             load_config(d4)
