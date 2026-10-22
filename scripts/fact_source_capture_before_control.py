@@ -243,7 +243,7 @@ def process_start(pid):
     return int(raw[raw.rfind(")") + 2 :].split()[19])
 
 
-def run_owned(command, environment, seconds):
+def run_owned(command, environment, seconds, *, cwd=None):
     """Use the existing confined subreaper; only its closed lifecycle crosses stdout."""
     started = time.monotonic()
     deadline = started + seconds
@@ -256,6 +256,7 @@ def run_owned(command, environment, seconds):
             *command,
         ],
         env=environment,
+        cwd=cwd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -491,6 +492,7 @@ def execute(root, output):
             [sys.executable, str(workload / "scripts/ci_environment.py"), "prepare"],
             environment,
             remaining(640),
+            cwd=workload,
         )
         if prepared["exit"] != 0 or not prepared["cleanup_complete"] or prepared["timed_out"]:
             raise ValueError("environment-prepare")

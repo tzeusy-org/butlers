@@ -153,7 +153,9 @@ def test_disposable_workload_allows_only_the_exact_immutable_runtime_overlay(tmp
     assert control.workload_state(tmp_path, "after") == healthy
 
 
-def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_sentinel(tmp_path):
+def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_sentinel(
+    tmp_path, monkeypatch
+):
     sentinel = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
     try:
         healthy = control.run_owned([sys.executable, "-c", "pass"], os.environ.copy(), 5)
@@ -168,6 +170,31 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         )
         hung = control.run_owned([sys.executable, "-c", code], os.environ.copy(), 2)
         assert hung["timed_out"] and hung["cleanup_complete"] and hung["exit"] != 0
+        # An absolute script path does not choose its editable-repair target.
+        controller = tmp_path / "controller"
+        controller.mkdir()
+        original = controller / "original"
+        original.write_text("unchanged")
+        workload = tmp_path / "workload"
+        (workload / "scripts").mkdir(parents=True)
+        prepare = workload / "scripts/ci_environment.py"
+        prepare.write_text(
+            "import pathlib,sys\n"
+            "assert sys.argv[1:] == ['prepare']\n"
+            "(pathlib.Path.cwd()/'prepared').write_text('software-only')\n"
+        )
+        with monkeypatch.context() as context:
+            context.chdir(controller)
+            prepared = control.run_owned(
+                [sys.executable, str(prepare), "prepare"],
+                os.environ.copy(),
+                5,
+                cwd=workload,
+            )
+        assert prepared["exit"] == 0 and prepared["cleanup_complete"]
+        assert (workload / "prepared").read_text() == "software-only"
+        assert sorted(p.name for p in controller.iterdir()) == ["original"]
+        assert original.read_text() == "unchanged" and sentinel.poll() is None
         # Exercise the real unchanged installer through the producer boundary.
         # Only curl is a software stand-in; no network or installed shared files.
         binaries = tmp_path / "bin"
