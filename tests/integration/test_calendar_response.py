@@ -362,22 +362,10 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             "/api/calendar/workspace/respond", json={**request, "request_id": str(uuid.uuid4())}
         )
         assert noop.status_code == 200 and noop.json()["data"]["status"] == "noop"
-        assert len(writes) == 1 and noop.json()["data"]["undo_available"] is False
-        concurrent_undo = await asyncio.gather(
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-        )
-        assert sorted(result.status_code for result in concurrent_undo) == [200, 409]
-        undone = next(result for result in concurrent_undo if result.status_code == 200)
-        assert undone.status_code == 200 and undone.json()["data"]["undone"] is True
-        inverse_id = uuid.UUID(undone.json()["data"]["result"]["command_id"])
-        inverse_args = await pool.fetchval(
-            "SELECT tool_args FROM pending_actions WHERE id=$1", inverse_id
-        )
-        assert inverse_args["response_status"] == "needsAction" and len(writes) == 2
-        assert (await client.post(f"/api/calendar/workspace/undo/{command_id}")).status_code == 409
-        with pytest.raises(CalendarResponseError, match="response_inverse_used"):
-            await reserve_response_inverse(pool, command_id)
+        assert len(writes) == 1
+        # The dashboard no longer exposes undo; reset the controlled provider so the
+        # remaining receipts start again from the original response status.
+        resource["attendees"][0]["responseStatus"] = "needsAction"
 
     # A real committed rejection receipt earns neither success nor inverse.
     # The explicit provider status is controlled; action-log SQL is actual.

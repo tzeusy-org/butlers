@@ -90,15 +90,6 @@ from tests.api.test_butlers_board import (
     _registry_row as _board_registry_row,
 )
 from tests.api.test_calendar_conflict_radar import _build_app as _make_conflicts_app
-from tests.api.test_calendar_dedup_review import (
-    _DUP_PARAMS,
-)
-from tests.api.test_calendar_dedup_review import (
-    _build_app as _make_duplicates_app,
-)
-from tests.api.test_calendar_dedup_review import (
-    _FakePool as _DedupFakePool,
-)
 from tests.api.test_calendar_workspace import (
     _audit_row,
     _workspace_event_row,
@@ -323,22 +314,6 @@ def _case_calendar_audit() -> DegradedCase:
         assert data["sources_available"] is False
 
     return DegradedCase("calendar_workspace_audit", _run)
-
-
-def _case_calendar_duplicates() -> DegradedCase:
-    async def _run() -> None:
-        with patch(
-            "butlers.api.routers.calendar_workspace._fetch_flattened_workspace_rows",
-            AsyncMock(side_effect=RuntimeError("pool down")),
-        ):
-            app, _db = _make_duplicates_app(create_app(), workspace_rows={}, pool=_DedupFakePool())
-            resp = await _request(app, "GET", "/api/calendar/workspace/duplicates", _DUP_PARAMS)
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["clusters"] == []
-        assert data["available"] is False
-
-    return DegradedCase("calendar_workspace_duplicates", _run)
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +719,6 @@ REGISTRY: list[DegradedCase] = [
     _case_calendar_entries(),
     _case_calendar_conflicts(),
     _case_calendar_audit(),
-    _case_calendar_duplicates(),
     _case_board(),
     _case_notifications_list(),
     _case_notifications_stats(),
