@@ -119,12 +119,12 @@ import {
   KindTag,
   OverlayPill,
   PillButton,
-  SnoozeMenu,
 } from "@/pages/calendar/atoms";
 import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarEntryDetailPanel } from "@/pages/calendar/CalendarEntryDetailPanel";
 import { CalendarSearchPalette } from "@/pages/calendar/CalendarSearchPalette";
 import { ButlerEventDialog } from "@/pages/calendar/ButlerEventDialog";
+import { ButlerLanes } from "@/pages/calendar/ButlerLanes";
 import { CalendarHeader } from "@/pages/calendar/CalendarHeader";
 import { CalendarToolbar, type CalendarPanel } from "@/pages/calendar/CalendarToolbar";
 import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
@@ -148,13 +148,10 @@ import {
 } from "@/pages/calendar/mutation-result";
 import {
   FIELD_SELECT_CLASS,
-  RECURRING_INSTANCE_CAP,
   SELECT_CLASS,
-  capLaneEntriesByDay,
   formatLaneTitle,
   headlineLabel,
   isCancelledEntry,
-  isOverflowSentinel,
   isPausedEntry,
   isRecurringUserEntry,
   occurrenceImpactText,
@@ -2563,142 +2560,17 @@ export default function CalendarWorkspacePage() {
             // grid replacing itself with "Drawing the calendar…" on every step.
             <FetchingDim isFetching={calendarSurfaceFetching}>
               {view === "butler" ? (
-            /* ---- Butler lanes ---- */
-            butlerLaneRows.length === 0 ? (
-              <Voice variant="italic" className="text-[var(--mfg)]">
-                No butler lanes yet.
-              </Voice>
-            ) : (
-              <div className="min-h-0 flex-1 space-y-8 overflow-y-auto pr-1">
-                {butlerLaneRows.map((lane) => (
-                  <section key={lane.laneId}>
-                    <div className="mb-1 flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <ButlerMark name={lane.butlerName} tone="fill" />
-                        <span className="truncate text-[15px] font-medium text-fg">
-                          {lane.title}
-                        </span>
-                        <Mono muted className="tabular-nums">
-                          {lane.entries.length}{" "}
-                          {lane.entries.length === 1 ? "event" : "events"}
-                        </Mono>
-                      </div>
-                      <PillButton
-                        onClick={() => openButlerCreateDialog(lane.butlerName)}
-                        disabled={butlerMutation.isPending}
-                      >
-                        Add event
-                      </PillButton>
-                    </div>
-
-                    {lane.entries.length === 0 ? (
-                      <Voice
-                        variant="italic"
-                        className="py-2 text-[var(--mfg)]"
-                      >
-                        No events in this lane.
-                      </Voice>
-                    ) : (
-                      <div role="list">
-                        {capLaneEntriesByDay(
-                          lane.entries,
-                          RECURRING_INSTANCE_CAP,
-                          defaultTimezone,
-                        ).map((item) =>
-                          isOverflowSentinel(item) ? (
-                            <div
-                              key={item.sentinelKey}
-                              data-testid="butler-lane-row"
-                              className="border-b border-[var(--border-soft)] py-2 pl-[68px]"
-                            >
-                              <span className="font-serif text-[13px] italic text-[var(--mfg)]">
-                                and {item.hiddenCount} more instance
-                                {item.hiddenCount === 1 ? "" : "s"} of &ldquo;
-                                {item.title}&rdquo;
-                              </span>
-                            </div>
-                          ) : (
-                            <Row
-                              key={item.entry_id}
-                              data-testid="butler-lane-row"
-                              mark={
-                                <Mono
-                                  muted
-                                  className="inline-block w-14 tabular-nums"
-                                >
-                                  {item.all_day
-                                    ? "all day"
-                                    : formatEventTime(
-                                        item.start_at,
-                                        defaultTimezone,
-                                        "HH:mm",
-                                      )}
-                                </Mono>
-                              }
-                              meta={
-                                <div className="flex items-center gap-1.5">
-                                  <PillButton
-                                    onClick={() => openDetailPanel(item)}
-                                    disabled={butlerMutation.isPending}
-                                  >
-                                    Edit
-                                  </PillButton>
-                                  <PillButton
-                                    onClick={() => handleButlerToggle(item)}
-                                    disabled={butlerMutation.isPending}
-                                  >
-                                    {isPausedEntry(item) ? "Resume" : "Pause"}
-                                  </PillButton>
-                                  <SnoozeMenu
-                                    disabled={butlerMutation.isPending}
-                                    onSnooze={(iso) =>
-                                      handleButlerSnooze(item, iso)
-                                    }
-                                  />
-                                  {item.source_type === "butler_reminder" ? (
-                                    <PillButton
-                                      data-testid="butler-dismiss-button"
-                                      onClick={() => handleButlerDismiss(item)}
-                                      disabled={butlerMutation.isPending}
-                                      className="hover:border-[var(--red)] hover:text-[var(--red-text)]"
-                                    >
-                                      Dismiss
-                                    </PillButton>
-                                  ) : null}
-                                  <PillButton
-                                    onClick={() => handleButlerDelete(item)}
-                                    disabled={butlerMutation.isPending}
-                                    className="hover:border-[var(--red)] hover:text-[var(--red-text)]"
-                                  >
-                                    Delete
-                                  </PillButton>
-                                </div>
-                              }
-                            >
-                              <div className="flex min-w-0 items-center gap-2">
-                                <span className="truncate text-sm text-fg">
-                                  {item.title}
-                                </span>
-                                <KindTag>
-                                  {item.source_type === "scheduled_task"
-                                    ? "schedule"
-                                    : "reminder"}
-                                </KindTag>
-                                {isPausedEntry(item) ? (
-                                  <KindTag className="text-[var(--mfg)]">
-                                    paused
-                                  </KindTag>
-                                ) : null}
-                              </div>
-                            </Row>
-                          ),
-                        )}
-                      </div>
-                    )}
-                  </section>
-                ))}
-              </div>
-            )
+            <ButlerLanes
+              lanes={butlerLaneRows}
+              defaultTimezone={defaultTimezone}
+              pending={butlerMutation.isPending}
+              onAddEvent={openButlerCreateDialog}
+              onOpenDetail={openDetailPanel}
+              onToggle={handleButlerToggle}
+              onSnooze={handleButlerSnooze}
+              onDismiss={handleButlerDismiss}
+              onDelete={handleButlerDelete}
+            />
           ) : range === "month" ? (
             /* ---- Month matrix ---- */
             <div className="flex min-h-0 flex-1 flex-col">
