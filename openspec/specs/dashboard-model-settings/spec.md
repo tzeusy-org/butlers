@@ -184,6 +184,10 @@ The dashboard SHALL expose `PUT /api/settings/models/{id}/priority {delta: int}`
 ### Requirement: Catalog Verify-All API
 The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify every enabled model in parallel. The verification core is shared (`butlers.api.routers.model_settings.run_verify_all_models`) between this manual endpoint and the hourly automated sweep (see Hourly Automated Verification Sweep) so the two can never disagree about what "verified" means or how the result is persisted.
 
+ID: REQ-dashboard-model-settings-003
+Source: dashboard-owner-auth successor design D1-D9; existing dashboard-model-settings behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
+
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is called
 - **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency of 8
