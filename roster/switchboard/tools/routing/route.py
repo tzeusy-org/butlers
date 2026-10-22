@@ -31,7 +31,7 @@ from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
 )
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     CONFIRMED,
     POLICY_DENIED,
     RECIPIENT_UNAVAILABLE,

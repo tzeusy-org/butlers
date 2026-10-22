@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.tools.switchboard.routing.transport import TransportOutcome
 from butlers.tools.switchboard.runtime_attention.outbox import OutboxEpisode
 from butlers.tools.switchboard.runtime_attention.worker import build_messenger_transport
+from butlers.tools.switchboard.transport import TransportOutcome
 
 pytestmark = [pytest.mark.unit]
 

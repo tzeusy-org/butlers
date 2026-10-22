@@ -795,7 +795,7 @@ def _to_wire_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
     ``_make_ingestion_envelope_for_filter`` (ingestion-policy raw_key) — can
     read the event type without re-deriving it. That field is internal to
     this connector: the ``ingest.v1`` wire contract (``IngestEventV1`` in
-    ``routing/contracts.py``, ``extra="forbid"``) only defines
+    ``tools/contracts.py``, ``extra="forbid"``) only defines
     ``external_event_id``, ``external_thread_id``, and ``observed_at`` on
     ``event``. Submitting ``event.type`` verbatim causes the Switchboard to
     reject the envelope with a Pydantic ``extra_forbidden`` error on every

@@ -23,7 +23,7 @@ from butlers.core.decision_callbacks import (
 )
 from butlers.core_tools._routing import _owner_control_reply_markup
 from butlers.jobs.decision_routing import build_decision_request_envelope, compose_prompt_message
-from butlers.tools.switchboard.routing.contracts import parse_notify_request
+from butlers.tools.switchboard.contracts import parse_notify_request
 from tests.decision_desk_helpers import make_bead
 
 pytestmark = pytest.mark.unit

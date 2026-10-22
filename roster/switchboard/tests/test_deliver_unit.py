@@ -1582,9 +1582,7 @@ class TestWriteOutboundMessageInbox:
         """Derives thread identity from delivery.recipient for telegram send-intent."""
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import (
-            NotifyRequestV1,
-        )
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 3, 19, 13, 21, 0, tzinfo=UTC)
@@ -1621,7 +1619,7 @@ class TestWriteOutboundMessageInbox:
         """A proactive WhatsApp send shares the whatsapp:<jid> key of the chat's inbound rows."""
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         notify_request = NotifyRequestV1.model_validate(
@@ -1651,9 +1649,7 @@ class TestWriteOutboundMessageInbox:
     async def test_skips_when_no_thread_and_no_recipient(self) -> None:
         """Skips write when neither thread identity nor recipient is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import (
-            NotifyRequestV1,
-        )
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         notify_request = NotifyRequestV1.model_validate(
@@ -1682,7 +1678,7 @@ class TestWriteOutboundMessageInbox:
         """Derives thread identity from recipient when request_context lacks it."""
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 3, 20, 1, 31, 0, tzinfo=UTC)
@@ -1726,7 +1722,7 @@ class TestWriteOutboundMessageInbox:
     async def test_reply_without_conversation_key_joins_the_delivered_chat(self) -> None:
         """A reply context that dropped external_conversation_id still lands in chat history."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         notify_request = NotifyRequestV1.model_validate(
@@ -1755,7 +1751,7 @@ class TestWriteOutboundMessageInbox:
     async def test_writes_outbound_row_when_thread_identity_present(self) -> None:
         """Writes outbound row to message_inbox when source_thread_identity is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 2, 18, 10, 5, 0, tzinfo=UTC)
@@ -1818,7 +1814,7 @@ class TestWriteOutboundMessageInbox:
     async def test_swallows_db_error_without_propagating(self) -> None:
         """DB error during outbound write is logged but never propagates."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         pool.execute.side_effect = Exception("DB connection lost")

@@ -25,7 +25,7 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnectorConfig,
     _classify_source_api_error,
 )
-from butlers.tools.switchboard.routing.contracts import IngestAttachment
+from butlers.tools.switchboard.contracts import IngestAttachment
 
 _ENDPOINT = "telegram:bot:123456789"
 

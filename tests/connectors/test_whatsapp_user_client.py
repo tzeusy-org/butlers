@@ -77,7 +77,7 @@ def test_single_event_passes_parse_ingest_envelope(
     """Single event envelope must validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     event: dict[str, Any] = {
         "message_id": "validate-me",
@@ -738,7 +738,7 @@ def test_batch_envelope_large_group_passes_parse(
     """Large-group batch envelope must still validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     events: list[dict[str, Any]] = [
         {

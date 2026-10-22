@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     NotifyRequestV1,
+    parse_notify_request,
+)
+from butlers.tools.switchboard.routing.contracts import (
     RouteEnvelopeV1,
     RouteRequestContextV1,
-    parse_notify_request,
     parse_route_envelope,
 )
 
@@ -508,7 +510,7 @@ class TestIngestionTierContract:
 
     def test_tier1_full_envelope_valid(self) -> None:
         """Tier 1 (full) envelope accepts non-null raw payload."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         envelope = IngestEnvelopeV1.model_validate(self._base_email_payload())
         assert envelope.control.ingestion_tier == "full"
@@ -516,7 +518,7 @@ class TestIngestionTierContract:
 
     def test_tier2_metadata_envelope_valid(self) -> None:
         """Tier 2 (metadata) envelope accepts null raw with subject-only text."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         envelope = IngestEnvelopeV1.model_validate(self._tier2_email_payload())
         assert envelope.control.ingestion_tier == "metadata"
@@ -525,7 +527,7 @@ class TestIngestionTierContract:
 
     def test_default_ingestion_tier_is_full(self) -> None:
         """When ingestion_tier is omitted, it defaults to 'full'."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         del payload["control"]["ingestion_tier"]
@@ -535,7 +537,7 @@ class TestIngestionTierContract:
 
     def test_tier2_with_non_null_raw_rejected(self) -> None:
         """Tier 2 envelopes must have payload.raw=null."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._tier2_email_payload()
         payload["payload"]["raw"] = {"some": "body content"}  # violates tier 2 constraint
@@ -548,7 +550,7 @@ class TestIngestionTierContract:
 
     def test_tier1_with_null_raw_rejected(self) -> None:
         """Tier 1 envelopes must have a non-null raw dict."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         payload["payload"]["raw"] = None  # violates tier 1 constraint
@@ -561,7 +563,7 @@ class TestIngestionTierContract:
 
     def test_invalid_ingestion_tier_rejected(self) -> None:
         """Unknown ingestion_tier values are rejected by the contract."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         payload["control"]["ingestion_tier"] = "skip"  # Tier 3 is connector-side only
@@ -574,7 +576,7 @@ class TestIngestionTierContract:
 
     def test_backward_compat_no_ingestion_tier_field_in_control(self) -> None:
         """Envelopes without ingestion_tier in control remain valid (backward compat)."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = {
             "schema_version": "ingest.v1",
@@ -599,7 +601,7 @@ class TestIngestionTierContract:
 
     def test_tier2_spec_example_from_policy_doc(self) -> None:
         """Validate the exact Tier 2 JSON example from email_ingestion_policy.md section 5.2."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = {
             "schema_version": "ingest.v1",
