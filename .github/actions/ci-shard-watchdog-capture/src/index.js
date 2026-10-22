@@ -521,7 +521,8 @@ async function runRetentionControl() {
 module.exports = {subjectEnvironment, subjectInputs, uploaderEnvironment, finalized, sealedFiles, uploadWithClient,
   numericProcess, descendantSamples, managed, cleanup, boundedUpload, runAction, writeAtomic, RETENTION_PINS, retentionBinding, writeRetentionControl,
   retentionFiles, uploadRetentionWithClient, retentionUploaderMain, runRetentionControl};
-if (require.main === module) {
+// ncc rewrites require.main to its internal entry; argv also distinguishes an import.
+if (require.main === module && path.resolve(process.argv[1] || '') === __filename) {
   if (process.env.WATCHDOG_UPLOADER === '1') uploaderMain();
   else runAction().then(code => { process.exitCode = code; }).catch(() => {
     process.stderr.write('watchdog diagnostic unavailable: UNKNOWN\n'); process.exitCode = 2;

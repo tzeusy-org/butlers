@@ -133,6 +133,12 @@ test('actual control entry finalizes only after managed mock SDK settlement and 
   const git=args=>execFileSync('git',args,{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
   try {
     const original=path.resolve(__dirname,'../../../..');
+    const imported=require('node:child_process').spawnSync(process.execPath,['-e',
+      `require(${JSON.stringify(path.join(original,'.github/actions/ci-shard-watchdog-capture/dist/index.js'))})`],
+      {env:{PATH:process.env.PATH},timeout:10000,encoding:'utf8'});
+    assert.equal(imported.status,0,'generated bundle import must never start the diagnostic');
+    assert.equal(imported.stderr,'');assert.equal(imported.stdout,'');
+
     git(['init','-q']);
     for(const file of api.RETENTION_PINS) {
       fs.mkdirSync(path.dirname(path.join(root,file)),{recursive:true});
