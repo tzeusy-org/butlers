@@ -152,6 +152,17 @@ class ScheduleSpec(_StrictModel):
     target_date: date | None = None
     lead_time_days: StrictInt | None = None
     alert_thresholds: list[dict[str, Any]] | None = None
+    # Validated by the single declaration parser below. The object annotation
+    # avoids importing admission/runtime_config while this module initializes.
+    # Every constructed spec receives a closed immutable carrier, never raw TOML.
+    obligation: object = Field(default=None, validate_default=True, repr=False)
+
+    @field_validator("obligation", mode="before")
+    @classmethod
+    def _obligation_carrier(cls, value: object) -> object:
+        from butlers.core.obligations import parse_loaded_declaration
+
+        return parse_loaded_declaration(value)
 
     @field_validator("name")
     @classmethod

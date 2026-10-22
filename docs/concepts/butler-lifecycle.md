@@ -54,6 +54,11 @@ DB-owned operational tuning is seeded from `[butler.runtime_seed]` on first boot
 
 Scheduled tasks declared in `butler.toml` are synchronized to the database before any module starts. New tasks become TOML-owned, changed tasks update, and removed TOML tasks are disabled. This ordering lets a module-default registration observe a disabled TOML orphan while leaving DB-owned operator schedules untouched.
 
+Schedules remain the typed `ScheduleSpec` objects validated by the configuration
+loader. Their optional obligation declaration is parsed once into a closed,
+immutable carrier; the actual sync projection consumes it without changing SQL,
+dispatch or writing obligation/admission records while the switch is off.
+
 ### Step 11: Module on_startup
 
 Each healthy module's `on_startup()` method is called in topological order after schedule synchronization. This is where modules perform post-migration initialization, open connections, start background resources, load cached data, and register provenance-aware defaults. Failures are non-fatal and trigger cascade failures for dependent modules.
@@ -69,6 +74,14 @@ A FastMCP server is created and core tools are registered: status, trigger, stat
 ### Step 14: Register Module Tools and Gates
 
 Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module and is surfaced as declared-but-not-registered in the console's tool-surface diff.
+
+After approval wrapping and final catalog construction, startup diagnoses loaded
+schedule declarations with fixed index/reason warnings. Local registrations can
+disprove a local grant, but cannot establish a complete verified fleet catalog.
+Missing fleet authority stays an explicit warning in this dark integration;
+current dispatch continues. Authoritative error-after-switch validation still
+requires the actual trusted control/catalog producers. It cannot use an early
+pre-module catalog at Step 10 or promote a local snapshot to fleet authority.
 
 ### Step 15: Start the FastMCP Server
 

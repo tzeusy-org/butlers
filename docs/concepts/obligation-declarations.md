@@ -34,6 +34,25 @@ are refused. The name `preconditions` is reserved for **bu-jv1moa.1**; version 1
 neither accepts nor evaluates it, even if it is empty. No allowance or spend
 behavior is implemented here.
 
+## Git schedule carrier
+
+[decision] A prompt schedule declares its ceiling in a nested
+`[butler.schedule.obligation]` table. `ScheduleSpec` invokes the single
+`parse_declaration()` parser during its normal typed validation. The field holds
+an immutable `ParsedDeclaration`, never the original mutable table. Missing or
+malformed declarations retain only a closed status for dark startup diagnostics;
+ordinary unknown schedule keys, bad cron, dispatch-mode and deadline validation
+remain startup errors. Invalid declaration contents are neither retained nor logged.
+The conversion imports the parser only when the field is validated, avoiding the
+config/admission/runtime-config import cycle without a second TOML parser.
+
+The actual lifecycle passes those same typed schedules into `sync_schedules()`.
+Its `project_loaded_schedule()` consumer preserves existing SQL argument types,
+timezone/quiet/stagger behavior and its `None` result. The same parsed carrier is
+used by post-registration diagnostics. The projection's definition digest includes
+the declaration, but is not a row UUID, context witness, creator grant or source
+registration. OFF makes no new B2, admission or reservation calls.
+
 ## Validation and catalog custody
 
 `build_obligation_catalog()` projects immutable final `ToolCatalog` snapshots.
@@ -47,8 +66,17 @@ actual recipient and enforce approvals, resource selection and exposure.
 `validate_declarations()` logs fixed reason codes and indexes before the switch,
 returning only valid declarations. After the switch the same invalid population
 raises a startup validation error. Neither function toggles a switch or discovers
-which due sources exist. Startup wiring and the full published catalog must
-provide those inputs; the current Phase A does not install that wiring.
+which due sources exist. That authoritative switched startup integration still
+requires the real control reader and complete published catalog.
+
+Current startup runs `diagnose_loaded_schedules()` only after core/module
+registration and approval wrapping finish and `_finalize_tool_catalog()` returns.
+It can report missing/invalid declarations and disprove unknown or ungrantable
+local capabilities/resources. A valid local declaration, an empty ceiling or a
+remote capability still reports `fleet_catalog_unavailable`: the local snapshot
+cannot prove a complete verified fleet. These fixed index/reason warnings do not
+suppress current dispatch or enable a goal. This is actual dark diagnostic
+wiring, not completed after-switch startup validation or source authority.
 
 ## Source identity and runtime creation
 

@@ -24,6 +24,14 @@ cron = "<cron-expression>"      # Standard 5-field cron expression.
 prompt = """<prompt>"""         # Prompt sent to runtime instance (prompt mode, default).
 # dispatch_mode = "prompt"      # Default. Explicit only when needed.
 
+[butler.schedule.obligation]   # Optional dark declaration for this prompt schedule.
+version = 1
+capabilities = []              # Explicit empty ceiling, never an inferred default.
+# Nonempty entries name actual registered domain__canonical_name capabilities,
+# with optional exact resource sets and park_only narrowing.
+# Format and limits: docs/concepts/obligation-declarations.md.
+# preconditions is reserved for the allowance successor; v1 refuses it.
+
 [[butler.schedule]]             # Optional. Job-mode scheduled task.
 name = "<job-name>"             # Kebab-case identifier.
 cron = "<cron-expression>"      # Standard 5-field cron expression.

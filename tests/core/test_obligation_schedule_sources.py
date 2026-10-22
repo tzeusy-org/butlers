@@ -454,3 +454,52 @@ async def test_role_shadow_wrong_command_and_stale_generation_refuse_before_effe
         )
     assert len(pool.connection.rows) == len(pool.connection.outbox) == 1
     assert first.definition.generation == 1
+
+
+async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, monkeypatch):
+    from butlers.core import scheduler
+    from tests.config.test_obligation_declarations import _loaded_config
+    from tests.core.test_sync_schedules_timezone_and_quiet_lint import _FakePool
+
+    config = _loaded_config(tmp_path)
+    declared = config.schedules[0]
+    plain = type(declared)(name=declared.name, cron=declared.cron, prompt=declared.prompt)
+    projections = []
+    actual = scheduler.project_loaded_schedule
+    from butlers.core import obligations
+
+    monkeypatch.setattr(
+        obligations, "parse_declaration", lambda _: pytest.fail("sync must not reparse config")
+    )
+
+    def projected(spec):
+        value = actual(spec)
+        assert value.declaration is spec.obligation
+        projections.append(value)
+        return value
+
+    class Pool(_FakePool):
+        async def fetchval(self, sql, *args):
+            assert "obligation" not in sql.lower()
+            value = await super().fetchval(sql, *args)
+            return value if "information_schema" in sql else UUID(int=1)
+
+        async def fetch(self, sql, *args):
+            assert "obligation" not in sql.lower()
+            return await super().fetch(sql, *args)
+
+        async def execute(self, sql, *args):
+            assert "obligation" not in sql.lower()
+            return await super().execute(sql, *args)
+
+    monkeypatch.setattr(scheduler, "project_loaded_schedule", projected)
+    monkeypatch.setattr(scheduler, "_next_run", lambda *a, **k: datetime(2026, 1, 1, tzinfo=UTC))
+    a, b = Pool(), Pool()
+    assert await scheduler.sync_schedules(a, [plain], stagger_key="health") is None
+    assert await scheduler.sync_schedules(b, [declared], stagger_key="health") is None
+    assert a.inserted == b.inserted and a.executed == b.executed
+    assert [p.declaration.status for p in projections] == ["missing", "valid"]
+    # The same production projection has a real declaration change, without
+    # falsely promoting either value to row UUID/context/catalog authority.
+    assert projections[0].digest != projections[1].digest
+    assert projections[1].declaration.declaration is declared.obligation.declaration

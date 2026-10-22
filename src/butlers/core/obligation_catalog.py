@@ -7,17 +7,22 @@ or a production CatalogProvider. No admission or runtime switch is called here.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from butlers.core.goal_admission import Capability, CatalogView, digest
 from butlers.core.obligations import (
     DeclarationError,
     ObligationDeclaration,
     parse_declaration,
+    project_loaded_schedule,
     qualify_capability,
 )
 from butlers.core.tool_catalog import ToolCatalog
+
+if TYPE_CHECKING:
+    from butlers.config import ScheduleSpec
 
 logger = logging.getLogger(__name__)
 
@@ -133,3 +138,45 @@ def validate_declarations(
     for issue in issues:
         logger.warning("Obligation declaration index=%d reason=%s", issue.index, issue.code)
     return DeclarationValidation(tuple(valid), tuple(issues))
+
+
+def diagnose_loaded_schedules(
+    schedules: Sequence[ScheduleSpec], *, owner_domain: str, local_catalog: ToolCatalog
+) -> tuple[DeclarationIssue, ...]:
+    """Run actual startup diagnostics, without claiming a verified fleet view.
+
+    Called only after final approval registration. Local metadata can disprove a
+    local grant; it cannot validate remote grants or establish source authority.
+    There is no trusted switched control/catalog reader here yet: healthy local
+    syntax still reports fleet unavailability and never enables admission.
+    """
+    try:
+        local = build_obligation_catalog({owner_domain: local_catalog})
+    except DeclarationValidationError:
+        local = None
+    resources = dict(local.resource_parameters) if local is not None else {}
+    issues = []
+    for index, spec in enumerate(schedules):
+        material = project_loaded_schedule(spec)
+        if material["dispatch_mode"] != "prompt":
+            continue
+        parsed = material.declaration
+        if parsed.status != "valid":
+            code = f"{parsed.status}_declaration"
+        elif local is None:
+            code = "catalog_unavailable"
+        else:
+            code = "fleet_catalog_unavailable"
+            for grant in parsed.declaration.capabilities:
+                if not grant.capability.startswith(f"{owner_domain}__"):
+                    continue
+                if grant.capability not in resources:
+                    code = "unknown_capability"
+                    break
+                if set(dict(grant.resources)) - set(resources[grant.capability]):
+                    code = "unknown_resource"
+                    break
+        issue = DeclarationIssue(index, code)
+        issues.append(issue)
+        logger.warning("Obligation declaration index=%d reason=%s", issue.index, issue.code)
+    return tuple(issues)

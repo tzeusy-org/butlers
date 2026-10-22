@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import date, datetime, time
+from typing import TYPE_CHECKING, Literal
 
 from butlers.core.goal_admission import Grant, digest, encode_grants
+
+if TYPE_CHECKING:
+    from butlers.config import ScheduleSpec
 
 _CAPABILITY_ID = re.compile(r"[a-z][a-z0-9_-]*__[A-Za-z_][A-Za-z0-9_.-]*\Z")
 _RESOURCE_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -116,3 +122,98 @@ def parse_declaration(value: object) -> ObligationDeclaration:
         except (TypeError, ValueError) as exc:
             raise DeclarationError("invalid_resource_set") from exc
     return ObligationDeclaration(tuple(grants))
+
+
+@dataclass(frozen=True)
+class ParsedDeclaration:
+    """A single config parse, not catalog validation or source authority.
+
+    Invalid input is deliberately discarded. Only a closed status survives to
+    the later startup diagnostic; ordinary schedule validation stays strict.
+    """
+
+    status: Literal["missing", "invalid", "valid"]
+    declaration: ObligationDeclaration | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.status) is not str
+            or self.status not in {"missing", "invalid", "valid"}
+            or ((self.status == "valid") != (type(self.declaration) is ObligationDeclaration))
+            or (self.status != "valid" and self.declaration is not None)
+        ):
+            raise DeclarationError("invalid_declaration_carrier")
+
+
+def parse_loaded_declaration(value: object) -> ParsedDeclaration:
+    if type(value) is ParsedDeclaration:
+        return value
+    if value is None:
+        return ParsedDeclaration("missing")
+    try:
+        return ParsedDeclaration("valid", parse_declaration(value))
+    except DeclarationError:
+        return ParsedDeclaration("invalid")
+
+
+@dataclass(frozen=True)
+class LoadedScheduleProjection:
+    """Typed sync material and the SAME parsed carrier; no row/context authority."""
+
+    fields: tuple[tuple[str, object], ...]
+    declaration: ParsedDeclaration
+
+    def __getitem__(self, key: str) -> object:
+        return deepcopy(dict(self.fields)[key])
+
+    @property
+    def digest(self) -> str:
+        # Dates remain real date values at SQL consumption. Only the value
+        # digest uses their ISO representation; this is not a context witness.
+        def json_value(value):
+            if isinstance(value, (date, datetime, time)):
+                return value.isoformat()
+            if isinstance(value, dict):
+                return {k: json_value(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [json_value(v) for v in value]
+            return value
+
+        return digest(
+            {
+                "fields": json_value(dict(self.fields)),
+                "declaration_status": self.declaration.status,
+                "declaration": (
+                    self.declaration.declaration.digest if self.declaration.declaration else None
+                ),
+            }
+        )
+
+
+def project_loaded_schedule(spec: ScheduleSpec) -> LoadedScheduleProjection:
+    """Consume validated ScheduleSpec attributes without a second raw parser.
+
+    Both the real sync consumer and post-registration diagnostics use this
+    projection. It cannot manufacture row UUID, creator, context or availability.
+    """
+    if type(spec.obligation) is not ParsedDeclaration:
+        raise DeclarationError("unvalidated_schedule_declaration")
+    fields = tuple(
+        (name, deepcopy(getattr(spec, name)))
+        for name in (
+            "name",
+            "cron",
+            "task_type",
+            "prompt",
+            "job_name",
+            "job_args",
+            "complexity",
+            "max_token_budget",
+            "continuity",
+            "target_date",
+            "lead_time_days",
+            "alert_thresholds",
+            "timezone",
+        )
+    ) + (("dispatch_mode", spec.dispatch_mode.value),)
+    return LoadedScheduleProjection(fields, spec.obligation)

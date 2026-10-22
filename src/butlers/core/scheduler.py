@@ -28,6 +28,7 @@ from butlers.config import ScheduleSpec
 from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
+from butlers.core.obligations import project_loaded_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -732,26 +733,27 @@ async def sync_schedules(
         db_by_name.setdefault(row["name"], row)
 
     for spec in schedules:
-        name = spec.name
-        cron = spec.cron
-        task_type = spec.task_type
-        prompt = spec.prompt
-        dispatch_mode = spec.dispatch_mode.value
-        job_name = spec.job_name
-        job_args = spec.job_args
-        complexity = spec.complexity or _DEFAULT_COMPLEXITY
-        max_token_budget = spec.max_token_budget
-        continuity = spec.continuity
-        target_date = spec.target_date
-        lead_time_days = spec.lead_time_days
-        alert_thresholds = spec.alert_thresholds
+        material = project_loaded_schedule(spec)
+        name = material["name"]
+        cron = material["cron"]
+        task_type = material["task_type"]
+        prompt = material["prompt"]
+        dispatch_mode = material["dispatch_mode"]
+        job_name = material["job_name"]
+        job_args = material["job_args"]
+        complexity = material["complexity"] or _DEFAULT_COMPLEXITY
+        max_token_budget = material["max_token_budget"]
+        continuity = material["continuity"]
+        target_date = material["target_date"]
+        lead_time_days = material["lead_time_days"]
+        alert_thresholds = material["alert_thresholds"]
         # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
         if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
             _check_notify_reference(task_name=name, prompt=prompt, skills_dir=skills_dir)
         # An explicit per-schedule zone wins; otherwise the owner's zone (the stored
         # "UTC" column default is the follow-the-owner sentinel, so it is stored for unset).
-        stored_timezone = spec.timezone or "UTC"
-        effective_timezone = _effective_schedule_timezone(spec.timezone, default_timezone)
+        stored_timezone = material["timezone"] or "UTC"
+        effective_timezone = _effective_schedule_timezone(material["timezone"], default_timezone)
         next_run_at = _next_run(
             cron,
             timezone=effective_timezone,
