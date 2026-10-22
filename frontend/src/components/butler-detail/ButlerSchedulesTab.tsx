@@ -43,6 +43,12 @@ interface ButlerSchedulesTabProps {
 // ---------------------------------------------------------------------------
 
 export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabProps) {
+  // A cached sibling route can change the owner without unmounting this tab.
+  // Retire its fields, mutation state and callback lifetime as one instance.
+  return <ButlerSchedulesTabInstance key={butlerName} butlerName={butlerName} />;
+}
+
+function ButlerSchedulesTabInstance({ butlerName }: ButlerSchedulesTabProps) {
   const { data: schedulesResponse, isLoading, isError, error } = useSchedules(butlerName);
   const schedules = schedulesResponse?.data ?? [];
 

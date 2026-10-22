@@ -153,6 +153,12 @@ function SetValueDialog({
 // ---------------------------------------------------------------------------
 
 export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
+  // A cached sibling route can change the owner without unmounting this tab.
+  // Retire its fields, mutation state and callback lifetime as one instance.
+  return <ButlerStateTabInstance key={butlerName} butlerName={butlerName} />;
+}
+
+function ButlerStateTabInstance({ butlerName }: ButlerStateTabProps) {
   const { data: stateResponse, isLoading, isError, error } = useButlerState(butlerName);
   const setStateMutation = useSetState(butlerName, { notify: false });
   const deleteStateMutation = useDeleteState(butlerName);

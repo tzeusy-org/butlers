@@ -600,3 +600,84 @@ test("accepted Retry clears the failed submission's C and preserves a newer comp
     } else await expect.poll(async () => (await rows(page))[0]?.state).toBe("tombstone");
   }
 });
+
+// Owning-butler identity must survive cached sibling navigation (REQ001/006).
+async function siblingButlers(context: BrowserContext) {
+  await context.route((url) => url.pathname === "/api/butlers/board", async (route) => {
+    const board = ["switchboard", "general"].map((name) => ({
+      name, type: "butler", status: "running", activity: "idle", cell_tone: "neutral",
+      eligibility: "active", sessions_24h: 0, cost_today: 0, active_session_count: 0,
+      hourly_stripe: [], hourly_total: 0, heartbeat_unavailable: true, cadence_status: "unknown",
+    }));
+    await route.fulfill({ json: { data: { rows: board, aggregates: {} } } });
+  });
+  await context.route((url) => /^\/api\/butlers\/(general|switchboard)$/.test(url.pathname), async (route) => {
+    await route.fulfill({ json: { data: { name: new URL(route.request().url()).pathname.split("/").at(-1), status: "running", modules: [], schedules: [], skills: [] } } });
+  });
+}
+
+test("cached butler transition keeps state input with its owning butler only", async ({ page, context }) => {
+  await siblingButlers(context);
+  await page.goto("/butlers/general?tab=system&section=state");
+  await expect(page.getByRole("button", { name: "Set value", exact: true })).toBeVisible();
+  await page.getByRole("navigation", { name: "Navigate to butler" }).getByRole("link", { name: "switchboard" }).click();
+  await page.getByRole("tab", { name: "State", exact: true }).click();
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Set value", exact: true });
+  await dialog.getByLabel("Key", { exact: true }).fill("A-only-key");
+  await dialog.getByLabel("Value (JSON)").fill('"A-only-value"');
+  await expect.poll(async () => (await rows(page)).filter((row) => row.state === "live").length).toBe(1);
+  const original = (await rows(page)).find((row) => row.state === "live")!;
+  const back = page.goBack();
+  await page.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await back;
+  await expect(page).toHaveURL(/butlers\/general\?tab=system&section=state/);
+  await expect(dialog).toBeHidden();
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("");
+  await expect(dialog.getByLabel("Value (JSON)")).toHaveValue("");
+  expect((await rows(page)).filter((row) => row.state === "live")).toEqual([original]);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.goForward();
+  await page.getByRole("button", { name: "Set value", exact: true }).click();
+  await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("A-only-key");
+  await expect(dialog.getByLabel("Value (JSON)")).toHaveValue('"A-only-value"');
+});
+
+test("cached butler transition fences old schedule feedback and keeps current success", async ({ page, context }) => {
+  await siblingButlers(context);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  await context.route((url) => /^\/api\/butlers\/(switchboard|general)\/schedules$/.test(url.pathname), async (route) => {
+    if (route.request().method() !== "POST") { await route.fulfill({ json: { data: [] } }); return; }
+    if (new URL(route.request().url()).pathname.includes("switchboard")) { started(); await held; }
+    await route.fulfill({ json: { data: { id: "created", ...route.request().postDataJSON() } } });
+  });
+  await page.goto("/butlers/general?tab=system&section=schedules");
+  await expect(page.getByRole("button", { name: "Add schedule", exact: true })).toBeVisible();
+  await page.getByRole("navigation", { name: "Navigate to butler" }).getByRole("link", { name: "switchboard" }).click();
+  await page.getByRole("tab", { name: "Schedules", exact: true }).click();
+  const open = async (name: string) => {
+    await page.getByRole("button", { name: "Add schedule", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create Schedule", exact: true });
+    await dialog.getByLabel("Name", { exact: true }).fill(name);
+    await dialog.getByLabel("Cron Expression").fill("0 * * * *");
+    await dialog.getByLabel("Prompt", { exact: true }).fill("Ordinary schedule prompt");
+    return dialog;
+  };
+  const a = await open("A-pending-schedule");
+  await a.getByRole("button", { name: "Create Schedule", exact: true }).click();
+  await requested;
+  const back = page.goBack();
+  await page.getByRole("button", { name: "Keep draft and close", exact: true }).click();
+  await back;
+  await expect(page).toHaveURL(/butlers\/general\?tab=system&section=schedules/);
+  await expect(a).toBeHidden();
+  release();
+  const b = await open("B-current-schedule");
+  await b.getByRole("button", { name: "Create Schedule", exact: true }).click();
+  await expect(page.getByText('Schedule "B-current-schedule" created', { exact: true })).toBeVisible();
+  await expect(page.getByText('Schedule "A-pending-schedule" created', { exact: true })).toBeHidden();
+});
