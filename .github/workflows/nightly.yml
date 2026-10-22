@@ -70,10 +70,12 @@ jobs:
     # tree. It deliberately does NOT touch the monotonic clock, so
     # asyncio sleep/timeout semantics are unaffected (verified locally: a
     # faked process still measures asyncio.sleep(0.2) as ~0.2s of monotonic
-    # time while datetime.now() reports the shifted date). Postgres runs as a
-    # separate service container whose own clock is NOT shifted -- SQL
-    # NOW()/CURRENT_TIMESTAMP stays real -- so this catches the Python-level
-    # frozen-fixture class above, not a DB-side clock skew.
+    # time while datetime.now() reports the shifted date). bu-29wkwj.6: the
+    # root conftest gives the shared Postgres testcontainer the same library
+    # and FAKETIME offset, so SQL now() agrees with the Python clock. Before
+    # that only the Python clock moved, every DB test comparing the two clocks
+    # failed by the offset unless it carried pg_clock, and the leg stayed red
+    # from 2026-07-25 as new tests arrived without the marker.
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
     # slow the required `check` job, only surface future hazards early. A
@@ -189,10 +191,10 @@ jobs:
           # clean summary + tracebacks on the runs that do finish.
           # bu-szgi9: `not pg_clock` drops the tests whose pass/fail hinges on
           # comparing a Postgres-clock timestamp against a Python-clock value.
-          # libfaketime shifts only the Python process clock, not the Postgres
-          # testcontainer, so those tests skew by the offset and false-fail --
-          # they are CI-artifact skew, not wall-clock time-bombs, so they are
-          # excluded from THIS leg only (they still run in every other job).
+          # They were marked while libfaketime shifted only the Python process
+          # clock; since bu-29wkwj.6 the testcontainer shares the offset, so new
+          # tests need no mark and these await re-admission. Excluded from
+          # THIS leg only (they still run in every other job).
           #
           # bu-ik7p3: session/worker-level watchdog. --timeout=300 bounds each
           # test CALL, but the observed wedge lives in xdist/session shutdown
@@ -218,7 +220,10 @@ jobs:
           # the recurring 99% wedge: run 29254910952 hung in
           # test_concurrent_same_model_builds_single_instance's RaceDict.wait,
           # NOT in a real embedding-model load). No time semantics -> zero value
-          # under faketime; they still run in every other job.
+          # under faketime; they still run in every other job. bu-29wkwj.6
+          # adds tests needing a live TLS handshake (uv fetching from PyPI):
+          # certificate validity is checked against the shifted clock, so the
+          # +120d leg fails whenever the real certificate expires inside it.
           WATCHDOG_SECONDS=3600
           timeout --signal=SIGABRT --kill-after=30s "${WATCHDOG_SECONDS}" \
             env LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \

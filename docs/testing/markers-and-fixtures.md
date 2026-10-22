@@ -25,9 +25,11 @@ read them there. The semantics that matter:
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.
-- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs: the
-  first mixes Postgres and Python clocks that libfaketime skews apart, the second waits on a timed
-  thread primitive that never expires under a shifted clock. Everywhere else they run.
+- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs. The
+  first mixes Postgres and Python clocks; the shared testcontainer now runs under the same offset,
+  so new DB tests do not need it and the existing marks are awaiting re-admission. The second waits
+  on a timed thread primitive or needs a live TLS certificate check, neither of which works under a
+  shifted clock. Everywhere else they run.
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 
@@ -39,10 +41,15 @@ The root `conftest.py` (at the repository root) provides fixtures visible to all
 
 A shared Postgres testcontainer for all DB-backed tests in the pytest session. Uses the `pgvector/pgvector:pg17` image. The container is started once and reused across all tests; isolation is achieved at the database level (each test gets a fresh DB).
 
+`_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
+
 ```python
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    with container as pg:
         yield pg
 ```
 

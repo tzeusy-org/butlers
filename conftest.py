@@ -11,16 +11,17 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -518,6 +519,43 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     return _DEFAULT_XDIST_AUTO_WORKERS
 
 
+# Docker's default /dev/shm is 64 MB. One session container accumulates hundreds
+# of test databases, and Postgres's dynamic shared memory (the cumulative stats
+# area grows with every relation) outgrew it late in the single-job faketime legs:
+# "could not resize shared memory segment ... No space left on device", then a
+# crash into recovery mode that errored every later DB test (bu-29wkwj.6).
+_POSTGRES_SHM_SIZE = "1g"
+_CONTAINER_FAKETIME_LIBRARY = "/opt/butlers-faketime/libfaketime.so.1"
+
+
+def _configure_postgres_container(container: Any, environ: Mapping[str, str]) -> Any:
+    """Apply the shared Postgres container's options.
+
+    When the pytest process runs under libfaketime (the nightly faketime legs),
+    the container gets the same library and offset, so SQL ``now()`` and Python
+    ``datetime.now()`` stay in agreement. Without it every DB test comparing the
+    two clocks failed by the leg offset unless it carried the ``pg_clock``
+    marker, and new tests kept arriving without one (bu-29wkwj.6).
+    """
+    container = container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE)
+    offset = environ.get("FAKETIME")
+    library = next(
+        (
+            path
+            for path in re.split(r"[:\s]+", environ.get("LD_PRELOAD", ""))
+            if os.path.basename(path).startswith("libfaketime")
+        ),
+        None,
+    )
+    if not offset or library is None:
+        return container
+    return (
+        container.with_volume_mapping(library, _CONTAINER_FAKETIME_LIBRARY, mode="ro")
+        .with_env("LD_PRELOAD", _CONTAINER_FAKETIME_LIBRARY)
+        .with_env("FAKETIME", offset)
+    )
+
+
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
@@ -533,7 +571,10 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    with container as pg:
         yield pg
 
 
