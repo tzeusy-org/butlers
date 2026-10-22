@@ -15,7 +15,7 @@ import {
   startOfWeek,
 } from "date-fns";
 import { toast } from "sonner";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 
 import { Tip } from "@/components/ui/tip";
 
@@ -41,7 +41,6 @@ import type {
 } from "@/api/types.ts";
 import { ApiError, getCalendarWorkspaceEntry } from "@/api/index.ts";
 import {
-  useCalendarAccounts,
   useAcceptCalendarProposal,
   useCalendarConflicts,
   useCalendarInvitations,
@@ -60,9 +59,6 @@ import {
   useMutateCalendarWorkspaceUserEvent,
   useUndoCalendarWorkspaceMutation,
   usePreviewCalendarWorkspaceButlerEvent,
-  useSetPrimaryCalendar,
-  useSyncCalendarWorkspace,
-  useToggleCalendarSource,
 } from "@/hooks/use-calendar-workspace";
 import { useDebounce } from "@/hooks/use-debounce";
 import {
@@ -93,7 +89,6 @@ import { CalendarDuplicatesPanel } from "@/components/calendar/CalendarDuplicate
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { Checkbox } from "@/components/ui/checkbox";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
@@ -136,11 +131,12 @@ import {
 import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarEntryDetailPanel } from "@/pages/calendar/CalendarEntryDetailPanel";
 import { CalendarSearchPalette } from "@/pages/calendar/CalendarSearchPalette";
+import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
+import { useCalendarSync } from "@/pages/calendar/use-calendar-sync";
+import { useSourceControls } from "@/pages/calendar/use-source-controls";
 import { RecurrenceScopeFieldset } from "@/pages/calendar/RecurrenceScopeFieldset";
 import {
   computeFreshnessPlaque,
-  formatOptionalTimestamp,
-  formatStaleness,
 } from "@/pages/calendar/freshness";
 import {
   calendarMutationErrorMessage,
@@ -156,7 +152,6 @@ import {
   SOURCE_TYPE_FACET_OPTIONS,
   STATUS_FACET_OPTIONS,
   VIEW_OPTIONS,
-  accountHealthDotState,
   buildRRule,
   capLaneEntriesByDay,
   createDefaultButlerDraft,
@@ -177,7 +172,6 @@ import {
   serializeAnchor,
   shiftAnchor,
   sourceName,
-  syncDotState,
   titleize,
   truncateCalendarId,
   type ButlerEventDialogMode,
@@ -679,81 +673,10 @@ export default function CalendarWorkspacePage() {
   const [sourcesDialogOpen, setSourcesDialogOpen] = useState(false);
   const [agendaOpen, setAgendaOpen] = useState(false);
   const [portabilityOpen, setPortabilityOpen] = useState(false);
-  // The backend is the source of truth for whether a calendar is enabled as a
-  // sync source (``sync_enabled`` on each connected source). We mirror that into
-  // a local Set for snappy optimistic toggling; it is re-seeded whenever meta
-  // refreshes.
-  const accountsQuery = useCalendarAccounts();
-  const toggleSourceMutation = useToggleCalendarSource();
-  const [disabledSources, setDisabledSources] = useState<Set<string>>(
-    new Set<string>(),
-  );
-  // View-only hide/show set. This is a purely client-side concern: hiding a
-  // source removes its events from the grid WITHOUT touching the persisted
-  // ``sync_enabled`` sync toggle, so a still-syncing calendar can be hidden and
-  // a sync-disabled calendar's prior events stay visible. Never persisted to
-  // the server; resets on reload by design.
-  const [hiddenSources, setHiddenSources] = useState<Set<string>>(
-    new Set<string>(),
-  );
-
-  useEffect(() => {
-    if (toggleSourceMutation.isPending) return;
-    const serverDisabled = connectedSources
-      .filter((source) => source.sync_enabled === false)
-      .map((source) => source.source_key);
-    setDisabledSources(new Set(serverDisabled));
-  }, [connectedSources, toggleSourceMutation.isPending]);
-
-  function toggleSourceHidden(source: CalendarWorkspaceSourceFreshness) {
-    const sourceKey = source.source_key;
-    setHiddenSources((prev) => {
-      const next = new Set(prev);
-      if (next.has(sourceKey)) next.delete(sourceKey);
-      else next.add(sourceKey);
-      return next;
-    });
-  }
-
-  function toggleSourceEnabled(source: CalendarWorkspaceSourceFreshness) {
-    const sourceKey = source.source_key;
-    const willEnable = disabledSources.has(sourceKey);
-    // Optimistically reflect the new state.
-    setDisabledSources((prev) => {
-      const next = new Set(prev);
-      if (willEnable) next.delete(sourceKey);
-      else next.add(sourceKey);
-      return next;
-    });
-    if (!source.butler_name) {
-      toast.error("Cannot toggle this source: no owning butler resolved");
-      return;
-    }
-    toggleSourceMutation.mutate(
-      {
-        butler: source.butler_name,
-        source_key: sourceKey,
-        enabled: willEnable,
-      },
-      {
-        onError: (err) => {
-          // Revert the optimistic update on failure.
-          setDisabledSources((prev) => {
-            const next = new Set(prev);
-            if (willEnable) next.add(sourceKey);
-            else next.delete(sourceKey);
-            return next;
-          });
-          toast.error(`Failed to update source: ${err.message}`);
-        },
-        onSuccess: () => {
-          toast.success(
-            willEnable ? "Source enabled for sync" : "Source disabled",
-          );
-        },
-      },
-    );
-  }
+  const sourceControls = useSourceControls(connectedSources);
+  const { hiddenSources } = sourceControls;
+  const sync = useCalendarSync();
+  const { syncMutation, handleSyncAll, syncButtonLabel } = sync;
 
   const sourceFilters = useMemo(() => {
     let filtered = userSources;
@@ -892,10 +815,8 @@ export default function CalendarWorkspacePage() {
       !conflictsQuery.isError &&
       conflictsQuery.isFetching);
 
-  const syncMutation = useSyncCalendarWorkspace();
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
-  const primaryMutation = useSetPrimaryCalendar();
   const queryClient = useQueryClient();
 
   // Activity panel state
@@ -1008,7 +929,6 @@ export default function CalendarWorkspacePage() {
     [undoMutation, undoingActionId],
   );
 
-  const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
   const [userEventDialogOpen, setUserEventDialogOpen] = useState(false);
   const [userEventDialogMode, setUserEventDialogMode] =
     useState<UserEventDialogMode>("create");
@@ -1398,19 +1318,6 @@ export default function CalendarWorkspacePage() {
     if (range === "day") return [start];
     return [] as Date[];
   }, [range, start]);
-
-  // Collect the set of Google account emails from source metadata.
-  // The backend stores `account_email` on each source during calendar discovery.
-  const googleAccountEmails = useMemo(() => {
-    const emails = new Set<string>();
-    for (const source of connectedSources) {
-      const email = source.metadata?.account_email;
-      if (typeof email === "string" && email) {
-        emails.add(email);
-      }
-    }
-    return emails;
-  }, [connectedSources]);
 
   const calendarFilterOptions = useMemo(() => {
     const deduped = new Map<string, string>();
@@ -1968,57 +1875,6 @@ export default function CalendarWorkspacePage() {
       moved: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
-  }
-
-  async function handleSyncAll() {
-    try {
-      const result = await syncMutation.mutateAsync({ all: true });
-      toast.success(
-        `Sync queued for ${result.data.triggered_count} calendar owner(s).`,
-      );
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to trigger sync.",
-      );
-    }
-  }
-
-  async function handleSyncSource(
-    source: CalendarWorkspaceSourceFreshness,
-    { full = false }: { full?: boolean } = {},
-  ) {
-    setSyncingSourceKey(source.source_key);
-    try {
-      const result = await syncMutation.mutateAsync({
-        source_key: source.source_key,
-        butler: source.butler_name || undefined,
-        full,
-      });
-      const target = result.data.targets[0];
-      if (target?.status === "failed") {
-        toast.error(target.error || "Source sync failed.");
-      } else if (full) {
-        toast.success(
-          target?.coalesced
-            ? `Recovery sync joined queued work for ${sourceName(source)}.`
-            : `Recovery sync queued for ${sourceName(source)}.`,
-        );
-      } else {
-        toast.success(
-          target?.coalesced
-            ? `Sync joined queued work for ${sourceName(source)}.`
-            : `Sync queued for ${sourceName(source)}.`,
-        );
-      }
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to trigger source sync.",
-      );
-    } finally {
-      setSyncingSourceKey(null);
-    }
   }
 
   /**
@@ -2794,7 +2650,6 @@ export default function CalendarWorkspacePage() {
     );
   }
 
-  const syncButtonLabel = syncMutation.isPending ? "Syncing..." : "Sync now";
   const canCreateUserEvents =
     view === "user" && submittableCalendars.length > 0;
 
@@ -4381,310 +4236,15 @@ export default function CalendarWorkspacePage() {
         importTargets={submittableCalendars}
       />
 
-      <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
-        <DialogContent className="w-[90vw] max-w-[90vw] sm:w-[80vw] sm:max-w-[80vw] max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Configure Sources</DialogTitle>
-            <DialogDescription>
-              Connected Google accounts and their calendars. The checkbox
-              enables or disables a calendar as a sync source (persisted); a
-              disabled calendar is skipped by sync but its already-synced events
-              stay visible. Use Hide/Show to remove a calendar from the grid
-              without changing its sync, a view-only preference.
-            </DialogDescription>
-          </DialogHeader>
-          {(() => {
-            const accounts = accountsQuery.data?.data.accounts ?? [];
-            const healthAvailable =
-              accountsQuery.data?.data.health_available ?? true;
-            if (accounts.length === 0) return null;
-            return (
-              <div
-                className="mb-3 space-y-1.5"
-                role="list"
-                aria-label="Connected accounts"
-              >
-                <Mono muted className="text-[11px] uppercase tracking-wide">
-                  Accounts
-                </Mono>
-                {accounts.map((account) => (
-                  <Row
-                    key={account.account_id}
-                    meta={
-                      <span className="inline-flex items-center gap-1.5">
-                        <StateDot
-                          state={accountHealthDotState(account.health.state)}
-                        />
-                        <Mono muted>
-                          {healthAvailable
-                            ? account.health.state
-                            : "health unavailable"}
-                        </Mono>
-                      </span>
-                    }
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span
-                        className="truncate text-sm font-medium text-fg"
-                        title={
-                          account.email ??
-                          account.display_name ??
-                          account.account_id
-                        }
-                      >
-                        {account.email ||
-                          account.display_name ||
-                          account.account_id}
-                      </span>
-                      {account.is_primary ? (
-                        <KindTag className="text-fg">primary</KindTag>
-                      ) : null}
-                      <KindTag>{account.status}</KindTag>
-                      {account.health.error_message ? (
-                        <span
-                          className="max-w-[16rem] truncate text-[11px] text-[var(--red-text)]"
-                          title={account.health.error_message}
-                        >
-                          {account.health.error_message}
-                        </span>
-                      ) : null}
-                    </div>
-                  </Row>
-                ))}
-              </div>
-            );
-          })()}
-          {metaQuery.isLoading && connectedSources.length === 0 ? (
-            <Voice variant="italic" className="text-[var(--mfg)]">
-              Reading source metadata…
-            </Voice>
-          ) : connectedSources.length === 0 ? (
-            <Voice variant="italic" className="text-[var(--mfg)]">
-              No connected sources.
-            </Voice>
-          ) : (
-            <div role="list">
-              {[...connectedSources]
-                .sort((a, b) => {
-                  // Sort: primary first, then user-email calendars, then enabled, then disabled
-                  const aPrimary =
-                    a.lane === "user" && a.calendar_id === primaryCalendarId
-                      ? 1
-                      : 0;
-                  const bPrimary =
-                    b.lane === "user" && b.calendar_id === primaryCalendarId
-                      ? 1
-                      : 0;
-                  if (aPrimary !== bPrimary) return bPrimary - aPrimary;
-
-                  const aIsAcct =
-                    a.provider === "google" &&
-                    a.calendar_id &&
-                    googleAccountEmails.has(a.calendar_id)
-                      ? 1
-                      : 0;
-                  const bIsAcct =
-                    b.provider === "google" &&
-                    b.calendar_id &&
-                    googleAccountEmails.has(b.calendar_id)
-                      ? 1
-                      : 0;
-                  if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
-
-                  const aOff = disabledSources.has(a.source_key) ? 1 : 0;
-                  const bOff = disabledSources.has(b.source_key) ? 1 : 0;
-                  return aOff - bOff;
-                })
-                .map((source) => {
-                  const isPrimary =
-                    source.lane === "user" &&
-                    source.calendar_id != null &&
-                    source.calendar_id === primaryCalendarId;
-                  const canSetPrimary =
-                    source.lane === "user" &&
-                    source.writable &&
-                    source.calendar_id != null &&
-                    source.calendar_id !== primaryCalendarId &&
-                    source.butler_name != null;
-                  const isEnabled = !disabledSources.has(source.source_key);
-                  const isHidden = hiddenSources.has(source.source_key);
-                  const acctEmail =
-                    typeof source.metadata?.account_email === "string"
-                      ? source.metadata.account_email
-                      : undefined;
-                  const calIdDisplay = (() => {
-                    if (
-                      acctEmail &&
-                      source.calendar_id &&
-                      source.calendar_id !== acctEmail
-                    ) {
-                      return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
-                    }
-                    return truncateCalendarId(
-                      source.calendar_id ??
-                        source.provider ??
-                        source.source_kind,
-                    );
-                  })();
-
-                  return (
-                    <Row
-                      key={source.source_key}
-                      className={cn((!isEnabled || isHidden) && "opacity-50")}
-                      mark={
-                        <Checkbox
-                          checked={isEnabled}
-                          onCheckedChange={() => toggleSourceEnabled(source)}
-                          aria-label={`Toggle ${sourceName(source)}`}
-                        />
-                      }
-                      meta={
-                        <div className="flex items-center gap-1.5">
-                          <Tip
-                            content={
-                              isHidden
-                                ? "Hidden from the grid (view-only; sync unaffected)"
-                                : "Hide from the grid (view-only; sync unaffected)"
-                            }
-                          >
-                            <PillButton
-                              onClick={() => toggleSourceHidden(source)}
-                              aria-label={`${isHidden ? "Show" : "Hide"} ${sourceName(source)} in view`}
-                              aria-pressed={isHidden}
-                            >
-                              {isHidden ? "Show" : "Hide"}
-                            </PillButton>
-                          </Tip>
-                          {canSetPrimary ? (
-                            <PillButton
-                              onClick={() => {
-                                primaryMutation.mutate(
-                                  {
-                                    butler_name: source.butler_name!,
-                                    calendar_id: source.calendar_id!,
-                                  },
-                                  {
-                                    onSuccess: (response) => {
-                                      if (response.data.persisted === false) {
-                                        toast.error(
-                                          "Failed to set primary: change was not persisted",
-                                        );
-                                        return;
-                                      }
-                                      toast.success("Primary calendar updated");
-                                    },
-                                    onError: (err) =>
-                                      toast.error(
-                                        `Failed to set primary: ${err.message}`,
-                                      ),
-                                  },
-                                );
-                              }}
-                              disabled={primaryMutation.isPending}
-                            >
-                              Set as primary
-                            </PillButton>
-                          ) : null}
-                          <PillButton
-                            onClick={() => handleSyncSource(source)}
-                            disabled={
-                              syncMutation.isPending || !source.butler_name
-                            }
-                          >
-                            {syncingSourceKey === source.source_key
-                              ? "Syncing..."
-                              : "Sync now"}
-                          </PillButton>
-                          <PillButton
-                            onClick={() =>
-                              handleSyncSource(source, { full: true })
-                            }
-                            disabled={
-                              syncMutation.isPending || !source.butler_name
-                            }
-                            title="Full re-sync from scratch (cursor recovery)"
-                          >
-                            Recover
-                          </PillButton>
-                          {source.error_kind === "token_expired" ||
-                          source.error_kind === "auth" ? (
-                            <Link
-                              to="/ingestion?tab=connectors"
-                              className="inline-flex items-center rounded-[3px] border border-[var(--red)] px-2 py-0.5 text-[11px] font-medium text-[var(--red-text)] transition-colors hover:bg-[var(--red)]/10"
-                              title="This source needs re-authorization"
-                            >
-                              Reconnect
-                            </Link>
-                          ) : null}
-                        </div>
-                      }
-                    >
-                      <div className="flex min-w-0 flex-col gap-1">
-                        <div className="flex min-w-0 items-center gap-2">
-                          {source.butler_name ? (
-                            <ButlerMark name={source.butler_name} />
-                          ) : null}
-                          <span
-                            className="truncate text-sm font-medium text-fg"
-                            title={sourceName(source)}
-                          >
-                            {sourceName(source)}
-                          </span>
-                          {isPrimary ? (
-                            <KindTag className="text-fg">
-                              primary
-                            </KindTag>
-                          ) : null}
-                          <KindTag>{source.lane}</KindTag>
-                        </div>
-                        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                          <span
-                            className="min-w-0 max-w-full truncate"
-                            title={source.calendar_id ?? undefined}
-                          >
-                            <Mono muted>{calIdDisplay}</Mono>
-                          </span>
-                          <span className="inline-flex items-center gap-1.5">
-                            <StateDot state={syncDotState(source.sync_state)} />
-                            <Mono muted>{source.sync_state}</Mono>
-                          </span>
-                          <Mono muted>
-                            {formatStaleness(source.staleness_ms)}
-                            {formatOptionalTimestamp(source.last_success_at)
-                              ? ` \u00b7 ${formatOptionalTimestamp(source.last_success_at)}`
-                              : ""}
-                          </Mono>
-                          {source.last_error ? (
-                            <span
-                              className="inline-flex min-w-0 items-center gap-1.5"
-                              title={source.last_error}
-                            >
-                              <StateDot state="error" />
-                              {source.error_kind &&
-                              source.error_kind !== "none" ? (
-                                <KindTag className="text-[var(--red-text)]">
-                                  {source.error_kind}
-                                </KindTag>
-                              ) : null}
-                              <span className="max-w-[16rem] truncate text-[11px] text-[var(--red-text)]">
-                                {source.last_error}
-                              </span>
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    </Row>
-                  );
-                })}
-            </div>
-          )}
-          <DialogFooter>
-            <PillButton onClick={() => setSourcesDialogOpen(false)}>
-              Close
-            </PillButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <SourcesDialog
+        open={sourcesDialogOpen}
+        onOpenChange={setSourcesDialogOpen}
+        connectedSources={connectedSources}
+        metaLoading={metaQuery.isLoading}
+        primaryCalendarId={primaryCalendarId}
+        controls={sourceControls}
+        sync={sync}
+      />
 
       <Dialog
         open={userEventDialogOpen}
