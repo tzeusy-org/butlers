@@ -1184,8 +1184,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [route, guards]
     # Required through the `check` verdict (owner decision bu-w72da2 = A):
-    # merge_group and push:main always run it; pull_request runs it only when
-    # frontend/ changed (fail-closed, see `route`).
+    # merge_group and push:main always run it; pull_request runs it only when the
+    # route classifies the PR as frontend: frontend/, .github/workflows/, scripts/ci_
+    # or scripts/check_ci_ changed, or the diff is undeterminable (fail-closed, see
+    # `route`). Every other PR requires the explicit skip.
     if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
 
     defaults:

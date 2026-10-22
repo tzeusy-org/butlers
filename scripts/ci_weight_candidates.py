@@ -39,6 +39,11 @@ from ci_partition import (
 COVERED_WORKFLOW_FILE = "nightly.yml"
 COVERED_WORKFLOW_PATH = f".github/workflows/{COVERED_WORKFLOW_FILE}"
 COVERED_WORKFLOW_NAME = "Nightly Tests"
+# The covered weights depend only on this job. Unrelated nightly jobs (for example the
+# faketime matrix) can fail the run, so selection reads the job's own conclusion.
+COVERED_JOB_NAME = "coverage-report"
+# Bounded per-run job reads while walking back from the newest completed run.
+COVERED_JOB_LOOKUPS = 10
 
 
 class Provenance:
@@ -118,8 +123,39 @@ def member(blob: bytes, filename: str) -> dict:
         return value
 
 
+def coverage_job_succeeded(repository: str, run: dict, trace: Provenance) -> bool:
+    """Whether exactly one ``coverage-report`` job of this run attempt concluded success."""
+    attempt = trace.begin(
+        "job-index",
+        "job-index",
+        run=Provenance.identifier(run["id"]),
+        attempt=Provenance.identifier(run["run_attempt"]),
+    )
+    response = api(
+        f"repos/{repository}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"
+        "?per_page=100",
+        timeout=5,
+    )
+    jobs = response.get("jobs") if isinstance(response, dict) else None
+    if not isinstance(jobs, list) or len(jobs) > 100:
+        raise ValueError("covered job index unavailable")
+    attempt.update(state="available", rows=len(jobs), body_sha256=trace.body_digest(response))
+    coverage = [
+        job for job in jobs if isinstance(job, dict) and job.get("name") == COVERED_JOB_NAME
+    ]
+    return (
+        len(coverage) == 1
+        and coverage[0].get("status") == "completed"
+        and coverage[0].get("conclusion") == "success"
+    )
+
+
 def covered_run(repository: str, trace: Provenance) -> dict:
-    """Select only genuine owned main schedule/manual coverage executions."""
+    """Select the newest owned main schedule/manual run whose coverage job succeeded.
+
+    The run's own conclusion is not consulted: an unrelated failing nightly job must not
+    starve the covered refresh while the coverage artifacts are genuine.
+    """
     trace.repository = (
         repository if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) else None
     )
@@ -130,7 +166,7 @@ def covered_run(repository: str, trace: Provenance) -> dict:
         attempt = trace.begin("run-index", "run-index", page=page)
         response = api(
             f"repos/{repository}/actions/workflows/{COVERED_WORKFLOW_FILE}/runs"
-            f"?status=success&branch=main&per_page=50&page={page}",
+            f"?status=completed&branch=main&per_page=50&page={page}",
             timeout=5,
         )
         values = response["workflow_runs"]
@@ -141,12 +177,12 @@ def covered_run(repository: str, trace: Provenance) -> dict:
         if len(values) < 50:
             break
     trace.stage = "run-selection"
+    lookups = 0
     for run in runs:
         if (
             isinstance(run, dict)
             and run.get("event") in {"schedule", "workflow_dispatch"}
             and run.get("status") == "completed"
-            and run.get("conclusion") == "success"
             and run.get("head_branch") == "main"
             and run.get("head_repository", {}).get("full_name") == repository
             and run.get("repository", {}).get("full_name") == repository
@@ -159,7 +195,13 @@ def covered_run(repository: str, trace: Provenance) -> dict:
             and isinstance(run.get("head_sha"), str)
             and re.fullmatch(r"[0-9a-f]{40}", run["head_sha"])
         ):
-            return run
+            if lookups == COVERED_JOB_LOOKUPS:
+                break
+            lookups += 1
+            if coverage_job_succeeded(repository, run, trace):
+                trace.stage = "run-selection"
+                return run
+            trace.stage = "run-selection"
     raise ValueError("no owned successful covered run in bounded horizon")
 
 

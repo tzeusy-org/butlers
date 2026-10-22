@@ -135,7 +135,8 @@ Frontend lint, copy/coercion gates, knip, the one build and existing bounded Nod
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
 actual test membership. Required frontend fails if guards or either child fails. The
 Playwright browser job is required through `check`: every merge group and main push runs it,
-as does every pull request that changes `frontend/`, and its failure fails `check`. Browser
+as does every pull request the route classifies as frontend (a change under `frontend/`,
+`.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
 reuses only the source/attempt/content-bound build and retains locked browser version,
 mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
