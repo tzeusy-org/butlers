@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +29,7 @@ from butlers.connectors.discretion_dispatcher import (
 )
 from butlers.core.model_call import SpendCeilingReached
 from butlers.core.model_routing import (
+    CEILING_DENIAL_REASON_PREFIX,
     CeilingStatus,
     Complexity,
     QuotaStatus,
@@ -587,13 +589,10 @@ async def test_evaluator_leaves_ordinary_numbers_unchanged() -> None:
     assert "Order 482913 total 20.50" in dispatcher.call.await_args.args[0]
 
 
-async def test_monthly_ceiling_refuses_a_discretion_call_before_any_invocation() -> None:
-    """bu-svqpzo.14 [decision]: the owner's monthly ceiling binds discretion too."""
-    pool = MagicMock()
-    dispatcher = DiscretionDispatcher(pool=pool)
-    adapter = _make_adapter()
+@contextmanager
+def _ceiling_reached(dispatcher: DiscretionDispatcher, adapter: MagicMock):
+    """Patch the kernel seam so the owner's monthly ceiling is reached ($51 of $50)."""
     catalog = _catalog_result()
-
     with (
         patch(
             f"{_KERNEL}.resolve_model_with_effective_tier",
@@ -609,14 +608,55 @@ async def test_monthly_ceiling_refuses_a_discretion_call_before_any_invocation()
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as record_attempt,
-        pytest.raises(SpendCeilingReached, match="Monthly spend ceiling reached"),
+    ):
+        yield record_attempt
+
+
+async def test_monthly_ceiling_refuses_a_discretion_call_before_any_invocation() -> None:
+    """bu-svqpzo.14 [decision]: the owner's monthly ceiling binds discretion too."""
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    adapter = _make_adapter()
+
+    with (
+        _ceiling_reached(dispatcher, adapter) as record_attempt,
+        pytest.raises(SpendCeilingReached) as raised,
     ):
         await dispatcher.call("hello", identity="tg:1")
 
+    # The Spawner's refusal text, so both gates read the same in logs and attempt rows.
+    expected = f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date $51.00 >= ceiling $50.00"
+    assert str(raised.value) == expected
     adapter.invoke.assert_not_awaited()
     row = record_attempt.await_args.kwargs
-    assert (row["outcome"], row["produce_fleet_halt"], row["butler"]) == (
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
         "quota_skip",
+        expected,
         True,
-        "__discretion__",
     )
+    assert row["butler"] == "__discretion__"
+
+
+@pytest.mark.parametrize(
+    ("weight", "verdict", "reason"),
+    [
+        (0.6, "FORWARD", "fail-open: SpendCeilingReached"),
+        (0.3, "IGNORE", "fail-closed: SpendCeilingReached"),
+    ],
+)
+async def test_evaluator_applies_its_weight_default_when_the_ceiling_refuses(
+    weight: float, verdict: str, reason: str
+) -> None:
+    """A ceiling refusal reaches the evaluator as an ordinary error: its default applies."""
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    adapter = _make_adapter()
+    evaluator = DiscretionEvaluator(source_name="tg:1", dispatcher=dispatcher)
+
+    with _ceiling_reached(dispatcher, adapter):
+        result = await evaluator.evaluate("Dinner at 7?", weight=weight)
+
+    assert (result.verdict, result.reason, result.is_fail_open) == (
+        verdict,
+        reason,
+        verdict == "FORWARD",
+    )
+    adapter.invoke.assert_not_awaited()
