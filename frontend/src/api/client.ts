@@ -104,6 +104,7 @@ import type {
   NotificationStats,
   NotificationStatsParams,
   NotificationSummary,
+  MemoryPaginatedResponse,
   PaginatedResponse,
   Schedule,
   ScheduleCreate,
@@ -221,6 +222,7 @@ import type {
   ContactSearchResponse,
   ModelCatalogEntry,
   ModelDeleteImpact,
+  AllowanceObservation,
   ModelAttentionObservation,
   ModelAttentionReissueResult,
   FleetHaltAttentionObservation,
@@ -414,6 +416,7 @@ import type {
   HomeTopConsumer,
   HomeCommandLogEntry,
   OverdueContactsResponse,
+  PendingDebriefsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
   GeneralCollection,
@@ -1620,6 +1623,15 @@ export function getCalendarInvitations(
 }
 
 /** Authenticated owner response through canonical preparation and approval. */
+export function getCalendarResponseReceipt(
+  commandId: string, sourceButler: string, inverse = false,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  const query = new URLSearchParams({ source_butler: sourceButler, inverse: String(inverse) });
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>(
+    `/calendar/workspace/responses/${encodeURIComponent(commandId)}?${query}`,
+  );
+}
+
 export function respondToCalendarInvitation(
   body: CalendarResponseRequest,
 ): Promise<ApiResponse<CalendarResponseReceipt>> {
@@ -2021,6 +2033,11 @@ export function getOverdueContacts(days?: number): Promise<OverdueContactsRespon
   return apiFetch<OverdueContactsResponse>(
     `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** Fetch prompted, unanswered meeting debriefs (bu-q7vx1q.63). */
+export function getPendingMeetingDebriefs(): Promise<PendingDebriefsResponse> {
+  return apiFetch<PendingDebriefsResponse>("/relationship/meeting-debriefs/pending");
 }
 
 /** Build URLSearchParams from group query parameters. */
@@ -2674,6 +2691,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
 /** Build URLSearchParams from rule query parameters. */
 function ruleSearchParams(params?: RuleParams): URLSearchParams {
   const sp = new URLSearchParams();
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.q) sp.set("q", params.q);
   if (params?.scope) sp.set("scope", params.scope);
   if (params?.maturity) sp.set("maturity", params.maturity);
@@ -2697,9 +2715,9 @@ export function getMemoryStats(): Promise<MemoryStatsResponse> {
 /** Fetch a paginated list of episodes. */
 export function getEpisodes(
   params?: EpisodeParams,
-): Promise<PaginatedResponse<Episode>> {
+): Promise<MemoryPaginatedResponse<Episode>> {
   const qs = episodeSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Episode>>(
+  return apiFetch<MemoryPaginatedResponse<Episode>>(
     qs ? `/memory/episodes?${qs}` : "/memory/episodes",
   );
 }
@@ -2730,9 +2748,9 @@ export function retryEpisodeConsolidation(
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
-): Promise<PaginatedResponse<Fact>> {
+): Promise<MemoryPaginatedResponse<Fact>> {
   const qs = factSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Fact>>(
+  return apiFetch<MemoryPaginatedResponse<Fact>>(
     qs ? `/memory/facts?${qs}` : "/memory/facts",
   );
 }
@@ -2818,9 +2836,9 @@ export function getLifestyleTasteVerdicts(
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,
-): Promise<PaginatedResponse<MemoryRule>> {
+): Promise<MemoryPaginatedResponse<MemoryRule>> {
   const qs = ruleSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<MemoryRule>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryRule>>(
     qs ? `/memory/rules?${qs}` : "/memory/rules",
   );
 }
@@ -2906,14 +2924,14 @@ export function runReembed(
 /** Search memory (inspect). */
 export function inspectMemory(
   params?: MemoryInspectParams,
-): Promise<PaginatedResponse<MemoryInspectResult>> {
+): Promise<MemoryPaginatedResponse<MemoryInspectResult>> {
   const sp = new URLSearchParams();
   if (params?.q) sp.set("q", params.q);
   if (params?.kind) sp.set("kind", params.kind);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<MemoryInspectResult>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryInspectResult>>(
     qs ? `/memory/inspect?${qs}` : "/memory/inspect",
   );
 }
@@ -5192,6 +5210,10 @@ export function testModelCatalogEntry(
 
 export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservation>> {
   return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
+}
+
+export function getModelAllowance(): Promise<ApiResponse<AllowanceObservation>> {
+  return apiFetch<ApiResponse<AllowanceObservation>>("/settings/models/allowance");
 }
 
 export function reissueModelAttention(

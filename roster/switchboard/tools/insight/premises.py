@@ -41,9 +41,37 @@ async def _finance_bill_still_pending(pool: asyncpg.Pool, args: Mapping[str, Any
     return row["status"] in ("pending", "overdue")
 
 
+async def _health_medication_refill_still_due(
+    pool: asyncpg.Pool, args: Mapping[str, Any]
+) -> bool | None:
+    """True while the medication is active and its supply is within the warning window.
+
+    False once it is stopped or deleted, or a refill pushed depletion past the
+    window; None when the definer answers unknown (not found, or no supply quantity).
+    """
+    subject = args.get("subject")
+    doses_per_day = args.get("doses_per_day")
+    warning_days = args.get("warning_days")
+    if not isinstance(subject, str) or isinstance(doses_per_day, bool):
+        return None
+    if not isinstance(doses_per_day, int | float) or doses_per_day <= 0:
+        return None
+    if isinstance(warning_days, bool) or not isinstance(warning_days, int | float):
+        return None
+    due = await pool.fetchval(
+        "SELECT public.resolve_health_medication_refill("
+        "$1, $2::float8::numeric, $3::float8::numeric)",
+        subject,
+        doses_per_day,
+        warning_days,
+    )
+    return None if due is None else bool(due)
+
+
 #: ``(butler, probe)`` -> probe. A butler adopts premises by registering here.
 PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("finance", "bill_still_pending"): _finance_bill_still_pending,
+    ("health", "medication_refill_still_due"): _health_medication_refill_still_due,
 }
 
 

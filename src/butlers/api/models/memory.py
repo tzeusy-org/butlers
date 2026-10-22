@@ -100,6 +100,9 @@ class Fact(BaseModel):
     entity_name: str | None = None
     object_entity_id: str | None = None
     object_entity_name: str | None = None
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
     validity: str = "active"
     scope: str = "global"
     tenant_id: str = "owner"
@@ -149,6 +152,9 @@ class Rule(BaseModel):
     # came from. ``held`` rules are invisible to sessions until the owner endorses.
     content_authority: str | None = None
     authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
+    endorsed_by: str | None = None
+    endorsed_by_name: str | None = None
     endorsed_at: str | None = None
     held: bool = False
 

@@ -567,6 +567,11 @@ The router derives each page's lazy boundary from the registry, so a page path a
 - **THEN** the router replaces it with its canonical destination
 - **AND** no legacy path renders a page of its own
 
+#### Scenario: Unmatched route renders not-found inside the shell
+- **WHEN** the owner opens a path that is neither a registered page route nor a compatibility redirect
+- **THEN** the root layout renders a not-found page whose heading is "Page not found", showing the requested path and a link to `/`
+- **AND** a route whose render or loader throws renders the shell's "Something went wrong" fallback with "Try again" rather than the router's default error screen
+
 #### Scenario: Settings stays system-side
 - **WHEN** the router is configured
 - **THEN** `/settings` and its sub-routes (`/settings/models`, `/settings/permissions`) carry only system-side configuration

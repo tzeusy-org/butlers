@@ -15,7 +15,13 @@
 // render real belief / maturity / importance data identical to browse mode
 // (honest-default fallback only for rows that predate the embedded row).
 //
-// Empty result: one serif-italic line — "Nothing in the books." (§3d).
+// Empty result: one serif-italic line — "Nothing in the books." (§3d) — only
+// after a successful, healthy, empty response. While the query is in flight a
+// loading line stands in; when a pool dropped out (`meta.pools_failed`) the
+// degraded note names it, with or without rows (bu-kqnum.14.5).
+//
+// Paging: `offset` lives in the URL (owned by MemoryBrowser); the footer reads
+// the exact `meta.total` ("showing 1–50 of 312") and moves only the offset.
 //
 // Binding docs:
 // - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 1
@@ -25,6 +31,8 @@
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Voice } from "@/components/ui/Voice";
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { LedgerRow } from "@/components/memory/FactsRegister";
 import { DirectiveRow } from "@/components/memory/RulesRegister";
 import { EpisodeRow } from "@/components/memory/EpisodesRegister";
@@ -123,6 +131,10 @@ interface SearchResultsProps {
   kind: "all" | "fact" | "rule" | "episode";
   /** Reference instant for the ledger belief numeral / daybook (tests). */
   now?: Date;
+  /** Page offset (from the URL). Defaults to the first page. */
+  offset?: number;
+  /** Move to another page; writes only the offset. */
+  onOffset?: (next: number) => void;
 }
 
 /**
@@ -130,16 +142,46 @@ interface SearchResultsProps {
  * query + kind scope, groups them by kind, and renders each group's rows in its
  * register shape. Empty result is one serif-italic line.
  */
-export default function SearchResults({ q, kind, now }: SearchResultsProps) {
-  const { data: response, isError, refetch } = useMemoryInspect({
+export default function SearchResults({ q, kind, now, offset = 0, onOffset }: SearchResultsProps) {
+  const { data: response, isError, isPending, refetch } = useMemoryInspect({
     q,
     kind: kind === "all" ? undefined : kind,
+    offset,
     limit: SEARCH_LIMIT,
   });
 
+  if (isError && (!response || response.data.length === 0)) {
+    // A failed search must not render "Nothing in the books." — a down inspect
+    // endpoint would read as a genuine no-match result (bu-mkd5r), including
+    // after a refetch failure retains a previously empty response in the cache.
+    return (
+      <MemoryLoadError
+        label="search results"
+        onRetry={() => void refetch()}
+        testId="memory-search-error"
+      />
+    );
+  }
+
+  if (isPending || !response) {
+    // No verdict yet (in flight, or paused offline): never render the empty
+    // line. `isPending`, not `isLoading`: a paused query is not fetching.
+    return (
+      <div role="status" data-testid="memory-search-loading">
+        <Voice variant="italic" className="py-6">
+          Searching the books…
+        </Voice>
+      </div>
+    );
+  }
+
+  // Read only from a response that is known to be present.
+  const { total, has_more: hasMore, pools_failed: poolsFailedMeta } = response.meta;
+  const poolsFailed = poolsFailedMeta ?? [];
+
   // useMemoryInspect returns PaginatedResponse<MemoryInspectResult> = {data,meta}
   // — unwrap .data before grouping (the #2190/#2191 envelope pattern).
-  const results = response?.data ?? [];
+  const results = response.data;
 
   // Group by kind, preserving each kind's incoming (created_at desc) order.
   const byKind: Record<string, MemoryInspectResult[]> = {
@@ -151,19 +193,44 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
     (byKind[r.kind] ??= []).push(r);
   }
 
-  if (isError && results.length === 0) {
-    // A failed search must not render "Nothing in the books." — a down inspect
-    // endpoint would read as a genuine no-match result (bu-mkd5r).
-    return (
-      <MemoryLoadError
-        label="search results"
-        onRetry={() => void refetch()}
-        testId="memory-search-error"
-      />
-    );
-  }
+  const degradedNote = (
+    <PoolsDegradedNote
+      label="Search results"
+      poolsFailed={poolsFailed}
+      onRetry={() => void refetch()}
+      testId="memory-search-degraded"
+    />
+  );
+  const footer = (
+    <MemoryPaginationFooter
+      offset={offset}
+      count={results.length}
+      total={total}
+      hasMore={hasMore}
+      pageSize={SEARCH_LIMIT}
+      partial={poolsFailed.length > 0}
+      onOffset={(next) => onOffset?.(next)}
+      prefix="showing "
+      testId="memory-search-pager"
+    />
+  );
 
   if (results.length === 0) {
+    if (poolsFailed.length > 0) {
+      // A pool dropped out: an empty page is not a "no match" verdict.
+      return <div className="flex flex-col gap-4">{degradedNote}{footer}</div>;
+    }
+    if (total > 0) {
+      // Paged past the last result: say so and keep the way back.
+      return (
+        <div className="flex flex-col gap-4">
+          <Voice variant="italic" className="py-6">
+            Nothing on this page.
+          </Voice>
+          {footer}
+        </div>
+      );
+    }
     return (
       <Voice variant="italic" className="py-6">
         Nothing in the books.
@@ -173,6 +240,7 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
 
   return (
     <div className="flex flex-col gap-8">
+      {degradedNote}
       {KIND_ORDER.map((k) => {
         const group = byKind[k];
         if (!group || group.length === 0) return null;
@@ -180,6 +248,7 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
         if (k === "rule") return <RuleGroup key={k} results={group} />;
         return <EpisodeGroup key={k} results={group} />;
       })}
+      {footer}
     </div>
   );
 }

@@ -403,10 +403,9 @@ def generate_report(files: list[Path]) -> tuple[str, int]:
             total += 1
         lines.append("")
 
-    lines.append("---")
-    lines.append(f"*Total strings: {total}*")
-    lines.append("")
-
+    # No file-global trailer such as a total count: every PR that adds copy would rewrite it
+    # to the same value, so concurrent PRs merge cleanly yet leave the inventory stale and
+    # fail the CI guard in the merge group (bu-21bos0). The total goes to stdout instead.
     return "\n".join(lines), total
 
 

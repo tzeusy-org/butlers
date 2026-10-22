@@ -20,14 +20,18 @@ copies the insight message or other sensitive evidence.
 ## Premise-bound insights
 
 An insight can name the fact it asserts (its `premise`): either an owner-condition
-episode that must still be active, or a registered zero-LLM probe such as finance's
-`bill_still_pending`. The delivery cycle re-checks the premise before selection:
+episode that must still be active, or a registered zero-LLM probe: finance's
+`bill_still_pending`, or health's `medication_refill_still_due` (the medication is
+still active and its estimated supply is still inside the 14-day refill window). The delivery cycle re-checks the premise
+before selection:
 
 - **False**: the candidate is withdrawn and never sent (attention-ledger outcome
   `withdrawn`), so a paid bill's "due tomorrow" does not go out.
 - **Unknown** (probe error, no evidence): the insight is delivered stamped
   `(as of <proposed time> UTC)` and is never presented as rechecked.
-- **Resolved after delivery**: when an owner-condition premise resolves, a standalone
+- **Resolved after delivery**: when an owner-condition premise resolves (probe premises,
+  including the health refill probe, are checked only before selection and are not amended
+  in place), a standalone
   Telegram message is edited in place to a struck-through original plus `Resolved HH:MM UTC`
   (outcome `amended`, no new ping). A digest line, an email, a rejected edit (Telegram
   400) or three transport failures instead fold a `Since last digest: Resolved ...`

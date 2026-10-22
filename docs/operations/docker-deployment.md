@@ -114,9 +114,11 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
 - **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
-  `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
-  mounts only the runtime-probe verifier keyring, never the signing key.
+  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs under
+  Docker's default AppArmor profile: runtime sessions launch Codex with
+  `--dangerously-bypass-approvals-and-sandbox`, so no `butlers-up` path creates a user namespace
+  (only `dashboard-api`'s CLI-auth sandbox does). It mounts only the runtime-probe verifier keyring,
+  never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
   (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
   placeholders, so the stack boots on a machine that has provisioned neither --- with the control
@@ -189,12 +191,14 @@ sudo apparmor_parser -r /etc/apparmor.d/butlers-dashboard-api
 sudo aa-status | grep butlers-dashboard-api
 ```
 
-Then, in `docker-compose.yml`, edit the `security_opt` of BOTH the `dashboard-api` and
-`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`): replace
-`apparmor:unconfined` with `apparmor=butlers-dashboard-api` (the other two entries stay). The profile
-is otherwise unconfined, so the container's confinement is the same as today; only user-namespace
-creation is newly allowed, and only for these containers. Reload the stack with the launcher or
-`butlers deploy`.
+Then set `BUTLERS_DASHBOARD_APPARMOR_PROFILE=butlers-dashboard-api` in the environment file the
+launcher sources (`.env.dev` / `.env.prod`); do not edit the tracked `docker-compose.yml`. The
+variable feeds the `apparmor` entry of the `security_opt` of BOTH the `dashboard-api` and
+`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`); the
+other two entries stay, and with the variable unset the entry remains `apparmor:unconfined`. The
+profile is otherwise unconfined, so the container's confinement is the same as today; only
+user-namespace creation is newly allowed, and only for these containers. Reload the stack with the
+launcher or `butlers deploy`.
 
 Verify from the container that is actually running, `dashboard-api` or `dashboard-api-hotreload`
 (this proves user-namespace creation only, not the full sandbox):
