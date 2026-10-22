@@ -8,6 +8,7 @@ resolution attributes a sender, it does not authenticate external transport.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import json
@@ -30,6 +31,9 @@ SOURCE_HEADER = "X-Butlers-Fact-Source"
 VERIFIER_PATH = "/internal/fact-source/verify"
 RECOVERY_PATH = "/internal/fact-source/recover"
 RECEIVER_PATH = "/internal/fact-source/receiver"
+# Capture must not consume all source connections while waiting for its owner.
+# Keep these deadlines local; other registry/resolver callers retain their policy.
+_CAPTURE_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +267,40 @@ class FactSourceContextRegistry:
         This method is called only by the owning Pipeline after resolution, not
         exposed through MCP/HTTP. Recovery reuses the original private record.
         """
-        async with self.pool.acquire() as conn, conn.transaction():
+        async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
+            async with self.pool.acquire(timeout=_CAPTURE_TIMEOUT_SECONDS) as conn:
+                snapshot = await conn.fetchrow(
+                    "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
+                    "FROM switchboard.message_inbox WHERE id=$1",
+                    inbox_id,
+                )
+        if snapshot is None:
+            raise ValueError("accepted source is unavailable")
+        context = snapshot["request_context"] or {}
+        sender = context.get("source_sender_identity")
+        channel = context.get("source_channel")
+        resolved = None
+        if (
+            context.get("_fact_source_report") is None
+            and isinstance(sender, str)
+            and isinstance(channel, str)
+        ):
+            # Relationship routing itself acquires from this source pool. No
+            # connection or inbox lock may span that lookup or its network I/O.
+            try:
+                async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
+                    resolved = await self.resolve_identity(
+                        None, channel, sender, raise_on_error=False
+                    )
+            except TimeoutError:
+                # Preserve unresolved attribution, never infer owner authority.
+                resolved = None
+
+        async with (
+            asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS),
+            self.pool.acquire(timeout=_CAPTURE_TIMEOUT_SECONDS) as conn,
+            conn.transaction(),
+        ):
             row = await conn.fetchrow(
                 "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
                 "FROM switchboard.message_inbox WHERE id=$1 FOR UPDATE",
@@ -271,21 +308,19 @@ class FactSourceContextRegistry:
             )
             if row is None:
                 raise ValueError("accepted source is unavailable")
+            if (
+                accepted_source_digest(row) != accepted_source_digest(snapshot)
+                or row["lifecycle_state"] != snapshot["lifecycle_state"]
+            ):
+                raise ValueError("accepted source changed during identity resolution")
             context = row["request_context"] or {}
             stored = context.get("_fact_source_report")
             if stored is not None:
                 report = FactWriteContext.from_record(stored)
             else:
-                # Resolve from the source-owning durable accepted request, not
-                # the public process argument's sender/entity fields. The
-                # Pipeline result is only a consistency witness.
-                sender = context.get("source_sender_identity")
-                channel = context.get("source_channel")
-                resolved = None
-                if isinstance(sender, str) and isinstance(channel, str):
-                    resolved = await self.resolve_identity(
-                        conn, channel, sender, raise_on_error=False
-                    )
+                # The locked source still matches the resolved snapshot. A
+                # concurrent stored winner above always takes precedence; the
+                # Pipeline argument remains only a consistency witness.
                 actual_entity_id = resolved.entity_id if resolved is not None else None
                 if resolved_entity_id is not None and actual_entity_id != resolved_entity_id:
                     raise ValueError("canonical accepted sender resolution mismatch")
