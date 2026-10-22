@@ -2307,7 +2307,7 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
 
     mock_sync.assert_awaited_once()
     schedules_arg = mock_sync.call_args[0][1]
-    job_names = [s.get("job_name") for s in schedules_arg]
+    job_names = [s.job_name for s in schedules_arg]
     assert "daily_briefing_contribution" not in job_names
     assert "some_other_job" in job_names
 

@@ -28,7 +28,7 @@ The daemon follows a deterministic multi-phase startup. Each phase depends on th
 
 ### Phase 1: Load and Validate Config
 
-The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig`, and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
+The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
 
 ### Phase 2: Initialize Telemetry and Scan Config
 

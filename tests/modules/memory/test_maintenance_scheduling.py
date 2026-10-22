@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import asyncpg
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory import MemoryModule
 from butlers.scheduled_jobs import (
@@ -606,12 +607,12 @@ async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cade
         await sync_schedules(
             pool,
             [
-                {
-                    "name": "memory_decay_sweep",
-                    "cron": "30 2 * * *",
-                    "dispatch_mode": "job",
-                    "job_name": "memory_decay_sweep",
-                }
+                ScheduleSpec(
+                    name="memory_decay_sweep",
+                    cron="30 2 * * *",
+                    dispatch_mode="job",
+                    job_name="memory_decay_sweep",
+                )
             ],
         )
         row = await pool.fetchrow(

@@ -15,7 +15,7 @@ import { MemoryRouter } from "react-router";
 
 import { undoCalendarWorkspaceMutation } from "@/api/client.ts";
 import type { CalendarAuditEntry } from "@/api/types.ts";
-import { CalendarActivityPanel } from "@/pages/CalendarWorkspacePage.tsx";
+import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
