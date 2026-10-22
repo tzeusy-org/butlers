@@ -272,3 +272,26 @@ def test_stored_record_scrubs_legacy_top_level_content() -> None:
     assert "482913" not in new_raw["content"] and fresh
     _assert_metadata_untouched(before, new_raw)
     assert scrub_stored_record({"content": "Invoice 482913"}, "")[0]["content"] == "Invoice 482913"
+
+
+def test_scrub_that_moves_text_collapses_untrusted_spans_to_whole_text() -> None:
+    """Scrubbing shifts the connector's offsets; each kind then marks the whole text (bu-xmueeq)."""
+    text = "Fwd from Mallory: Your code is 482913. Pay account 12-34."
+    envelope = {
+        "source": {"provider": "telegram"},
+        "sender": {"identity": "owner"},
+        "payload": {
+            "raw": None,
+            "normalized_text": text,
+            "untrusted_spans": [
+                {"kind": "forwarded", "start": 18, "end": len(text), "origin_identity": "555"}
+            ],
+        },
+    }
+    out, hits = scrub_envelope(envelope)
+
+    assert hits
+    scrubbed = out["payload"]["normalized_text"]
+    assert out["payload"]["untrusted_spans"] == [
+        {"kind": "forwarded", "start": 0, "end": len(scrubbed), "origin_identity": "555"}
+    ]

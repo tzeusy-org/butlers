@@ -15,6 +15,7 @@ Key behaviors:
 See docs/connectors/heartbeat.md for the full protocol specification.
 """
 
+import json
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -25,6 +26,13 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from butlers.connectors.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.ingestion_spans import (
+    CHANNEL_KIND_CAPABILITY,
+    CHANNEL_KIND_MESSAGE,
+    CHANNEL_KINDS,
+    ChannelKind,
+    effective_channel_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,10 +249,59 @@ def parse_connector_heartbeat(payload: Mapping[str, Any]) -> ConnectorHeartbeatV
                 CLASSIFICATION_KEY: parse_check(capabilities[CLASSIFICATION_KEY]),
             },
         }
+    capabilities = payload.get("capabilities")
+    if (
+        isinstance(capabilities, dict)
+        and CHANNEL_KIND_CAPABILITY in capabilities
+        and capabilities[CHANNEL_KIND_CAPABILITY] not in CHANNEL_KINDS
+    ):
+        # An unrecognised channel kind is not registered at all, which is a message channel
+        # (REQ-connector-base-spec-003); liveness is unaffected.
+        payload = {
+            **payload,
+            "capabilities": {k: v for k, v in capabilities.items() if k != CHANNEL_KIND_CAPABILITY},
+        }
     try:
         return ConnectorHeartbeatV1.model_validate(payload)
     except Exception as exc:
         raise ValueError(f"Invalid connector.heartbeat.v1 envelope: {exc}") from exc
+
+
+async def registered_channel_kind(
+    pool: asyncpg.Pool | asyncpg.Connection,
+    connector_type: str,
+    endpoint_identity: str,
+) -> ChannelKind:
+    """The channel kind a connector registered (REQ-connector-base-spec-003).
+
+    Goal admission resolves the kind here, from the Switchboard-owned registry row, never from an
+    ingest envelope. An unregistered connector, a row without a declared kind, or an unreadable
+    registry is a message channel, the spec's default for an undeclared channel.
+    """
+    try:
+        capabilities = await pool.fetchval(
+            """
+            SELECT capabilities
+            FROM switchboard.connector_registry
+            WHERE connector_type = $1 AND endpoint_identity = $2
+            """,
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:  # noqa: BLE001 -- an unreadable registry is an undeclared channel
+        logger.warning(
+            "Channel kind unavailable for %s/%s; treating it as a message channel",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        return CHANNEL_KIND_MESSAGE
+    if isinstance(capabilities, str):
+        try:
+            capabilities = json.loads(capabilities)
+        except ValueError:
+            return CHANNEL_KIND_MESSAGE
+    return effective_channel_kind(capabilities if isinstance(capabilities, dict) else None)
 
 
 async def _get_previous_snapshot(

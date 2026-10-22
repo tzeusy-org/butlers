@@ -67,6 +67,7 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
@@ -398,6 +399,16 @@ def _resolve_observed_at(
             return parsed, OBSERVED_AT_DATE_HEADER
         break
     return received_at, OBSERVED_AT_RECEIPT_TIME
+
+
+def _has_attached_message(payload: dict[str, Any], depth: int = 0) -> bool:
+    """Whether the MIME tree carries a whole message from someone else (``message/rfc822``)."""
+    if depth > 20 or not isinstance(payload, dict):
+        return False
+    if payload.get("mimeType") == "message/rfc822":
+        return True
+    parts = payload.get("parts")
+    return isinstance(parts, list) and any(_has_attached_message(part, depth + 1) for part in parts)
 
 
 class GmailConnectorConfig(BaseModel):
@@ -2781,6 +2792,14 @@ class GmailConnectorRuntime:
         }
         if known_contact is not None:
             envelope["control"]["known_contact"] = known_contact
+        # Forwarded, quoted and attached third-party content (RFC 0038 D5, bu-xmueeq).
+        untrusted_spans = email_untrusted_spans(
+            normalized_text,
+            subject=subject,
+            has_attached_message=_has_attached_message(payload),
+        )
+        if untrusted_spans:
+            envelope["payload"]["untrusted_spans"] = untrusted_spans
         # Bearer material (OTP codes, reset/magic links) never leaves the connector.
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed
