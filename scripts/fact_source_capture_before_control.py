@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import resource
+import runpy
 import secrets
 import selectors
 import signal
@@ -26,6 +27,32 @@ OLD_COMMIT = "37d3917c38080a0e43aa73d8f114b715c2377568"
 RUNTIME = "src/butlers/core/fact_authority.py"
 OLD_BLOB = "6fb7494b993a459d58736d91d72c96382c728998"
 NEW_BLOB = "1f3287e7583f31eb969ffcdc6d3eeb3a5204d271"
+PREPARE_HELPER_SHA256 = "81d2f5701c376fd52bd51772e3b874b7b81a722259d2fea4427fd471ae4bce64"
+PREPARE_STAGES = {
+    "entry",
+    "compatibility",
+    "uv-version",
+    "lock-check",
+    "frozen-sync",
+    "own-source",
+    "metadata-write",
+}
+ERROR_CLASSES = {
+    "none",
+    "subprocess-timeout",
+    "subprocess-error",
+    "os-error",
+    "value-error",
+    "other",
+}
+REFUSAL_COUNTS = (
+    "scan_refused",
+    "task_overflow",
+    "children_overflow",
+    "owned_overflow",
+    "pending_overflow",
+    "walk_overflow",
+)
 NODE = (
     "tests/integration/test_fact_source_capture_pool_liveness.py::"
     "test_capacity_one_registered_owner_capture_and_concurrent_sources"
@@ -113,7 +140,7 @@ def refusal(error, progress, binding):
     elif isinstance(error, KeyError):
         category = "missing-key"
     reason = error.args[0] if len(error.args) == 1 else None
-    return {
+    data = {
         "schema": "fact-capture-control-refusal.v1",
         "complete": False,
         "control_verdict": "UNKNOWN",
@@ -124,6 +151,129 @@ def refusal(error, progress, binding):
         "pg_call": "UNKNOWN",
         "cleanup": "UNKNOWN",
     }
+    if progress.get("stage") == "environment-prepare":
+        data["preparation"] = progress.get("preparation")
+    return data
+
+
+def preparation_child():
+    """Observe the exact helper without intercepting its calls, output or verdict."""
+    config_path = Path(os.environ["FACT_CAPTURE_PREPARE_CONFIG"])
+    config = json.loads(config_path.read_text())
+    if set(config) != {"root"}:
+        raise ValueError("prepare-config")
+    root = Path(config["root"]).resolve()
+    if root.parent != config_path.resolve().parent or root.name != "workload":
+        raise ValueError("prepare-root")
+    helper = root / "scripts/ci_environment.py"
+    if (
+        helper.is_symlink()
+        or hashlib.sha256(helper.read_bytes()).hexdigest() != PREPARE_HELPER_SHA256
+    ):
+        raise ValueError("prepare-helper")
+    observation = {
+        "schema": "fact-capture-prepare-observation.v1",
+        "helper_sha256": PREPARE_HELPER_SHA256,
+        "substage": "entry",
+        "error_class": "none",
+        "helper_exit": None,
+    }
+    active = True
+
+    def category(kind):
+        for parent, name in (
+            (subprocess.TimeoutExpired, "subprocess-timeout"),
+            (subprocess.SubprocessError, "subprocess-error"),
+            (OSError, "os-error"),
+            (ValueError, "value-error"),
+        ):
+            if issubclass(kind, parent):
+                return name
+        return "other"
+
+    def trace(frame, event, arg):
+        if frame.f_code.co_filename != str(helper):
+            return None
+        if event == "call":
+            if frame.f_code.co_name == "compatibility":
+                observation["substage"] = "compatibility"
+            elif frame.f_code.co_name == "validate_source":
+                observation["substage"] = "own-source"
+        elif event == "exception" and not issubclass(arg[0], SystemExit):
+            observation["error_class"] = category(arg[0])
+        return trace
+
+    def audit(event, args):
+        if not active:
+            return
+        if event == "subprocess.Popen":
+            for command, stage in (
+                (["uv", "--version"], "uv-version"),
+                (["uv", "lock", "--check"], "lock-check"),
+                (
+                    [
+                        "uv",
+                        "sync",
+                        "--frozen",
+                        "--dev",
+                        "--compile-bytecode",
+                        "--reinstall-package",
+                        "butlers",
+                    ],
+                    "frozen-sync",
+                ),
+            ):
+                if args[1] == command:
+                    observation["substage"] = stage
+        elif (
+            event == "open"
+            and args[0] == str(root / ".venv/ci-environment.json")
+            and args[1] == "w"
+        ):
+            observation["substage"] = "metadata-write"
+
+    # Match normal script execution's argv and import directory. runpy executes
+    # the admitted file unchanged, including its original main/catch/exit path.
+    sys.argv = [str(helper), "prepare"]
+    sys.path[0] = str(helper.parent)
+    sys.addaudithook(audit)
+    sys.settrace(trace)
+    try:
+        runpy.run_path(str(helper), run_name="__main__")
+    except SystemExit as error:
+        if type(error.code) is int and 0 <= error.code <= 255:
+            observation["helper_exit"] = error.code
+        raise
+    finally:
+        sys.settrace(None)
+        active = False
+        if observation["helper_exit"] == 0:
+            observation["error_class"] = "none"
+        atomic(root.parent / "prepare-observation.json", observation)
+
+
+def preparation_observation(path):
+    """Only the fixed observer schema may cross the private output boundary."""
+    try:
+        if path.is_symlink() or path.stat().st_size > 8192:
+            return None
+        data = json.loads(path.read_text())
+        if (
+            set(data) != {"schema", "helper_sha256", "substage", "error_class", "helper_exit"}
+            or data["schema"] != "fact-capture-prepare-observation.v1"
+            or data["helper_sha256"] != PREPARE_HELPER_SHA256
+            or data["substage"] not in PREPARE_STAGES
+            or data["error_class"] not in ERROR_CLASSES
+            or not (
+                data["helper_exit"] is None
+                or type(data["helper_exit"]) is int
+                and 0 <= data["helper_exit"] <= 255
+            )
+        ):
+            return None
+        return data
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def digest(data):
@@ -309,6 +459,68 @@ def process_start(pid):
     return int(raw[raw.rfind(")") + 2 :].split()[19])
 
 
+def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protocol_refused):
+    """Project protocol observations, never child output or a new cleanup verdict."""
+    outcomes = [value for value in events if value.get("event") == "outcome"]
+    settled = [value for value in events if value.get("event") == "settled"]
+    diagnostics = [value for value in events if value.get("event") == "diagnostic"]
+    outcome = outcomes[0] if len(outcomes) == 1 else {}
+    diagnostic = diagnostics[0] if len(diagnostics) == 1 else {}
+
+    def number(value, lower=0, upper=65535):
+        return value if type(value) is int and lower <= value <= upper else None
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    def literal(value, allowed):
+        return value if type(value) is str and value in allowed else "unknown"
+
+    counts = diagnostic.get("counts")
+    counts = counts if isinstance(counts, dict) else {}
+    return {
+        "child_exit": number(outcome.get("code"), upper=255),
+        "child_signal": literal(
+            outcome.get("signal"),
+            {
+                "SIGABRT",
+                "SIGALRM",
+                "SIGBUS",
+                "SIGFPE",
+                "SIGHUP",
+                "SIGILL",
+                "SIGINT",
+                "SIGKILL",
+                "SIGPIPE",
+                "SIGQUIT",
+                "SIGSEGV",
+                "SIGTERM",
+                "SIGTRAP",
+                "SIGXCPU",
+                "SIGXFSZ",
+            },
+        ),
+        "supervisor_exit": number(supervisor_exit, -64, 255),
+        "timed_out": bool(timed_out),
+        "cancelled": bool(cancelled),
+        "protocol_refused": bool(protocol_refused),
+        "outcome_records": min(8, len(outcomes)),
+        "settled_records": min(8, len(settled)),
+        "settled_complete": boolean(settled[0].get("complete")) if len(settled) == 1 else None,
+        "reason": literal(
+            diagnostic.get("reason"),
+            {
+                "settled",
+                "latched_refusal",
+                "settlement_deadline",
+            },
+        ),
+        "counts": {key: number(counts.get(key)) for key in REFUSAL_COUNTS},
+        "counts_saturated": boolean(diagnostic.get("counts_saturated")),
+        "kernel_children_closed": boolean(diagnostic.get("kernel_children_closed")),
+    }
+
+
 def run_owned(command, environment, seconds, *, cwd=None):
     """Use the existing confined subreaper; only its closed lifecycle crosses stdout."""
     started = time.monotonic()
@@ -398,6 +610,9 @@ def run_owned(command, environment, seconds, *, cwd=None):
         "timed_out": timed_out,
         "cancelled": bool(CANCELLED),
         "elapsed_s": time.monotonic() - started,
+        "observation": lifecycle_observation(
+            events, process.returncode, timed_out, CANCELLED, overflow
+        ),
     }
 
 
@@ -565,12 +780,18 @@ def execute(root, output, progress=None):
         progress["stage"] = "uv-install"
         environment = prepare_uv(root, private, environment, remaining(640))
         progress["stage"] = "environment-prepare"
+        prepare_config = private / "prepare-config.json"
+        atomic(prepare_config, {"root": str(workload)})
         prepared = run_owned(
-            [sys.executable, str(workload / "scripts/ci_environment.py"), "prepare"],
-            environment,
+            [sys.executable, str(Path(__file__).resolve()), "--prepare-child"],
+            {**environment, "FACT_CAPTURE_PREPARE_CONFIG": str(prepare_config)},
             remaining(640),
             cwd=workload,
         )
+        progress["preparation"] = {
+            "lifecycle": prepared["observation"],
+            "helper": preparation_observation(private / "prepare-observation.json"),
+        }
         if prepared["exit"] != 0 or not prepared["cleanup_complete"] or prepared["timed_out"]:
             raise ValueError("environment-prepare")
         progress["stage"] = "sentinel-start"
@@ -650,6 +871,8 @@ def execute(root, output, progress=None):
 def main():
     if sys.argv[1:] == ["--phase-child"]:
         phase_child()
+    if sys.argv[1:] == ["--prepare-child"]:
+        preparation_child()
     if len(sys.argv) != 1:
         return 2
     root = Path(__file__).resolve().parents[1]

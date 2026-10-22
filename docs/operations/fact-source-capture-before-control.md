@@ -55,3 +55,17 @@ witness reader. Failure before identity validation creates no directory or child
 closed console diagnostic is the only observation. Exception messages, commands, paths,
 environment values and tracebacks never enter these diagnostics. A failed artifact write
 remains refused and does not overwrite or promote evidence.
+
+An environment-preparation refusal additionally retains a closed `preparation` diagnostic.
+Its lifecycle projection distinguishes the child exit/signal, supervisor exit, timeout,
+cancellation, protocol refusal, and the existing supervisor's fixed refusal reason/counts.
+These observations do not supply a missing cleanup verdict or prove any PostgreSQL call.
+The unchanged, SHA256-pinned `ci_environment.py prepare` runs with its original argv, cwd,
+environment, subprocess commands, exception handling and exit status. An observer labels only
+compatibility/UV-version, lock-check, frozen-sync, own-source validation or metadata-write
+events and allowlisted exception classes. It does not intercept subprocess execution or
+publish stdout, stderr, exception messages, paths or environment values. The private helper
+observation is validated against an exact schema before projection. A cancelled/terminated
+helper may leave no such observation, which remains unknown; lifecycle refusal is never
+promoted to a successful preparation or paired witness. The original preparation, aggregate
+and process-cleanup deadlines and predicates are unchanged.

@@ -160,6 +160,25 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
     try:
         healthy = control.run_owned([sys.executable, "-c", "pass"], os.environ.copy(), 5)
         assert healthy["exit"] == 0 and healthy["cleanup_complete"]
+        assert healthy["observation"]["child_exit"] == 0
+        assert healthy["observation"]["supervisor_exit"] == 0
+        assert healthy["observation"]["settled_complete"] is True
+        refused = control.run_owned(
+            [sys.executable, "-c", "import sys;print('PRIVATE_CHILD');sys.exit(7)"],
+            os.environ.copy(),
+            5,
+        )
+        assert refused["exit"] == 7 and refused["cleanup_complete"]
+        assert refused["observation"]["child_exit"] == 7
+        assert refused["observation"]["reason"] == "settled"
+        diagnostic = control.refusal(
+            ValueError("environment-prepare"),
+            {"stage": "environment-prepare", "preparation": refused["observation"]},
+            {"nonce": "a" * 64},
+        )
+        assert diagnostic["preparation"]["child_exit"] == 7
+        assert diagnostic["pg_call"] == diagnostic["cleanup"] == "UNKNOWN"
+        assert "PRIVATE" not in json.dumps(diagnostic)
         escaped = tmp_path / "escaped"
         code = (
             "import os,signal,time,pathlib;"
@@ -170,6 +189,46 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         )
         hung = control.run_owned([sys.executable, "-c", code], os.environ.copy(), 2)
         assert hung["timed_out"] and hung["cleanup_complete"] and hung["exit"] != 0
+        assert hung["observation"]["timed_out"] is True
+        assert hung["observation"]["child_signal"] == "SIGKILL"
+        assert hung["observation"]["kernel_children_closed"] is True
+        private = control.lifecycle_observation(
+            [
+                {"event": "outcome", "code": "PRIVATE_EXIT", "signal": "PRIVATE_SIGNAL"},
+                {
+                    "event": "diagnostic",
+                    "reason": "PRIVATE_REASON",
+                    "counts": {"scan_refused": "PRIVATE_COUNT"},
+                    "counts_saturated": "PRIVATE_BOOL",
+                },
+            ],
+            "PRIVATE_SUPERVISOR",
+            False,
+            False,
+            True,
+        )
+        assert private["child_exit"] is private["supervisor_exit"] is None
+        assert private["counts"]["scan_refused"] is None
+        assert private["protocol_refused"] and "PRIVATE" not in json.dumps(private)
+        latched = control.lifecycle_observation(
+            [
+                {"event": "outcome", "code": 1},
+                {"event": "settled", "complete": False},
+                {
+                    "event": "diagnostic",
+                    "reason": "latched_refusal",
+                    "counts": {key: int(key == "scan_refused") for key in control.REFUSAL_COUNTS},
+                    "counts_saturated": False,
+                    "kernel_children_closed": True,
+                },
+            ],
+            2,
+            False,
+            False,
+            False,
+        )
+        assert latched["reason"] == "latched_refusal" and latched["counts"]["scan_refused"] == 1
+        assert latched["settled_complete"] is False and latched["supervisor_exit"] == 2
         # An absolute script path does not choose its editable-repair target.
         controller = tmp_path / "controller"
         controller.mkdir()
@@ -423,8 +482,14 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
 
             def prepare(command, environment, seconds, *, cwd):
                 calls.append("prepare")
-                assert cwd.name == "workload" and command[-1] == "prepare"
-                return {"exit": 2, "cleanup_complete": True, "timed_out": False}
+                assert cwd.name == "workload" and command[-1] == "--prepare-child"
+                assert Path(environment["FACT_CAPTURE_PREPARE_CONFIG"]).parent == cwd.parent
+                return {
+                    "exit": 2,
+                    "cleanup_complete": True,
+                    "timed_out": False,
+                    "observation": control.lifecycle_observation([], 0, False, False, False),
+                }
 
             context.setattr(control, "prepare_uv", install)
             context.setattr(control, "run_owned", prepare)
@@ -489,3 +554,94 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
     assert control.main() == 2
     assert marker.read_text() == "unchanged"
     assert not (output / "control-refusal.json").exists()
+
+    # Execute the pinned helper unchanged, directly and through the observer.
+    # Only uv is a software fixture: no install, network, provider or PG call.
+    helper_bytes = (Path(control.__file__).parent / "ci_environment.py").read_bytes()
+    assert control.hashlib.sha256(helper_bytes).hexdigest() == control.PREPARE_HELPER_SHA256
+    uv_fixture = """#!/usr/bin/env python3
+import os,pathlib,subprocess,sys
+mode=os.environ['FIXTURE_MODE']
+if sys.argv[1:]==['--version']:
+ print('PRIVATE_VERSION_ERROR' if mode=='compatibility-refused' else 'uv software fixture')
+ sys.exit(6 if mode=='compatibility-refused' else 0)
+if sys.argv[1:]==['lock','--check']:
+ print('PRIVATE_LOCK_OUTPUT',file=sys.stderr)
+ sys.exit(7 if mode=='lock-refused' else 0)
+assert sys.argv[1:]==['sync','--frozen','--dev','--compile-bytecode','--reinstall-package','butlers']
+if mode=='sync-refused':
+ print('PRIVATE_SYNC_OUTPUT',file=sys.stderr);sys.exit(8)
+root=pathlib.Path.cwd()
+subprocess.run([sys.executable,'-m','venv','--without-pip',str(root/'.venv')],check=True)
+site=next((root/'.venv/lib').glob('python*/site-packages'))
+target=root/'src' if mode!='own-source-refused' else root/'outside'
+(site/'fixture.pth').write_text(str(target)+'\\n')
+"""
+    for mode, substage in (
+        ("healthy", "metadata-write"),
+        ("compatibility-refused", "uv-version"),
+        ("lock-refused", "lock-check"),
+        ("sync-refused", "frozen-sync"),
+        ("own-source-refused", "own-source"),
+    ):
+        executions = []
+        for observed in (False, True):
+            parent = tmp_path / (mode + str(observed))
+            workload = parent / "workload"
+            helper = workload / "scripts/ci_environment.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(helper_bytes)
+            for name in ("uv.lock", "pyproject.toml"):
+                (workload / name).write_text("software fixture\n")
+            for source in ("src", "outside"):
+                (workload / source / "butlers").mkdir(parents=True)
+                (workload / source / "butlers/__init__.py").write_text("# fixture\n")
+            binary = workload / "bin/uv"
+            binary.parent.mkdir()
+            binary.write_text(uv_fixture)
+            binary.chmod(0o755)
+            config = parent / "prepare-config.json"
+            config.write_text(json.dumps({"root": str(workload)}))
+            command = (
+                [sys.executable, str(Path(control.__file__).resolve()), "--prepare-child"]
+                if observed
+                else [sys.executable, str(helper), "prepare"]
+            )
+            result = subprocess.run(
+                command,
+                cwd=workload,
+                env={
+                    **os.environ,
+                    "FIXTURE_MODE": mode,
+                    "FACT_CAPTURE_PREPARE_CONFIG": str(config),
+                    "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+                },
+                capture_output=True,
+                timeout=40,
+            )
+            metadata = workload / ".venv/ci-environment.json"
+            executions.append(
+                (
+                    result.returncode,
+                    result.stdout,
+                    result.stderr,
+                    metadata.read_bytes() if metadata.is_file() else None,
+                )
+            )
+            assert helper.read_bytes() == helper_bytes
+        assert executions[0] == executions[1]
+        assert result.returncode == (0 if mode == "healthy" else 1)
+        diagnostic_path = parent / "prepare-observation.json"
+        data = control.preparation_observation(diagnostic_path)
+        assert data["substage"] == substage
+        assert data["error_class"] == ("none" if mode == "healthy" else "subprocess-error")
+        assert "PRIVATE" not in diagnostic_path.read_text()
+        for key, value in (
+            ("substage", "PRIVATE_STAGE"),
+            ("helper_exit", True),
+            ("helper_sha256", "wrong"),
+            ("error_class", "PRIVATE_ERROR"),
+        ):
+            bad = {**data, key: value}
+            diagnostic_path.write_text(json.dumps(bad))
+            assert control.preparation_observation(diagnostic_path) is None
