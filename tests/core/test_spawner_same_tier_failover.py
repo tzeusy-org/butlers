@@ -23,15 +23,20 @@ Also covers:
 
 from __future__ import annotations
 
+import asyncio
+import datetime as _datetime
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core import model_routing as _mr
 from butlers.core.dispatch_intent import FitCode, FitFinding
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import (
@@ -1474,6 +1479,261 @@ class TestUsageLimitAllowanceExhaustion:
             if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
         )
         assert failed.kwargs["outcome"] == "runtime_failure"
+
+
+class TestUsageLimitAllowanceAttemptEvidence:
+    """A provider usage-limit exhausts the account, not just the model (bu-q7vx1q.13)."""
+
+    async def _run(
+        self,
+        tmp_path: Path,
+        error: Exception,
+        *,
+        stop_during_capture: bool = False,
+        capture_unavailable: bool = False,
+        cold_retry: bool = False,
+        dashboard: bool = False,
+        clear_database_failure: bool = False,
+    ) -> tuple[Any, _FailThenSuccessAdapter, AsyncMock, AsyncMock, AsyncMock]:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        adapter = _FailThenSuccessAdapter(fail_count=1, error=error, result_text="other-account")
+        adapter.supports_resume = cold_retry
+        pool = AsyncMock()
+        captures: list[tuple[uuid.UUID, datetime]] = []
+        events: list[str] = []
+        capturing, release_capture = asyncio.Event(), asyncio.Event()
+
+        async def fetchrow(sql, *args):
+            if "AS observed_rejection_at" not in sql:
+                return None
+            started = datetime(2026, 10, 3, 12, tzinfo=UTC) + _datetime.timedelta(
+                seconds=len(captures)
+            )
+            captures.append((args[0], started))
+            events.append("capture")
+            if stop_during_capture:
+                capturing.set()
+                await release_capture.wait()
+            if capture_unavailable:
+                raise asyncpg.PostgresError("synthetic capture unavailable")
+            return {
+                "account_key": str(args[0]),
+                "started_at": started,
+                "observed_rejection_at": started - _datetime.timedelta(seconds=1),
+            }
+
+        pool.fetchrow.side_effect = fetchrow
+        if clear_database_failure:
+            pool.execute.side_effect = asyncpg.PostgresError("synthetic clear unavailable")
+        invoke = adapter.invoke
+
+        async def observe_invoke(**kwargs):
+            events.append("invoke")
+            kwargs.pop("resume_session_id", None)
+            return await invoke(**kwargs)
+
+        adapter.invoke = observe_invoke
+
+        async def claim(*_args, **_kwargs):
+            events.append("claim")
+            return SimpleNamespace(outcome="active")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+                return_value=42,
+            ) as write_attempt,
+            patch("butlers.core.spawner.mark_allowance_exhausted", new_callable=AsyncMock) as mark,
+            patch(
+                "butlers.core.spawner.clear_allowance_exhaustion",
+                new_callable=AsyncMock,
+                side_effect=_mr.clear_allowance_exhaustion if clear_database_failure else None,
+            ) as clear,
+            patch("butlers.core.spawner.claim_invoke", side_effect=claim),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(outcome="active"),
+            ),
+            patch("butlers.core.spawner.complete_session", new_callable=AsyncMock) as complete,
+            patch("butlers.core.spawner.acknowledge_cancel", new_callable=AsyncMock),
+            patch("butlers.core.spawner.release_invoke", new_callable=AsyncMock),
+            patch("butlers.core.spawner.conversation_get_provider_session", new_callable=AsyncMock),
+            patch("butlers.core.spawner.resolve_resume_handle", return_value="synthetic-resume"),
+            patch(
+                "butlers.core.spawner.conversation_clear_provider_session", new_callable=AsyncMock
+            ),
+            patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=pool,
+                runtime=adapter,
+            )
+            trigger = spawner.trigger(
+                "hello",
+                "route" if cold_retry or dashboard else "tick",
+                conversation_id=uuid.uuid4() if cold_retry else None,
+                request_id=str(uuid.uuid4()) if dashboard else None,
+                dashboard_turn_id=uuid.uuid4() if dashboard else None,
+            )
+            if stop_during_capture:
+                task = asyncio.create_task(trigger)
+                await asyncio.wait_for(capturing.wait(), timeout=5)
+                spawner.cancel_session(str(_SESSION_ID))
+                release_capture.set()
+                result = await asyncio.wait_for(task, timeout=5)
+            else:
+                result = await trigger
+        adapter.allowance_captures = captures
+        adapter.allowance_events = events
+        adapter.dashboard_complete = complete
+        return result, adapter, write_attempt, mark, clear
+
+    async def test_usage_limit_exhausts_account_and_fails_over_in_one_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        reset = datetime(2026, 10, 3, 15, 10, tzinfo=UTC)
+        with patch(
+            "butlers.core.spawner.classify_failover_eligibility",
+            return_value=FailoverDecision(
+                eligible=True, reason="usage_limit: plan exhausted", reset_at=reset
+            ),
+        ):
+            result, adapter, write_attempt, mark, clear = await self._run(
+                tmp_path, RuntimeError("You've hit your usage limit")
+            )
+
+        assert result.success is True
+        assert result.model == "fallback-model"
+        assert adapter.invoke_calls == 2
+        failed = next(
+            c
+            for c in write_attempt.await_args_list
+            if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        )
+        assert failed.kwargs["outcome"] == "allowance_exhausted"
+        assert failed.kwargs["failure_reason"].startswith("usage_limit")
+        mark.assert_awaited_once()
+        assert mark.await_args.args[1] == _PRIMARY_CATALOG_ID
+        assert mark.await_args.kwargs == {"reset_at": reset, "attempt_id": 42}
+        clear.assert_awaited_once()
+        assert clear.await_args.args[1] == _FALLBACK_CATALOG_ID
+        # Completion time cannot establish whether this attempt predates a rejection.
+        assert clear.await_args.kwargs.get("attempt_context") is not None
+        context = clear.await_args.kwargs["attempt_context"]
+        assert context.account_key == str(_FALLBACK_CATALOG_ID)
+        assert context.started_at == adapter.allowance_captures[-1][1]
+        assert [entry for entry, _ in adapter.allowance_captures] == [
+            _PRIMARY_CATALOG_ID,
+            _FALLBACK_CATALOG_ID,
+        ]
+        assert adapter.allowance_events == ["capture", "invoke", "capture", "invoke"]
+        assert adapter.allowance_captures[0][1] < context.started_at
+        # The breaker counts only runtime_failure/success, so nothing here feeds it.
+        assert all(c.kwargs["outcome"] != "runtime_failure" for c in write_attempt.await_args_list)
+
+    async def test_ordinary_failure_does_not_touch_allowance(self, tmp_path: Path) -> None:
+        result, _adapter, write_attempt, mark, _clear = await self._run(
+            tmp_path, RuntimeError("connection refused: provider unavailable")
+        )
+
+        assert result.success is True
+        mark.assert_not_awaited()
+        failed = next(
+            c
+            for c in write_attempt.await_args_list
+            if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        )
+        assert failed.kwargs["outcome"] == "runtime_failure"
+
+        for dashboard in (False, True):
+            stopped, adapter, writes, mark, clear = await self._run(
+                tmp_path / f"stopped-{dashboard}",
+                RuntimeError("connection refused"),
+                stop_during_capture=True,
+                dashboard=dashboard,
+            )
+            assert stopped.success is False and stopped.error == "Cancelled by owner"
+            assert adapter.invoke_calls == 0
+            assert adapter.allowance_events == (["claim", "capture"] if dashboard else ["capture"])
+            mark.assert_not_awaited()
+            clear.assert_not_awaited()
+            assert all(not call.kwargs.get("invoked") for call in writes.await_args_list)
+            if dashboard:
+                adapter.dashboard_complete.assert_awaited_once()
+                assert adapter.dashboard_complete.await_args.kwargs["success"] is False
+
+        unavailable, adapter, _writes, _mark, clear = await self._run(
+            tmp_path / "unavailable", RuntimeError("connection refused"), capture_unavailable=True
+        )
+        assert unavailable.success is True and adapter.invoke_calls == 2
+        assert clear.await_args.kwargs["attempt_context"] is None
+
+        cold, adapter, writes, mark, clear = await self._run(
+            tmp_path / "cold", RuntimeError("connection refused"), cold_retry=True
+        )
+        assert cold.success is True and adapter.invoke_calls == 2
+        assert [entry for entry, _ in adapter.allowance_captures] == [
+            _PRIMARY_CATALOG_ID,
+            _PRIMARY_CATALOG_ID,
+        ]
+        assert adapter.allowance_captures[0][1] < adapter.allowance_captures[1][1]
+        assert (
+            clear.await_args.kwargs["attempt_context"].started_at
+            == (adapter.allowance_captures[1][1])
+        )
+        assert any(call.kwargs["outcome"] == "resume_failure" for call in writes.await_args_list)
+        mark.assert_not_awaited()
+
+        degraded, adapter, writes, _mark, clear = await self._run(
+            tmp_path / "clear-unavailable",
+            RuntimeError("connection refused"),
+            clear_database_failure=True,
+        )
+        assert degraded.success is True and adapter.invoke_calls == 2
+        assert clear.await_args.kwargs["attempt_context"] is not None
+        assert any(call.kwargs["outcome"] == "success" for call in writes.await_args_list)
+
+        with patch(
+            "butlers.core.spawner.classify_failover_eligibility",
+            return_value=FailoverDecision(eligible=False, reason="synthetic terminal failure"),
+        ):
+            failed, adapter, writes, mark, clear = await self._run(
+                tmp_path / "failed", RuntimeError("synthetic terminal failure")
+            )
+        assert failed.success is False and adapter.invoke_calls == 1
+        assert adapter.allowance_events == ["capture", "invoke"]
+        assert any(call.kwargs["outcome"] == "suppressed" for call in writes.await_args_list)
+        mark.assert_not_awaited()
+        clear.assert_not_awaited()
 
 
 class TestAC4SuppressedFailover:

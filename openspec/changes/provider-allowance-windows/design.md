@@ -26,5 +26,11 @@ They are different failures with different recoveries, so they get different sta
 
 ## Risks
 
-A success on an exhausted account clears the state even if it started before the
-rejection; the next rejection re-establishes it.
+A successful attempt clears only its captured account's unchanged exhausted rejection,
+strictly older than its pre-invocation database-clock start. A single conditional UPDATE
+rechecks the fence after a row-lock wait. Rejection writes use `clock_timestamp()` so an
+early transaction start cannot backdate a later rejection. Missing capture or capture failure
+(bounded to five seconds) conservatively retains exhaustion without failing the runtime.
+No transaction is held across provider invocation and no attempt context is persisted or
+replayed after a crash. Ordinary best-effort writes and process-local routing-cache limits
+remain; this does not add an outbox or an exactly-once recovery guarantee.
