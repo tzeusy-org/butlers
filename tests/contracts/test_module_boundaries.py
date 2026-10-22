@@ -54,20 +54,6 @@ class TestModuleAbcStructure:
 
         assert Module.__abstractmethods__ == {"name", "config_schema", "register_tools"}
 
-    def test_abc_hooks_beyond_the_required_three_have_defaults(self):
-        from butlers.modules.base import Module
-
-        for hook in (
-            "dependencies",
-            "migration_revisions",
-            "on_startup",
-            "on_shutdown",
-            "credentials_env",
-            "on_all_modules_ready",
-        ):
-            assert hasattr(Module, hook)
-            assert hook not in Module.__abstractmethods__
-
     def test_module_abc_has_no_core_infrastructure_access(self):
         """RFC 0002: Module ABC does not expose core infrastructure to subclasses.
 

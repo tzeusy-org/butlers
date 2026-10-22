@@ -311,10 +311,6 @@ class BareModule(Module):
         pass
 
 
-def test_only_three_members_are_abstract():
-    assert Module.__abstractmethods__ == {"name", "config_schema", "register_tools"}
-
-
 async def test_bare_module_gets_formal_hook_defaults():
     mod = BareModule()
 
