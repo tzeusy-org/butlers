@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --configLoader runner",
     "build": "tsc -b && vite build --configLoader runner",
-    "lint": "eslint . && npm run lint:visual-role-css",
+    "lint": "eslint . && npm run lint:draft-eligibility && npm run lint:visual-role-css",
+    "lint:draft-eligibility": "node scripts/check-draft-eligibility.mjs",
     "lint:emdash": "node scripts/check-em-dash-copy.mjs",
     "lint:query-coercion": "node scripts/check-query-result-coercion.mjs",
     "lint:owner-time": "node scripts/check-owner-time-ast.mjs",

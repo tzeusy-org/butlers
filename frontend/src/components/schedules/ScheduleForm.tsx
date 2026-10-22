@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 import { useState } from "react";
 
 import type {
@@ -32,12 +34,13 @@ import { Textarea } from "@/components/ui/textarea";
 // ---------------------------------------------------------------------------
 
 export interface ScheduleFormProps {
+  butlerName?: string;
   /** When set, the form operates in edit mode and pre-fills values. */
   schedule?: Schedule | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Called when the user submits the form. */
-  onSubmit: (values: ScheduleCreate) => void;
+  onSubmit: (values: ScheduleCreate) => void | Promise<unknown>;
   /** Whether the mutation is currently in flight. */
   isSubmitting?: boolean;
   /** Optional error message to display. */
@@ -73,6 +76,7 @@ function parseJobArgs(raw: string): { value?: ScheduleJobArgs; error: string | n
 }
 
 function ScheduleFormFields({
+  butlerName,
   schedule,
   onSubmit,
   onCancel,
@@ -80,7 +84,8 @@ function ScheduleFormFields({
   error,
 }: {
   schedule?: Schedule | null;
-  onSubmit: (values: ScheduleFormValues) => void;
+  butlerName?: string;
+  onSubmit: (values: ScheduleFormValues) => void | Promise<unknown>;
   onCancel: () => void;
   isSubmitting: boolean;
   error: string | null;
@@ -98,6 +103,8 @@ function ScheduleFormFields({
   );
   const [complexity, setComplexity] = useState(schedule?.complexity ?? "workhorse");
 
+  const draft = useDraft("schedule.form", [butlerName ?? "", isEdit ? "edit" : "create", schedule?.id ?? "new"], { name, cron, dispatchMode, prompt, jobName, jobArgsRaw, complexity }, (v) => { setName(v.name); setCron(v.cron); setDispatchMode(v.dispatchMode as ScheduleDispatchMode); setPrompt(v.prompt); setJobName(v.jobName); setJobArgsRaw(v.jobArgsRaw); setComplexity(v.complexity); }, !!butlerName);
+
   const parsedJobArgs = parseJobArgs(jobArgsRaw);
   const isPromptMode = dispatchMode === "prompt";
   const isValid =
@@ -108,34 +115,27 @@ function ScheduleFormFields({
       : jobName.trim() !== "" && parsedJobArgs.error === null);
   const displayError = parsedJobArgs.error ?? error;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!isValid || isSubmitting) return;
-
-    if (dispatchMode === "prompt") {
-      onSubmit({
-        name: name.trim(),
-        cron: cron.trim(),
-        dispatch_mode: "prompt",
-        prompt: prompt.trim(),
-        complexity,
+    if (!isValid || isSubmitting || parsedJobArgs.error) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    try {
+      await onSubmit(dispatchMode === "prompt" ? {
+        name: name.trim(), cron: cron.trim(), dispatch_mode: "prompt", prompt: prompt.trim(), complexity,
+      } : {
+        name: name.trim(), cron: cron.trim(), dispatch_mode: "job", job_name: jobName.trim(),
+        ...(parsedJobArgs.value ? { job_args: parsedJobArgs.value } : {}), complexity,
       });
-      return;
-    }
-
-    if (parsedJobArgs.error) return;
-    onSubmit({
-      name: name.trim(),
-      cron: cron.trim(),
-      dispatch_mode: "job",
-      job_name: jobName.trim(),
-      ...(parsedJobArgs.value ? { job_args: parsedJobArgs.value } : {}),
-      complexity,
-    });
+      await draft.submitted(submission, onCancel);
+    } catch { /* The owning mutation renders its real error; keep the draft. */ }
+    finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <label htmlFor="schedule-name" className="text-sm font-medium">
           Name
@@ -256,12 +256,12 @@ function ScheduleFormFields({
         <Button
           type="button"
           variant="outline"
-          onClick={onCancel}
+          onClick={() => draft.dismiss(onCancel)}
           disabled={isSubmitting}
         >
           Cancel
         </Button>
-        <Button type="submit" disabled={!isValid || isSubmitting}>
+        <Button type="submit" disabled={!isValid || isSubmitting || draft.session?.presentation.submitting || draft.session?.presentation.cleanup}>
           {isSubmitting
             ? isEdit
               ? "Updating..."
@@ -280,6 +280,7 @@ function ScheduleFormFields({
 // ---------------------------------------------------------------------------
 
 export function ScheduleForm({
+  butlerName,
   schedule,
   open,
   onOpenChange,
@@ -308,6 +309,7 @@ export function ScheduleForm({
 
         <ScheduleFormFields
           key={formKey}
+          butlerName={butlerName}
           schedule={schedule}
           onSubmit={onSubmit}
           onCancel={() => onOpenChange(false)}

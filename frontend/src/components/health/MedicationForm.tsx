@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // MedicationForm — reusable add/edit form for health medications [bu-aisjm]
 //
@@ -87,9 +89,11 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
   const [quantityTouched, setQuantityTouched] = useState(false);
   const [quantityError, setQuantityError] = useState<string | null>(null);
 
+  const draft = useDraft("health.medication", [isEdit ? "edit" : "create", medication?.id ?? "new"], { name, dosage, frequency, schedule, active, notes }, (next) => { setName(next.name as typeof name); setDosage(next.dosage as typeof dosage); setFrequency(next.frequency as typeof frequency); setSchedule(next.schedule as typeof schedule); setActive(next.active as typeof active); setNotes(next.notes as typeof notes); }, true, undefined, medication?.updated_at);
+
   const createMutation = useCreateMedication();
   const updateMutation = useUpdateMedication();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -119,6 +123,9 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
     }
     setQuantityError(null);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         const body = {
@@ -136,7 +143,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           id: medication.id,
           body,
         });
-        toast.success("Medication updated.");
+        if (draft.current(submission)) toast.success("Medication updated.");
       } else {
         const body = {
           name: trimmedName,
@@ -147,16 +154,17 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           ...(parsedQuantity.value != null ? { quantity: parsedQuantity.value } : {}),
         };
         await createMutation.mutateAsync(body);
-        toast.success("Medication added.");
+        if (draft.current(submission)) toast.success("Medication added.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="medication-form">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <Label htmlFor="med-name">Name</Label>
         <Input
@@ -247,7 +255,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
       )}
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

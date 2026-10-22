@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Full-page chat posture (bu-0ynlk.11): `/chat` and `/chat/:conversationId`.
  *
@@ -108,7 +111,15 @@ export default function ChatPage() {
   const gatedConversationId =
     routeId != null && !sendReady ? null : activeConversationId;
 
-  const [inputValue, setInputValue] = useState("");
+  // A temporary lookup failure withdraws send/storage authority, not the typed
+  // text belonging to this same immutable conversation route.
+  const composerContext = JSON.stringify([routeId ?? WIDGET_BUTLER, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [butlerName ?? "unresolved", activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), !!butlerName && sendReady && !isDetailError, { message: "" });
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
@@ -145,6 +156,15 @@ export default function ChatPage() {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // A brand-new conversation (bare /chat) gets its id from the first send;
@@ -168,18 +188,34 @@ export default function ChatPage() {
     scrollToMessageAnchor(hash.slice(3));
   }, [isLoadingMessages, visibleMessages, location.hash]);
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputValue.trim();
     if (!text || !sendReady) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (submission && !draft.current(submission)) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    try {
+      await sendText(text);
+    } finally {
+      // Keep failed pre-acceptance bindings for the existing explicit Retry/message_id.
+      // Only onMessageAccepted consumes C; a retry must never capture newer input.
+      draft.finish();
+    }
   }
 
   function handleNewConversation() {
+    draft.dismiss(() => {
     abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
     navigate("/chat", { replace: true });
+    });
   }
 
   function handleCheckAgain() {
@@ -323,6 +359,7 @@ export default function ChatPage() {
           />
         )}
 
+        <DraftNotice session={draft.session} />
         <MessageInput
           value={inputValue}
           onChange={setInputValue}
@@ -339,7 +376,7 @@ export default function ChatPage() {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={!sendReady}
+          disabled={!sendReady || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,
