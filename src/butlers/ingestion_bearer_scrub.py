@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from butlers.ingestion_spans import collapse_spans
+
 #: Telegram's service account that delivers login codes.
 TELEGRAM_SERVICE_SENDER = "777000"
 
@@ -440,10 +442,16 @@ def scrub_envelope(envelope: Mapping[str, Any]) -> tuple[dict[str, Any], list[Be
     payload = dict(envelope.get("payload") or {})
     found: list[BearerArtifact] = []
     if isinstance(payload.get("normalized_text"), str):
+        original_text = payload["normalized_text"]
         payload["normalized_text"], hits = scrub_text(
-            payload["normalized_text"], provider_domain=domain, aggressive=aggressive
+            original_text, provider_domain=domain, aggressive=aggressive
         )
         found.extend(hits)
+        if payload.get("untrusted_spans") and payload["normalized_text"] != original_text:
+            # The scrub moved text under the connector's span offsets (bu-xmueeq).
+            payload["untrusted_spans"] = collapse_spans(
+                payload["normalized_text"], payload["untrusted_spans"]
+            )
     if payload.get("raw") is not None:
         payload["raw"], hits = scrub_json(
             payload["raw"], provider_domain=domain, aggressive=aggressive
