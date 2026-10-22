@@ -1,0 +1,1189 @@
+{
+  "version": 1,
+  "source_commit": "923273a3843f883a0e7ec299fdd36199aa8b1f03",
+  "scope": "All git roster schedules and enumerated dynamic/model source families; not a live DB inventory or a completed declaration/admission sweep.",
+  "schedules": [
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_sessions",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_sessions",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_calendar",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_calendar",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_owntracks",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_owntracks",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_owntracks_place_cluster",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_owntracks_place_cluster",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_owntracks_ssid",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_owntracks_ssid",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_activitywatch",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_activitywatch",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_owner_outbound",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_owner_outbound",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_steam",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_steam",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_meals",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_meals",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_home_assistant",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_home_assistant",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_home_assistant_sensor_activity",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_home_assistant_sensor_activity",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_google_health_sleep",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_google_health_sleep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_google_health_workout",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_google_health_workout",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_google_health_steps",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_google_health_steps",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_google_health_heart_rate",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_google_health_heart_rate",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_focus_inferred",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_focus_inferred",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_reading_inferred",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_reading_inferred",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_exercise_inferred",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_exercise_inferred",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_occupation_inferred",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_occupation_inferred",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_spotify",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_spotify",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_project_comms",
+      "dispatch_mode": "job",
+      "job_name": "chronicler_project_comms",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_day_close",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/chronicler/butler.toml",
+      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "butler": "chronicler",
+      "name": "chronicler_gap_interview",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "nightly-analytics",
+      "dispatch_mode": "job",
+      "job_name": "compute_analytics_snapshots",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "weekly-mind-map-staleness",
+      "dispatch_mode": "job",
+      "job_name": "mind_map_staleness_abandonment",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "weekly-progress-digest",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "weekly-stale-flow-check",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "daily-spaced-repetition-nudge",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/education/butler.toml",
+      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "butler": "education",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "insight-scan",
+      "dispatch_mode": "job",
+      "job_name": "insight_scan",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "bill-reconciliation-sweep",
+      "dispatch_mode": "job",
+      "job_name": "bill_reconciliation_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "cost-claim-reconciliation-sweep",
+      "dispatch_mode": "job",
+      "job_name": "cost_claim_reconciliation_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "anomaly-insight-scan",
+      "dispatch_mode": "job",
+      "job_name": "anomaly_insight_scan",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "monthly-finance-digest",
+      "dispatch_mode": "job",
+      "job_name": "monthly_finance_digest",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "simplefin-sync",
+      "dispatch_mode": "job",
+      "job_name": "simplefin_sync",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/finance/butler.toml",
+      "source_sha256": "8e3d1040d881d03c9f40863c7f0f2ad2b0397e5552ad562a498cc1b0fb505371",
+      "butler": "finance",
+      "name": "calendar_overlay_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_overlay_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/general/butler.toml",
+      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "butler": "general",
+      "name": "eod-tomorrow-prep",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/general/butler.toml",
+      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "butler": "general",
+      "name": "collect_briefing_contributions",
+      "dispatch_mode": "job",
+      "job_name": "collect_briefing_contributions",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/general/butler.toml",
+      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "butler": "general",
+      "name": "context_producer_calendar",
+      "dispatch_mode": "job",
+      "job_name": "context_producer_calendar",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "weekly-health-summary",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "calendar_overlay_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_overlay_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "insight_scan",
+      "dispatch_mode": "job",
+      "job_name": "insight_scan",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "baseline_watch",
+      "dispatch_mode": "job",
+      "job_name": "baseline_watch",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "health_visit_brief",
+      "dispatch_mode": "job",
+      "job_name": "health_visit_brief",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "atmosphere-advisory",
+      "dispatch_mode": "job",
+      "job_name": "atmosphere_advisory",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/health/butler.toml",
+      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "butler": "health",
+      "name": "context_producer_sleep_window",
+      "dispatch_mode": "job",
+      "job_name": "context_producer_sleep_window",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "weekly-energy-digest",
+      "dispatch_mode": "job",
+      "job_name": "energy_digest",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "environment-report",
+      "dispatch_mode": "job",
+      "job_name": "environment_report",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "device-health-check",
+      "dispatch_mode": "job",
+      "job_name": "device_health_check",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "maintenance-schedule-check",
+      "dispatch_mode": "job",
+      "job_name": "maintenance_schedule_check",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "atmosphere-feed-refresh",
+      "dispatch_mode": "job",
+      "job_name": "atmosphere_feed_refresh",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "atmosphere-preconditioning",
+      "dispatch_mode": "job",
+      "job_name": "atmosphere_preconditioning",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "context_producer_home_presence",
+      "dispatch_mode": "job",
+      "job_name": "context_producer_home_presence",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/home/butler.toml",
+      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "butler": "home",
+      "name": "home-safety-sentinel",
+      "dispatch_mode": "job",
+      "job_name": "home_safety_sentinel",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/lifestyle/butler.toml",
+      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "butler": "lifestyle",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/lifestyle/butler.toml",
+      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "butler": "lifestyle",
+      "name": "weekly-taste-digest",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/lifestyle/butler.toml",
+      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "butler": "lifestyle",
+      "name": "taste-ledger-project",
+      "dispatch_mode": "job",
+      "job_name": "taste_ledger_project",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/messenger/butler.toml",
+      "source_sha256": "bf63288bb417ea4888c979359f24e2e5630a06c0fb8e842e400c86745ae1aad7",
+      "butler": "messenger",
+      "name": "calendar_prep_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_prep_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/qa/butler.toml",
+      "source_sha256": "e10d698ce8679a2a15df9d136efb173c347d75a1c4689ec1bd38690795224995",
+      "butler": "qa",
+      "name": "qa_patrol",
+      "dispatch_mode": "job",
+      "job_name": "qa_patrol",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/qa/butler.toml",
+      "source_sha256": "e10d698ce8679a2a15df9d136efb173c347d75a1c4689ec1bd38690795224995",
+      "butler": "qa",
+      "name": "qa_pr_status_check",
+      "dispatch_mode": "job",
+      "job_name": "qa_pr_status_check",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/qa/butler.toml",
+      "source_sha256": "e10d698ce8679a2a15df9d136efb173c347d75a1c4689ec1bd38690795224995",
+      "butler": "qa",
+      "name": "qa_evidence_cleanup",
+      "dispatch_mode": "job",
+      "job_name": "qa_evidence_cleanup",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "upcoming-dates-check",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "relationship-maintenance",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "calendar_overlay_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_overlay_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "calendar_prep_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_prep_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "meeting-debrief",
+      "dispatch_mode": "job",
+      "job_name": "meeting_debrief",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "insight-scan",
+      "dispatch_mode": "job",
+      "job_name": "insight_scan",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "interaction-sync",
+      "dispatch_mode": "job",
+      "job_name": "interaction_sync",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "loan-cost-claim-backfill",
+      "dispatch_mode": "job",
+      "job_name": "loan_cost_claim_backfill",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "memory-curation",
+      "dispatch_mode": "job",
+      "job_name": "memory_curation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "pending-actions-curation",
+      "dispatch_mode": "job",
+      "job_name": "pending_actions_curation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "fact-retraction-curation",
+      "dispatch_mode": "job",
+      "job_name": "fact_retraction_curation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "prepared-action-orphan-sweep",
+      "dispatch_mode": "job",
+      "job_name": "prepared_action_orphan_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "entity-dedup-curation",
+      "dispatch_mode": "job",
+      "job_name": "entity_dedup_curation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "episodic-predicate-curation",
+      "dispatch_mode": "job",
+      "job_name": "episodic_predicate_curation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/relationship/butler.toml",
+      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "butler": "relationship",
+      "name": "email-identity-enrichment",
+      "dispatch_mode": "job",
+      "job_name": "email_identity_enrichment",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "eligibility_sweep",
+      "dispatch_mode": "job",
+      "job_name": "eligibility_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "insight-delivery-cycle",
+      "dispatch_mode": "job",
+      "job_name": "insight_delivery_cycle",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "insight-urgent-subcycle",
+      "dispatch_mode": "job",
+      "job_name": "insight_urgent_subcycle",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "commitment-escalation",
+      "dispatch_mode": "job",
+      "job_name": "commitment_escalation",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "spend-rule-savings",
+      "dispatch_mode": "job",
+      "job_name": "spend_rule_savings",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "rule-promotion-trigger",
+      "dispatch_mode": "job",
+      "job_name": "rule_promotion_trigger",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "dropped-known-watch",
+      "dispatch_mode": "job",
+      "job_name": "dropped_known_watch",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "decision-review-digest",
+      "dispatch_mode": "job",
+      "job_name": "decision_review_digest",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "decision-escalation-check",
+      "dispatch_mode": "job",
+      "job_name": "decision_escalation_check",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "decision-routing",
+      "dispatch_mode": "job",
+      "job_name": "decision_routing",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "domain-event-reconciliation-sweep",
+      "dispatch_mode": "job",
+      "job_name": "domain_event_reconciliation_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/switchboard/butler.toml",
+      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "butler": "switchboard",
+      "name": "fleet-case-lapse-sweep",
+      "dispatch_mode": "job",
+      "job_name": "fleet_case_lapse_sweep",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "upcoming-travel-check",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "trip-document-expiry",
+      "dispatch_mode": "prompt",
+      "job_name": null,
+      "declaration_status": "missing_pending_roster_allocation",
+      "classification": "prompt_obligation"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "insight-scan",
+      "dispatch_mode": "job",
+      "job_name": "insight_scan",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "flight-status-check",
+      "dispatch_mode": "job",
+      "job_name": "flight_status_check",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "destination-outlook",
+      "dispatch_mode": "job",
+      "job_name": "destination_outlook",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "daily_briefing_contribution",
+      "dispatch_mode": "job",
+      "job_name": "daily_briefing_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "calendar_overlay_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_overlay_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "calendar_prep_contribution",
+      "dispatch_mode": "job",
+      "job_name": "calendar_prep_contribution",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "context_producer_travel",
+      "dispatch_mode": "job",
+      "job_name": "context_producer_travel",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    },
+    {
+      "path": "roster/travel/butler.toml",
+      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "butler": "travel",
+      "name": "context_producer_commuting_eta",
+      "dispatch_mode": "job",
+      "job_name": "context_producer_commuting_eta",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
+    }
+  ],
+  "producer_families": [
+    {
+      "family": "cron",
+      "path": "src/butlers/core/scheduler.py",
+      "anchor": "tick:2303 / prompt dispatch:2642",
+      "required_mapping": "Persist task UUID + source-owned revision + nominal due instant; retry same occurrence, not a new now-based key.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "deadline",
+      "path": "src/butlers/core/scheduler.py",
+      "anchor": "_tick_deadline_pass:1363 / dispatch:1528",
+      "required_mapping": "Threshold identity and target revision; original prompt plus structured deadline metadata, not one generic cron key.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "chain",
+      "path": "src/butlers/core/scheduler.py",
+      "anchor": "_fire_chain:1578 / _tick_event_chain_pass:1642",
+      "required_mapping": "Chain UUID + materialized unique action/occurrence; same exposure/ceiling lineage, existing window behavior.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "manual schedule trigger",
+      "path": "src/butlers/core_tools/_scheduling.py",
+      "anchor": "schedule_trigger / dispatch:296",
+      "required_mapping": "Real persisted owner request or verified invocation identity; no fresh timestamp-only token.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "runtime schedule CRUD",
+      "path": "src/butlers/core_tools/_scheduling.py",
+      "anchor": "register_scheduling_tools:51 / create:68 / update:163",
+      "required_mapping": "Administer approval and child refusal at switch; genuine verified creator read from broker/ledger, not request fields.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "deadline CRUD",
+      "path": "src/butlers/core_tools/_temporal.py",
+      "anchor": "register_temporal_tools:20",
+      "required_mapping": "Same creator bounds as scheduling even though dispatch_mode is per-call; classify tool as administer outright.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "subscription",
+      "path": "src/butlers/core_tools/_domain_events.py",
+      "anchor": "subscribe_to_event:942 / receive_domain_event:990",
+      "required_mapping": "Git declaration plus actual active subscription; payload has no authority, receiver revalidates durable event+subscriber.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "domain wake",
+      "path": "src/butlers/core/domain_event_wake.py",
+      "anchor": "handle_receive_domain_event:234",
+      "required_mapping": "Actual row event/subscriber pair, declared set, verified cause or missing-stamp exposed; preserve current one-shot/reaction replay off-switch.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "feed",
+      "path": "src/butlers/core_tools/_domain_events.py",
+      "anchor": "receive_domain_event:990 and dark feed adapter",
+      "required_mapping": "Use registered feed identity from actual control source; bu-n7zmbp.9 owns registered-channel/span ingress adaptation. No email/person-authored field establishes owner stamp.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "education teaching",
+      "path": "roster/education/tools/teaching_flows.py",
+      "anchor": "teaching_flow_start:229 / advance:307 / assemble_session_context:663",
+      "required_mapping": "Teaching state transition is not itself a model call. Declare model session/occurrence context separately without adding another spawner; keep CAS and quiet behavior.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "education reviews",
+      "path": "roster/education/tools/spaced_repetition.py",
+      "anchor": "review schedule creation:271,290; modules/tools.py:47",
+      "required_mapping": "Git-declared review obligation; generated due rows are occurrences, not arbitrary new runtime authorities. Individual/batch repeat stays bounded by captured creator.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "briefing text",
+      "path": "src/butlers/api/briefing/prompts.py",
+      "anchor": "elaborate_llm:148 / router dashboard_briefing.py:782",
+      "required_mapping": "Model-backed owner paragraph including fallback; deterministic collection remains job, no direct SQL shortcut or wake conversion of all contributions.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "Chronicler text",
+      "path": "src/butlers/chronicler/narration.py",
+      "anchor": "narrate_daily_rollup:339 / model:394; scheduled_jobs.py:1981",
+      "required_mapping": "Day-close prompt plus direct narration job are both included; projections/rollups stay deterministic; do not edit frozen .2 or invent .3 completion.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "insight text",
+      "path": "roster/switchboard/tools/insight/broker.py",
+      "anchor": "cosmetic synthesis adapter.invoke:1331",
+      "required_mapping": "Optional cosmetic model path still needs declaration/dark submission; retain deterministic bullet fallback and delivery semantics.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "quick-add judgment",
+      "path": "src/butlers/api/calendar/quick_add.py",
+      "anchor": "parse_quick_add:150 / model call",
+      "required_mapping": "Owner-authenticated request identity, parsing only; do not turn this into calendar write authority or change confirmation/auth behavior.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "commitment/seasonal",
+      "path": "src/butlers/core/domain_events.py",
+      "anchor": "domain events + scheduler metadata boundary",
+      "required_mapping": "Consume existing source row/period stamp, carry exposed inputs; do not invent a second autonomous commitment creator or seasonal context injector.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "engineering QA/healing",
+      "path": "src/butlers/core/spawner.py",
+      "anchor": "context fetch:2360-2404 / MCP branch:2543",
+      "required_mapping": "Retain no-MCP branch and specialty/shell/worktree execution; skip situational/owner/memory preamble fetches before composition, not merely hide them later.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "retired delegation wake",
+      "path": "src/butlers/core/delegation_wake.py",
+      "anchor": "legacy one-shot schedule producer",
+      "required_mapping": "Inventory legacy reason and switch-time retirement dependency; do not add a new general delegation system or delete it during dark phase.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    },
+    {
+      "family": "Gmail/backfill",
+      "path": "openspec/changes/generalist-lead-focused-delegation/specs/connector-gmail/spec.md",
+      "anchor": "approved delta",
+      "required_mapping": "Record-only default; owner opt-in category and exposed low-priority input at future switch. No connector ingress rewire or live backfill here.",
+      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+    }
+  ],
+  "protected_deterministic_jobs": [
+    {
+      "job_name": "home_safety_sentinel",
+      "path": "src/butlers/jobs/home_safety.py",
+      "reason": "Sensor alert reconciliation and owner notification remain independent of goal admission/model availability."
+    },
+    {
+      "job_name": "context_producer_home_presence",
+      "path": "src/butlers/jobs/context_producers.py",
+      "reason": "Deterministic presence context publication; no goal or model dependency is added."
+    },
+    {
+      "job_name": "context_producer_commuting_eta",
+      "path": "src/butlers/jobs/context_producers.py",
+      "reason": "Deterministic commuting ETA context publication remains job-mode; no admission or model dependency is added. This does not stand in for the separate departure-card source mapping."
+    }
+  ],
+  "known_model_backed_job_wrappers": [
+    {
+      "path": "src/butlers/scheduled_jobs.py",
+      "symbol": "_run_chronicler_narrate_daily_job",
+      "target": "butlers.chronicler.jobs.run_narrate_daily",
+      "classification": "model_obligation_pending_adapter_allocation",
+      "reason": "Job-mode alone is insufficient: this wrapper reaches model-backed narration."
+    }
+  ],
+  "status": "PHASE_A_SOURCE_CENSUS_ONLY; remaining declarations, repositories, production adapters and exhaustive transitive review stay owned by bu-o9qax4."
+}

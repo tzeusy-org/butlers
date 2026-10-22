@@ -1,0 +1,135 @@
+"""Validate dark declarations against final, approval-wrapped tool registries.
+
+This is an in-process value projection, not an authenticated fleet publication
+or a production CatalogProvider. No admission or runtime switch is called here.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from butlers.core.goal_admission import Capability, CatalogView, digest
+from butlers.core.obligations import (
+    DeclarationError,
+    ObligationDeclaration,
+    parse_declaration,
+    qualify_capability,
+)
+from butlers.core.tool_catalog import ToolCatalog
+
+logger = logging.getLogger(__name__)
+
+
+class DeclarationValidationError(ValueError):
+    """Catalog or declaration cannot be used after the switch."""
+
+
+@dataclass(frozen=True)
+class ObligationCatalog:
+    view: CatalogView
+    resource_parameters: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True)
+class DeclarationIssue:
+    # Index, not the source name or supplied field values, is safe to log.
+    index: int
+    code: str
+
+
+@dataclass(frozen=True)
+class DeclarationValidation:
+    declarations: tuple[tuple[str, ObligationDeclaration], ...]
+    issues: tuple[DeclarationIssue, ...]
+
+
+def build_obligation_catalog(registries: Mapping[str, ToolCatalog]) -> ObligationCatalog:
+    """Project exact qualified IDs from actual immutable final registrations.
+
+    Conditional recipient prose is not an executable owner-default predicate.
+    This projection conservatively sets owner_default=False. The real publisher
+    and broker still own authenticated freshness and per-call owner resolution.
+    """
+    if not registries:
+        raise DeclarationValidationError("catalog_unavailable")
+    capabilities = []
+    resource_parameters = []
+    generations = []
+    for domain, registry in sorted(registries.items()):
+        if (
+            not isinstance(domain, str)
+            or not isinstance(registry, ToolCatalog)
+            or not registry.classification_complete
+            or not registry.generation_digest
+        ):
+            raise DeclarationValidationError("catalog_unavailable")
+        generations.append((domain, registry.generation_digest))
+        for descriptor in registry.descriptors:
+            if descriptor.owner_domain != domain or (
+                descriptor.llm_presentable and not descriptor.authorization_complete
+            ):
+                raise DeclarationValidationError("catalog_unavailable")
+            if not descriptor.grantable:
+                continue
+            qualified = qualify_capability(domain, descriptor.canonical_name)
+            capabilities.append(
+                Capability(
+                    id=qualified,
+                    owner_domain=domain,
+                    effect_class=descriptor.effect_class,
+                    owner_authority=descriptor.owner_authority,
+                    owner_default=False,
+                )
+            )
+            resource_parameters.append((qualified, tuple(descriptor.resource_params)))
+    return ObligationCatalog(
+        CatalogView(digest({"version": 1, "registries": generations}), tuple(capabilities)),
+        tuple(resource_parameters),
+    )
+
+
+def validate_declarations(
+    values: Mapping[str, object],
+    catalog: ObligationCatalog | None,
+    *,
+    after_switch: bool,
+) -> DeclarationValidation:
+    """Warn dark; refuse after the switch. Invalid entries are never returned.
+
+    The caller must supply the complete due-source inventory and a current
+    verified catalog. This function neither discovers sources nor toggles mode.
+    """
+    if type(after_switch) is not bool:
+        raise TypeError("after_switch must be bool")
+    issues = []
+    valid = []
+    eligible = dict(catalog.resource_parameters) if catalog is not None else {}
+    for index, (source, raw) in enumerate(values.items()):
+        if raw is None:
+            issues.append(DeclarationIssue(index, "missing_declaration"))
+            continue
+        try:
+            declaration = parse_declaration(raw)
+        except DeclarationError:
+            issues.append(DeclarationIssue(index, "invalid_declaration"))
+            continue
+        if catalog is None:
+            issues.append(DeclarationIssue(index, "catalog_unavailable"))
+            continue
+        bad = False
+        for grant in declaration.capabilities:
+            if grant.capability not in eligible:
+                issues.append(DeclarationIssue(index, "unknown_capability"))
+                bad = True
+            elif set(dict(grant.resources)) - set(eligible[grant.capability]):
+                issues.append(DeclarationIssue(index, "unknown_resource"))
+                bad = True
+        if not bad:
+            valid.append((source, declaration))
+    if issues and after_switch:
+        raise DeclarationValidationError("obligation_declarations_invalid")
+    for issue in issues:
+        logger.warning("Obligation declaration index=%d reason=%s", issue.index, issue.code)
+    return DeclarationValidation(tuple(valid), tuple(issues))
