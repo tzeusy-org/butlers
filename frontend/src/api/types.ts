@@ -50,7 +50,21 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * Keyset (cursor) pagination metadata for the cross-butler session list.
+ * The one cursor-paginated list envelope (`Page[T]` in `src/butlers/api/pagination.py`).
+ * `next_cursor` is opaque and null on the last page: "is there more" is
+ * `next_cursor !== null`. `sources_degraded` names fan-out sources that failed
+ * for this page (absent when every source answered).
+ */
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+  limit: number;
+  sources_degraded?: string[] | null;
+}
+
+/**
+ * Keyset (cursor) pagination metadata for the cross-butler session list, the
+ * one cursor list still off {@link CursorPage} (it retires at the RFC 0038 D19 switch).
  * Drops the expensive `count(*)` total in favour of an opaque forward cursor.
  * `next_cursor` is base64url-encoded and opaque to the client; pass it back as
  * the `cursor` query param to fetch the next (older) page.
@@ -4518,18 +4532,6 @@ export interface IngestionEventSession {
   cost_evidence?: "priced" | "unpriced" | "no_usage";
   trace_id: string | null;
   model: string | null;
-}
-
-/** Cursor pagination metadata returned by keyset-paginated endpoints. */
-export interface CursorPaginationMeta {
-  next_cursor: string | null;
-  has_more: boolean;
-}
-
-/** API response wrapper for cursor-paginated list endpoints. */
-export interface CursorPaginatedResponse<T> {
-  data: T[];
-  meta: CursorPaginationMeta;
 }
 
 /** Query parameters for GET /api/ingestion/events (cursor-paginated). */
@@ -9278,19 +9280,6 @@ export interface EntityFact extends FactAttribution {
   store: EntityFactStore;
   /** Read-time staleness band (``"fresh"`` / ``"aging"`` / ``"stale"``). */
   staleness_band: EntityFactStalenessBand;
-}
-
-/**
- * Keyset (cursor) response envelope for
- * GET /api/butlers/relationship/entities/{id}/facts.
- *
- * Ordered ``created_at DESC, id DESC`` per the repo cursor convention; there is
- * no ``total`` field. ``next_cursor`` is null on the last page.
- */
-export interface EntityFactsResponse {
-  items: EntityFact[];
-  next_cursor: string | null;
-  has_more: boolean;
 }
 
 /** Validity filter for the facts drill (active rows vs. superseded history). */

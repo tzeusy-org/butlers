@@ -1408,8 +1408,8 @@ function ProvenanceGrid({
     return [...priorPages, ...pageItems.filter((f) => !seen.has(`${f.store}:${f.id}`))];
   }, [priorPages, pageItems]);
 
-  const hasMore = data?.has_more ?? false;
   const nextCursor = data?.next_cursor ?? null;
+  const hasMore = nextCursor != null;
 
   function handleLoadMore() {
     if (nextCursor == null) return;
@@ -1908,8 +1908,8 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   }, [binsData]);
 
   const facts = useMemo(() => factsData?.items ?? [], [factsData]);
-  // has_more=true means the 200-fact window is incomplete; counts are lower bounds.
-  const truncated = factsData?.has_more ?? false;
+  // A next_cursor means the 200-fact window is incomplete; counts are lower bounds.
+  const truncated = factsData?.next_cursor != null;
   const sourcesCount = useMemo(() => new Set(facts.map((f) => f.src)).size, [facts]);
   const channelsCount = useMemo(
     () => facts.filter((f) => f.predicate.startsWith("has-")).length,

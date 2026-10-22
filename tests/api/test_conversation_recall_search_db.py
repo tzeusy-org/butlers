@@ -326,9 +326,7 @@ async def test_router_paginates_by_cursor_with_highlight_ranges(
     start, end = first_item["highlight_ranges"][0]
     assert first_item["snippet"][start:end].lower() == "gizmo"
 
-    page2 = await _search_messages(
-        search_app, q="gizmo", limit=2, cursor=page1["next_cursor"]
-    )
+    page2 = await _search_messages(search_app, q="gizmo", limit=2, cursor=page1["next_cursor"])
     assert len(page2["items"]) == 1
     assert page2["next_cursor"] is None
 

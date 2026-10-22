@@ -96,7 +96,7 @@ import type {
   DismissIssueResult,
   UndismissIssueResult,
   Label,
-  CursorPaginatedResponse,
+  CursorPage,
   AckFailedResult,
   NotificationActionResult,
   NotificationListResponse,
@@ -441,7 +441,7 @@ import type {
   MemoryAccess,
   KillRequest,
   KillResponse,
-  EntityFactsResponse,
+  EntityFact,
   EntityFactsParams,
   AddEntityContactRequest,
   AddEntityContactResponse,
@@ -3606,7 +3606,7 @@ export function getPlexHalo(perType?: number): Promise<HaloResponse> {
 export function getEntityFacts(
   entityId: string,
   params?: EntityFactsParams,
-): Promise<EntityFactsResponse> {
+): Promise<CursorPage<EntityFact>> {
   const qs = new URLSearchParams();
   if (params?.predicate != null) qs.set("predicate", params.predicate);
   if (params?.validity != null) qs.set("validity", params.validity);
@@ -3616,7 +3616,7 @@ export function getEntityFacts(
   const path = qs.size
     ? `/relationship/entities/${encodeURIComponent(entityId)}/facts?${qs.toString()}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/facts`;
-  return apiFetch<EntityFactsResponse>(path);
+  return apiFetch<CursorPage<EntityFact>>(path);
 }
 
 /**
@@ -4984,7 +4984,7 @@ export function searchContacts(
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
   signal?: AbortSignal,
-): Promise<CursorPaginatedResponse<IngestionEventSummary>> {
+): Promise<CursorPage<IngestionEventSummary>> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.cursor) sp.set("cursor", params.cursor);
@@ -4997,7 +4997,7 @@ export async function listIngestionEvents(
   if (params?.sort) sp.set("sort", params.sort);
   if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
+  return apiFetch<CursorPage<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
     { signal },
   );
@@ -5534,7 +5534,7 @@ export function searchConversations(
  */
 export function searchMessages(
   params: MessageSearchParams,
-): Promise<CursorPaginatedResponse<MessageSearchResult>> {
+): Promise<CursorPage<MessageSearchResult>> {
   const sp = new URLSearchParams();
   sp.set("q", params.q);
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
@@ -5543,7 +5543,7 @@ export function searchMessages(
   if (params.butler) sp.set("butler", params.butler);
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
-  return apiFetch<CursorPaginatedResponse<MessageSearchResult>>(
+  return apiFetch<CursorPage<MessageSearchResult>>(
     `/conversations/messages/search?${sp.toString()}`,
   );
 }

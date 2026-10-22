@@ -90,9 +90,7 @@ def encode_cursor(values: tuple[CursorValue, ...]) -> str:
     return f"{token}.{_checksum(body)}"
 
 
-def decode_cursor(
-    cursor: str, shape: tuple[type, ...] | None = None
-) -> tuple[CursorValue, ...]:
+def decode_cursor(cursor: str, shape: tuple[type, ...] | None = None) -> tuple[CursorValue, ...]:
     """Decode a token from :func:`encode_cursor`; raise :class:`InvalidCursorError` otherwise.
 
     ``shape`` is the tuple of types the endpoint's keyset has. A well-formed cursor minted by
