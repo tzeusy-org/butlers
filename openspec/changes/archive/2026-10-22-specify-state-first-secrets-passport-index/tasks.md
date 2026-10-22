@@ -26,8 +26,8 @@
 - [x] 2.2 `python3 scripts/check_spec_overwrites.py` — no unfrozen baseline losses. Passes on 2026-10-22: no unfrozen baseline losses.
 - [x] 2.3 `python3 scripts/check_countable_tasks.py`. Passes on 2026-10-22: all 80 unarchived changes carry countable task lines.
 - [x] 2.4 `make check-guards`. Passes on the archive PR head (bu-u5euwb.6).
-- [ ] 2.5 Independent UX/spec review with zero unresolved threads (`bu-k87os` acceptance
-      criterion 6).
+- [x] 2.5 Independent UX/spec review with zero unresolved threads (`bu-k87os` acceptance
+      criterion 6). Done: independent review bu-wbst4z (rev-4907), PR #4914, zero unresolved threads.
 
 ## 3. Owner gate (blocks all future work)
 
