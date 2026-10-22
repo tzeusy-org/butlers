@@ -1273,118 +1273,37 @@ Scope: v1-mandatory
 
 ### Requirement: Condensation requires current executable survivor evidence
 
-The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
+Test removal SHALL be governed by review alone. The repository SHALL NOT keep a protected-test inventory, survivor ledger, contract-evolution manifest or deletion guard script, and no required check SHALL refuse a pull request because it removes or weakens tests. A pull request that deletes, moves or renames a test, or weakens one in place by dropping an assertion, parameter case, fixture or marker, SHALL carry a `Tests: +a ~m -d` line in its body, measured from its own collection. For each removed check it SHALL either name the executing survivor that still enforces that behavior at the pull-request head, or state that the behavior itself is intentionally removed or changed by the same pull request. Architecture, wire, privacy, authorization, no-send, retry, idempotency and migration-outcome checks SHALL keep a named executing survivor unless their governing requirement changes in the same pull request. Reviewers SHALL refuse a missing delta line, a survivor that does not exist or does not exercise the removed behavior, and a protected-check loss with neither a survivor nor a requirement change. Matching names, smaller counts and deleted production paths are not survivors on their own. This rule SHALL NOT change the per-lane collected-test budget, test selection, markers, coverage, required checks or the complete terminal merge-group gate.
 
-Separately, the same complete consumer MAY admit intentional contract evolution
-for retained owners under an independently reviewed, exact normative amendment
-authorized in the trusted public source before the candidate executes. This
-distinct mode SHALL require fresh actual before/after execution, identical
-complete owner and opaque case populations, successful setup/call/teardown,
-bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
-source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
-reviewer-name string, successful test result or current-branch approval file.
-Every candidate-only input change, including proof machinery and execution
-requests, SHALL have exact protected approval; an unobserved-tooling exemption
-SHALL NOT substitute for that approval. Owned cleanup SHALL include descendants
-that create nested sessions, on success, failure and interruption.
-The initial mode SHALL NOT admit deletions, renames, reduced case populations,
-environment waivers or migration/runtime substitutions. Every other loss SHALL
-retain ordinary survivor-evidence obligations.
-
-Separately from intentional contract evolution, the same complete source-loss consumer MAY admit the single independently qualified conformance account for bu-mmax8j.8 / commit 1298bef65ad1 listed below, where the complete qualified product requirement REQ-ingestion-target-delivery-recovery-006 was already adopted in protected public history before the original event comparison base and its exact requirement-block bytes remain unchanged. This permission extends only to the twelve named retained loss owners and their eighteen opaque case pairs: three assertion-loss owners may replace only the independently established expectations that contradict that adopted product requirement; the three bulk-fixture corrections and six additional helper-context losses must independently preserve their original applicable obligations. Separate protected public authorization, landed before candidate execution, MUST bind this mapping, the adoption ancestry, the unchanged qualified requirement block, exact old/current owner and helper/import/fixture/conftest/runtime contexts, all candidate-only inputs including machinery and requests, and the complete original-base/current source universes. The actual original comparison base MUST remain the old execution and complete-loss-scan base. Fresh collection MUST establish the complete retained owning population, currently expected to be 128 owners and 139 identical opaque old/current case pairs including all eighteen qualified pairs; every retained case MUST have successful setup, call and teardown on both genuine source sides. All 131 current owning tests and 142 current cases MUST execute successfully. The three new current cases MUST be recorded as absent from the frozen base and separately reproduce assertion failure against genuine old product runtime through exact independently approved control inputs; this control MUST NOT be represented as an original-base PASS or substitute for any retained pair. One absolute monotonic deadline of at most 300 seconds MUST include snapshot preparation, collection, cold migrated PostgreSQL/bootstrap preparation, both complete source-side executions, the separate reproducer control, independent carrier consumption and complete owned process/resource settlement. Relevant actual migrated PostgreSQL/runtime-role/bootstrap/RLS and policy-lock/committed full-row/error/inbox preservation outcomes remain mandatory; SQL text, administrator-pool success, synthetic catalogs, counts and software tracing cannot substitute for them. Complete source/tool/request/run/attempt/event/base/head/tree/nonce and raw minimized phase/SQLite/lifecycle custody MUST be independently consumed. Cleanup MUST account for owned descendants including nested sessions and separately recorded nonce-owned Docker/service/database resources on success, failure, cancellation and timeout, without touching unrelated resources. Missing, unsupported, changed, unlisted, incomplete or over-budget evidence MUST remain UNKNOWN/REFUSED. This distinct mode MUST leave intentional contract evolution's unequal-hash predicate, ordinary survivor predicates and complete loss classification unchanged. No other loss, deletion, rename, owner/parameter/case reduction, environment or migration substitution, selector, marker, coverage, budget, CI event, required check or full terminal merge-group obligation is relaxed. Every loss outside this exact account and independently authorized contract evolution retains ordinary survivor-evidence obligations.
+This requirement supersedes the executable survivor-proof admission, the intentional contract-evolution mode and the single bu-mmax8j.8 replay conformance account that it previously defined; none of them remains an admission route or an obligation.
 
 ID: REQ-testing-053
-Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
+Source: bu-lm2b4v owner decision B (2026-10-21), retiring the bu-ly3lv5.11 condensation ledger and the bu-mmax8j.9 replay exception; about/craft-and-care/testing-and-verification.md Removing or Weakening Tests; AGENTS.md Test Scope Policy
 Scope: v1-mandatory
 
-#### Scenario: Approved contract changes retain fresh complete execution
-- **WHEN** an independently reviewed normative amendment intentionally replaces expectations in retained owners
-- **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
-- **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
-- **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
-- **AND** exact protected input approval includes proof machinery and requests, while bounded cleanup accounts for every owned descendant
+#### Scenario: A test deletion with a stated delta passes CI
 
-#### Scenario: Candidate declarations cannot grant their own exception
-- **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
-- **THEN** the evolution path refuses without a count fallback, cached receipt, attestation-only approval or automatic baseline rewrite
-- **AND** unrelated losses, deletions, renames and genuine condensation retain ordinary survivor proof requirements
+- **WHEN** a pull request deletes tests, states a `Tests:` line with the deletions and names each survivor or intentional behavior change
+- **THEN** no CI step refuses it for the test loss
+- **AND** the required check, guards and frontend verdicts and the complete terminal merge-group gate still run unchanged
 
-#### Scenario: Exact branch contexts and retained mutation kills
-- **WHEN** removed cases and named survivors execute a protected proof
-- **THEN** the producer uses actual ctrace branch arcs under literal exact per-case phase contexts and complete collected case identities
-- **AND** every removed-case mutant kill is retained by a named survivor with zero normative residue and no lost kills before dogfood deletion
-- **AND** setup, collection, timeout, incomplete phases or uncertain cleanup are UNKNOWN rather than semantic kills
+#### Scenario: Review refuses an unaccounted loss
 
-#### Scenario: Assertion and parameter loss inside a retained name refuses
-- **WHEN** an unchanged test qualname loses an assertion, parameter declaration, fixture/import context or collected case
-- **THEN** the consumer detects that change and requires its complete source-bound survivor account
-- **AND** matching qualnames or a smaller count cannot hide the lost invariant
+- **WHEN** a pull request removes or weakens a check without a `Tests:` line, or without a named survivor or stated behavior change for that check
+- **THEN** the reviewer refuses it until the line and the account are present
+- **AND** a survivor that does not exist at the pull-request head, or does not exercise the removed behavior, does not count
 
-#### Scenario: Moves and retirement have no automatic exemption
-- **WHEN** a test moves or renames, or a production source path is deleted
-- **THEN** admission still requires complete body/import/fixture/marker/case continuity or genuine governing retirement authority with a protected survivor account
-- **AND** filename similarity and deleted source paths grant no permission to remove protected coverage
+#### Scenario: Protected behavior keeps an executing survivor
 
-#### Scenario: Malformed stale or partial evidence refuses
-- **WHEN** evidence has duplicate keys or aliases, wrong JSON types, missing survivors, changed relevant bodies/modes/tools/selection, or incomplete phase/outcome/restore population
-- **THEN** admission refuses without automatic baseline repair or a count-only fallback
-- **AND** merge-group does not permit stale proof merely because its event differs from a pull request
+- **WHEN** a removed check covers architecture, wire, privacy, authorization, no-send, retry, idempotency or a migration outcome and its governing requirement is unchanged
+- **THEN** the pull request names the executing test that still enforces that behavior
+- **AND** a matching name, a smaller count or a deleted production path cannot stand in for it
 
-#### Scenario: Compatible protected union preserves dated proof identity
-- **WHEN** a protected union has freshly validated event/head lineage and exactly unchanged relevant source/mode/config/tool/selection inputs
-- **THEN** verification may reuse that unchanged proof within its named scope while retaining its dated original run identity
-- **AND** changed relevant inputs require fresh proof rather than a historical receipt restamp
+#### Scenario: An intended behavior change edits its pinning tests in the same pull request
 
-#### Scenario: Crash cancellation and timeout preserve recovery
-- **WHEN** an owned proof process fails, times out, is cancelled or crashes during a mutation
-- **THEN** a durable journal and scoped UNKNOWN receipt survive until exact file/mode restoration and owned process-group completion are attested
-- **AND** the live source, unrelated processes, environment and other proof runs remain untouched
-
-#### Scenario: Catalog and attestation cannot substitute for protected runtime proof
-- **WHEN** a proposed deletion relies on migration/catalog behavior or protected authority
-- **THEN** actual migrated PostgreSQL roles, bootstrap, constraints/defaults/indexes/functions/RLS/grants/rollback and relevant negative companions remain required
-- **AND** SQL-text coverage, synthetic catalogs and attested mode cannot discharge those outcomes
-
-#### Scenario: One guard species and complete survivor accounting
-- **WHEN** the required condensation guard is activated after genuine preparation qualification
-- **THEN** one stdlib source-scan consumer owns deletion admission across the complete declared tests and roster roots, including in-place losses
-- **AND** every moved or removed check names its executing survivor, with no empty-directory fail-open, new selector exclusion or duplicated normative scanner
-
-#### Scenario: Source evidence does not complete timing or delivery
-- **WHEN** the additive proof machinery and its private controls pass
-- **THEN** the first three real clusters, zero-residue/no-lost dogfood, shared-app isolation, original per-file/cluster and named before/after timing, supported native administration and current genuine/normal/protected/squash remain mandatory
-- **AND** the generic no-wall-clock-gain option applies only to its original timing paragraph
-
-#### Scenario: An adopted unchanged product norm qualifies only the exact account
-
-- **WHEN** independent review establishes that the complete REQ-ingestion-target-delivery-recovery-006 block was protected and ancestral before the genuine event comparison base, remains byte-identical at adoption/base/candidate, and the exact listed expectations contradict it
-- **THEN** only the independently mapped obsolete expectations of the three named assertion-loss owners may be replaced through this distinct mode
-- **AND** the other nine listed losses preserve their applicable original bulk, audit, filtered-replay, unsafe-policy and transaction-lock obligations; no unrelated loss is admitted
-- **AND** qualification uses a separate exact protected-public authorization before execution, never the candidate's declaration or a fabricated product amendment
-
-#### Scenario: Honest full populations retain new-case absences
-
-- **WHEN** the exact current account is freshly collected on genuine full original-base/current source snapshots
-- **THEN** the complete retained population must have identical opaque case identities and successful setup/call/teardown on both sides, currently expected to be 139 retained pairs including all eighteen qualified pairs
-- **AND** all 142 current cases must pass, while the three current-only owners remain explicitly absent from the original base
-- **AND** the separate protected current-reproducer/old-runtime control must fail by the expected assertions; setup errors, skips, timeouts or fabricated old PASS phases cannot satisfy it
-- **AND** any population or context drift requires a fresh complete account and exact independent protected approval within this policy scope; an extra loss or reduced population refuses
-
-#### Scenario: Real runtime and all owned resources fit one finite envelope
-
-- **WHEN** fresh qualification begins preparing either source copy or its runtime
-- **THEN** one absolute deadline at most 300 seconds includes preparation, collection, real cold migrations/bootstrap, both full executions, the reproducer control, independent consumption and complete cleanup
-- **AND** actual runtime identities and relevant migrated PostgreSQL role/bootstrap/RLS, policy-lock races and committed full-row/error/inbox outcomes must be established without borrowing an administrator-only or software-only result
-- **AND** every owned nested-session descendant and separately registered nonce-owned Docker/service/database resource must settle on success, failure, interruption and timeout; unsupported supervision, incomplete settlement or deadline overrun refuses
-- **AND** the controls for missing authority/input/case/phase, stale or forged run custody, changed requirement, unlisted loss, unsafe-policy mutation, incomplete cleanup and rollback have healthy companions under their finite owning controls
-
-#### Scenario: One strict consumer preserves all existing gates and rollback
-
-- **WHEN** the required complete source-loss consumer evaluates this account
-- **THEN** it independently verifies protected authority, original event/base/head/tree lineage, complete inputs including machinery/requests, source/tool/nonce and raw phase/SQLite/lifecycle carriers before discharging exactly the listed losses
-- **AND** candidate-only approval, stale/restamped carriers, incomplete execution, extra loss, case reduction or source drift refuses, while existing equal-hash contract-evolution requests continue to refuse
-- **AND** ordinary survivors, complete tests/roster loss scanning, selection/markers/coverage/budgets, normal required checks and the complete terminal merge-group remain unchanged
-- **AND** revoking the inert authorization or disabling this distinct mode restores source-admission refusal without data rewrites or a product rollback
+- **WHEN** a reviewed product change alters behavior that an existing test pins
+- **THEN** that pull request changes or removes the pinning test itself and states the delta and the changed behavior
+- **AND** no authorization manifest, separate authorization bead or replacement guard is required
 
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be
