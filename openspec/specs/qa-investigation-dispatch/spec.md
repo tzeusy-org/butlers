@@ -136,6 +136,7 @@ Scope: v1-mandatory
 - **THEN** no `git push` and no `gh pr create` runs, and there is no fallback that restores token injection
 - **AND** the investigation transitions to `failed` with reason `publication_unavailable`; a follow-up records the same reason in `last_follow_up_error` and the PR is left unchanged
 - **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
+- **AND** a `failed` attempt whose `error_detail` starts with `publication_unavailable:` is neutral to the QA circuit breaker, in admission and on the dashboard alike: it neither counts as a failure nor resets the consecutive-failure streak
 
 #### Scenario: Dispatcher git subprocesses in the shared clone are isolated
 - **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)
