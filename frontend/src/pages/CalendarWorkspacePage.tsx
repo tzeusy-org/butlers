@@ -7,16 +7,12 @@ import {
   addDays,
   differenceInMinutes,
   format,
-  isSameDay,
-  isSameMonth,
-  isToday,
   parseISO,
   startOfDay,
   startOfWeek,
 } from "date-fns";
 import { toast } from "sonner";
 
-import { Tip } from "@/components/ui/tip";
 
 import type {
   ApiResponse,
@@ -72,9 +68,6 @@ import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabi
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { DebriefCard } from "@/components/calendar/DebriefCard";
 import {
-  LinkedPeopleAvatars,
-} from "@/components/calendar/LinkedPeopleAvatars";
-import {
   ContactPeoplePicker,
   type SelectedPerson,
 } from "@/components/calendar/ContactPeoplePicker";
@@ -83,10 +76,7 @@ import { CalendarDuplicatesPanel } from "@/components/calendar/CalendarDuplicate
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { ButlerMark } from "@/components/ui/ButlerMark";
-import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
-import { Row } from "@/components/ui/Row";
 import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
 import { FetchingDim } from "@/components/ui/fetching-dim";
@@ -94,12 +84,10 @@ import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { cn } from "@/lib/utils";
 import {
-  AVATAR_MIN_BLOCK_HEIGHT_PX,
   dateTimeLocalToIso,
   formatEventTime,
   HOUR_HEIGHT_PX,
   isoAtMinuteInTz,
-  MINUTES_PER_DAY,
   minuteOfDayInTz,
   normalizeDragWindow,
   offsetToMinutes,
@@ -116,15 +104,23 @@ import {
 } from "@/lib/calendar-overlays";
 import {
   CommitButton,
-  KindTag,
-  OverlayPill,
   PillButton,
 } from "@/pages/calendar/atoms";
 import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarEntryDetailPanel } from "@/pages/calendar/CalendarEntryDetailPanel";
 import { CalendarSearchPalette } from "@/pages/calendar/CalendarSearchPalette";
 import { ButlerEventDialog } from "@/pages/calendar/ButlerEventDialog";
+import { AgendaList } from "@/pages/calendar/AgendaList";
 import { ButlerLanes } from "@/pages/calendar/ButlerLanes";
+import { MonthGrid } from "@/pages/calendar/MonthGrid";
+import { TimeGrid } from "@/pages/calendar/TimeGrid";
+import {
+  DRAG_THRESHOLD_PX,
+  isGridDraggable,
+  type DragOrigin,
+  type GridDragPreview,
+  type MovedGhost,
+} from "@/pages/calendar/grid-drag";
 import { CalendarHeader } from "@/pages/calendar/CalendarHeader";
 import { CalendarToolbar, type CalendarPanel } from "@/pages/calendar/CalendarToolbar";
 import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
@@ -151,8 +147,6 @@ import {
   SELECT_CLASS,
   formatLaneTitle,
   headlineLabel,
-  isCancelledEntry,
-  isPausedEntry,
   isRecurringUserEntry,
   occurrenceImpactText,
   resolveButlerEventTarget,
@@ -210,107 +204,8 @@ function defaultFormWindow(anchor: Date): {
   };
 }
 
-
-/** Hour labels 0–23 for the y-axis. */
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
 /** Default scroll-to position (in hours) when the time grid first mounts. */
 const DEFAULT_SCROLL_HOUR = 7.5;
-/** Pixel movement past which a pointer gesture counts as a drag (not a click). */
-const DRAG_THRESHOLD_PX = 4;
-
-/** Format a minute-of-day value as an `HH:mm` label. */
-function formatMinuteLabel(minutes: number): string {
-  const clamped = Math.min(MINUTES_PER_DAY, Math.max(0, minutes));
-  if (clamped === MINUTES_PER_DAY) return "24:00";
-  return format(
-    new Date(2000, 0, 1, Math.floor(clamped / 60), clamped % 60),
-    "HH:mm",
-  );
-}
-
-/** Whether an entry carries an RRULE (i.e. is a recurring occurrence). */
-function isRecurringInstance(entry: UnifiedCalendarEntry): boolean {
-  return typeof entry.rrule === "string" && entry.rrule.trim().length > 0;
-}
-
-/** Whether a grid entry can be dragged to move/resize via existing update endpoints. */
-function isGridDraggable(entry: UnifiedCalendarEntry): boolean {
-  if (entry.all_day) {
-    return false;
-  }
-  if (entry.source_type === "provider_event") {
-    // Recurring provider occurrences are draggable; the drop is routed through the
-    // recurrence scope sheet (this / following / series) instead of committing directly.
-    return !!entry.provider_event_id && entry.editable;
-  }
-  // Butler-lane events (scheduled tasks / reminders) update via
-  // calendar_update_butler_event, which has no scope-aware path yet, so keep
-  // recurring butler instances non-draggable.
-  if (isRecurringInstance(entry)) {
-    return false;
-  }
-  return resolveButlerEventTarget(entry) !== null && !!entry.butler_name;
-}
-
-/** Immutable origin of an in-flight grid drag gesture. */
-type DragOrigin =
-  | {
-      mode: "create";
-      pointerId: number;
-      downX: number;
-      downY: number;
-      dayIndex: number;
-      anchorMin: number;
-      moved: boolean;
-    }
-  | {
-      mode: "move";
-      pointerId: number;
-      downX: number;
-      downY: number;
-      entry: UnifiedCalendarEntry;
-      originStartMin: number;
-      durationMin: number;
-      grabOffsetMin: number;
-      moved: boolean;
-    }
-  | {
-      mode: "resize";
-      pointerId: number;
-      downX: number;
-      downY: number;
-      entry: UnifiedCalendarEntry;
-      dayIndex: number;
-      startMin: number;
-      moved: boolean;
-    };
-
-/** Live preview of the current drag, rendered as a translucent block. */
-type GridDragPreview =
-  | { mode: "create"; dayIndex: number; startMin: number; endMin: number }
-  | {
-      mode: "move";
-      dayIndex: number;
-      startMin: number;
-      endMin: number;
-      entryId: string;
-    }
-  | {
-      mode: "resize";
-      dayIndex: number;
-      startMin: number;
-      endMin: number;
-      entryId: string;
-    };
-
-/** Ghost left at an event's prior slot after a successful move, enabling one-click undo. */
-interface MovedGhost {
-  entry: UnifiedCalendarEntry;
-  prevStartIso: string;
-  prevEndIso: string;
-  nextStartIso: string;
-  nextEndIso: string;
-}
 
 
 
@@ -2573,116 +2468,17 @@ export default function CalendarWorkspacePage() {
             />
           ) : range === "month" ? (
             /* ---- Month matrix ---- */
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="mb-2 grid grid-cols-7">
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(
-                  (label) => (
-                    <Eyebrow key={label} as="div" className="px-2">
-                      {label}
-                    </Eyebrow>
-                  ),
-                )}
-              </div>
-              <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 overflow-y-auto border-l border-t border-[var(--border)]">
-                {monthDays.map((day) => {
-                  const key = format(day, "yyyy-MM-dd");
-                  const dayEntries = entriesByDay.get(key) ?? [];
-                  const dayOverlays = overlaysEnabled
-                    ? (overlaysByDayMap.get(key) ?? [])
-                    : [];
-                  const inMonth = isSameMonth(day, start);
-                  const today = isToday(day);
-                  return (
-                    <div
-                      key={key}
-                      className={cn(
-                        "relative min-h-[5.5rem] overflow-hidden border-b border-r border-[var(--border)] p-1.5",
-                        !inMonth && "bg-foreground/[0.02]",
-                      )}
-                    >
-                      {view === "user" ? (
-                        <button
-                          type="button"
-                          aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                          onClick={() => openUserCreateDialog(day)}
-                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
-                        />
-                      ) : null}
-                      <div className="pointer-events-none relative z-10">
-                        <div className="mb-1 flex items-center justify-between">
-                          {today ? (
-                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-fg px-1 font-mono text-[11px] tabular-nums text-bg">
-                              {format(day, "d")}
-                            </span>
-                          ) : (
-                            <span
-                              className={cn(
-                                "font-mono text-[11px] tabular-nums",
-                                inMonth
-                                  ? "text-fg"
-                                  : "text-[var(--dim)]",
-                              )}
-                            >
-                              {format(day, "d")}
-                            </span>
-                          )}
-                        </div>
-                        <div className="space-y-0.5">
-                          {dayEntries.slice(0, 3).map((entry) => (
-                            <Tip key={entry.entry_id} content={entry.title}>
-                              <button
-                                type="button"
-                                data-calendar-entry-id={entry.entry_id}
-                                onClick={() => openDetailPanel(entry)}
-                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                              >
-                              {!entry.all_day ? (
-                                <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                  {formatEventTime(
-                                    entry.start_at,
-                                    defaultTimezone,
-                                    "HH:mm",
-                                  )}
-                                </span>
-                              ) : null}
-                              <span className="truncate">{entry.title}</span>
-                              </button>
-                            </Tip>
-                          ))}
-                          {dayEntries.length > 3 ? (
-                            <button
-                              type="button"
-                              aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")}: open day view`}
-                              onClick={() =>
-                                updateQuery({ range: "day", anchor: day })
-                              }
-                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                            >
-                              +{dayEntries.length - 3} more
-                            </button>
-                          ) : null}
-                          {dayOverlays.length > 0 ? (
-                            <div className="mt-1 space-y-0.5 border-t border-dashed border-[var(--border)] pt-1">
-                              {dayOverlays.slice(0, 3).map((overlay) => (
-                                <OverlayPill
-                                  key={overlay.entry_id}
-                                  entry={overlay}
-                                />
-                              ))}
-                              {dayOverlays.length > 3 ? (
-                                <span className="block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                  +{dayOverlays.length - 3} overlay
-                                </span>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <MonthGrid
+              monthDays={monthDays}
+              start={start}
+              entriesByDay={entriesByDay}
+              overlaysEnabled={overlaysEnabled}
+              overlaysByDayMap={overlaysByDayMap}
+              defaultTimezone={defaultTimezone}
+              onCreateOnDay={view === "user" ? openUserCreateDialog : undefined}
+              onOpenDetail={openDetailPanel}
+              updateQuery={updateQuery}
+            />
           ) : range === "week" || range === "day" ? (
             /* ---- Time grid — mono gutter, no hour rules (Design Language: Calendar) ---- */
             <div className="flex min-h-0 flex-1 flex-col">
@@ -2735,543 +2531,51 @@ export default function CalendarWorkspacePage() {
                   );
                 }}
               />
-              {/* Column headers */}
-              <div
-                className="mb-2 grid"
-                style={{
-                  gridTemplateColumns:
-                    range === "week"
-                      ? "3.25rem repeat(7, minmax(0, 1fr))"
-                      : "3.25rem minmax(0, 1fr)",
-                }}
-              >
-                <div />
-                {weekDays.map((day) => (
-                  <div
-                    key={format(day, "yyyy-MM-dd")}
-                    className="px-2 text-center"
-                  >
-                    <Eyebrow className={cn(isToday(day) && "text-fg")}>
-                      {format(day, "EEE")}
-                    </Eyebrow>{" "}
-                    <span
-                      className={cn(
-                        "font-mono text-[12px] tabular-nums",
-                        isToday(day) ? "text-fg" : "text-[var(--mfg)]",
-                      )}
-                    >
-                      {format(day, "d")}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {/* All-day row */}
-              {(() => {
-                const hasAllDay = weekDays.some((day) =>
-                  (entriesByDay.get(format(day, "yyyy-MM-dd")) ?? []).some(
-                    (e) => e.all_day,
-                  ),
-                );
-                const hasOverlays =
-                  overlaysEnabled &&
-                  weekDays.some(
-                    (day) =>
-                      (overlaysByDayMap.get(format(day, "yyyy-MM-dd")) ?? [])
-                        .length > 0,
-                  );
-                if (!hasAllDay && !hasOverlays) return null;
-                return (
-                  <div
-                    className="mb-2 grid border-b border-[var(--border)] pb-2"
-                    style={{
-                      gridTemplateColumns:
-                        range === "week"
-                          ? "3.25rem repeat(7, minmax(0, 1fr))"
-                          : "3.25rem minmax(0, 1fr)",
-                    }}
-                  >
-                    <div className="pr-2 pt-0.5 text-right">
-                      <Eyebrow>All day</Eyebrow>
-                    </div>
-                    {weekDays.map((day) => {
-                      const key = format(day, "yyyy-MM-dd");
-                      const allDayEntries = (
-                        entriesByDay.get(key) ?? []
-                      ).filter((e) => e.all_day);
-                      const dayOverlays = overlaysEnabled
-                        ? (overlaysByDayMap.get(key) ?? [])
-                        : [];
-                      return (
-                        <div key={key} className="space-y-1 px-1">
-                          {allDayEntries.map((entry) => (
-                            <Tip key={entry.entry_id} content={entry.title}>
-                              <button
-                                type="button"
-                                data-calendar-entry-id={entry.entry_id}
-                                onClick={(evt) => {
-                                  evt.stopPropagation();
-                                  openDetailPanel(entry);
-                                }}
-                                className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06]"
-                              >
-                                {entry.title}
-                              </button>
-                            </Tip>
-                          ))}
-                          {dayOverlays.map((overlay) => (
-                            <OverlayPill
-                              key={overlay.entry_id}
-                              entry={overlay}
-                            />
-                          ))}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-
-              {/* Scrollable time grid */}
-              <div ref={timeGridRef} className="min-h-0 flex-1 overflow-y-auto">
-                <div
-                  ref={gridBodyRef}
-                  className="grid h-[var(--calendar-grid-height)]"
-                  style={{
-                    gridTemplateColumns:
-                      range === "week"
-                        ? "3.25rem repeat(7, minmax(0, 1fr))"
-                        : "3.25rem minmax(0, 1fr)",
-                  }}
-                >
-                  {/* Hour gutter */}
-                  <div ref={gutterRef} className="relative">
-                    {HOURS.map((h) => (
-                      <div
-                        key={h}
-                        className="absolute right-2 -translate-y-1/2 font-mono text-[10px] leading-none tabular-nums text-[var(--mfg)]"
-                        style={{ top: h * HOUR_HEIGHT_PX }}
-                      >
-                        {h === 0
-                          ? ""
-                          : format(new Date(2000, 0, 1, h), "HH:mm")}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Day columns */}
-                  {weekDays.map((day, dayIndex) => {
-                    const key = format(day, "yyyy-MM-dd");
-                    const dayEntries = (entriesByDay.get(key) ?? []).filter(
-                      (e) => !e.all_day,
-                    );
-                    const ghost =
-                      movedGhost &&
-                      isSameDay(new Date(movedGhost.prevStartIso), day)
-                        ? movedGhost
-                        : null;
-                    return (
-                      <div
-                        key={key}
-                        className="relative border-l border-[var(--border)]"
-                      >
-                        {view === "user" ? (
-                          <button
-                            type="button"
-                            aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
-                            onPointerDown={(evt) =>
-                              beginCreateDrag(evt, dayIndex)
-                            }
-                            onPointerMove={handleGridPointerMove}
-                            onPointerUp={handleGridPointerUp}
-                            onPointerCancel={handleGridPointerCancel}
-                            onClick={(evt) => {
-                              // Swallow the click that trails a completed drag-create.
-                              if (suppressClickRef.current) {
-                                suppressClickRef.current = false;
-                                return;
-                              }
-                              const rect =
-                                evt.currentTarget.getBoundingClientRect();
-                              // Keyboard activation (detail === 0) carries no pointer Y — default to the day.
-                              if (evt.detail === 0) {
-                                openUserCreateDialog(day);
-                                return;
-                              }
-                              const yPx = evt.clientY - rect.top;
-                              const snappedMin = Math.max(
-                                0,
-                                Math.floor(((yPx / HOUR_HEIGHT_PX) * 60) / 30) *
-                                  30,
-                              );
-                              const clickedDate = new Date(day);
-                              clickedDate.setHours(
-                                Math.floor(snappedMin / 60),
-                                snappedMin % 60,
-                                0,
-                                0,
-                              );
-                              openUserCreateDialog(clickedDate);
-                            }}
-                          />
-                        ) : null}
-                        {/* Drag preview (create / move / resize landing in this column). */}
-                        {gridDrag && gridDrag.dayIndex === dayIndex ? (
-                          <div
-                            aria-hidden
-                            data-testid="calendar-drag-preview"
-                            className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-fg/60 bg-fg/10"
-                            style={{
-                              top: (gridDrag.startMin / 60) * HOUR_HEIGHT_PX,
-                              height:
-                                ((gridDrag.endMin - gridDrag.startMin) / 60) *
-                                HOUR_HEIGHT_PX,
-                              minHeight: 16,
-                            }}
-                          >
-                            <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-fg">
-                              {formatMinuteLabel(gridDrag.startMin)}–
-                              {formatMinuteLabel(gridDrag.endMin)}
-                            </span>
-                          </div>
-                        ) : null}
-                        {/* Find-time ghost overlays — ranked free slots from the
-                            panel's latest search, drawn in place via the grid
-                            geometry and synced with the list. Selecting one does
-                            the same prefilled-create as the list. */}
-                        {findTimeSlots.map((slot, slotIndex) => {
-                          const slotStart = parseISO(slot.start_at);
-                          const slotEnd = parseISO(slot.end_at);
-                          // Bucket + place the slot in the workspace timezone so
-                          // it lines up with the grid's events under that zone.
-                          if (
-                            tzDayKey(slot.start_at, defaultTimezone) !==
-                            format(day, "yyyy-MM-dd")
-                          )
-                            return null;
-                          const topMin = minuteOfDayInTz(
-                            slot.start_at,
-                            defaultTimezone,
-                          );
-                          const durationMin = Math.max(
-                            differenceInMinutes(slotEnd, slotStart),
-                            15,
-                          );
-                          const slotLabel = `${formatEventTime(slot.start_at, defaultTimezone, "HH:mm")}–${formatEventTime(slot.end_at, defaultTimezone, "HH:mm")}`;
-                          return (
-                            <button
-                              key={`find-time-${slot.start_at}-${slot.end_at}`}
-                              type="button"
-                              data-testid="find-time-overlay"
-                              title={`Open slot ${slotIndex + 1}: ${slotLabel}`}
-                              onClick={(evt) => {
-                                evt.stopPropagation();
-                                selectFindTimeSlot(slot);
-                              }}
-                              className={cn(
-                                "absolute inset-x-0.5 z-20 flex flex-col overflow-hidden rounded-[3px]",
-                                "border border-dashed border-fg/50 bg-fg/[0.08]",
-                                "px-1.5 py-0.5 text-left transition-colors hover:bg-fg/[0.16]",
-                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
-                              )}
-                              style={{
-                                top: (topMin / 60) * HOUR_HEIGHT_PX,
-                                height: (durationMin / 60) * HOUR_HEIGHT_PX,
-                                minHeight: 16,
-                              }}
-                            >
-                              <span className="font-mono text-[10px] leading-none tabular-nums text-fg">
-                                #{slotIndex + 1} · {slotLabel}
-                              </span>
-                            </button>
-                          );
-                        })}
-                        {/* "Moved" ghost — one-click undo of the last move/resize. */}
-                        {ghost ? (
-                          <button
-                            type="button"
-                            data-testid="calendar-move-ghost"
-                            title="Undo move"
-                            onClick={(evt) => {
-                              evt.stopPropagation();
-                              undoMove();
-                            }}
-                            className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-fg/40 bg-bg/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-fg"
-                            style={{
-                              top:
-                                (minuteOfDayInTz(
-                                  ghost.prevStartIso,
-                                  defaultTimezone,
-                                ) /
-                                  60) *
-                                HOUR_HEIGHT_PX,
-                              height: Math.max(
-                                (differenceInMinutes(
-                                  new Date(ghost.prevEndIso),
-                                  new Date(ghost.prevStartIso),
-                                ) /
-                                  60) *
-                                  HOUR_HEIGHT_PX,
-                                16,
-                              ),
-                            }}
-                          >
-                            Undo
-                          </button>
-                        ) : null}
-                        {dayEntries.map((entry) => {
-                          const s = new Date(entry.start_at);
-                          const e = new Date(entry.end_at);
-                          const topMin = minuteOfDayInTz(s, defaultTimezone);
-                          const durationMin = Math.max(
-                            differenceInMinutes(e, s),
-                            15,
-                          );
-                          const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
-                          const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
-                          const paused = isPausedEntry(entry);
-                          const draggable = isGridDraggable(entry);
-                          const isDragSource =
-                            gridDrag &&
-                            gridDrag.mode !== "create" &&
-                            gridDrag.entryId === entry.entry_id;
-                          return (
-                            <button
-                              key={entry.entry_id}
-                              type="button"
-                              data-calendar-entry-id={entry.entry_id}
-                              data-conflict-overlap={
-                                overlapEntryIds.has(entry.entry_id)
-                                  ? "true"
-                                  : undefined
-                              }
-                              className={cn(
-                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-bg px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
-                                // Amber left edge marks an event caught in an overlap.
-                                overlapEntryIds.has(entry.entry_id) &&
-                                  "border-l-2 border-l-amber-500",
-                                paused && "opacity-50",
-                                draggable &&
-                                  "cursor-grab touch-none active:cursor-grabbing",
-                                isDragSource && "opacity-40",
-                              )}
-                              style={{
-                                top: topPx,
-                                height: heightPx,
-                                minHeight: 16,
-                              }}
-                              title={`${formatEventTime(s, defaultTimezone, "HH:mm")}–${formatEventTime(e, defaultTimezone, "HH:mm")} · ${entry.title}`}
-                              onPointerDown={
-                                draggable
-                                  ? (evt) => beginMoveDrag(evt, entry)
-                                  : undefined
-                              }
-                              onPointerMove={
-                                draggable ? handleGridPointerMove : undefined
-                              }
-                              onPointerUp={
-                                draggable ? handleGridPointerUp : undefined
-                              }
-                              onPointerCancel={
-                                draggable ? handleGridPointerCancel : undefined
-                              }
-                              onClick={() => {
-                                // Swallow the click that trails a completed move/resize drag.
-                                if (suppressClickRef.current) {
-                                  suppressClickRef.current = false;
-                                  return;
-                                }
-                                openDetailPanel(entry);
-                              }}
-                            >
-                              <span className="block truncate text-[11px] font-medium leading-tight text-fg">
-                                {entry.title}
-                              </span>
-                              {heightPx >= 32 ? (
-                                <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                  {formatEventTime(s, defaultTimezone, "HH:mm")}–
-                                  {formatEventTime(e, defaultTimezone, "HH:mm")}
-                                </span>
-                              ) : null}
-                              {/* Linked-people avatars (bu-01qmd) — reuse the agenda/detail
-                                  cluster, gated by block height so short blocks don't overflow.
-                                  pointer-events-none keeps it transparent to the block's drag
-                                  handlers (no interactive elements inside the draggable block). */}
-                              {heightPx >= AVATAR_MIN_BLOCK_HEIGHT_PX &&
-                              entry.linked_people &&
-                              entry.linked_people.length > 0 ? (
-                                <LinkedPeopleAvatars
-                                  people={entry.linked_people}
-                                  className="pointer-events-none mt-0.5"
-                                />
-                              ) : null}
-                              {draggable ? (
-                                <span
-                                  aria-hidden
-                                  data-testid="calendar-resize-handle"
-                                  className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
-                                  onPointerDown={(evt) =>
-                                    beginResizeDrag(evt, entry, dayIndex)
-                                  }
-                                  onPointerMove={handleGridPointerMove}
-                                  onPointerUp={handleGridPointerUp}
-                                  onPointerCancel={handleGridPointerCancel}
-                                />
-                              ) : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          ) : entries.length === 0 ? (
-            <Voice variant="italic" className="text-[var(--mfg)]">
-              No events in this range.
-            </Voice>
-          ) : (
-            /* ---- Agenda list, grouped by day ---- */
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              {(() => {
-                const groups: Array<{
-                  day: string;
-                  date: Date;
-                  items: UnifiedCalendarEntry[];
-                }> = [];
-                const groupIndex = new Map<string, number>();
-                // Group by the event's calendar day in the workspace timezone so
-                // sections match the times rendered in each row.
-                const todayKey = formatEventTime(
-                  new Date(),
-                  defaultTimezone,
-                  "yyyy-MM-dd",
-                );
-                for (const entry of entries) {
-                  const d = new Date(entry.start_at);
-                  const dayKey = tzDayKey(d, defaultTimezone);
-                  let gi = groupIndex.get(dayKey);
-                  if (gi === undefined) {
-                    gi = groups.length;
-                    groupIndex.set(dayKey, gi);
-                    groups.push({
-                      day: dayKey,
-                      date: d,
-                      items: [],
-                    });
-                  }
-                  groups[gi].items.push(entry);
+              <TimeGrid
+                range={range}
+                weekDays={weekDays}
+                entriesByDay={entriesByDay}
+                overlaysEnabled={overlaysEnabled}
+                overlaysByDayMap={overlaysByDayMap}
+                overlapEntryIds={overlapEntryIds}
+                defaultTimezone={defaultTimezone}
+                timeGridRef={timeGridRef}
+                gridBodyRef={gridBodyRef}
+                gutterRef={gutterRef}
+                onOpenDetail={openDetailPanel}
+                interaction={
+                  view === "user"
+                    ? {
+                        gridDrag,
+                        movedGhost,
+                        findTimeSlots,
+                        suppressClickRef,
+                        openCreateDialog: openUserCreateDialog,
+                        selectFindTimeSlot,
+                        undoMove,
+                        beginCreateDrag,
+                        beginMoveDrag,
+                        beginResizeDrag,
+                        handleGridPointerMove,
+                        handleGridPointerUp,
+                        handleGridPointerCancel,
+                      }
+                    : undefined
                 }
-                return groups.map((group) => (
-                  <section key={group.day} className="mb-6">
-                    <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
-                      <Eyebrow
-                        className={cn(
-                          group.day === todayKey && "text-fg",
-                        )}
-                      >
-                        {formatEventTime(
-                          group.date,
-                          defaultTimezone,
-                          "EEE · MMM d",
-                        )}
-                      </Eyebrow>
-                      {group.day === todayKey ? (
-                        <KindTag className="text-[var(--mfg)]">today</KindTag>
-                      ) : null}
-                    </div>
-                    <div role="list">
-                      {group.items.map((entry) => {
-                        const canMutate =
-                          view === "user" &&
-                          entry.source_type === "provider_event" &&
-                          !!entry.provider_event_id &&
-                          entry.editable;
-                        return (
-                          <Row
-                            key={entry.entry_id}
-                            mark={
-                              <Mono
-                                muted
-                                className="inline-block w-14 tabular-nums"
-                              >
-                                {entry.all_day
-                                  ? "all day"
-                                  : formatEventTime(
-                                      entry.start_at,
-                                      defaultTimezone,
-                                      "HH:mm",
-                                    )}
-                              </Mono>
-                            }
-                            meta={
-                              <div className="flex items-center gap-1.5">
-                                <PillButton
-                                  onClick={() => openDetailPanel(entry)}
-                                  disabled={userEventMutation.isPending}
-                                >
-                                  Detail
-                                </PillButton>
-                                <PillButton
-                                  onClick={() => {
-                                    setDeleteScope(
-                                      isRecurringUserEntry(entry)
-                                        ? "this"
-                                        : "series",
-                                    );
-                                    setDeleteCandidate(entry);
-                                  }}
-                                  disabled={
-                                    !canMutate || userEventMutation.isPending
-                                  }
-                                  className="hover:border-[var(--red)] hover:text-[var(--red-text)]"
-                                >
-                                  Delete
-                                </PillButton>
-                              </div>
-                            }
-                          >
-                            <div className="flex min-w-0 items-center gap-2">
-                              {entry.butler_name ? (
-                                <ButlerMark name={entry.butler_name} />
-                              ) : null}
-                              <span
-                                className={cn(
-                                  "truncate text-sm text-fg",
-                                  isCancelledEntry(entry) &&
-                                    "text-[var(--mfg)] line-through",
-                                )}
-                              >
-                                {entry.title}
-                              </span>
-                              {isCancelledEntry(entry) ? (
-                                <KindTag
-                                  data-testid="entry-cancelled-tag"
-                                  className="text-[var(--red-text)]"
-                                >
-                                  cancelled
-                                </KindTag>
-                              ) : null}
-                              {entry.linked_people &&
-                              entry.linked_people.length > 0 ? (
-                                <LinkedPeopleAvatars
-                                  people={entry.linked_people}
-                                />
-                              ) : null}
-                              <Mono muted className="hidden truncate sm:inline">
-                                {entry.butler_name ?? entry.source_key}
-                              </Mono>
-                            </div>
-                          </Row>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ));
-              })()}
+              />
             </div>
+          ) : (
+            <AgendaList
+              entries={entries}
+              view={view}
+              defaultTimezone={defaultTimezone}
+              pending={userEventMutation.isPending}
+              onOpenDetail={openDetailPanel}
+              onDelete={(entry) => {
+                setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
+                setDeleteCandidate(entry);
+              }}
+            />
           )}
             </FetchingDim>
           )}
