@@ -31,6 +31,34 @@ pytest_plugins = ("tests.switchboard.goal_ledger_fixtures",)
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+# Roles scripts/init-db.sql creates. Roles are cluster-level and outlive per-test databases, so
+# the isolation test names exactly these instead of a LIKE pattern that also matches strays
+# (a leaked `connector_probe` failed it by shard order, bu-28av8x.12).
+BOOTSTRAP_RUNTIME_ROLES = frozenset(
+    {
+        *(
+            f"butler_{butler}_rw"
+            for butler in (
+                "chronicler",
+                "concierge",
+                "education",
+                "finance",
+                "general",
+                "health",
+                "home",
+                "lifestyle",
+                "messenger",
+                "qa",
+                "relationship",
+                "switchboard",
+                "travel",
+            )
+        ),
+        "connector_writer",
+    }
+)
+# Created only when the calendar module is enabled; checked if present.
+OPTIONAL_BOOTSTRAP_ROLES = frozenset({"butler_calendar_rw"})
 
 
 def bootstrap_again(container, url):
@@ -120,10 +148,12 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
             }
             roles = conn.execute(
                 text(
-                    "SELECT rolname,rolsuper,rolbypassrls FROM pg_roles WHERE rolname LIKE 'butler_%_rw' OR rolname LIKE 'connector_%'"
-                )
+                    "SELECT rolname,rolsuper,rolbypassrls FROM pg_roles WHERE rolname = ANY(:names)"
+                ),
+                {"names": sorted(BOOTSTRAP_RUNTIME_ROLES | OPTIONAL_BOOTSTRAP_ROLES)},
             ).all()
-            assert roles
+            found = {row[0] for row in roles}
+            assert BOOTSTRAP_RUNTIME_ROLES <= found, sorted(BOOTSTRAP_RUNTIME_ROLES - found)
             original_rows = snapshot(ledger_url)[0]
             # Resolve names as the owner: denied runtimes cannot traverse the
             # schema, but the OID overload still checks their actual table ACL.

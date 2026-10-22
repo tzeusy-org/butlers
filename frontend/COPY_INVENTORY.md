@@ -209,9 +209,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
-- Recurrence scope
-- Snooze
-- Set
 - Duration
 - When
 - Window
@@ -219,157 +216,42 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to find open time slots.
 - Choose a duration and search for open time.
 - No open slots match those constraints in the selected window.
-- Loading activity log…
-- No calendar mutations logged yet.
-- ‹ Prev
-- Next ›
-- session ›
-- Event detail
-- Title
-- Source
-- Provenance
-- Attendees
-- People
-- Description
-- Location
-- Delete event
-- Search events
-- Type to search across all events.
-- Searching…
-- No matching events.
-- Search
-- Agenda
-- Export / Import
-- Create butler event
-- Create event
-- View
-- Range
-- Today
-- Activity
-- Find time
-- Proposals
-- Duplicates
-- Status
-- All statuses
-- Type
-- All types
-- · unavailable
-- · none
-- Calendar
-- All calendars
-- All sources
 - Drawing the calendar…
-- No butler lanes yet.
-- Add event
-- No events in this lane.
-- Edit
-- Dismiss
-- Delete
-- All day
-- Undo
-- No events in this range.
-- Detail
-- Configure Sources
-- Accounts
-- Reading source metadata…
-- No connected sources.
-- Set as primary
-- Recover
-- Reconnect
-- Close
 - Calendar Source
+- Title
 - Start
 - End
 - Timezone
+- Description
+- Location
 - Suggested times:
 - Book anyway (overlap)
 - Cancel
-- Butler lane
-- No butlers available
-- Event type
-- Reminder
-- Scheduled task
-- Cron (optional)
-- Recurrence
-- None
-- Daily
-- Weekly
-- Monthly
-- Yearly
-- Set until boundary
-- Until
-- No occurrences in the next 90 days.
-- Calculating…
 - Delete Event
 - Edit recurring event
-- Activity log
-- Reverse this calendar change
-- Close detail panel
-- Live entry detail
-- Search calendar…
-- Search calendar events
-- Sync all sources now
-- Open printable agenda
-- Export or import calendar
-- Configure sources
-- Create user event
 - Calendar sync
-- Previous range
-- Jump to today
-- Next range
-- Cross-domain overlays
-- Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
 - Calendar events
+- Cross-domain overlays
 - Linked people
-- Create event on {}
-- {} more on {}: open day view
-- Open slot {}: {}
-- Undo move
-- Connected accounts
-- Toggle {}
-- {} {} in view
-- Show
-- Hide
-- Full re-sync from scratch (cursor recovery)
-- This source needs re-authorization
-- e.g. Daily medication
-- User
-- Butler
-- Month
-- Week
-- Day
-- List
-- 1 hour
-- 3 hours
-- Tomorrow 9am
-- Active
-- Paused
-- Error
-- Completed
-- Cancelled
-- Provider event
-- Schedule
-- Butler event
 - Next 7 days
 - Next 14 days
 - Next 30 days
 - 30 minutes
 - 45 minutes
+- 1 hour
 - 90 minutes
 - 2 hours
 - Any time of day
 - Mornings
 - Afternoons
 - Evenings
-- Enter a valid snooze time
+- Create butler event
+- Create event
+- Jump to today
+- Previous range
+- Next range
+- Search events
 - No writable calendar is available to search for free time.
-- Failed to update {}: {}
-- Event {} updated.
-- Failed to update {}.
-- Cannot toggle this source: no owning butler resolved
-- Failed to update source: {}
-- Source enabled for sync
-- Source disabled
 - Reversed {} · undo {}
 - Invitation details unavailable. Try again shortly.
 - No writable calendar sources are available for user events.
@@ -379,14 +261,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Reverted.
 - Event moved.
 - Failed to save calendar change.
-- Sync queued for {} calendar owner(s).
-- Failed to trigger sync.
-- Source sync failed.
-- Recovery sync joined queued work for {}.
-- Recovery sync queued for {}.
-- Sync joined queued work for {}.
-- Sync queued for {}.
-- Failed to trigger source sync.
 - Failed to create event: {}
 - Failed to update event: {}
 - Created event ({}).
@@ -406,47 +280,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Deleted calendar event.
 - Failed to delete calendar event.
 - Could not update {}: the new time conflicts with another event.
-- Missing butler event linkage for toggle
-- {} failed: {}
-- Resume
-- Pause
-- Event resumed
-- Event paused
-- Toggle failed
-- Missing butler event linkage for delete
-- Delete "{}"?
-- Delete failed: {}
-- Event deleted
-- Delete failed
-- Missing butler event linkage for snooze
-- Snooze failed: {}
-- Snoozed to {}
-- Snooze failed
-- Missing butler event linkage for dismiss
-- Dismiss failed: {}
-- Reminder dismissed
-- Dismiss failed
-- Select a butler lane before saving
-- Title is required
-- Start time is required
-- End time is required for scheduled events
-- End time must be after start time
-- Scheduled events require either a recurrence frequency or cron expression
-- Until boundary is invalid
-- Missing event context for update
-- Missing butler event linkage for update
-- Failed to create butler event: {}
-- Failed to update butler event: {}
-- Butler event created
-- Butler event updated
-- Event mutation failed
+- Failed to update {}: {}
+- Event {} updated.
+- Failed to update {}.
 - Proposal accepted. Event added to the Butlers calendar.
 - Failed to accept the proposed fix.
 - Proposal dismissed.
 - Failed to dismiss the proposed fix.
-- Failed to set primary: change was not persisted
-- Primary calendar updated
-- Failed to set primary: {}
 
 ## `frontend/src/pages/ChatPage.tsx`
 
@@ -1303,6 +1143,128 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Refresh timeline
 - Jump to latest events
 
+## `frontend/src/pages/calendar/AgendaList.tsx`
+
+- No events in this range.
+- Detail
+- Delete
+
+## `frontend/src/pages/calendar/ButlerEventDialog.tsx`
+
+- Butler lane
+- No butlers available
+- Event type
+- Reminder
+- Scheduled task
+- Title
+- Start
+- Timezone
+- End
+- Cron (optional)
+- Recurrence
+- None
+- Daily
+- Weekly
+- Monthly
+- Yearly
+- Set until boundary
+- Until
+- No occurrences in the next 90 days.
+- Calculating…
+- Cancel
+- e.g. Daily medication
+
+## `frontend/src/pages/calendar/ButlerLanes.tsx`
+
+- No butler lanes yet.
+- Add event
+- No events in this lane.
+- Edit
+- Dismiss
+- Delete
+
+## `frontend/src/pages/calendar/CalendarActivityPanel.tsx`
+
+- Loading activity log…
+- No calendar mutations logged yet.
+- ‹ Prev
+- Next ›
+- session ›
+- Activity log
+- Reverse this calendar change
+
+## `frontend/src/pages/calendar/CalendarEntryDetailPanel.tsx`
+
+- Event detail
+- Title
+- When
+- Source
+- Provenance
+- session ›
+- Attendees
+- People
+- Description
+- Location
+- Delete event
+- Close detail panel
+- Live entry detail
+- Failed to update {}: {}
+- Event {} updated.
+- Failed to update {}.
+
+## `frontend/src/pages/calendar/CalendarHeader.tsx`
+
+- Search
+- Agenda
+- Export / Import
+- Create butler event
+- Create event
+- Sync all sources now
+- Search events
+- Open printable agenda
+- Export or import calendar
+- Configure sources
+- Create user event
+
+## `frontend/src/pages/calendar/CalendarSearchPalette.tsx`
+
+- Search events
+- Type to search across all events.
+- Searching…
+- No matching events.
+- Search calendar…
+- Search calendar events
+
+## `frontend/src/pages/calendar/CalendarToolbar.tsx`
+
+- View
+- Range
+- Today
+- Status
+- All statuses
+- Type
+- All types
+- · unavailable
+- · none
+- Calendar
+- All calendars
+- Source
+- All sources
+- Previous range
+- Jump to today
+- Next range
+- Cross-domain overlays
+- Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
+- Activity
+- Find time
+- Proposals
+- Duplicates
+
+## `frontend/src/pages/calendar/MonthGrid.tsx`
+
+- Create event on {}
+- {} more on {}: open day view
+
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
 
 - Promise
@@ -1321,6 +1283,48 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - ISO 8601
 - Draft end
 - Draft location
+
+## `frontend/src/pages/calendar/RecurrenceScopeFieldset.tsx`
+
+- Recurrence scope
+
+## `frontend/src/pages/calendar/SourcesDialog.tsx`
+
+- Configure Sources
+- Accounts
+- Reading source metadata…
+- No connected sources.
+- Set as primary
+- Recover
+- Reconnect
+- Close
+- Connected accounts
+- Toggle {}
+- {} {} in view
+- Show
+- Hide
+- Full re-sync from scratch (cursor recovery)
+- This source needs re-authorization
+- Failed to set primary: change was not persisted
+- Primary calendar updated
+- Failed to set primary: {}
+
+## `frontend/src/pages/calendar/TimeGrid.tsx`
+
+- All day
+- Undo
+- Create event on {}
+- Open slot {}: {}
+- Undo move
+
+## `frontend/src/pages/calendar/atoms.tsx`
+
+- Snooze
+- Set
+- 1 hour
+- 3 hours
+- Tomorrow 9am
+- Enter a valid snooze time
 
 ## `frontend/src/components/ErrorBoundary.tsx`
 

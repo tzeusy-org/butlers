@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.db import register_jsonb_codec
 
 pytestmark = [pytest.mark.unit]
@@ -1260,7 +1261,7 @@ class TestTickIntegration:
         assert row["chain_triggered"] is False
 
     async def test_tick_cron_and_sync_schedules(self, pool):
-        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; validates required fields."""
+        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; the spec requires them."""
         from butlers.core.scheduler import sync_schedules, tick
 
         await pool.execute(
@@ -1283,26 +1284,19 @@ class TestTickIntegration:
         await sync_schedules(
             pool,
             [
-                {
-                    "name": "visa-renewal",
-                    "cron": "0 9 * * *",
-                    "task_type": "deadline",
-                    "prompt": "Check visa",
-                    "dispatch_mode": "prompt",
-                    "target_date": target.isoformat(),
-                    "lead_time_days": 60,
-                    "alert_thresholds": [
+                ScheduleSpec(
+                    name="visa-renewal",
+                    cron="0 9 * * *",
+                    task_type="deadline",
+                    prompt="Check visa",
+                    target_date=target,
+                    lead_time_days=60,
+                    alert_thresholds=[
                         {"days_before": 60, "severity": "info"},
                         {"days_before": 30, "severity": "warning"},
                     ],
-                },
-                {
-                    "name": "morning-summary",
-                    "cron": "0 8 * * *",
-                    "task_type": "cron",
-                    "prompt": "Morning briefing",
-                    "dispatch_mode": "prompt",
-                },
+                ),
+                ScheduleSpec(name="morning-summary", cron="0 8 * * *", prompt="Morning briefing"),
             ],
         )
         dl_row = await pool.fetchrow(
@@ -1324,19 +1318,13 @@ class TestTickIntegration:
         )["task_type"] == "cron"
 
         with pytest.raises(ValueError, match="target_date"):
-            await sync_schedules(
-                pool,
-                [
-                    {
-                        "name": "bad-dl",
-                        "cron": "0 9 * * *",
-                        "task_type": "deadline",
-                        "prompt": "Missing target",
-                        "dispatch_mode": "prompt",
-                        "lead_time_days": 30,
-                        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
-                    }
-                ],
+            ScheduleSpec(
+                name="bad-dl",
+                cron="0 9 * * *",
+                task_type="deadline",
+                prompt="Missing target",
+                lead_time_days=30,
+                alert_thresholds=[{"days_before": 30, "severity": "info"}],
             )
 
     async def test_tick_deadline_seasonal_context_injection(self, pool):

@@ -87,6 +87,7 @@ from butlers.db import (
 )
 from butlers.ingestion_bearer_scrub import scrub_evidence_json
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1179,6 +1180,7 @@ class OwnTracksConnector:
             metrics=metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=lambda: self._get_checkpoint_info_for_identity(identity),
+            channel_kind=CHANNEL_KIND_FEED,
         )
         return _OwnTracksDeviceState(
             endpoint_identity=identity,

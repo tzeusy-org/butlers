@@ -776,30 +776,16 @@ class Spawner:
             if self._adapter_pool_cfg.get(runtime_type, "") == cfg_str:
                 return self._adapter_pool[runtime_type]
 
-        from butlers.core.runtimes.base import create_adapter
+        from butlers.core.runtimes.registry import build_runtime_adapter
 
-        if runtime_type == "codex":
-            # Codex does not consume generic provider/log-root constructor
-            # kwargs. Passing them through ``create_adapter`` can trigger its
-            # compatibility fallback, which would drop the explicit global
-            # authority along with those unsupported kwargs. Keep the Codex
-            # construction surface exact so an authorized daemon session
-            # retains its selected authority; a missing authority still fails
-            # closed inside ``CodexAdapter``.
-            adapter = create_adapter(
-                runtime_type,
-                butler_name=self._config.name,
-                credential_store=self._credential_store,
-            )
-        else:
-            log_root = resolve_log_root(self._config.logging.log_root)
-            adapter = create_adapter(
-                runtime_type,
-                provider_config=provider_config,
-                butler_name=self._config.name,
-                log_root=log_root,
-                credential_store=self._credential_store,
-            )
+        adapter = build_runtime_adapter(
+            runtime_type,
+            codex_authority=self._credential_store,
+            provider_config=provider_config,
+            butler_name=self._config.name,
+            log_root=resolve_log_root(self._config.logging.log_root),
+            credential_store=self._credential_store,
+        )
         self._adapter_pool[runtime_type] = adapter
         self._adapter_pool_cfg[runtime_type] = cfg_str
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)

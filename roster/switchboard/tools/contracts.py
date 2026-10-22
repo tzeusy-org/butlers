@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from butlers.ingestion_spans import SpanKind, normalize_spans
+
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 SourceChannel = Literal[
@@ -157,6 +159,10 @@ class IngestEventV1(BaseModel):
     # Compatibility-only for producers that have not adopted the split
     # conversation/reply identity contract yet.
     external_thread_id: NonEmptyStr | None = None
+    in_reply_to_ref: NonEmptyStr | None = None
+    """Provider reference (``<chat_id>:<message_id>`` for Telegram) of the message this one
+    replies to, when the provider says so. A server-resolvable pointer, not content: a reply to
+    the butler's own message carries this and no quoted span (bu-xmueeq, RFC 0038 D5)."""
     observed_at: datetime
 
     @field_validator("observed_at", mode="before")
@@ -221,6 +227,24 @@ class IngestAttachment(BaseModel):
     source_attachment_id: str | None = None
 
 
+class IngestUntrustedSpanV1(BaseModel):
+    """One connector-marked part of ``normalized_text`` written by someone else (RFC 0038 D5).
+
+    ``[start, end)`` indexes the stripped ``normalized_text``. A zero-length ``[0, 0)`` span is
+    only valid on an empty text, where it marks the attachments that carry the content.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: SpanKind
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    origin_identity: NonEmptyStr | None = None
+    """Provider identity of the original author, when the provider names one."""
+    origin_display_name: NonEmptyStr | None = None
+    """The original author's display name, when the provider names one."""
+
+
 class IngestPayloadV1(BaseModel):
     """Source payload for canonical ingest payloads.
 
@@ -239,6 +263,24 @@ class IngestPayloadV1(BaseModel):
     # in `attachments`, not in this field.
     normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
     attachments: tuple[IngestAttachment, ...] | None = None
+    untrusted_spans: tuple[IngestUntrustedSpanV1, ...] | None = None
+    """Forwarded, quoted or embedded third-party parts of ``normalized_text``
+    (REQ-connector-base-spec-004). Absent means the connector marked nothing. Representation
+    only: no routing step reads it."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fit_untrusted_spans(cls, data: Any) -> Any:
+        """Fail closed: a span that does not fit the text becomes a whole-text span."""
+        if not isinstance(data, Mapping):
+            return data
+        spans = data.get("untrusted_spans")
+        text = data.get("normalized_text")
+        if not spans or not isinstance(text, str) or isinstance(spans, (str, bytes, Mapping)):
+            return data
+        if not all(isinstance(span, Mapping) for span in spans):
+            return data
+        return {**data, "untrusted_spans": normalize_spans(text, spans)}
 
     @model_validator(mode="after")
     def _validate_normalized_text_or_attachments(self) -> IngestPayloadV1:
@@ -254,6 +296,20 @@ class IngestPayloadV1(BaseModel):
                 "is non-empty.",
                 {},
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_untrusted_spans_fit(self) -> IngestPayloadV1:
+        """Spans built as model instances skip the mapping fit above; reject one that misfits."""
+        size = len(self.normalized_text)
+        for span in self.untrusted_spans or ():
+            if span.end > size or span.end < span.start or (span.start == span.end and size):
+                raise PydanticCustomError(
+                    "untrusted_span_out_of_range",
+                    "payload.untrusted_spans entry [{start}, {end}) does not fit "
+                    "normalized_text of length {size}.",
+                    {"start": span.start, "end": span.end, "size": size},
+                )
         return self
 
 
@@ -773,6 +829,7 @@ __all__ = [
     "IngestPayloadV1",
     "IngestSenderV1",
     "IngestSourceV1",
+    "IngestUntrustedSpanV1",
     "ApprovalRequestActionV1",
     "ApprovalRecoveryV1",
     "NotifyDeliveryV1",

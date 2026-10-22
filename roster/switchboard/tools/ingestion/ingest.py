@@ -63,6 +63,7 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
+from butlers.ingestion_spans import collapse_spans
 from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
@@ -403,6 +404,25 @@ def _scrub_bearer_material(
             {**artifact.as_dict(), "observed_at": observed_at.isoformat()} for artifact in artifacts
         ]
     return raw_payload, normalized_text, fresh
+
+
+def _persist_exposure_markers(
+    envelope: IngestEnvelopeV1, raw_payload: dict[str, Any], stored_text: str
+) -> None:
+    """Copy the reply reference and untrusted spans into ``raw_payload``.
+
+    Each key is written only when the connector supplied it, so envelopes without markers
+    persist exactly as before. Spans index the connector's text; when the stored text differs
+    (bearer scrub, null-byte strip, scrub failure) their offsets are stale, so each kind
+    collapses to one whole-text span rather than fencing the wrong characters.
+    """
+    if envelope.event.in_reply_to_ref is not None:
+        raw_payload["event"]["in_reply_to_ref"] = envelope.event.in_reply_to_ref
+    if envelope.payload.untrusted_spans:
+        spans = [span.model_dump(exclude_none=True) for span in envelope.payload.untrusted_spans]
+        if stored_text != envelope.payload.normalized_text:
+            spans = collapse_spans(stored_text, spans)
+        raw_payload["payload"]["untrusted_spans"] = spans
 
 
 def _record_bearer_scrub(source_channel: str, artifacts: list[BearerArtifact]) -> None:
@@ -1008,6 +1028,10 @@ async def ingest_v1(
     raw_payload = _strip_null_bytes(raw_payload)
     if attachments_value is not None:
         attachments_value = _strip_null_bytes(attachments_value)
+
+    # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
+    # representation: nothing on the routing path reads them.
+    _persist_exposure_markers(envelope, raw_payload, normalized_text)
 
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot

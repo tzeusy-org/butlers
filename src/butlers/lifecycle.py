@@ -58,18 +58,7 @@ async def _sync_toml_schedules(daemon: Any, pool: Any, credential_store: Any) ->
     # per the staffer-archetype spec (briefing exclusion decision point).
     _is_staffer = daemon.config.type == ButlerType.STAFFER
     schedules = [
-        {
-            "name": s.name,
-            "cron": s.cron,
-            "dispatch_mode": s.dispatch_mode.value,
-            "prompt": s.prompt,
-            "job_name": s.job_name,
-            "job_args": s.job_args,
-            "max_token_budget": s.max_token_budget,
-            "complexity": s.complexity,
-            "continuity": s.continuity,
-            "timezone": s.timezone,
-        }
+        s
         for s in daemon.config.schedules
         if not (_is_staffer and s.job_name == "daily_briefing_contribution")
     ]
