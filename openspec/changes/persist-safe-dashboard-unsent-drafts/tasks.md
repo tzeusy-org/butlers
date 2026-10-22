@@ -60,7 +60,9 @@ The retired relationship reach-out identity remains inactive rather than being
 replaced or reintroduced. Navigation interception is confined to enrolled dirty
 tasks and does not add a navigation-intent consumer.
 
-Local checks do not complete task 6.4. Admission against newer public main is
-currently refused because this older branch does not contain that main's new
-retained tests. This is not waived: preserve the refusal and perform the separately
-authorized ordinary current-main integration before publication and hosted gates.
+Local checks do not complete task 6.4. The initial implementation's admission
+against newer public main was refused because it lacked the newly landed retained
+tests; that dated refusal remains preserved. The separately authorized ordinary
+integration now includes public main `3900aadd76fc7403c025fb85187d40476570e4f5`
+and preserves its retained tests. Independent exact-head review, publication and
+hosted delivery remain pending; local evidence does not replace those gates.
