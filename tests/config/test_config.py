@@ -299,6 +299,46 @@ def test_legacy_runtime_sections_rejected(tmp_path: Path, toml: str, match: str)
         load_config(_write_toml(tmp_path, toml))
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '[butler.runtime]\ntype = "codex"\nmodel = "old"\n',
+        '[butler.seed_configs]\nmodel = "old"\n',
+        'blob_dir = "/var/blobs"\n',
+        'blob_storage_dir = "/var/blobs"\n',
+        '[butler.storage]\nblob_dir = "/var/blobs"\n',
+        '[butler.storage]\nblob_storage_dir = "/var/blobs"\n',
+    ],
+)
+def test_legacy_keys_named_by_the_spec_are_accepted_and_ignored(tmp_path: Path, extra: str):
+    """core-daemon spec: obsolete runtime/seed_configs tables and blob keys never alter config."""
+    # Scalar keys must sit in the [butler] table, before any sub-table header.
+    head, _, tables = extra.partition("[")
+    toml = f'[butler]\nname = "m"\nport = 7031\n{head}' + (f"[{tables}" if tables else "")
+    baseline = load_config(_write_toml(tmp_path, '[butler]\nname = "m"\nport = 7031\n'))
+
+    cfg = load_config(_write_toml(tmp_path, toml))
+
+    assert cfg.runtime_seed == baseline.runtime_seed
+    assert not hasattr(cfg, "blob_storage_dir")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "mystery = 1\n",
+        '[butler.storage]\nendpoint_url = "http://s3"\n',
+        '[butler.storage]\nbucket = "b"\n',
+    ],
+)
+def test_other_unknown_keys_still_raise(tmp_path: Path, extra: str):
+    head, _, tables = extra.partition("[")
+    toml = f'[butler]\nname = "m"\nport = 7032\n{head}' + (f"[{tables}" if tables else "")
+
+    with pytest.raises(ConfigError, match="Unknown key"):
+        load_config(_write_toml(tmp_path, toml))
+
+
 def test_roster_runtime_identity_is_internally_consistent():
     """Every roster butler's runtime_seed stays clean of catalog-owned fields.
 

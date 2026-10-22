@@ -69,6 +69,18 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# Keys the core-daemon spec says a butler.toml may still carry: they are accepted and ignored,
+# never surfaced as config. Everything else unknown stays an error.
+_IGNORED_LEGACY_BLOB_KEYS = ("blob_dir", "blob_storage_dir")
+_IGNORED_LEGACY_BUTLER_KEYS = ("runtime", "seed_configs", *_IGNORED_LEGACY_BLOB_KEYS)
+
+
+def _drop_keys(data: Any, keys: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in keys}
+
+
 def _non_empty_stripped(value: str, what: str) -> str:
     stripped = value.strip()
     if not stripped:
@@ -409,8 +421,14 @@ class StorageConfig(_StrictModel):
     All blob storage parameters (endpoint_url, bucket, region, credentials)
     are resolved at runtime from the CredentialStore (managed via the
     dashboard secrets UI at /secrets).  This model is kept as a
-    placeholder for potential future non-secret storage settings.
+    placeholder for potential future non-secret storage settings. The legacy
+    ``blob_dir`` / ``blob_storage_dir`` keys are ignored; any other key is an error.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_legacy_blob_keys(cls, data: Any) -> Any:
+        return _drop_keys(data, _IGNORED_LEGACY_BLOB_KEYS)
 
 
 @dataclass
@@ -784,6 +802,13 @@ class _ButlerSection(_StrictModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     runtime_seed: RuntimeSeedConfig = Field(default_factory=RuntimeSeedConfig)
     schedule: list[ScheduleSpec] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_legacy_keys(cls, data: Any) -> Any:
+        # The obsolete [butler.runtime] and [butler.seed_configs] tables and the blob keys are
+        # accepted and ignored (core-daemon spec); they never alter RuntimeSeedConfig.
+        return _drop_keys(data, _IGNORED_LEGACY_BUTLER_KEYS)
 
     @field_validator("type", mode="before")
     @classmethod
