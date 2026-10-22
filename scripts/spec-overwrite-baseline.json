@@ -2553,10 +2553,10 @@
   ],
   "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
     {
-      "kind": "prose",
-      "scenario": null,
       "digest": "982c41ec33eb",
-      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
@@ -4543,6 +4543,34 @@
       "excerpt": "- **AND** that mini-patrol is a full patrol across every enabled source, recorded with `origin='scheduled'`, and coun...",
       "kind": "clause",
       "scenario": "Reactive findings between patrols"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Module Abstract Base Class": [
+    {
+      "digest": "6e6e3e700063",
+      "excerpt": "Every pluggable module MUST subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a8d9e984e63d",
+      "excerpt": "- **WHEN** a module subclass omits one or more abstract members",
+      "kind": "clause",
+      "scenario": "Incomplete module implementation fails"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Tool Group Filtering": [
+    {
+      "digest": "f1b5036f2e2c",
+      "excerpt": "Inside `register_tools()`, modules define a local `_tool(group)` helper that returns `mcp.tool()` when the group is e...",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
+    },
+    {
+      "digest": "dec0e5a0eea7",
+      "excerpt": "```python def _tool(group: str): if group_enabled(config, group): return mcp.tool() return lambda fn: fn",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
     }
   ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [

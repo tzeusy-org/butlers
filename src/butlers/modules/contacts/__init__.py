@@ -246,10 +246,6 @@ class ContactsModule(Module):
         return ContactsConfig
 
     @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    @property
     def credentials_env(self) -> list[str]:
         return []
 

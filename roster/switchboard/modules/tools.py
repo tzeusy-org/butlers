@@ -16,7 +16,7 @@ from butlers.core.approval_delivery_authority import (
     verify_switchboard_recovery,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
-from butlers.modules.base import group_enabled
+from butlers.modules.base import tool_registrar
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.routing import correct_route as _correct_route
     from butlers.tools.switchboard.routing import route as _route
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # =================================================================
     # Registry tools

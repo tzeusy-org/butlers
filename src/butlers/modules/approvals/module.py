@@ -68,7 +68,7 @@ from butlers.modules.approvals.executor import (
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 logger = logging.getLogger(__name__)
 _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
@@ -291,10 +291,6 @@ class ApprovalsModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return ApprovalsConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
     def migration_revisions(self) -> str | None:
         return "approvals"
 
@@ -376,12 +372,7 @@ class ApprovalsModule(Module):
         self._butler_name = butler_name
         module = self  # capture for closures
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, self._config)
 
         # --- Approval queue tools (8) ---
 

@@ -91,13 +91,6 @@ class SelfHealingModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return SelfHealingConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # Schema owned by core migration (public.healing_attempts)
-
     # ------------------------------------------------------------------
     # Sensitivity metadata
     # ------------------------------------------------------------------
@@ -130,9 +123,6 @@ class SelfHealingModule(Module):
             config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
         )
         self._pool = getattr(db, "pool", None) if db is not None else None
-
-    async def on_shutdown(self) -> None:
-        """No module-owned investigation tasks or shared cleanup to stop."""
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register report_error and get_healing_status tools on the MCP server."""
