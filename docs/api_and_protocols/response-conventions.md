@@ -48,7 +48,9 @@ second envelope or a second codec.
   `decode_cursor` returns the same types it was given and raises `InvalidCursorError`, a 400, for
   anything malformed, edited, from another codec version, or minted by an endpoint with a
   different `shape`. Treat cursors as opaque; they are not stable across deployments that change
-  the codec version, and a 400 means "start again from the first page".
+  the codec version, and a 400 means "start again from the first page". Before the shared codec,
+  fleet cases, message search and ingestion `sort=cost` answered an invalid cursor with 422; they
+  now answer 400 like every other cursor route, and cursors minted before the change are invalid.
 - `GET /api/ingestion/events` orders by `received_at DESC, id DESC`. Its optional `sort=cost` view
   keeps the same envelope but its cursor encodes a page offset, so a cursor from one sort mode is a
   400 in the other.
