@@ -17,8 +17,8 @@ Usage::
 
 Design notes
 ------------
-- Adapter instances are cached per ``runtime_type``; instantiation is
-  handled by :func:`~butlers.core.runtimes.base.create_adapter`.
+- Adapter instances are cached per ``runtime_type`` and built by the shared
+  :class:`~butlers.core.runtimes.registry.AdapterRegistry`.
 - Model resolution is performed on every call so catalog updates take effect
   without restarting the dispatcher.
 - ``asyncio.wait_for`` enforces the per-call wall-clock timeout. The model
@@ -88,9 +88,9 @@ from butlers.core.purpose_lane import (
 )
 from butlers.core.runtimes.base import (
     RuntimeAdapter,
-    create_adapter,
     validated_session_timeout_overhead_s,
 )
+from butlers.core.runtimes.registry import AdapterRegistry
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -207,8 +207,11 @@ class DiscretionDispatcher:
         self._timeout_s = timeout_s
         self._complexity_tier = complexity_tier
         self._purpose_lane = purpose_lane
-        self._adapter_cache: dict[str, RuntimeAdapter] = {}
-        self._adapter_cache_key: dict[str, str] = {}
+        self._adapters = AdapterRegistry(
+            codex_authority=codex_auth_authority,
+            butler_name=butler_name,
+            **({"credential_store": credential_store} if credential_store is not None else {}),
+        )
         # Reuses the same OTel instruments Spawner._run() records same-tier
         # failover to, keyed by the constructor's butler_name (not the
         # per-call identity= label) so per-connector identities (one per
@@ -239,38 +242,8 @@ class DiscretionDispatcher:
         runtime_type: str,
         provider_config: dict[str, dict] | None = None,
     ) -> RuntimeAdapter:
-        """Return a cached adapter for *runtime_type*, creating via
-        :func:`~butlers.core.runtimes.base.create_adapter` on cache miss.
-        """
-        cfg_str = str(provider_config) if provider_config else ""
-        if runtime_type in self._adapter_cache:
-            if self._adapter_cache_key.get(runtime_type, "") == cfg_str:
-                return self._adapter_cache[runtime_type]
-
-        constructor_kwargs: dict[str, Any] = {"butler_name": self._butler_name}
-        if runtime_type == "codex":
-            if self._codex_auth_authority is not None:
-                constructor_kwargs["credential_store"] = self._codex_auth_authority
-        elif self._credential_store is not None:
-            constructor_kwargs["credential_store"] = self._credential_store
-        if runtime_type == "codex" and provider_config:
-            # ``provider_config`` is a generic adapter-factory argument, not
-            # a Codex constructor option. Avoid its fallback path, which
-            # would otherwise discard the explicit Codex authority together
-            # with that unsupported option.
-            adapter = create_adapter(runtime_type, **constructor_kwargs)
-        else:
-            adapter = create_adapter(
-                runtime_type,
-                provider_config=provider_config,
-                **constructor_kwargs,
-            )
-        self._adapter_cache[runtime_type] = adapter
-        self._adapter_cache_key[runtime_type] = cfg_str
-        logger.debug(
-            "DiscretionDispatcher: lazily instantiated adapter runtime_type=%s", runtime_type
-        )
-        return adapter
+        """Return the cached adapter for *runtime_type* from the shared adapter registry."""
+        return self._adapters.for_runtime(runtime_type, provider_config)
 
     async def _resolve_provider_config(self, model_id: str) -> dict[str, dict] | None:
         """Look up provider base URL from ``public.provider_config``.
