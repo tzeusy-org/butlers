@@ -60,7 +60,8 @@ Steps:
 
    **Calendar — [Day, Date]**
    List tomorrow's events in chronological order (times in SGT). For each event: title, time,
-   duration, location. Include prep notes (documents to review, travel time, items to bring).
+   duration, location. Include prep notes (documents to review and items to bring).
+   Do not estimate travel duration or a leave-by time: no authoritative leave-by read is bound.
    Note any free blocks between events. If no events: "No events scheduled for tomorrow."
 
    **Today's Highlights** (only include this section if any specialist contribution has
