@@ -34,8 +34,8 @@ async def test_subscriptions_are_not_ready_when_state_changed_ack_times_out() ->
     client._connected = True
     requested: list[str] = []
 
-    async def respond(command: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
-        del timeout
+    async def respond(command: dict[str, Any], timeout_s: float = 10.0) -> dict[str, Any]:
+        del timeout_s
         requested.append(command["event_type"])
         if command["event_type"] == "state_changed":
             raise TimeoutError("state_changed subscription timed out")

@@ -56,7 +56,7 @@ def default_registry() -> ModuleRegistry:
     """
     registry = ModuleRegistry()
     package = butlers.modules
-    for importer, modname, ispkg in pkgutil.walk_packages(
+    for _importer, modname, _ispkg in pkgutil.walk_packages(
         package.__path__, prefix=package.__name__ + "."
     ):
         try:

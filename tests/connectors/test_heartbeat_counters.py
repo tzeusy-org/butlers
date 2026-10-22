@@ -280,7 +280,7 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
         {"reason": "private-contact TOKEN-error"},
     ]:
 
-        async def malformed(_name, envelope):
+        async def malformed(_name, envelope, *, changes=changes):
             return response(envelope["capabilities"][CLASSIFICATION_KEY], **changes)
 
         publisher._mcp_client.call_tool = malformed
@@ -336,7 +336,7 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
         release.clear()
         completed = asyncio.Event()
 
-        async def stubborn(_name, envelope):
+        async def stubborn(_name, envelope, *, completed=completed, late_admitted=late_admitted):
             sent = envelope["capabilities"][CLASSIFICATION_KEY]
             entered.set()
             try:

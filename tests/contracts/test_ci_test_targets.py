@@ -1248,7 +1248,9 @@ else:
                 diagnostic.setattr(
                     vitest,
                     "run_process",
-                    lambda command, **kwargs: subprocess.CompletedProcess(command, 0, raw, b""),
+                    lambda command, *, raw=raw, **kwargs: subprocess.CompletedProcess(
+                        command, 0, raw, b""
+                    ),
                 )
                 assert vitest.runtime_observation(buildroot) is None
         with monkeypatch.context() as diagnostic:

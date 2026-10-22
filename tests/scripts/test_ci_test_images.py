@@ -203,7 +203,7 @@ def test_preload_positions_real_docker_sdk_missing_image_and_preserves_local_con
     ]:
         calls = []
 
-        def preload(command, **kwargs):
+        def preload(command, *, calls=calls, image=image, **kwargs):
             calls.append(command)
             assert kwargs == {"check": True, "timeout": 365}
             if image != ryuk and "--ryuk" in command:

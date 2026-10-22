@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,6 +22,8 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = pytest.mark.unit
 
@@ -59,10 +62,9 @@ def _build_app(pool):
     """Create a FastAPI test app with the health router wired to *pool*."""
     import importlib.util
     import sys
-    from pathlib import Path
 
     # Load the health router module (may already be in sys.modules)
-    router_path = Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
+    router_path = _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
     module_name = "health_api_router"
     if module_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(module_name, router_path)
@@ -258,11 +260,8 @@ class TestMeasurementsLatest:
 
         import importlib.util
         import sys
-        from pathlib import Path
 
-        router_path = (
-            Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
-        )
+        router_path = _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
         module_name = "health_api_router"
         if module_name not in sys.modules:
             spec = importlib.util.spec_from_file_location(module_name, router_path)

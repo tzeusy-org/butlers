@@ -2828,8 +2828,8 @@ async def get_butler_memory_stats(
 
     try:
         pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     # Run one batched query per table concurrently: each fetchrow returns (total, count_24h)
     # using COUNT(*) FILTER (...) to fetch both counts in a single round-trip.
@@ -3410,8 +3410,10 @@ async def get_reembed_pending(
     if butler is not None:
         try:
             pool = db.pool(butler)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"No pool available for butler '{butler}'")
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"No pool available for butler '{butler}'"
+            ) from exc
         memory_schema = _memory_source_schema(db, butler)
         if _memory_schema_absent_at_start(db, butler):
             counts = dict.fromkeys(_reembedding.ALL_TIERS, 0)
@@ -3501,8 +3503,10 @@ async def run_reembed(
 
     try:
         pool = db.pool(body.butler)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"No pool available for butler '{body.butler}'")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"No pool available for butler '{body.butler}'"
+        ) from exc
 
     if _memory_schema_absent_at_start(db, body.butler):
         tier_names = list(_reembedding.ALL_TIERS) if body.tiers is None else list(body.tiers)

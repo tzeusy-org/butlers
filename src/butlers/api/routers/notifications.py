@@ -611,7 +611,7 @@ async def mark_notification_read(
             raise HTTPException(
                 status_code=503,
                 detail="Notifications table is not yet initialised",
-            )
+            ) from exc
         raise
 
     if row is None:

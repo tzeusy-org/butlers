@@ -112,7 +112,7 @@ No local gate command matches CI's scope; check which command produced a number.
 | `make test-qg` (and `test-qg-serial`, `test-qg-parallel`) | `pytest tests/` minus `test_db.py`, `test_migrations.py`, `tests/e2e` |
 | low-context backend gate | `pytest tests/ --ignore=tests/e2e` (~40 min contended, ~21 min alone) |
 | CI `check-unit-N` / `check-integration-N` | `scripts/check_ci_test_shards.py run --lane {unit,integration} --shard N` |
-| `make lint` | `ruff check src/ tests/` only; omits `roster/` and `conftest.py` |
+| `make lint` | `ruff check src/ tests/ roster/ scripts/`, package-layer contracts, pinned secret/workflow checks and detector self-tests; Ruff omits root `conftest.py` |
 
 - `tests/` does not collect `roster/`: they are sibling roots, so a `tests/`-rooted "full gate" never
   runs `roster/<butler>/tests/`. Add `roster/` whenever the diff touches a roster butler; `pytest

@@ -66,10 +66,11 @@ async def scrub_existing_previews(
     if not 1 <= batch_size <= 500:
         raise ValueError("batch_size must be between 1 and 500")
     cursor = (_aware(resume_after[0]), resume_after[1]) if resume_after else None
+    scrubber_source = await asyncio.to_thread(Path(ingestion_bearer_scrub.__file__).read_bytes)
     receipt = ScrubReceipt(
         "INCOMPLETE",
         cutoff.isoformat(),
-        hashlib.sha256(Path(ingestion_bearer_scrub.__file__).read_bytes()).hexdigest(),
+        hashlib.sha256(scrubber_source).hexdigest(),
         (cursor[0].isoformat(), str(cursor[1])) if cursor else None,
     )
     while True:

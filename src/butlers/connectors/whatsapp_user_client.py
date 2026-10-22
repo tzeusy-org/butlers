@@ -903,7 +903,7 @@ class WhatsAppUserClientConnector:
                     logger.debug("Bridge awaiting QR pairing — waiting for connection signal")
                     try:
                         await self._bridge_manager.wait_until_connected(
-                            timeout=_SSE_PAIRING_WAIT_TIMEOUT_S
+                            timeout_s=_SSE_PAIRING_WAIT_TIMEOUT_S
                         )
                     except TimeoutError:
                         logger.debug("Bridge is still awaiting QR pairing")
@@ -1462,7 +1462,7 @@ class WhatsAppUserClientConnector:
             *(self._flush_chat_buffer(jid) for jid in chat_jids),
             return_exceptions=True,
         )
-        for jid, result in zip(chat_jids, results):
+        for jid, result in zip(chat_jids, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",

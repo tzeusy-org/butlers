@@ -2815,8 +2815,8 @@ async def schedule_create(
             calendar_event_id,
             next_run_at,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"Task name {name!r} already exists")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(f"Task name {name!r} already exists") from exc
     logger.info("Created runtime schedule: %s (%s)", name, task_id)
     return task_id
 

@@ -216,13 +216,24 @@ class _DelayedStartedServer:
     def __init__(self, config: Any) -> None:
         self.config = config
         self.started = False
-        self.should_exit = False
+        self._exit_requested = asyncio.Event()
+
+    @property
+    def should_exit(self) -> bool:
+        return self._exit_requested.is_set()
+
+    @should_exit.setter
+    def should_exit(self, value: bool) -> None:
+        # The daemon stops uvicorn by assigning ``should_exit``; serve() wakes on it.
+        if value:
+            self._exit_requested.set()
+        else:
+            self._exit_requested.clear()
 
     async def serve(self, sockets: list[Any] | None = None) -> None:
         await asyncio.sleep(0.05)
         self.started = True
-        while not self.should_exit:
-            await asyncio.sleep(0.01)
+        await self._exit_requested.wait()
 
 
 # ---------------------------------------------------------------------------

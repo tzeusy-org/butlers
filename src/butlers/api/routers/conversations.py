@@ -912,7 +912,7 @@ async def _stream_conversation_response(
                 # interval — a wake re-checks message_find_reply_since on the
                 # very next loop iteration, well before the safety-net
                 # timeout below would have fired anyway.
-                envelope = await stream_listener.get(timeout=_POLL_INTERVAL_S)
+                envelope = await stream_listener.get(timeout_s=_POLL_INTERVAL_S)
                 if envelope is None:
                     continue
                 etype = envelope.get("type")

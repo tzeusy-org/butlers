@@ -148,7 +148,7 @@ async def test_wait_until_connected_returns_after_connection_signal() -> None:
     mgr = BridgeSubprocessManager(_make_config())
     mgr._connected_event.set()
 
-    await mgr.wait_until_connected(timeout=0.01)
+    await mgr.wait_until_connected(timeout_s=0.01)
 
 
 async def test_wait_until_connected_preserves_timeout_behavior() -> None:
@@ -156,7 +156,7 @@ async def test_wait_until_connected_preserves_timeout_behavior() -> None:
     mgr = BridgeSubprocessManager(_make_config())
 
     with pytest.raises(TimeoutError):
-        await mgr.wait_until_connected(timeout=0.01)
+        await mgr.wait_until_connected(timeout_s=0.01)
 
 
 async def test_wait_until_connected_blocks_after_bridge_becomes_degraded() -> None:
@@ -166,7 +166,7 @@ async def test_wait_until_connected_blocks_after_bridge_becomes_degraded() -> No
     mgr._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
 
     with pytest.raises(TimeoutError):
-        await mgr.wait_until_connected(timeout=0.01)
+        await mgr.wait_until_connected(timeout_s=0.01)
 
 
 @pytest.mark.parametrize(

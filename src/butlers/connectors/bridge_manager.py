@@ -403,20 +403,20 @@ class BridgeSubprocessManager:
         except Exception:
             return {}
 
-    async def wait_until_connected(self, timeout: float | None = None) -> None:
+    async def wait_until_connected(self, timeout_s: float | None = None) -> None:
         """Wait until a healthy bridge status reports ``connected``.
 
         Args:
-            timeout: Optional maximum wait in seconds. When omitted, wait
+            timeout_s: Optional maximum wait in seconds. When omitted, wait
                 until the connection signal arrives.
 
         Raises:
-            TimeoutError: If ``timeout`` elapses before the bridge connects.
+            TimeoutError: If ``timeout_s`` elapses before the bridge connects.
         """
-        if timeout is None:
+        if timeout_s is None:
             await self._connected_event.wait()
             return
-        await asyncio.wait_for(self._connected_event.wait(), timeout=timeout)
+        await asyncio.wait_for(self._connected_event.wait(), timeout=timeout_s)
 
     async def start(self) -> None:
         """Start the bridge subprocess and wait until it satisfies startup readiness.
@@ -694,7 +694,7 @@ class BridgeSubprocessManager:
             # Wait until the bridge is healthy again before counting this as
             # a successful restart (reset the backoff counter).
             try:
-                await self.wait_until_connected(timeout=self._config.startup_timeout_s)
+                await self.wait_until_connected(timeout_s=self._config.startup_timeout_s)
                 logger.info("Bridge reconnected after restart")
                 self._restart_attempt = 0
             except TimeoutError:

@@ -970,8 +970,8 @@ async def get_butler_detail(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     modules = [
         ModuleInfo(name=mod_name, enabled=True, config=mod_cfg or None)
@@ -1098,7 +1098,9 @@ async def get_butler_config(
         butler_toml = tomllib.loads(toml_path.read_bytes().decode())
     except (tomllib.TOMLDecodeError, OSError) as exc:
         logger.error("Failed to read butler.toml for %s: %s", name, exc)
-        raise HTTPException(status_code=500, detail=f"Failed to read config for butler: {name}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to read config for butler: {name}"
+        ) from exc
 
     config_response = ButlerConfigResponse(
         butler_toml=butler_toml,
@@ -1214,19 +1216,19 @@ async def list_butler_mcp_tools(
             client.list_tools(),
             timeout=_MCP_LIST_TOOLS_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool listing for butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning("Unexpected MCP list_tools failure for %s", name, exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Failed to list MCP tools for butler '{name}': {exc}",
-        )
+        ) from exc
 
     if not isinstance(raw_tools, list):
         logger.warning(
@@ -1269,13 +1271,13 @@ async def call_butler_mcp_tool(
             client.call_tool(tool_name, request.arguments),
             timeout=_MCP_CALL_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool call '{tool_name}' to butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning(
             "Unexpected MCP tool call failure for %s.%s",
@@ -1286,7 +1288,7 @@ async def call_butler_mcp_tool(
         raise HTTPException(
             status_code=502,
             detail=f"MCP tool call '{tool_name}' failed for butler '{name}': {exc}",
-        )
+        ) from exc
 
     raw_text = _extract_mcp_result_text(result)
     parsed_result = _parse_mcp_result_payload(raw_text)
@@ -1490,8 +1492,8 @@ async def get_butler_modules(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     module_names = list(config.modules.keys())
 
@@ -1543,22 +1545,22 @@ async def trigger_butler(
             client.call_tool("trigger", trigger_args),
             timeout=_TRIGGER_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
-    except TimeoutError:
+        ) from exc
+    except TimeoutError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Request timed out"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Trigger request to butler '{name}' timed out",
-        )
+        ) from exc
 
     # Parse the MCP tool result
     session_id: str | None = None

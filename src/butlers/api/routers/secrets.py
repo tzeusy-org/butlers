@@ -75,19 +75,19 @@ def _credential_store_for(db: DatabaseManager, butler_name: str) -> CredentialSt
     if normalized_name in (_SHARED_SECRETS_TARGET, _SHARED_PUBLIC_TARGET):
         try:
             pool = db.credential_shared_pool()
-        except KeyError:
+        except KeyError as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Shared credential database is not available",
-            )
+            ) from exc
     else:
         try:
             pool = db.pool(butler_name)
-        except KeyError:
+        except KeyError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=f"Butler '{butler_name}' database is not available",
-            )
+            ) from exc
     return CredentialStore(pool)
 
 
@@ -215,7 +215,7 @@ async def upsert_secret(
             expires_at=expires_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Re-read metadata to return the persisted state
     secrets = await store.list_secrets()

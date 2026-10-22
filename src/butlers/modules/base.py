@@ -203,6 +203,7 @@ class Module(abc.ABC):
             asyncpg connection pool scoped to the switchboard schema, or
             ``None`` when the audit pool could not be created.
         """
+        return None
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Return sensitivity and optional presentation metadata for tools.

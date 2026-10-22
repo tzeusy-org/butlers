@@ -1967,8 +1967,8 @@ async def set_primary_google_account(
 
     try:
         account = await set_primary_account(shared_pool, account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     return SetPrimaryResponse(account=_account_to_response(account))
 
@@ -2000,8 +2000,8 @@ async def disconnect_google_account(
     try:
         account_before = await get_google_account(shared_pool, account=account_id)
         was_primary = account_before.is_primary
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     await disconnect_account(shared_pool, account_id, hard_delete=hard_delete)
 
@@ -2043,8 +2043,8 @@ async def get_google_account_status(
 
     try:
         account = await get_google_account(shared_pool, account=account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     # Check app credentials.
     app_creds = await load_app_credentials(cred_store)

@@ -75,7 +75,7 @@ def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
     if len({target.port for target in targets}) != len(targets):
         raise ValueError("duplicate roster port")
     for target in targets:
-        target.url  # Validate the complete trusted endpoint before any I/O.
+        _ = target.url  # Validate the complete trusted endpoint before any I/O.
     return targets
 
 

@@ -12,6 +12,7 @@ import asyncio
 import copy
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -38,6 +39,8 @@ from butlers.modules.calendar import (
 from butlers.modules.calendar_response import CalendarResponseError, reserve_response_inverse
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -147,12 +150,9 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             return await client.call_tool(name, arguments)
 
     transport = SimpleNamespace(call_tool=call_route)
-    from pathlib import Path
 
     for owner_module in (module, peer):
-        owner_module.wire_runtime(
-            None, Path(__file__).resolve().parents[2], switchboard_client=transport
-        )
+        owner_module.wire_runtime(None, _THIS_FILE.parents[2], switchboard_client=transport)
         response_pool.fences.append(owner_module._response_fence)
     account = {"entity_id": str(uuid.uuid4()), "email": "owner@example.test"}
     module._verified_response_account = AsyncMock(return_value=account)
@@ -222,10 +222,9 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     )
     approvals = ApprovalsModule()
     await approvals.register_tools(mcp, {}, pool, "messenger")
-    from pathlib import Path
 
     daemon = ButlerDaemon(
-        Path(__file__).resolve().parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
+        _THIS_FILE.parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
     )
     daemon.config = SimpleNamespace(
         name="messenger",

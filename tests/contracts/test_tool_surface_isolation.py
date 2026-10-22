@@ -20,6 +20,8 @@ import pytest
 from butlers.config import ButlerType, load_config
 from butlers.core_tools import ToolContext, register_all_core_tools
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.contract
 
 
@@ -148,7 +150,7 @@ class TestEphemeralMcpConfig:
 
     async def test_roster_authority_registers_cross_butler_and_fleet_case_tools(self):
         """The three affected roster declarations reach the real dispatcher seam."""
-        roster = Path(__file__).resolve().parents[2] / "roster"
+        roster = _THIS_FILE.parents[2] / "roster"
         for butler_name in ("finance", "relationship"):
             config = load_config(roster / butler_name)
             registrations = await _record_core_registrations(

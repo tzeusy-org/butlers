@@ -22,7 +22,7 @@ import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -182,6 +182,7 @@ class MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -242,6 +243,7 @@ class SequenceMockAdapter(MockAdapter):
         self._sequence = sequence
         self._call_index = 0
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -270,6 +272,7 @@ class TrackingMockAdapter(MockAdapter):
         super().__init__()
         self.execution_log: list[tuple[str, str]] = []
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -305,6 +308,7 @@ class WorkerFactoryMockAdapter(RuntimeAdapter):
         self.created_worker_ids.append(worker_id)
         return _WorkerAdapter(worker_id=worker_id, factory=self)
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -342,6 +346,7 @@ class _WorkerAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "worker-mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -547,6 +552,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-args-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -627,6 +633,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -674,6 +681,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -751,6 +759,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "adapter-managed-timeout"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -1362,6 +1371,7 @@ class TestSemaphoreConcurrencyPool:
         ready = asyncio.Event()
 
         class ConcurrentTrackingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2034,6 +2044,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2437,6 +2448,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2484,6 +2496,7 @@ class TestCatalogModelResolution:
         captured2: dict = {}
 
         class CapturingAdapter2(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,

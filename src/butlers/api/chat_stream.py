@@ -157,9 +157,9 @@ class ChatStreamListener:
         self._queue = queue
         self._on_notify = on_notify
 
-    async def get(self, timeout: float) -> dict[str, Any] | None:
+    async def get(self, timeout_s: float) -> dict[str, Any] | None:
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout_s)
         except TimeoutError:
             return None
 

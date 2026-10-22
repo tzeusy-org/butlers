@@ -173,11 +173,11 @@ async def get_activity_feed(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     events: list[ActivityEvent] = []
 

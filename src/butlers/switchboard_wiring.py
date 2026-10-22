@@ -503,7 +503,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 request_id=parsed.request_context.request_id,
                                 route_inbox_id=row_id,
                             )
-                        except Exception:
+                        except Exception as exc:
                             logger.exception(
                                 "route_inbox recovery: could not reconcile dashboard "
                                 "predecessor id=%s",
@@ -513,7 +513,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 raise RouteInboxLeaseLost(
                                     "route inbox processing lease was lost during "
                                     "dashboard recovery reconciliation"
-                                )
+                                ) from exc
                             await route_inbox_mark_errored(
                                 pool,
                                 row_id,
