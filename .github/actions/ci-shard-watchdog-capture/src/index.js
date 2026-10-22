@@ -396,8 +396,9 @@ const RETENTION_PINS = Object.freeze([
 ]);
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function exactKeys(value, keys) {
-  return value && typeof value === 'object' && !Array.isArray(value) &&
-    Object.keys(value).sort().join() === [...keys].sort().join();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort(), expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 function validRetentionBinding(binding) {
   return exactKeys(binding, ['repository','workflow','run','attempt','source_head','source_tree','nonce','pins']) &&

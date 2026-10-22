@@ -47,6 +47,11 @@ test('one immutable control is finalized with separate schema, namespace and exa
 });
 
 test('mixed source, schema, namespace, extra data and altered payload refuse before SDK', async () => {
+  const collapsed= binding();
+  collapsed.pins={[[...api.RETENTION_PINS].sort().join(',')]:'d'.repeat(64)};
+  const rejected=temporary();
+  try {assert.throws(()=>api.writeRetentionControl(rejected,collapsed),'all ten individual source pins are required');}
+  finally {fs.rmSync(rejected,{recursive:true,force:true});}
   for (const mode of ['name','run','source','extra','schema','payload','symlink','oversize','duplicate','hash']) {
     const directory=temporary();
     try {
