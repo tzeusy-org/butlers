@@ -591,22 +591,15 @@ def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
     ]
     assert not unmarked, unmarked
 
-    # The selection-bound set is a decision, not a default: widening it makes a capability
-    # unavailable without an owner selection record, so a change must edit this pin.
+    # Selection-bound is true only where a spec requires the scope be exactly what the owner
+    # picked (REQ-capability-authorization-018; RFC 0038 D7). A bound param makes its capability
+    # neither listed nor callable without an owner-surface selection record, and obligation,
+    # third-party, caused and message-admitted goals never carry one, so no current param
+    # qualifies. Adding the first one is a deliberate edit to this pin.
     bound = {
         (entry.module_name, param)
         for entry in TOOL_PRESENTATION_INVENTORY
         for param, flag in entry.selection_bound.items()
         if flag
     }
-    assert bound == {
-        ("calendar", "calendar_id"),
-        ("calendar", "calendar_ids"),
-        ("chronicler", "source_name"),
-        ("contacts", "account"),
-        ("finance", "account"),
-        ("finance", "account_id"),
-        ("google_drive", "file_id"),
-        ("google_drive", "folder_id"),
-        ("travel", "trip_id"),
-    }
+    assert bound == set()
