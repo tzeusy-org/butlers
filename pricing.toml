@@ -333,16 +333,17 @@ cached_input_price_per_token = 0.00000012  # $0.12 / 1M tokens
 input_price_per_token = 0.0000025   # $2.50 / 1M tokens
 output_price_per_token = 0.0000075  # $7.50 / 1M tokens
 
-# Qwen3.6 Plus — context-tiered at 256K tokens. UNVERIFIED: no primary source states whether the
-# upper tier starts at or above 256K (the current https://opencode.ai/docs/go/ card does not list
-# this model), so the threshold is left as is (bu-jkhucb).
+# Qwen3.6 Plus — historical Go card (opencode revision 1ead9e3, 2026-09-01) labels <= 256K/> 256K;
+# the matching models.dev record dd8ad847 supplies numeric size 256000. Together they imply an
+# upper threshold of 256001 with the unchanged >= selector (bu-jkhucb). Continued availability
+# and billing on 2026-10-18 or today remain UNVERIFIED; the current card omits this model.
 [[models."opencode-go/qwen3.6-plus".tiers]]
 context_threshold = 0               # <= 256K tokens
 input_price_per_token = 0.0000005   # $0.50 / 1M tokens
 output_price_per_token = 0.000003   # $3.00 / 1M tokens
 cached_input_price_per_token = 0.00000005  # $0.05 / 1M tokens
 [[models."opencode-go/qwen3.6-plus".tiers]]
-context_threshold = 256000          # > 256K tokens
+context_threshold = 256001          # > 256K tokens
 input_price_per_token = 0.000002    # $2.00 / 1M tokens
 output_price_per_token = 0.000006   # $6.00 / 1M tokens
 cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
