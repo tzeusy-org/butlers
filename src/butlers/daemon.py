@@ -290,6 +290,8 @@ class ButlerDaemon:
         # Attached after the DB pool is ready (lifecycle step 6b) and detached
         # in shutdown before the pool is closed.
         self._db_log_handler: logging.Handler | None = None
+        self._capability_transport_owner: Any | None = None
+        self._capability_transport_cleanup: asyncio.Task | None = None
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -469,7 +471,16 @@ class ButlerDaemon:
         """
         from butlers.lifecycle import run_startup
 
-        await run_startup(self)
+        try:
+            await run_startup(self)
+        except BaseException as original:
+            from butlers.capability_broker.production import close_private_transport
+
+            try:
+                await close_private_transport(self)
+            except BaseException as cleanup:
+                original.add_note("private_cleanup_failed:" + type(cleanup).__name__)
+            raise
 
     def _wire_pipelines(self, pool: Any) -> None:
         """Attach a MessagePipeline to modules that support set_pipeline().

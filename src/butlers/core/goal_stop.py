@@ -177,7 +177,7 @@ class GoalStop:
     @staticmethod
     async def _goal(connection, goal_id):
         row = await connection.fetchrow(
-            "SELECT id,status FROM switchboard.goals WHERE id=$1 FOR UPDATE", goal_id
+            "SELECT id,status FROM switchboard.goals WHERE id=$1 FOR UPDATE OF goals", goal_id
         )
         if not row or row["status"] not in _STOPPABLE:
             raise StopUnavailable("goal_not_stoppable")

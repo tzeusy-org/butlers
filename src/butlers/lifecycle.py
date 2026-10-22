@@ -509,6 +509,12 @@ async def run_startup(daemon: Any) -> None:
     # 14e. Initialize module runtime states (enabled/disabled) from state store
     await daemon._init_module_runtime_states(pool)
 
+    # The dedicated private plane is dark by default and refuses missing
+    # producer/profile authority before ordinary MCP acceptance.
+    from butlers.capability_broker.production import start_private_transport
+
+    await start_private_transport(daemon)
+
     # 14f. The fenced approval-delivery worker is daemon-owned but remains
     # dormant until the trusted recovery-only Messenger runtime is installed.
     from butlers.core.approval_delivery_worker import start_approval_delivery_worker
@@ -633,6 +639,9 @@ async def run_shutdown(daemon: Any) -> None:
 
     daemon._shutting_down = True
     daemon._accepting_connections = False
+    from butlers.capability_broker.production import close_private_transport
+
+    await close_private_transport(daemon)
     if daemon._boot_registration_task is not None:
         daemon._boot_registration_task.cancel()
         try:
