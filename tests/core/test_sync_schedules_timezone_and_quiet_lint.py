@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.core.scheduler import schedule_always_in_quiet_window, sync_schedules
 
 pytestmark = pytest.mark.unit
@@ -44,18 +45,17 @@ class _FakePool:
         return "OK"
 
 
-def _schedule(name: str, cron: str, **extra: Any) -> dict[str, Any]:
+def _schedule(name: str, cron: str, **extra: Any) -> ScheduleSpec:
     base: dict[str, Any] = {
         "name": name,
         "cron": cron,
-        "dispatch_mode": "prompt",
         "prompt": 'Do the thing, then notify(channel="telegram", intent="send", message="x").',
     }
     base.update(extra)
-    return base
+    return ScheduleSpec(**base)
 
 
-async def _sync(schedules: list[dict[str, Any]], **kwargs: Any) -> _FakePool:
+async def _sync(schedules: list[ScheduleSpec], **kwargs: Any) -> _FakePool:
     pool = _FakePool()
     await sync_schedules(pool, schedules, default_timezone="Asia/Singapore", **kwargs)  # type: ignore[arg-type]
     return pool
@@ -116,12 +116,7 @@ async def test_job_mode_and_non_notifying_prompts_are_not_warned_about(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     schedules = [
-        {
-            "name": "job",
-            "cron": "0 23 * * *",
-            "dispatch_mode": "job",
-            "job_name": "some_job",
-        },
+        ScheduleSpec(name="job", cron="0 23 * * *", dispatch_mode="job", job_name="some_job"),
         _schedule("silent", "0 23 * * *", prompt="Tidy the state store."),
     ]
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
@@ -171,26 +166,26 @@ async def test_explicit_zone_drives_next_run_and_is_stored() -> None:
 @pytest.mark.parametrize("bad", ["Not/AZone", 5])
 async def test_invalid_schedule_timezone_is_rejected(bad: Any) -> None:
     with pytest.raises(ValueError, match="timezone"):
-        await _sync([_schedule("bad", "0 4 * * *", timezone=bad)])
+        _schedule("bad", "0 4 * * *", timezone=bad)
 
 
 @pytest.mark.parametrize("sentinel", ["UTC", "utc", "", "  "])
 async def test_sentinel_schedule_timezone_is_refused_naming_etc_utc(sentinel: str) -> None:
     with pytest.raises(ValueError, match=r"Etc/UTC"):
-        await _sync([_schedule("bad", "0 4 * * *", timezone=sentinel)])
+        _schedule("bad", "0 4 * * *", timezone=sentinel)
 
 
 class _ExistingRowPool(_FakePool):
     """Reports one existing TOML row identical to the schedule except for its timezone."""
 
-    def __init__(self, stored_timezone: str, schedule: dict[str, Any]) -> None:
+    def __init__(self, stored_timezone: str, schedule: ScheduleSpec) -> None:
         super().__init__()
         self._row = {
             "id": uuid.uuid4(),
-            "name": schedule["name"],
+            "name": schedule.name,
             "source": "toml",
-            "cron": schedule["cron"],
-            "prompt": schedule["prompt"],
+            "cron": schedule.cron,
+            "prompt": schedule.prompt,
             "dispatch_mode": "prompt",
             "job_name": None,
             "job_args": None,
@@ -213,9 +208,7 @@ class _ExistingRowPool(_FakePool):
 async def test_a_changed_timezone_alone_updates_the_existing_row(
     stored: str, declared: str | None, expect_update: bool
 ) -> None:
-    schedule = _schedule("infra", "15 4 * * *")
-    if declared is not None:
-        schedule["timezone"] = declared
+    schedule = _schedule("infra", "15 4 * * *", timezone=declared)
     pool = _ExistingRowPool(stored, schedule)
     await sync_schedules(pool, [schedule], default_timezone="Asia/Singapore")  # type: ignore[arg-type]
     updated = [sql for sql, _ in pool.executed if "UPDATE scheduled_tasks" in sql]
