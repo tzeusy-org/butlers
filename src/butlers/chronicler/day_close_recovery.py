@@ -24,6 +24,7 @@ from butlers.chronicler.day_close_cache import (
 from butlers.chronicler.day_close_writer import (
     DAY_CLOSE_TASK_NAME,
     _extract_provenance_refs,
+    _validated_canonical_bundle_capture,
     select_day_close_narration,
 )
 from butlers.chronicler.prose_admission import classify_day_close_candidate
@@ -136,6 +137,11 @@ async def _candidate(conn: Any, day: date, timezone: str, *, lock: bool = False)
             or not selected.deferred
         ):
             return None, "unproven_notification"
+        bundle = _validated_canonical_bundle_capture(
+            calls, target_date_iso=day.isoformat(), target_timezone=timezone
+        )
+        if bundle is None:
+            return None, "unproven_notification"
         notification_id = UUID(selected.notification_id)
         deferred = await conn.fetchrow(
             "SELECT id, butler_name, channel, message, envelope, status"
@@ -195,7 +201,12 @@ async def _candidate(conn: Any, day: date, timezone: str, *, lock: bool = False)
             }
         )
         return _Candidate(
-            selected.prose.strip(), tuple(_extract_provenance_refs(calls)), fingerprint
+            # Parser-only/other-target results are not this cache's sources.
+            # Keep the legacy writer extractor unchanged, but give recovery
+            # only the executed bundle already admitted for this exact tuple.
+            selected.prose.strip(),
+            tuple(_extract_provenance_refs([bundle])),
+            fingerprint,
         ), "eligible"
     except (ValueError, TypeError, KeyError, StopIteration):
         return None, "malformed_source"

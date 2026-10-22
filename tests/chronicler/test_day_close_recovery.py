@@ -266,7 +266,9 @@ def _operator():
     return module
 
 
-@pytest.mark.parametrize("species", ["duplicate", "unknown", "oversize", "authority", "digest"])
+@pytest.mark.parametrize(
+    "species", ["duplicate", "unknown", "oversize", "authority", "digest", "reason-type"]
+)
 def test_operator_plan_refuses_unbounded_or_forged_metadata(tmp_path, species):
     operator = _operator()
     value = {
@@ -279,6 +281,8 @@ def test_operator_plan_refuses_unbounded_or_forged_metadata(tmp_path, species):
         value["entries"][0]["reason"] = "already_applied"
     elif species == "digest":
         value["entries"][0]["fingerprint"] = None
+    elif species == "reason-type":
+        value["entries"][0]["reason"] = []
     text = json.dumps(value)
     if species == "duplicate":
         text = '{"timezone":"UTC",' + text[1:]
@@ -336,3 +340,107 @@ async def test_immediate_sent_result_cannot_be_rebound_to_a_deferred_row():
     value = await plan(pool)
     assert value.entries[0].reason == "unproven_notification"
     assert not any("FROM deferred_notifications" in sql for sql, _ in pool.conn.queries)
+
+
+def test_operator_connection_input_obeys_the_overall_deadline(monkeypatch):
+    import os
+    import time
+
+    operator = _operator()
+    reader, writer = os.pipe()
+    try:
+        os.write(writer, b"dummy-unfinished-input")
+        with os.fdopen(reader, "rb", buffering=0) as stream:
+            monkeypatch.setattr("sys.stdin", stream)
+            started = time.monotonic()
+            with pytest.raises(RecoveryRefused, match="connection_input_timeout"):
+                operator._read_connection(deadline=started + 0.03)
+            assert time.monotonic() - started < 1
+    finally:
+        os.close(writer)
+    # A complete injected line still returns its actual value; no DB/model call.
+    reader, writer = os.pipe()
+    try:
+        os.write(writer, b"dummy-complete-input\nnot-part-of-the-line")
+        with os.fdopen(reader, "rb", buffering=0) as stream:
+            monkeypatch.setattr("sys.stdin", stream)
+            assert (
+                operator._read_connection(deadline=time.monotonic() + 1) == "dummy-complete-input"
+            )
+    finally:
+        os.close(writer)
+
+
+def test_operator_plan_rejects_special_files_without_waiting(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    fifo = tmp_path / "plan.fifo"
+    os.mkfifo(fifo)
+    operator = Path(__file__).resolve().parents[2] / "scripts/recover_chronicler_day_close_cache.py"
+    code = """
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("operator_control", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.read_plan(Path(sys.argv[2]))
+except module.RecoveryRefused as error:
+    assert str(error) == "invalid_plan"
+else:
+    raise AssertionError("special plan accepted")
+"""
+    # The child executes the actual reader, unchanged. An old blocking FIFO
+    # reader fails this bound and is killed/reaped by subprocess.run.
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(operator), str(fifo)],
+        capture_output=True,
+        timeout=3,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == result.stderr == b""
+    valid = tmp_path / "plan.json"
+    valid.write_text(
+        json.dumps(
+            {
+                "timezone": "UTC",
+                "entries": [
+                    {"day": DAY.isoformat(), "reason": "eligible", "fingerprint": "a" * 64}
+                ],
+            }
+        )
+    )
+    assert _operator().read_plan(valid).entries[0].reason == "eligible"
+    link = tmp_path / "plan-link.json"
+    link.symlink_to(valid)
+    with pytest.raises(RecoveryRefused, match="invalid_plan"):
+        _operator().read_plan(link)
+
+
+async def test_recovery_provenance_excludes_unexecuted_or_unrelated_source_results():
+    pool = Pool()
+    pool.conn.sessions[0]["tool_calls"].extend(
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-04-23", "timezone": "Europe/London"},
+                "result": {"date": "2026-04-23", "citations": ["fixture:foreign-parser"]},
+            },
+            {
+                "name": "chronicler_list_events",
+                "outcome": "success",
+                "result": {"data": [{"source_ref": "fixture:unrelated-list"}]},
+            },
+        ]
+    )
+    value = await plan(pool)
+    assert value.entries[0].reason == "eligible"
+    assert (await apply_recovery(pool, value))[0].reason == "applied"
+    refs = pool.conn.cache["provenance_refs"]
+    assert "fixture:one" in refs
+    assert "fixture:foreign-parser" not in refs
+    assert "fixture:unrelated-list" not in refs

@@ -44,8 +44,9 @@ access and bind its hash in the operational record. It contains only timezone,
 date, closed reason and source fingerprint; never prose, recipient, session/tool
 payload or credentials. A refused day remains visible as incomplete recovery.
 An exit of 2 is a refusal, not successful backfill. The operator is bounded to
-120 seconds overall and 30 seconds per database command; cancellation and other
-failures produce fixed error categories without raw exceptions.
+120 seconds overall, including the bounded stdin line, and 30 seconds per
+database command. An incomplete input pipe expires within the same deadline;
+cancellation and other failures produce fixed error categories without raw exceptions.
 
 ## Authority and application
 
@@ -61,7 +62,9 @@ without a durable deferred reference are not guessed into this recovery route.
 Only after reviewing the private plan and obtaining separate application
 authorization, pass that exact plan through `--apply-plan /private/plan.json`
 with the same injected stdin connection. JSON keys, population, fingerprints and
-file size are bounded and validated. Application takes existing exact tuple
+file size are bounded and validated. Plan input must be an actual regular file:
+the descriptor is opened without waiting and checked before its bounded read;
+symlinks, FIFOs and devices refuse. Application takes existing exact tuple
 locks in date order inside one serializable transaction, read-locks and
 re-fingerprints the sources, then revalidates the destination. Any source drift,
 serialization conflict, cancellation or database error rolls back all
@@ -69,7 +72,9 @@ replacements in that invocation. It does not retry implicitly.
 
 An already-admissible destination is preserved, including a competing normal
 refresh. A repeat of the same recovery reports `already_applied` without changing
-its build timestamp. New rows retain source citations plus a recovery fingerprint
+its build timestamp. Recovery source citations come only from the validated
+executed bundle for that exact date/timezone; parser-only or unrelated list
+results cannot add provenance. New rows retain those citations plus a recovery fingerprint
 in provenance. Replaced invalid destinations also contribute a digest of their
 prior selected cache fields to that audit trail; raw prior prose is not exported.
 No transport/deferred state or coverage witness is written.

@@ -10,7 +10,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import select
+import stat
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -36,8 +40,17 @@ def _strict_object(pairs):
 
 
 def read_plan(path: Path) -> RecoveryPlan:
-    with path.open("rb") as stream:
-        raw = stream.read(65537)
+    # A FIFO/device must never block the event loop before its deadline can
+    # run. Open without waiting, reject symlinks and inspect the actual opened
+    # descriptor (not a racy path check) before reading this bounded local file.
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise RecoveryRefused("invalid_plan")
+            raw = stream.read(65537)
+    except OSError:
+        raise RecoveryRefused("invalid_plan") from None
     if len(raw) > 65536:
         raise RecoveryRefused("invalid_plan")
     value = json.loads(raw, object_pairs_hook=_strict_object)
@@ -63,6 +76,7 @@ def read_plan(path: Path) -> RecoveryPlan:
         if (
             not isinstance(row, dict)
             or set(row) != {"day", "reason", "fingerprint"}
+            or not isinstance(row["reason"], str)
             or row["reason"] not in allowed
             or not isinstance(row["day"], str)
             or (
@@ -81,6 +95,35 @@ def read_plan(path: Path) -> RecoveryPlan:
             RecoveryEntry(date.fromisoformat(row["day"]), row["reason"], row["fingerprint"])
         )
     return RecoveryPlan(value["timezone"], tuple(result))
+
+
+def _read_connection(*, deadline: float) -> str:
+    """Read one bounded stdin line within the same overall operation deadline.
+
+    No thread can outlive the operator, and no raw connection value is emitted.
+    A partial pipe without newline must not hold the process before wait_for.
+    """
+    descriptor = sys.stdin.fileno()
+    data = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([descriptor], [], [], remaining)[0]:
+            raise RecoveryRefused("connection_input_timeout")
+        chunk = os.read(descriptor, min(4096, 16385 - len(data)))
+        data.extend(chunk)
+        newline = data.find(b"\n")
+        if newline >= 0:
+            del data[newline:]
+        if len(data) > 16384:
+            raise RecoveryRefused("connection_input_invalid")
+        if newline >= 0 or not chunk:
+            try:
+                value = data.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                raise RecoveryRefused("connection_input_invalid") from None
+            if not value:
+                raise RecoveryRefused("connection_input_missing")
+            return value
 
 
 async def run(args, dsn: str) -> int:
@@ -134,10 +177,12 @@ def main() -> int:
         print('{"error":"invalid_arguments"}')
         return 2
     try:
-        dsn = sys.stdin.readline(16385).strip()
-        if not dsn or len(dsn) > 16384:
-            raise RecoveryRefused("connection_input_missing")
-        return asyncio.run(asyncio.wait_for(run(args, dsn), timeout=120))
+        deadline = time.monotonic() + 120
+        dsn = _read_connection(deadline=deadline)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RecoveryRefused("connection_input_timeout")
+        return asyncio.run(asyncio.wait_for(run(args, dsn), timeout=remaining))
     except RecoveryRefused as exc:
         # Only locally constructed closed reasons can reach this class.
         print(json.dumps({"error": str(exc)}))
