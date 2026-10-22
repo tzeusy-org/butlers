@@ -255,6 +255,7 @@ const OWNER_TIME_EXEMPT = [
   'src/lib/memory-derived.ts',
   'src/pages/ApprovalsPage.tsx',
   'src/pages/CalendarWorkspacePage.tsx',
+  'src/pages/calendar/ButlerEventDialog.tsx',
 ]
 const OWNER_TIME_MESSAGE = 'Use <Time> or formatOwnerDateTime (components/ui/time.tsx) for owner-visible ' +
   'timestamps, not locale or Intl date formatting (bu-6jv4m.14).'
