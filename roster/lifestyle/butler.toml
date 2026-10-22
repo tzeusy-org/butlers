@@ -39,6 +39,14 @@ Deliver the digest via notify(channel="telegram", intent="send", message=<digest
 If there are no notable highlights this week, exit silently without sending.
 """
 
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "lifestyle__memory_search" },
+  { capability = "lifestyle__notify" },
+]
+
 [[butler.schedule]]
 name = "taste-ledger-project"
 cron = "*/5 * * * *"

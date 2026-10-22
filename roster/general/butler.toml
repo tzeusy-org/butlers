@@ -84,6 +84,15 @@ Steps:
 6. Send the summary via notify(channel="telegram", intent="send", message=<final briefing text>).
 """
 
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "general__state_get" },
+  { capability = "general__calendar_list_events" },
+  { capability = "general__notify" },
+]
+
 [[butler.schedule]]
 name = "collect_briefing_contributions"
 cron = "58 6 * * *"

@@ -5,7 +5,7 @@
   "schedules": [
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_sessions",
       "dispatch_mode": "job",
@@ -15,7 +15,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_calendar",
       "dispatch_mode": "job",
@@ -25,7 +25,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks",
       "dispatch_mode": "job",
@@ -35,7 +35,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks_place_cluster",
       "dispatch_mode": "job",
@@ -45,7 +45,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks_ssid",
       "dispatch_mode": "job",
@@ -55,7 +55,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_activitywatch",
       "dispatch_mode": "job",
@@ -65,7 +65,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_owner_outbound",
       "dispatch_mode": "job",
@@ -75,7 +75,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_steam",
       "dispatch_mode": "job",
@@ -85,7 +85,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_meals",
       "dispatch_mode": "job",
@@ -95,7 +95,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_home_assistant",
       "dispatch_mode": "job",
@@ -105,7 +105,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_home_assistant_sensor_activity",
       "dispatch_mode": "job",
@@ -115,7 +115,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_sleep",
       "dispatch_mode": "job",
@@ -125,7 +125,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_workout",
       "dispatch_mode": "job",
@@ -135,7 +135,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_steps",
       "dispatch_mode": "job",
@@ -145,7 +145,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_heart_rate",
       "dispatch_mode": "job",
@@ -155,7 +155,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_focus_inferred",
       "dispatch_mode": "job",
@@ -165,7 +165,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_reading_inferred",
       "dispatch_mode": "job",
@@ -175,7 +175,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_exercise_inferred",
       "dispatch_mode": "job",
@@ -185,7 +185,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_occupation_inferred",
       "dispatch_mode": "job",
@@ -195,7 +195,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_spotify",
       "dispatch_mode": "job",
@@ -205,7 +205,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_project_comms",
       "dispatch_mode": "job",
@@ -215,17 +215,18 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_day_close",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/chronicler/butler.toml:chronicler_day_close"
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "4cc349ede13bc85fd09073ada5bfe515d183193425b81e61722b16f72802367c",
+      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
       "butler": "chronicler",
       "name": "chronicler_gap_interview",
       "dispatch_mode": "prompt",
@@ -378,17 +379,18 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
       "butler": "general",
       "name": "eod-tomorrow-prep",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/general/butler.toml:eod-tomorrow-prep"
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
       "butler": "general",
       "name": "collect_briefing_contributions",
       "dispatch_mode": "job",
@@ -398,7 +400,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "1c6d01a80dbd7d7ef037af20ee5a8990363966dbed183a9abd3bf82e624cb2e2",
+      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
       "butler": "general",
       "name": "context_producer_calendar",
       "dispatch_mode": "job",
@@ -408,17 +410,18 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "weekly-health-summary",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/health/butler.toml:weekly-health-summary"
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -428,7 +431,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -438,7 +441,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "insight_scan",
       "dispatch_mode": "job",
@@ -448,7 +451,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "baseline_watch",
       "dispatch_mode": "job",
@@ -458,7 +461,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "health_visit_brief",
       "dispatch_mode": "job",
@@ -468,7 +471,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "atmosphere-advisory",
       "dispatch_mode": "job",
@@ -478,7 +481,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "a7d94e6e8a543b97e4e8ab1c0c79669a07bc127dc94a829a2922c5ca08ca7a55",
+      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
       "butler": "health",
       "name": "context_producer_sleep_window",
       "dispatch_mode": "job",
@@ -578,7 +581,7 @@
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
       "butler": "lifestyle",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -588,17 +591,18 @@
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
       "butler": "lifestyle",
       "name": "weekly-taste-digest",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/lifestyle/butler.toml:weekly-taste-digest"
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "bfe1b9d0eed39bc21f386b25defacf3438b52970566c5034f7ee1f8ecd0eff06",
+      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
       "butler": "lifestyle",
       "name": "taste-ledger-project",
       "dispatch_mode": "job",
@@ -928,27 +932,29 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "upcoming-travel-check",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/travel/butler.toml:upcoming-travel-check"
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "trip-document-expiry",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/travel/butler.toml:trip-document-expiry"
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "insight-scan",
       "dispatch_mode": "job",
@@ -958,7 +964,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "flight-status-check",
       "dispatch_mode": "job",
@@ -968,7 +974,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "destination-outlook",
       "dispatch_mode": "job",
@@ -978,7 +984,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -988,7 +994,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -998,7 +1004,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "calendar_prep_contribution",
       "dispatch_mode": "job",
@@ -1008,7 +1014,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "context_producer_travel",
       "dispatch_mode": "job",
@@ -1018,7 +1024,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "619228a32bfa85f71dc1c3631729e0218f511405dac61473617a9dee4b459fcb",
+      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
       "butler": "travel",
       "name": "context_producer_commuting_eta",
       "dispatch_mode": "job",

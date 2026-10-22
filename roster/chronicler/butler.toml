@@ -236,6 +236,14 @@ run — your job is to narrate over that result, not to re-derive it.
 # message/day. Runs at 09:00 owner-local — after the 01:05 day-close reconciles
 # yesterday, at a civil hour; notify() additionally applies quiet-hours /
 # delivery preferences. The tool enforces the per-day dedupe.
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "chronicler__chronicler_day_close_bundle" },
+  { capability = "chronicler__notify" },
+]
+
 [[butler.schedule]]
 name = "chronicler_gap_interview"
 cron = "0 9 * * *"

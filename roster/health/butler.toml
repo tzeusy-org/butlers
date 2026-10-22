@@ -29,6 +29,19 @@ Use the health_summary and trend_report tools to compile this data.
 Deliver the summary via notify(channel="telegram", intent="send", message=<summary>).
 """
 
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "health__health_summary" },
+  { capability = "health__trend_report" },
+  { capability = "health__measurement_history" },
+  { capability = "health__medication_list" },
+  { capability = "health__medication_history" },
+  { capability = "health__symptom_history" },
+  { capability = "health__notify" },
+]
+
 [[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"

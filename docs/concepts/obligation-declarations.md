@@ -76,6 +76,51 @@ above; they still cannot establish a verified fleet catalog or enable admission.
 Education's generated teaching/review obligations remain separate unfinished
 source families, as do the other roster and subscription declarations.
 
+### Other declared Git prompt inputs
+
+Six more schedules carry dark ceilings through the same typed loader, schedule
+sync and final-registry diagnostics:
+
+| Schedule | Selected workflow capabilities, within its owning domain |
+| --- | --- |
+| Chronicler day-close | `chronicler_day_close_bundle`, `notify` |
+| General tomorrow prep | `state_get`, `calendar_list_events`, `notify` |
+| Health weekly summary | `health_summary`, `trend_report`, `measurement_history`, `medication_list`, `medication_history`, `symptom_history`, `notify` |
+| Lifestyle taste digest | `memory_search`, `notify` |
+| Travel upcoming check | `upcoming_travel`, `notify` |
+| Travel document expiry | `list_trips`, `trip_summary`, `calendar_list_events`, `calendar_create_event`, `notify` |
+
+The selected Health graph includes the referenced skill's medication and symptom
+reads. Lifestyle's taxonomy examples do not add memory writes to its search
+workflow. Travel's document graph includes reading existing calendar reminders
+before creation; a declaration does not itself implement repeat-safe identity.
+Only notification and calendar creation are classified `communicate` in these
+graphs; their actual recipient and approval checks remain mandatory.
+
+These six tables omit resource restrictions rather than invent dates, state
+keys, medication/trip IDs or owner recipients. This is not authorization for
+arbitrary arguments: actual creator/context/goal intersection and recipient and
+exposure policy remain required. `memory_search` registers `scope`, not its
+predicate/time filters, as a resource dimension; `notify` does not register
+`channel` or `owner`. An unknown owning-domain capability is diagnosed as
+`unknown_capability`. An other-domain capability stays
+`fleet_catalog_unavailable`, because a local registry cannot validate its remote
+existence. Even healthy owning-domain declarations remain unverified fleet data.
+
+The adjacent Chronicler gap-interview and both Relationship prompt blocks remain
+undeclared pending their separately owned deterministic conversions. No prompt,
+cron, job, module or current dispatch behavior changes here. The census still
+contains all 102 schedules and 19 producer families, including unfinished ones.
+
+Runtime gaps remain original implementation work: Health's skill examples do
+not match the registered `trend_report` period or medication/symptom history
+arguments; Travel's skill narrows trips to planned/active, lacks complete paging
+and an actual reminder lookup step, and the current store has no standalone
+passport API. General's travel-time wording must be removed at obligation
+conversion unless a real leave-by read is bound. These static ceilings neither
+repair those workflows nor establish complete document coverage, provider
+execution, source authority or admission readiness.
+
 ## Validation and catalog custody
 
 `build_obligation_catalog()` projects immutable final `ToolCatalog` snapshots.

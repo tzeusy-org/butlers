@@ -331,3 +331,132 @@ async def test_education_roster_ceilings_cover_actual_registered_workflows(monke
     assert len(result) == len(prompts)
     assert {issue.code for issue in result} == {"fleet_catalog_unavailable"}
     assert all(spec.prompt not in caplog.text for spec in prompts.values())
+
+
+async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_authority(
+    monkeypatch, caplog
+):
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from butlers.config import load_config
+    from butlers.core.obligation_catalog import diagnose_loaded_schedules
+    from tests.contracts.test_tool_authorization_catalog import _roster_catalog
+
+    # Each set covers a real scheduled workflow, including skill branches and
+    # existing-reminder lookup. Registration/approval wrapping executes, while
+    # handlers, database work and provider delivery deliberately do not.
+    required = {
+        "chronicler": {"chronicler_day_close": {"chronicler_day_close_bundle", "notify"}},
+        "general": {"eod-tomorrow-prep": {"state_get", "calendar_list_events", "notify"}},
+        "health": {
+            "weekly-health-summary": {
+                "health_summary",
+                "trend_report",
+                "measurement_history",
+                "medication_list",
+                "medication_history",
+                "symptom_history",
+                "notify",
+            }
+        },
+        "lifestyle": {"weekly-taste-digest": {"memory_search", "notify"}},
+        "travel": {
+            "upcoming-travel-check": {"upcoming_travel", "notify"},
+            "trip-document-expiry": {
+                "list_trips",
+                "trip_summary",
+                "calendar_list_events",
+                "calendar_create_event",
+                "notify",
+            },
+        },
+    }
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    for domain, workflows in required.items():
+        config = load_config(root / "roster" / domain)
+        prompts = {spec.name: spec for spec in config.schedules if spec.dispatch_mode == "prompt"}
+        assert {name: prompts[name].obligation.status for name in workflows} == {
+            name: "valid" for name in workflows
+        }
+        registry = await _roster_catalog(domain)
+        for name, calls in workflows.items():
+            spec = prompts[name]
+            grants = {g.capability: g for g in spec.obligation.declaration.capabilities}
+            assert grants.keys() == {f"{domain}__{call}" for call in calls}
+            for call in calls:
+                descriptor = registry[call]
+                assert descriptor.grantable and descriptor.owner_domain == domain
+                assert descriptor.effect_class == (
+                    "communicate" if call in {"notify", "calendar_create_event"} else "read"
+                )
+                # Dynamic dates/IDs/recipients are not fabricated static owner
+                # selections. Empty restrictions never authenticate those values.
+                assert grants[f"{domain}__{call}"].resources == ()
+            assert [
+                i.code
+                for i in diagnose_loaded_schedules(
+                    [spec], owner_domain=domain, local_catalog=registry
+                )
+            ] == ["fleet_catalog_unavailable"]
+            assert spec.prompt not in caplog.text
+
+        if domain == "chronicler":
+            # The adjacent helper conversion is separately owned and remains
+            # undeclared; it must not inherit the day-close notify grant.
+            assert prompts["chronicler_gap_interview"].obligation.status == "missing"
+            spec = prompts["chronicler_day_close"]
+
+            def changed(raw):
+                return type(spec).model_validate(
+                    spec.model_dump(exclude={"obligation"}) | {"obligation": raw}
+                )
+
+            for raw, expected in [
+                (None, "missing_declaration"),
+                (
+                    {"version": 1, "capabilities": [{"capability": "chronicler__absent"}]},
+                    "unknown_capability",
+                ),
+                (
+                    {"version": 1, "capabilities": [{"capability": "other__absent"}]},
+                    "fleet_catalog_unavailable",
+                ),
+                (
+                    {
+                        "version": 1,
+                        "capabilities": [
+                            {
+                                "capability": "chronicler__notify",
+                                "resources": {"channel": ["fixture"]},
+                            }
+                        ],
+                    },
+                    "unknown_resource",
+                ),
+            ]:
+                assert [
+                    i.code
+                    for i in diagnose_loaded_schedules(
+                        [changed(raw)], owner_domain=domain, local_catalog=registry
+                    )
+                ] == [expected]
+            missing_bundle = replace(
+                registry,
+                descriptors=tuple(
+                    d
+                    for d in registry.descriptors
+                    if d.canonical_name != "chronicler_day_close_bundle"
+                ),
+            )
+            assert [
+                i.code
+                for i in diagnose_loaded_schedules(
+                    [spec], owner_domain=domain, local_catalog=missing_bundle
+                )
+            ] == ["unknown_capability"]
+        if domain == "lifestyle":
+            # Search filters are API inputs, not registered resource dimensions.
+            assert "predicate" not in registry["memory_search"].resource_params
+            assert "memory_store_fact" not in workflows["weekly-taste-digest"]

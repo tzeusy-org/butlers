@@ -55,6 +55,14 @@ notify(channel="telegram", intent="send", message=<summary>).
 If nothing is upcoming, do not send a message.
 """
 
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "travel__upcoming_travel" },
+  { capability = "travel__notify" },
+]
+
 [[butler.schedule]]
 name = "trip-document-expiry"
 cron = "0 9 * * 1"
@@ -68,6 +76,17 @@ Send an alert via notify(channel="telegram", intent="send", message=<expiry_summ
 for any documents approaching expiry, ranked by urgency.
 If all documents are current, do not send a message.
 """
+
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+  { capability = "travel__list_trips" },
+  { capability = "travel__trip_summary" },
+  { capability = "travel__calendar_list_events" },
+  { capability = "travel__calendar_create_event" },
+  { capability = "travel__notify" },
+]
 
 [[butler.schedule]]
 name = "insight-scan"

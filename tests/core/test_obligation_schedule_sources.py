@@ -472,6 +472,17 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
         type(spec).model_validate(spec.model_dump(exclude={"obligation"}))
         for spec in education.schedules
     ]
+    rosters = {
+        domain: load_config(Path(__file__).resolve().parents[2] / "roster" / domain)
+        for domain in ("chronicler", "general", "health", "lifestyle", "travel")
+    }
+    plain_rosters = {
+        domain: [
+            type(spec).model_validate(spec.model_dump(exclude={"obligation"}))
+            for spec in config.schedules
+        ]
+        for domain, config in rosters.items()
+    }
     projections = []
     actual = scheduler.project_loaded_schedule
     from butlers.core import obligations
@@ -532,3 +543,51 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
             assert original.digest != candidate.digest
         else:
             assert original.digest == candidate.digest
+
+    # The five actual roster inputs use the same production sync path. Keep
+    # every old SQL field and job row, and consume the exact parsed object.
+    class ObservedPool(Pool):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        async def fetchval(self, sql, *args):
+            self.calls.append(("fetchval", sql, args))
+            return await super().fetchval(sql, *args)
+
+        async def fetch(self, sql, *args):
+            self.calls.append(("fetch", sql, args))
+            return await super().fetch(sql, *args)
+
+        async def execute(self, sql, *args):
+            self.calls.append(("execute", sql, args))
+            return await super().execute(sql, *args)
+
+    for domain, config in rosters.items():
+        before_roster = len(projections)
+        original_pool, declared_pool = ObservedPool(), ObservedPool()
+        assert (
+            await scheduler.sync_schedules(original_pool, plain_rosters[domain], stagger_key=domain)
+            is None
+        )
+        assert (
+            await scheduler.sync_schedules(declared_pool, config.schedules, stagger_key=domain)
+            is None
+        )
+        assert original_pool.inserted == declared_pool.inserted
+        assert original_pool.executed == declared_pool.executed
+        assert original_pool.calls
+        assert original_pool.calls == declared_pool.calls
+        normalized = projections[before_roster:]
+        count = len(config.schedules)
+        assert len(normalized) == 2 * count
+        for spec, original, candidate in zip(
+            config.schedules, normalized[:count], normalized[count:], strict=True
+        ):
+            assert original.fields == candidate.fields
+            assert candidate.declaration is spec.obligation
+            if spec.obligation.status == "valid":
+                assert original.declaration.status == "missing"
+                assert original.digest != candidate.digest
+            else:
+                assert original.digest == candidate.digest
