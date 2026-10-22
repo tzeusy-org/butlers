@@ -2659,6 +2659,20 @@ async def tick(
                     }
                     if max_token_budget is not None:
                         dispatch_kwargs["max_token_budget"] = max_token_budget
+                    # OFF observation is optional and non-authoritative. Keep
+                    # job-mode dispatch independent even of this import.
+                    try:
+                        from butlers.core.obligation_admission import observe_dark_attempt
+
+                        observe_dark_attempt(
+                            kind="schedule_attempt",
+                            phase="post_claim",
+                            owner_domain=butler_name,
+                            source_row_id=task_id,
+                            nominal_slot=original_next_run_at,
+                        )
+                    except Exception:
+                        pass
                     dispatch_result = await dispatch_fn(**dispatch_kwargs)
                     result = dispatch_result
                 elif dispatch_mode == _DISPATCH_MODE_JOB:

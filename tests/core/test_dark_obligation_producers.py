@@ -4,11 +4,14 @@ REQ-capability-authorization-013, REQ-goal-orchestration-007.
 """
 
 from dataclasses import replace
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 
 from butlers.core.goal_admission import Grant
+from butlers.core.model_routing import Complexity
 from butlers.core.obligation_sources import ObligationSource, RuntimeCreationSnapshot
 from butlers.core.obligations import DeclarationError, parse_declaration
 
@@ -84,3 +87,399 @@ def test_source_revision_occurrence_and_domain_are_independent_replay_keys():
         subscription.event(UUID(int=5), feed=True).key
         != subscription.event(UUID(int=6), feed=True).key
     )
+
+
+class _LocalSchedulePool:
+    """Closed entrypoint double, NOT evidence of PostgreSQL/CAS durability."""
+
+    def __init__(self, row=None, *, claim=True, lookups=()):
+        self.row = row
+        self.claim = claim
+        self.lookups = iter(lookups)
+        self.calls = []
+        self.claimed = False
+
+    async def fetchval(self, sql, *args):
+        self.calls.append((sql, args))
+        if "information_schema.columns" in sql:
+            return args[1] in {"task_type", "until_at", "max_token_budget"}
+        return False
+
+    async def fetch(self, sql, *args):
+        self.calls.append((sql, args))
+        if "information_schema.columns" in sql:
+            return [
+                {"column_name": c}
+                for c in args[1]
+                if c in {"task_type", "max_token_budget", "until_at"}
+            ]
+        if "FROM scheduled_tasks" in sql and "next_run_at <= $1" in sql:
+            return [self.row] if self.row else []
+        return []
+
+    async def fetchrow(self, sql, *args):
+        self.calls.append((sql, args))
+        if "IS NOT DISTINCT FROM" in sql:
+            assert args[-1] == self.row["next_run_at"]
+            self.claimed = self.claim
+            return {"id": self.row["id"]} if self.claim else None
+        if "SELECT id, name, prompt" in sql:
+            return next(self.lookups)
+        return None
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        return "OK"
+
+
+def _due_prompt(**updates):
+    return {
+        "id": UUID(int=101),
+        "name": "private-task-name",
+        "cron": "15 1 * * *",
+        "dispatch_mode": "prompt",
+        "prompt": "private-prompt-content",
+        "job_name": None,
+        "job_args": None,
+        "complexity": None,
+        "timezone": "UTC",
+        "next_run_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "until_at": None,
+        "max_token_budget": 123,
+        **updates,
+    }
+
+
+def _closed_observer(monkeypatch):
+    from opentelemetry import trace
+
+    from butlers.core import obligation_admission as admission
+
+    events, observations = [], []
+
+    class RecordingSpan(trace.NonRecordingSpan):
+        def add_event(self, name, attributes=None, timestamp=None):
+            events.append((name, attributes))
+
+    span = RecordingSpan(trace.INVALID_SPAN_CONTEXT)
+    monkeypatch.setattr(
+        "opentelemetry.trace.get_current_span",
+        lambda *_, **__: span,
+    )
+    builder = getattr(admission, "build_dark_attempt_observation", None)
+    if builder is not None:
+
+        def recording_builder(**kwargs):
+            result = builder(**kwargs)
+            observations.append(result)
+            return result
+
+        monkeypatch.setattr(admission, "build_dark_attempt_observation", recording_builder)
+    return admission, events, observations
+
+
+def _assert_closed_events(events, phases):
+    assert [a["phase"] for _, a in events] == phases
+    assert all(
+        name == "obligation.off_observation"
+        and set(a) == {"mode", "kind", "phase", "authority", "definition_state", "quality"}
+        and a["mode"] == "off"
+        and a["authority"] == "unverified"
+        and a["definition_state"] == "unavailable"
+        and a["quality"] == "observed"
+        for name, a in events
+    )
+
+
+async def test_off_cron_observes_actual_claim_and_original_slot_without_changing_dispatch(
+    monkeypatch,
+):
+    from butlers.core import scheduler
+
+    admission, events, observations = _closed_observer(monkeypatch)
+    # Any B2 call from this OFF path is a real regression, not an authority stub.
+    monkeypatch.setattr(admission, "run_source_transaction", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(admission, "prepare_dark_submission", AsyncMock(side_effect=AssertionError))
+    row = _due_prompt()
+    pool = _LocalSchedulePool(row)
+    result = {"status": "ok", "private": "original-result"}
+    completion = AsyncMock()
+
+    async def dispatch(**kwargs):
+        assert pool.claimed
+        assert kwargs == {
+            "prompt": "bound-prompt",
+            "trigger_source": "schedule:private-task-name",
+            "complexity": Complexity.WORKHORSE,
+            "max_token_budget": 123,
+        }
+        _assert_closed_events(events, ["post_claim"])
+        return result
+
+    count = await scheduler.tick(
+        pool,
+        dispatch,
+        butler_name="health",
+        prompt_hooks={row["name"]: lambda **_: "bound-prompt"},
+        completion_hooks={row["name"]: completion},
+    )
+    assert count == 1
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation.source_row_id == row["id"]
+    assert observation.nominal_slot == row["next_run_at"]
+    assert observation.owner_domain == "health" and observation.reported_event_id is None
+    assert observation.kind == "schedule_attempt"
+    assert completion.await_args.kwargs["result"] is result
+    updates = [(sql, args) for sql, args in pool.calls if "SET last_run_at" in sql]
+    assert len(updates) == 1 and updates[0][1][2] == result
+    assert not any("obligation_" in sql for sql, _ in pool.calls)
+    admission.run_source_transaction.assert_not_called()
+    admission.prepare_dark_submission.assert_not_called()
+
+
+async def test_off_observation_never_precedes_claim_gates_or_prompt_and_jobs_do_not_import_it(
+    monkeypatch,
+):
+    import builtins
+
+    from butlers.core import scheduler
+
+    _, events, observations = _closed_observer(monkeypatch)
+    dispatch = AsyncMock(return_value={"ok": True})
+    assert await scheduler.tick(_LocalSchedulePool(_due_prompt(), claim=False), dispatch) == 0
+    dispatch.assert_not_called()
+    assert not events and not observations
+
+    def failed_prompt(**_):
+        raise ValueError("private-failure")
+
+    assert (
+        await scheduler.tick(
+            _LocalSchedulePool(_due_prompt()),
+            dispatch,
+            prompt_hooks={"private-task-name": failed_prompt},
+        )
+        == 0
+    )
+    assert not events and not observations
+    with monkeypatch.context() as patch:
+        patch.setattr(scheduler, "_butler_dispatch_gated", AsyncMock(return_value="paused"))
+        assert (
+            await scheduler.tick(_LocalSchedulePool(_due_prompt()), dispatch, butler_name="health")
+            == 0
+        )
+    with monkeypatch.context() as patch:
+        patch.setattr(scheduler, "_defer_cron_for_allowance", AsyncMock(return_value=True))
+        assert await scheduler.tick(_LocalSchedulePool(_due_prompt()), dispatch) == 0
+    assert not events and not observations
+    dispatch.assert_not_called()
+
+    original_import = builtins.__import__
+    attempted = []
+
+    def fail_observer_import(name, *args, **kwargs):
+        if name == "butlers.core.obligation_admission":
+            attempted.append(name)
+            raise ImportError("closed observation unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_observer_import)
+    job = _due_prompt(dispatch_mode="job", job_name="safety", job_args={"a": 1})
+    assert await scheduler.tick(_LocalSchedulePool(job), dispatch) == 1
+    dispatch.assert_awaited_once_with(
+        job_name="safety", job_args={"a": 1}, trigger_source="schedule:private-task-name"
+    )
+    assert not attempted and not events
+    assert await scheduler.tick(_LocalSchedulePool(_due_prompt()), dispatch) == 1
+    assert attempted == ["butlers.core.obligation_admission"]
+
+
+async def test_off_wake_observes_only_successful_creation_or_exact_local_reconciliation(
+    monkeypatch,
+):
+    from butlers.core import domain_event_wake as wake
+
+    admission, events, observations = _closed_observer(monkeypatch)
+    monkeypatch.setattr(admission, "run_source_transaction", AsyncMock(side_effect=AssertionError))
+    lifecycle = AsyncMock()
+    monkeypatch.setattr(wake, "_open_reaction_lifecycle", lifecycle)
+    task_id, event_id = UUID(int=201), UUID(int=202)
+    args = dict(
+        event_id=event_id,
+        event_type="health.snapshot",
+        source_butler="health",
+        payload={"private": "payload", "valid_until": "expired"},
+        subscriber_butler="general",
+    )
+    create = AsyncMock(return_value=task_id)
+    monkeypatch.setattr(wake, "schedule_create", create)
+    result = await wake.handle_receive_domain_event(_LocalSchedulePool(lookups=[None]), **args)
+    assert result == {
+        "status": "ok",
+        "state": "task_created",
+        "task_id": str(task_id),
+        "task_name": wake.task_name_for(event_id, "general"),
+    }
+    _assert_closed_events(events, ["wake_created"])
+    assert observations[0].source_row_id == task_id
+    assert observations[0].reported_event_id == event_id
+    assert observations[0].owner_domain == "general" and observations[0].nominal_slot is None
+    lifecycle.assert_awaited_once()
+    prompt = create.await_args.args[3]
+    assert "<domain_event>" in prompt and '"valid_until": "expired"' in prompt
+    stored = {"id": task_id, "prompt": prompt}
+    for lookups in ([stored], [None, stored]):
+        create.reset_mock()
+        create.side_effect = ValueError("collision")
+        replay = await wake.handle_receive_domain_event(
+            _LocalSchedulePool(lookups=lookups), **{**args, "payload": {"changed": "untrusted"}}
+        )
+        assert replay == {**result, "reconciled": True}
+    _assert_closed_events(events, ["wake_created", "wake_reconciled", "wake_reconciled"])
+    assert all(
+        o.authority == "unverified" and o.definition_state == "unavailable" for o in observations
+    )
+    for lookups, state in (
+        ([{"id": task_id, "prompt": "unrelated"}], "conflict"),
+        ([None, {"id": task_id, "prompt": "unrelated"}], "conflict"),
+        ([None, None], "error"),
+    ):
+        refused = await wake.handle_receive_domain_event(
+            _LocalSchedulePool(lookups=lookups), **args
+        )
+        assert refused["status"] == state
+    assert len(events) == 3 and len(observations) == 3
+    lifecycle.assert_awaited_once()
+    admission.run_source_transaction.assert_not_called()
+
+
+async def test_off_builder_invalid_result_trace_or_import_failure_cannot_change_legacy_flow(
+    monkeypatch,
+):
+    import builtins
+
+    from butlers.core import domain_event_wake as wake
+    from butlers.core import obligation_admission as admission
+    from butlers.core import scheduler
+
+    monkeypatch.setattr(wake, "schedule_create", AsyncMock(return_value=UUID(int=301)))
+    monkeypatch.setattr(wake, "_open_reaction_lifecycle", AsyncMock())
+    expected = {"sentinel": "unchanged"}
+    args = dict(
+        event_id=UUID(int=302),
+        event_type="event",
+        source_butler="health",
+        subscriber_butler="general",
+        payload={},
+    )
+    builder = getattr(admission, "build_dark_attempt_observation", None)
+    assert builder is not None
+    _, events, _ = _closed_observer(monkeypatch)
+
+    def fail(**_):
+        raise ValueError("private builder failure")
+
+    for replacement in (fail, lambda **_: object(), lambda **_: {"authority": "verified"}):
+        with monkeypatch.context() as patch:
+            patch.setattr(admission, "build_dark_attempt_observation", replacement)
+            dispatch = AsyncMock(return_value=expected)
+            assert await scheduler.tick(_LocalSchedulePool(_due_prompt()), dispatch) == 1
+            dispatch.assert_awaited_once()
+            assert (
+                await wake.handle_receive_domain_event(_LocalSchedulePool(lookups=[None]), **args)
+            )["status"] == "ok"
+    assert len(events) == 6
+    assert all(a["quality"] == "unavailable" and a["authority"] == "unverified" for _, a in events)
+
+    # Trace failures are equally non-authoritative; no error content enters trace.
+    def trace_failure(*_, **__):
+        raise RuntimeError("private trace failure")
+
+    _, _, _ = _closed_observer(monkeypatch)
+    from opentelemetry import trace
+
+    monkeypatch.setattr(trace.get_current_span(), "add_event", trace_failure)
+    assert (
+        await scheduler.tick(_LocalSchedulePool(_due_prompt()), AsyncMock(return_value=expected))
+        == 1
+    )
+    assert (await wake.handle_receive_domain_event(_LocalSchedulePool(lookups=[None]), **args))[
+        "status"
+    ] == "ok"
+    original_import = builtins.__import__
+    attempted = []
+
+    def fail_import(name, *args, **kwargs):
+        if name == "butlers.core.obligation_admission":
+            attempted.append(name)
+            raise ImportError("closed import failure")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_import)
+    assert (await wake.handle_receive_domain_event(_LocalSchedulePool(lookups=[None]), **args))[
+        "status"
+    ] == "ok"
+    assert len(attempted) == 1
+
+
+async def test_off_observer_preserves_cancellation_and_other_base_exceptions(monkeypatch):
+    import asyncio
+
+    from butlers.core import domain_event_wake as wake
+    from butlers.core import obligation_admission as admission
+    from butlers.core import scheduler
+
+    monkeypatch.setattr(wake, "schedule_create", AsyncMock(return_value=UUID(int=401)))
+    monkeypatch.setattr(wake, "_open_reaction_lifecycle", AsyncMock())
+    for error in (asyncio.CancelledError(), BaseException("closed-test-control")):
+
+        def interrupt(**_):
+            raise error
+
+        monkeypatch.setattr(admission, "build_dark_attempt_observation", interrupt)
+        dispatch = AsyncMock()
+        with pytest.raises(type(error)):
+            await scheduler.tick(_LocalSchedulePool(_due_prompt()), dispatch)
+        dispatch.assert_not_called()
+        with pytest.raises(type(error)):
+            await wake.handle_receive_domain_event(
+                _LocalSchedulePool(lookups=[None]),
+                event_id=UUID(int=402),
+                event_type="event",
+                source_butler="health",
+                subscriber_butler="general",
+                payload={},
+            )
+
+
+def test_off_descriptor_is_immutable_non_authority_with_explicit_unknown_identities():
+    from dataclasses import FrozenInstanceError
+
+    from butlers.core.obligation_admission import build_dark_attempt_observation
+
+    observation = build_dark_attempt_observation(
+        kind="schedule_attempt",
+        phase="post_claim",
+        owner_domain="health",
+        source_row_id=UUID(int=501),
+        nominal_slot=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert observation.mode == "off" and observation.authority == "unverified"
+    assert observation.definition_state == "unavailable"
+    with pytest.raises(FrozenInstanceError):
+        observation.authority = "verified"
+    for invalid in (None, "not a UUID or domain", {"private": "payload"}):
+        unknown = build_dark_attempt_observation(
+            kind="domain_wake",
+            phase="wake_created",
+            owner_domain=invalid,
+            source_row_id=invalid,
+            reported_event_id=invalid,
+            nominal_slot=datetime(2026, 1, 1),
+        )
+        assert unknown.owner_domain is None and unknown.source_row_id is None
+        assert unknown.reported_event_id is None and unknown.nominal_slot is None
+        assert unknown.authority == "unverified"
+    with pytest.raises(ValueError):
+        build_dark_attempt_observation(kind="verified_goal", phase="post_claim")

@@ -8,8 +8,11 @@ outbox references and verify catalog/source/cause authority separately.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from butlers.core.goal_admission import SourceRef
@@ -75,3 +78,137 @@ async def prepare_dark_submission(
         SourceRef(occurrence["source_kind"], occurrence["source_ref"], occurrence["occurrence"]),
         definition,
     )
+
+
+@dataclass(frozen=True)
+class DarkAttemptObservation:
+    """OFF-path identity hints, never verified source/cause/creator authority.
+
+    These local immutable values do not drive dispatch and are not trace data.
+    In particular a reported event UUID does not prove an active subscription.
+    """
+
+    kind: Literal["schedule_attempt", "domain_wake"]
+    phase: Literal["post_claim", "wake_created", "wake_reconciled"]
+    owner_domain: str | None
+    source_row_id: UUID | None
+    nominal_slot: datetime | None
+    reported_event_id: UUID | None
+    definition_state: Literal["unavailable"] = field(default="unavailable", init=False)
+    authority: Literal["unverified"] = field(default="unverified", init=False)
+    mode: Literal["off"] = field(default="off", init=False)
+
+
+def _reported_uuid(value: object) -> UUID | None:
+    if type(value) is UUID:
+        return value
+    if type(value) is str and len(value) == 36:
+        try:
+            return UUID(value)
+        except ValueError:
+            pass
+    return None
+
+
+def build_dark_attempt_observation(
+    *,
+    kind: str,
+    phase: str,
+    owner_domain: object = None,
+    source_row_id: object = None,
+    nominal_slot: object = None,
+    reported_event_id: object = None,
+) -> DarkAttemptObservation:
+    """Normalize ONLY reported identity; no IO, clock, hash or permission.
+
+    The nominal cron slot comes from the selected row before its existing CAS,
+    never the advanced next_run_at or observation time. Invalid hints stay null.
+    """
+    if (kind, phase) not in {
+        ("schedule_attempt", "post_claim"),
+        ("domain_wake", "wake_created"),
+        ("domain_wake", "wake_reconciled"),
+    }:
+        raise ValueError("invalid_off_observation_category")
+    domain = (
+        owner_domain
+        if type(owner_domain) is str
+        and len(owner_domain) <= 63
+        and re.fullmatch(r"[a-z][a-z0-9_-]*", owner_domain)
+        else None
+    )
+    slot = (
+        nominal_slot
+        if kind == "schedule_attempt"
+        and type(nominal_slot) is datetime
+        and nominal_slot.utcoffset() is not None
+        else None
+    )
+    return DarkAttemptObservation(
+        kind=kind,
+        phase=phase,
+        owner_domain=domain,
+        source_row_id=_reported_uuid(source_row_id),
+        nominal_slot=slot,
+        reported_event_id=_reported_uuid(reported_event_id) if kind == "domain_wake" else None,
+    )
+
+
+def observe_dark_attempt(
+    *,
+    kind: str,
+    phase: str,
+    owner_domain: object = None,
+    source_row_id: object = None,
+    nominal_slot: object = None,
+    reported_event_id: object = None,
+) -> None:
+    """Best-effort closed trace only; OFF never calls B2 or GoalAdmission.
+
+    Ordinary builder/trace failures cannot alter legacy dispatch. Cancellation
+    and other BaseExceptions propagate. IDs, timestamps and source content are
+    deliberately excluded from the trace, including failure text.
+    """
+    if (kind, phase) not in {
+        ("schedule_attempt", "post_claim"),
+        ("domain_wake", "wake_created"),
+        ("domain_wake", "wake_reconciled"),
+    }:
+        return
+    quality = "unavailable"
+    try:
+        observation = build_dark_attempt_observation(
+            kind=kind,
+            phase=phase,
+            owner_domain=owner_domain,
+            source_row_id=source_row_id,
+            nominal_slot=nominal_slot,
+            reported_event_id=reported_event_id,
+        )
+        if (
+            type(observation) is DarkAttemptObservation
+            and observation.kind == kind
+            and observation.phase == phase
+            and observation.mode == "off"
+            and observation.authority == "unverified"
+            and observation.definition_state == "unavailable"
+        ):
+            quality = "observed"
+    except Exception:
+        pass
+    try:
+        from opentelemetry import trace
+
+        trace.get_current_span().add_event(
+            "obligation.off_observation",
+            attributes={
+                "mode": "off",
+                "kind": kind,
+                "phase": phase,
+                "authority": "unverified",
+                "definition_state": "unavailable",
+                "quality": quality,
+            },
+        )
+    except Exception:
+        pass
