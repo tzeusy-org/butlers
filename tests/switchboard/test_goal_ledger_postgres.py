@@ -226,6 +226,76 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         )
         == "delivery-1"
     )
+    # D11 has no settling -> running edge, so a settling goal cannot consume an
+    # inbox row: a reply to its live prompt becomes a new owner goal instead.
+    settling = await admit(runtime)
+    await effect(
+        owner,
+        settling.goal_id,
+        delivery="settling-1",
+        entity=entity,
+        channel="telegram",
+        accepts=True,
+        expiry=expiry,
+    )
+    await owner.execute(
+        "UPDATE switchboard.goals SET status='settling' WHERE id=$1", settling.goal_id
+    )
+    after_settling = await admit(runtime, replace(facts, reply_delivery="settling-1"))
+    assert after_settling.result == "admitted" and after_settling.goal_id != settling.goal_id
+    new = await owner.fetchrow(
+        "SELECT * FROM switchboard.goals WHERE id=$1", after_settling.goal_id
+    )
+    assert new["origin"] == "owner" and new["caused_by_goal"] is None
+    assert (
+        await owner.fetchval(
+            "SELECT delivery_ref FROM switchboard.admission_decisions WHERE id=$1",
+            after_settling.decision_id,
+        )
+        == "settling-1"
+    )
+    assert await owner.fetchval("SELECT count(*) FROM switchboard.goal_inbox") == 1
+    # A forwarded owner reply that joins an unexposed live goal raises its
+    # exposure and nothing else; later invocations must start exposed.
+    quiet = await admit(runtime, Evidence("message", "owner", owner=True))
+    await effect(
+        owner,
+        quiet.goal_id,
+        delivery="forwarded-1",
+        entity=entity,
+        channel="telegram",
+        accepts=True,
+        expiry=expiry,
+    )
+    quiet_before = dict(
+        await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", quiet.goal_id)
+    )
+    quiet_budget = dict(
+        await owner.fetchrow("SELECT * FROM switchboard.budgets WHERE goal_id=$1", quiet.goal_id)
+    )
+    assert quiet_before["exposed"] is False
+    forwarded = await admit(runtime, replace(facts, reply_delivery="forwarded-1", forwarded=True))
+    assert forwarded.result == "joined" and forwarded.goal_id == quiet.goal_id
+    quiet_after = dict(
+        await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", quiet.goal_id)
+    )
+    assert quiet_after["exposed"] is True
+    unchanged = ("origin", "ceiling", "caused_by_goal", "caused_by_effect", "admitted_exposed")
+    assert {k: quiet_after[k] for k in unchanged} == {k: quiet_before[k] for k in unchanged}
+    assert (
+        dict(
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.budgets WHERE goal_id=$1", quiet.goal_id
+            )
+        )
+        == quiet_budget
+    )
+    with pytest.raises(asyncpg.PostgresError, match="exposure"):
+        await owner.execute(
+            "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'returned','[]','digest',1,1)",
+            uuid4(),
+            quiet.goal_id,
+        )
 
 
 async def test_failure_and_cancellation_have_no_partial_success(ledger):

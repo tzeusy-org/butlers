@@ -468,8 +468,9 @@ class GoalAdmission:
                 and binding["prompt_accepts_input"]
                 and binding["prompt_expires_at"] is not None
                 and binding["prompt_expires_at"] > prompt_now
-                and goal["status"]
-                in {"admitted", "running", "settling", "awaiting_approval", "recovering"}
+                # D11 has no settling -> running edge: a settling goal can never
+                # consume an inbox row, so a reply to it is admitted as new intent.
+                and goal["status"] in {"admitted", "running", "awaiting_approval", "recovering"}
             ):
                 await ledger.increase_exposure(goal["id"], exposed)
                 joined = await ledger.decide(

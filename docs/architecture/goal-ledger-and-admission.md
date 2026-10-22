@@ -78,8 +78,10 @@ verified owner entity/channel and a live goal whose prompt accepts input. Expiry
 is checked after lock waits. Joining preserves origin, ceiling, cause and budget;
 exposure can only increase, and no invocation or approval is produced. The join
 writes one `goal_inbox` row in the same transaction; that row is the goal's only
-delivery path for the reply, and the M2 runner marks it consumed. A terminal
-or expired prompt creates an ordinary verified owner goal with delivery/effect
+delivery path for the reply, and the M2 runner marks it consumed. A `settling`
+goal is not live for joins (D11 has no settling -> running edge, so nothing could
+consume its inbox row). A reply to a settling, terminal or expired prompt creates
+an ordinary verified owner goal with delivery/effect
 reference and no caused-goal link. Unknown/foreign/mismatched bindings follow
 ordinary message admission without guessing continuity.
 
