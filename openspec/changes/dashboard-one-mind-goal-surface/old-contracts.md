@@ -987,6 +987,7 @@ Unchanged domain/system/visual contract: it supplies facts, authenticated existi
 ## dashboard-api / Calendar Workspace
 Disposition: kept-as-is. Successor: kept.
 Unchanged domain/system/visual contract: it supplies facts, authenticated existing domain operations or Dispatch/shell behavior without establishing an independent reasoning unit. D19 changes neither its domain semantics nor its owner’s active amendment.
+D19 note (2026-10-22, bu-q11586.7): the kept-as-is disposition still holds for the workspace read, meta, sync, search, single-entry lookup, `PUT /primary`, audit, quick-add parse, butler-event, proposal and invitation-answer routes and for the accounts and source-toggle routes. Owner decision bu-kf3n4i = A (operator view, recorded 2026-10-21T02:59:55Z) narrowed this contract: `POST /api/calendar/workspace/user-events` accepts `action="create"` only (the quick-add confirmation), and the duplicate-review, dedup-rules, keep-separate, find-time, `.ics` export, subscribe and import routes were removed. Every calendar MCP tool is unchanged. This note records only what that decision authorizes and widens nothing.
 ### Requirement: Calendar Workspace
 `src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
 
@@ -1946,6 +1947,7 @@ self-explaining and deep-linkable to the originating session.
 ## dashboard-api / Calendar Mutation Undo Endpoint
 Disposition: kept-as-is. Successor: kept.
 Unchanged domain/system/visual contract: it supplies facts, authenticated existing domain operations or Dispatch/shell behavior without establishing an independent reasoning unit. D19 changes neither its domain semantics nor its owner’s active amendment.
+D19 note (2026-10-22, bu-q11586.7): the kept-as-is disposition above no longer holds. Owner decision bu-kf3n4i = A (operator view, recorded 2026-10-21T02:59:55Z) removes the `POST /api/calendar/workspace/undo/{action_id}` endpoint and its UI, including the response-inverse use described below, so this contract has no successor. The calendar module's pre-state capture, `calendar_respond` and every other calendar MCP tool are unchanged, and the stored-inverse receipt read (`GET /api/calendar/workspace/responses/{command_id}?inverse=true`) is retained. This note records only what that decision authorizes and widens nothing.
 ### Requirement: Calendar Mutation Undo Endpoint
 
 `src/butlers/api/routers/calendar_workspace.py` SHALL expose
