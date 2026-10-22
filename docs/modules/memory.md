@@ -375,6 +375,13 @@ None. The memory module is a leaf module with no dependencies on other modules.
 
 ## Implementation Notes
 
+- Fact and rule dashboard details read persisted `content_authority` and `authority_entity_id`;
+  rule endorsement reads `endorsed_at` and `endorsed_by`. Canonical entity names are resolved
+  independently of a fact's subject. Request IDs never identify an author, a system stamp does
+  not imply scheduled execution, and NULL stamps do not establish record age. The held-guidance
+  link opens the existing rules register with `held=true`; source-episode availability retains
+  its separate link/expired/unresolved presentation.
+
 - Generated inverse gap closure stays on the writer's existing connection. Reserve both actual
   database advisory keys before any property supersession locks; do not replace the reservation
   with separate closure connections, text/Python hash ordering, or post-commit work. A skipped

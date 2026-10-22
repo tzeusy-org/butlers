@@ -250,6 +250,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   const maturityFilter = maturity === "all" ? undefined : maturity;
 
   const { data: response, isError, isPending, refetch } = useRules({
+    ...(state.held === true ? { held: true } : {}),
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
@@ -274,6 +275,12 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   return (
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
+      {state.held === true && <div className="flex items-center gap-3">
+        <Voice>Guidance waiting for you</Voice>
+        <Pill selected={false} onClick={() => setState({ held: undefined, offset: 0 })}>
+          Show all guidance
+        </Pill>
+      </div>}
 
       <PoolsDegradedNote
         label="Rules"
@@ -294,9 +301,11 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
         // The calm empty copy is a verdict: only a completed response may say it.
         !isPending && (
           <Voice variant="italic" className="py-6">
-            {maturity === "all"
-              ? "No standing orders yet."
-              : "Nothing of this maturity."}
+            {state.held === true
+              ? "No guidance waiting for you."
+              : maturity === "all"
+                ? "No standing orders yet."
+                : "Nothing of this maturity."}
           </Voice>
         )
       ) : (
