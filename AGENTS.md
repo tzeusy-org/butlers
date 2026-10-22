@@ -125,19 +125,21 @@ No local gate command matches CI's scope; check which command produced a number.
   Exit 0 is the only acceptance criterion; no skip count is pass/fail.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
 
-### Condensation survivor evidence
+### Removing or weakening tests
 
-`make check-condensation-ledger` is the single read-only source admission guard
-for in-place assertion/parameter/fixture losses, moves and deletions across
-`tests/` and `roster/*/tests/`. It defaults to the actual `origin/main` base;
-CI supplies its exact event/base/checkout identities. A matching name, deleted
-product path, empty ledger directory or green count cannot excuse lost coverage.
-Before condensation, run the actual branch/mutation producer and retain every
-removed owner's executing survivor and complete case population. See
-[the evidence protocol](docs/testing/condensation-evidence.md). Fresh same-head
-carriers must be wired into the consumer for a real cluster change; the guard's
-current no-ledger CI invocation refuses every observed unproven loss. Migrated
-PostgreSQL/catalog authority and genuine review remain separate mandatory proof.
+Review is the only deletion gate; there is no inventory, ledger or guard script
+(owner decision bu-lm2b4v, option B). A PR that deletes, moves or renames a test,
+or weakens one in place (drops an assertion, parameter case, fixture or marker),
+must carry the `Tests: +a ~m -d` line in its body and, for every removed check,
+either name the executing survivor (`Survivor: <old> -> <new>`, existing at the
+PR head) or state that the behavior itself was intentionally removed or changed
+in the same PR. Architecture, wire, privacy, authorization, no-send, retry,
+idempotency and migration-outcome checks need a named survivor unless their
+governing requirement changes in the same PR. Reviewers refuse a missing
+`Tests:` line, an invented survivor, or a protected-check loss with neither. The
+rule and its rationale live in
+[testing doctrine](about/craft-and-care/testing-and-verification.md#removing-or-weakening-tests)
+and REQ-testing-053; the test budget is unchanged by it.
 
 ### Gate verdicts and long runs
 
@@ -593,8 +595,8 @@ it before changing the subsystem.
   attributing it to the code.
 - A flaky test whose cause cannot be removed yet goes in `tests/quarantine.json` with a bead
   ([quarantine](docs/testing/quarantine.md)), never behind a rerun, a raised timeout or a looser
-  assertion. Marking it `nightly` in the test file does not work for most tests: the condensation
-  ledger guard refuses marker changes to existing tests without a proof.
+  assertion. The registry leaves the test file untouched, so removing the entry restores the test
+  exactly; a `nightly` marker edits the test and is a weakening under the test-removal rule above.
 - Logging state is process-global and survives across tests in an xdist worker: a test that calls
   `set_butler_context`, `configure_logging` or `lifecycle.run_startup` must restore the context var
   (`reset_butler_context(token)`), root handlers, filters and level. A leaked `ButlerDBLogHandler`
@@ -603,7 +605,7 @@ it before changing the subsystem.
 - A signal handler that raises can land inside `ThreadPoolExecutor.submit()` after the worker
   thread started but before the pool registered it; the `with` exit then never joins that worker.
   While pool workers are live, have the handler only set a cancellation event and raise after the
-  join (`scripts/condense_evidence.py` `execute_sides`, bu-w4c1iw).
+  join (found in the since-retired condensation proof producer, bu-w4c1iw).
 
 ### Git and recovery
 

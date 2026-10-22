@@ -68,24 +68,14 @@ restore those owners to blocking coverage.
   the run and job ids, the cause, and what removing the cause means.
 - **No automatic reruns, no raised timeouts, no weakened assertions** as a substitute. Each of those
   hides the next real regression in the same test.
-- **Quarantine through the registry, not by editing the test.** The condensation ledger guard
-  refuses marker, decorator and statement changes to existing tests and any `conftest.py` change
-  without a proof, so a `nightly` marker or a conftest skip cannot land without proof work anyway.
-  The registry touches no test file.
+- **Quarantine through the registry, not by editing the test.** The registry touches no test
+  file, so the quarantined test keeps its assertions, markers and fixtures exactly as they were,
+  and removing the entry restores it unchanged.
 - **Un-quarantine by fixing the cause.** The PR that removes the cause deletes the entry. Nothing
   else should bring a test back into the blocking lanes.
 
-Quarantine is normally temporary. The one standing exception is the three
-condensation proof owners in `tests/scripts/test_condense_evidence.py` (ctrace,
-distinct and paired), all registered under bu-oq6eiu. On 2026-10-20 the owner
-ruled that they run nightly-only for good. Each proof launches about 22
-strace-observed workers under a fixed 60 s deadline, and cutting cost further
-would weaken the evidence the proofs exist to produce. A dedicated serial
-blocking job was declined too, because it would slow every CI run. These entries
-stay until that ruling changes; a regression in the proof script surfaces in the
-nightly `quarantined` job.
+Quarantine is temporary: every entry waits on the fix its bead owns.
 
 ## Related Pages
 
 - [Markers and Fixtures](markers-and-fixtures.md)
-- [Condensation Evidence](condensation-evidence.md)

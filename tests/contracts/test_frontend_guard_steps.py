@@ -60,7 +60,7 @@ def test_every_local_step_is_a_real_npm_script() -> None:
 
 
 @pytest.mark.unit
-def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> None:
+def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
     # Execute the real recipe with recording tools; skip unrelated prerequisites.
     tools = tmp_path / "bin"
     tools.mkdir()
@@ -83,7 +83,6 @@ def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> 
         "check-countable-tasks",
         "check-duplicate-names",
         "check-session-links",
-        "check-condensation-ledger",
     )
     subprocess.run(
         [
@@ -93,7 +92,7 @@ def test_make_check_guards_passes_the_configured_condensation_base(tmp_path) -> 
             str(ROOT / "Makefile"),
             *(f"--assume-old={name}" for name in prerequisites),
             "check-guards",
-            "CONDENSATION_BASE=review-fork",
+            "GUARDS_BASE=review-fork",
             "BASE=unrelated-base",
         ],
         cwd=ROOT,
