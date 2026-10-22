@@ -380,7 +380,7 @@ async def test_transport_refusal_correlations_and_late_wiring():
     contacts_package = importlib.import_module("butlers.modules.contacts")
     for hosting_name in ["general", "health"]:
         started = ContactsModule()
-        config = contacts_package.ContactsConfig(provider="google")
+        config = contacts_package.ContactsConfig(provider="google", sync={"enabled": True})
         database = SimpleNamespace(pool=SimpleNamespace())
         started._create_provider = AsyncMock(return_value=SimpleNamespace(name="google"))
         with patch.object(contacts_package.ContactsSyncRuntime, "start", AsyncMock()):

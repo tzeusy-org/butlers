@@ -172,6 +172,7 @@ policy = "suggest"
 providers = [{type = "google"}, {type = "telegram"}]
 include_other_contacts = false
 
+# The only butler that syncs contacts (it owns entities); the roster test pins this.
 [modules.contacts.sync]
 enabled = true
 run_on_startup = true
