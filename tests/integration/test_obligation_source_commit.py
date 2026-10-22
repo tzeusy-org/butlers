@@ -421,3 +421,262 @@ async def test_real_rollback_and_lost_commit_reply_reconcile_same_command(owning
             )
             == 1
         )
+
+
+def _git_schedule_material(**changes):
+    """Fixture material only; no production context/config producer is asserted."""
+    from butlers.core.obligation_schedule_sources import (
+        SCHEDULE_FIELDS,
+        compile_git_schedule_definition,
+    )
+
+    values = dict.fromkeys(SCHEDULE_FIELDS)
+    values.update(
+        name="git-fixture",
+        cron="0 9 * * *",
+        dispatch_mode="prompt",
+        prompt="fixture narration",
+        complexity="workhorse",
+        enabled=True,
+        timezone="UTC",
+        continuity=False,
+        task_type="cron",
+    )
+    values.update(changes)
+    return compile_git_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=values,
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"fixture_only": "no real producer registration"},
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_schedule_and_source_atomic_readback_replay_and_rollback(owning_sources):
+    """Actual owning rows/roles, not the recording-connection software control."""
+    from uuid import uuid4
+
+    from butlers.core.obligation_admission import SourceUnavailable, run_source_transaction
+    from butlers.core.obligation_schedule_sources import stage_git_schedule_definition
+    from butlers.core.obligation_sources import ObligationSourceRepository, SourceConflict
+
+    pool, command = owning_sources.pool, uuid4()
+    value = _git_schedule_material()
+
+    async def create(repo):
+        return await stage_git_schedule_definition(
+            repo,
+            command_id=command,
+            expected_revision=None,
+            definition=value,
+        )
+
+    first = await run_source_transaction(pool, "health", create)
+    source_id = first.definition.source_id
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT id,source,prompt,next_run_at FROM health.scheduled_tasks WHERE id=$1", source_id
+        )
+        assert row["id"] == source_id and row["source"] == "toml"
+        assert row["prompt"] == "fixture narration" and row["next_run_at"] is None
+        assert await ObligationSourceRepository(conn, "health").read(source_id) == first.definition
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM health.obligation_source_outbox WHERE source_id=$1", source_id
+            )
+            == 1
+        )
+    assert await run_source_transaction(pool, "health", create) == first
+
+    async def update(repo):
+        return await stage_git_schedule_definition(
+            repo,
+            command_id=uuid4(),
+            source_id=source_id,
+            expected_revision=first.definition.revision,
+            definition=_git_schedule_material(prompt="new material"),
+        )
+
+    second = await run_source_transaction(pool, "health", update)
+    assert await run_source_transaction(pool, "health", create) == first
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT prompt FROM health.scheduled_tasks WHERE id=$1", source_id)
+            == "new material"
+        )  # late replay must not restore old material
+
+    async def caught_refusal(repo):
+        async def refuse(*args, **kwargs):
+            raise SourceConflict("fixture-after-scheduled-row-write")
+
+        repo.revise = refuse
+        try:
+            await stage_git_schedule_definition(
+                repo,
+                command_id=uuid4(),
+                source_id=source_id,
+                expected_revision=second.definition.revision,
+                definition=_git_schedule_material(prompt="must roll back"),
+            )
+        except SourceConflict:
+            pass  # real savepoint must still restore row before outer commit
+
+    await run_source_transaction(pool, "health", caught_refusal)
+    async with pool.acquire() as conn, conn.transaction():
+        assert (
+            await conn.fetchval("SELECT prompt FROM health.scheduled_tasks WHERE id=$1", source_id)
+            == "new material"
+        )
+        assert await ObligationSourceRepository(conn, "health").read(source_id) == second.definition
+
+    class LostReply:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as connection:
+                yield connection
+            raise OSError("fixture-release-reply-loss")
+
+    uncertain_command = uuid4()
+
+    async def uncertain_update(repo):
+        return await stage_git_schedule_definition(
+            repo,
+            command_id=uncertain_command,
+            source_id=source_id,
+            expected_revision=second.definition.revision,
+            definition=_git_schedule_material(prompt="commit before reply loss"),
+        )
+
+    with pytest.raises(SourceUnavailable):
+        await run_source_transaction(LostReply(), "health", uncertain_update)
+    recovered = await run_source_transaction(pool, "health", uncertain_update)
+    assert recovered.definition.generation == second.definition.generation + 1
+    async with pool.acquire() as conn, conn.transaction():
+        assert (
+            await ObligationSourceRepository(conn, "health").read(source_id) == recovered.definition
+        )
+        assert (
+            await conn.fetchval("SELECT prompt FROM health.scheduled_tasks WHERE id=$1", source_id)
+            == "commit before reply loss"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_schedule_revision_race_cancel_and_role_shadow_refusals(owning_sources):
+    import asyncio
+    from uuid import uuid4
+
+    from butlers.core.obligation_admission import run_source_transaction
+    from butlers.core.obligation_schedule_sources import stage_git_schedule_definition
+    from butlers.core.obligation_sources import ObligationSourceRepository, SourceConflict
+
+    pool = owning_sources.pool
+    value = _git_schedule_material(name="race-fixture")
+    first = await run_source_transaction(
+        pool,
+        "health",
+        lambda repo: stage_git_schedule_definition(
+            repo,
+            command_id=uuid4(),
+            expected_revision=None,
+            definition=value,
+        ),
+    )
+    source_id = first.definition.source_id
+    occurrences = [
+        await run_source_transaction(
+            pool,
+            "health",
+            lambda r: r.capture(
+                source_id,
+                first.definition.revision,
+                slot=slot,
+            ),
+        )
+        for slot in ("pending-slot", "claimed-slot")
+    ]
+    assert await run_source_transaction(
+        pool,
+        "health",
+        lambda r: r.claim(
+            source_id,
+            occurrences[1],
+            uuid4(),
+        ),
+    )
+
+    async def compete(prompt):
+        return await run_source_transaction(
+            pool,
+            "health",
+            lambda repo: stage_git_schedule_definition(
+                repo,
+                command_id=uuid4(),
+                expected_revision=first.definition.revision,
+                source_id=source_id,
+                definition=_git_schedule_material(name="race-fixture", prompt=prompt),
+            ),
+        )
+
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            compete("left"),
+            compete("right"),
+            return_exceptions=True,
+        ),
+        timeout=20,
+    )
+    assert sum(isinstance(result, SourceConflict) for result in results) == 1
+    winner = next(result.definition for result in results if not isinstance(result, BaseException))
+    async with pool.acquire() as conn, conn.transaction():
+        assert await ObligationSourceRepository(conn, "health").read(source_id) == winner
+        states = await conn.fetch(
+            "SELECT state FROM health.obligation_occurrences WHERE id=ANY($1::uuid[])", occurrences
+        )
+        assert len(states) == 2 and all(row["state"] == "cancelled" for row in states)
+        await conn.execute("CREATE TEMP TABLE scheduled_tasks (id uuid) ON COMMIT DROP")
+        with pytest.raises(SourceConflict, match="owning_schedule_relation_required"):
+            await stage_git_schedule_definition(
+                ObligationSourceRepository(conn, "health"),
+                command_id=uuid4(),
+                expected_revision=winner.revision,
+                source_id=source_id,
+                definition=value,
+            )
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await run_source_transaction(
+            owning_sources.peer,
+            "health",
+            lambda repo: stage_git_schedule_definition(
+                repo,
+                command_id=uuid4(),
+                expected_revision=None,
+                definition=value,
+            ),
+        )
+    tombstone = replace(winner, generation=winner.generation + 1, state="deleted")
+    await run_source_transaction(
+        pool,
+        "health",
+        lambda r: r.revise(
+            uuid4(),
+            tombstone,
+            expected_revision=winner.revision,
+        ),
+    )
+    with pytest.raises(SourceConflict, match="source_revision_conflict"):
+        await run_source_transaction(
+            pool,
+            "health",
+            lambda repo: stage_git_schedule_definition(
+                repo,
+                command_id=uuid4(),
+                expected_revision=tombstone.revision,
+                source_id=source_id,
+                definition=value,
+            ),
+        )

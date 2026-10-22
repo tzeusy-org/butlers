@@ -270,6 +270,34 @@ class ObligationSourceRepository:
             f"obligation-source:{self.owner_domain}:{source_id}",
         )
 
+    async def lock_source(self, source_id: UUID) -> None:
+        """Validated owning-source lock for writers sharing a source-row TX."""
+        await self._guard()
+        await self._lock(source_id)
+
+    async def read_command(self, command_id: UUID) -> tuple[str, DefinitionRevision] | None:
+        """Lock a command before source/row locks; replay is not current authority.
+
+        The returned immutable historical body must be matched to the exact
+        request. This exposes the existing command lock without changing revise.
+        """
+        await self._guard()
+        if not isinstance(command_id, UUID):
+            raise SourceConflict("invalid_source_command")
+        await self.connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"obligation-command:{self.owner_domain}:{command_id}",
+        )
+        row = await self.connection.fetchrow(
+            "SELECT request_digest,body FROM obligation_source_commands WHERE id=$1", command_id
+        )
+        if row is None:
+            return None
+        value = DefinitionRevision.decode(row["body"])
+        if value.owner_domain != self.owner_domain:
+            raise SourceConflict("source_binding_invalid")
+        return row["request_digest"], value
+
     async def read(self, source_id: UUID) -> DefinitionRevision | None:
         await self._guard()
         row = await self.connection.fetchrow(

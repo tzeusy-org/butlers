@@ -76,8 +76,9 @@ production caller can construct authoritative evidence.
 ## Dark integration and remaining work
 
 The implementation remains dark. No source adapter is registered with
-`GoalAdmission`, no source or goal table is written, and today's dispatch paths
-remain unchanged. In particular a passing value test does not prove committed
+`GoalAdmission`, current production paths write no new source or goal table,
+and today's dispatch paths remain unchanged. In particular a passing value test
+does not prove committed
 source creation, duplicate admission, creator authentication, feed subscription
 verification or causal lineage. Those require the actual source-owned repository,
 verified broker/domain interfaces and genuine PostgreSQL controls.
@@ -98,6 +99,41 @@ notify default; removal of unsupported travel-time wording; lifecycle/roster doc
 and real source/admission commit and replay proof. The existing D18 model-function,
 lead-policy, memory-consolidation, project and allowance units retain their scopes.
 There is no switch activation, migration application, deployment or live send.
+
+## Prepared owning schedule transaction
+
+`obligation_schedule_sources` is an unregistered owning-schema adapter, not a
+replacement config parser or a trusted caller. It copies the complete normalized
+scheduled-row material and declaration. Missing actual context material makes
+the definition unavailable; a supplied Python value does not authenticate the
+context, Git provenance, catalog or creator. The real context producer and typed
+config/sync carry-through remain required before production registration.
+
+The writer uses the same owning connection for actual `scheduled_tasks` row
+insertion/update, source revision, pending/claimed occurrence cancellation,
+command receipt and reference outbox. It validates the owning role/schema and
+rejects a temporary `scheduled_tasks` shadow. Lock order is command, source, then
+existing scheduled row. A nested savepoint prevents a caught refusal from
+committing only the row update; the returned value remains staged until the
+outer transaction and pool release succeed.
+
+A stable command replays its original receipt without reverting a newer row.
+A true no-op preserves generation and emits no new outbox entry. Material,
+declaration, context or activation changes advance the generation. Removed
+declarations/context and job conversion disable an existing source and cancel
+its outstanding occurrences; they cannot create fresh authority. Runtime
+identities cannot be relabelled Git, and a deleted identity stays terminal.
+Mutable run timestamps are excluded from material and preserved on updates.
+A newly inserted dormant row has no nominal run slot (`next_run_at` is null);
+normal scheduling/cutover registration is still missing. An unconfirmed commit
+requires reconciliation using the original command, not a fresh callback retry.
+
+Recording-connection tests exercise this software path, not PostgreSQL locks,
+role enforcement or durability. The additional migrated PostgreSQL cases are
+authored but unrun locally. Current OFF schedule/domain-wake hooks still do no
+B2 source IO, admission, reservation or suppression. Verified catalog/control,
+actual config/sync and context producers, final occurrence fences, runtime
+creator/cause and other source families remain full-issue implementation work.
 
 ## Engineering context decision
 
