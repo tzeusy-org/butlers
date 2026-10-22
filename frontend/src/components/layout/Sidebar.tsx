@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { RotateCw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
@@ -156,6 +158,54 @@ function UnavailableBadgeMarker({
   )
 }
 
+function QaBadgeFeedback({
+  item,
+  badgeCounts,
+  compact = false,
+  linkRef,
+}: {
+  item: NavFlatItem
+  badgeCounts?: SidebarBadgeCounts
+  compact?: boolean
+  linkRef: { current: HTMLAnchorElement | null }
+}) {
+  const value = item.badgeKey === 'qa-escalations' ? badgeCounts?.[item.badgeKey] : undefined
+  const feedback = typeof value === 'object' ? value.qaSource : undefined
+  if (!feedback) return null
+  const label = `QA ${feedback.source} unavailable${feedback.stale ? '; cached data is stale' : ''}`
+  const retryLabel = `Retry QA ${feedback.source}`
+  return (
+    <div
+      role="alert"
+      className={compact
+        ? 'flex justify-center px-1 pb-1 text-[var(--amber-text)]'
+        : 'mx-3 mb-1 flex items-center gap-2 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-2 py-1 text-xs text-[var(--amber-text)]'}
+    >
+      <span className={compact ? 'sr-only' : 'min-w-0'}>{label}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size={compact ? 'icon' : 'sm'}
+        className={compact ? 'size-7' : 'ml-auto h-7 shrink-0 px-2 text-xs'}
+        aria-label={retryLabel}
+        title={compact ? label : undefined}
+        disabled={feedback.retrying}
+        onClick={async (event) => {
+          const button = event.currentTarget
+          await feedback.retry()
+          // When recovery removes the focused retry, return to its destination.
+          // A deliberate focus move or an auth-unmounted link is left alone.
+          if (document.activeElement === button || (!button.isConnected && document.activeElement === document.body)) {
+            linkRef.current?.focus()
+          }
+        }}
+      >
+        {compact ? <RotateCw className="size-3.5" aria-hidden="true" /> : 'Retry'}
+      </Button>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Badge indicator (reauth=red, approvals=amber, default=primary)
 // ---------------------------------------------------------------------------
@@ -253,6 +303,7 @@ function FlatNavLink({
 }) {
   // Radix TooltipTrigger asChild stringifies a function className via clsx,
   // so we compute isActive here and pass className as a string.
+  const linkRef = useRef<HTMLAnchorElement>(null)
   const location = useLocation()
   const isActive = isPathActive(location.pathname, item.path, item.end)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
@@ -260,38 +311,42 @@ function FlatNavLink({
   const navIntent = useNavIntent(item.path)
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <NavLink
-          to={item.path}
-          end={item.end}
-          onClick={() => {
-            navIntent.onActivate()
-            onNavClick?.()
-          }}
-          onPointerEnter={navIntent.onPointerEnter}
-          onPointerLeave={navIntent.onPointerLeave}
-          onFocus={navIntent.onFocus}
-          onBlur={navIntent.onBlur}
-          className={railItemClassName(isActive)}
-          aria-label={item.tooltip ?? item.label}
-          data-shortcut={item.chord ? `g ${item.chord}` : undefined}
-        >
-          <ItemGlyph
-            item={item}
-            section={section}
-            butlerStatus={butlerStatus}
-            badgeCounts={badgeCounts}
-          />
-        </NavLink>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>
-        <span className="flex items-center gap-2">
-          {item.tooltip ?? item.label}
-          <DestinationChord chord={item.chord} />
-        </span>
-      </TooltipContent>
-    </Tooltip>
+    <div>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <NavLink
+            ref={linkRef}
+            to={item.path}
+            end={item.end}
+            onClick={() => {
+              navIntent.onActivate()
+              onNavClick?.()
+            }}
+            onPointerEnter={navIntent.onPointerEnter}
+            onPointerLeave={navIntent.onPointerLeave}
+            onFocus={navIntent.onFocus}
+            onBlur={navIntent.onBlur}
+            className={railItemClassName(isActive)}
+            aria-label={item.tooltip ?? item.label}
+            data-shortcut={item.chord ? `g ${item.chord}` : undefined}
+          >
+            <ItemGlyph
+              item={item}
+              section={section}
+              butlerStatus={butlerStatus}
+              badgeCounts={badgeCounts}
+            />
+          </NavLink>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <span className="flex items-center gap-2">
+            {item.tooltip ?? item.label}
+            <DestinationChord chord={item.chord} />
+          </span>
+        </TooltipContent>
+      </Tooltip>
+      <QaBadgeFeedback item={item} badgeCounts={badgeCounts} compact linkRef={linkRef} />
+    </div>
   )
 }
 
@@ -578,7 +633,7 @@ export default function Sidebar({
   onNavClick,
 }: SidebarProps) {
   const { sections: filteredSections, butlerStatusMap, isLoading, isError } = useFilteredNavSections(navSections)
-  const badgeCounts = useBadgeCounts()
+  const badgeCounts = useBadgeCounts({ qaSourceDetails: true })
 
   // Mobile sheet variant: render with labels (not icon rail)
   if (mobileExpanded) {
@@ -782,63 +837,68 @@ function MobileFlatLink({
   butlerStatusMap?: ButlerStatusMap
   badgeCounts?: SidebarBadgeCounts
 }) {
+  const linkRef = useRef<HTMLAnchorElement>(null)
   const { count, unavailableLabel } = resolveSidebarBadge(item, badgeCounts)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
   const navIntent = useNavIntent(item.path)
 
   return (
-    <NavLink
-      to={item.path}
-      end={item.end}
-      onClick={() => {
-        navIntent.onActivate()
-        onNavClick?.()
-      }}
-      onPointerEnter={navIntent.onPointerEnter}
-      onPointerLeave={navIntent.onPointerLeave}
-      onFocus={navIntent.onFocus}
-      onBlur={navIntent.onBlur}
-      className={({ isActive }) =>
-        [
-          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-          isActive
-            ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-            : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
-        ].join(' ')
-      }
-      title={item.tooltip ?? item.label}
-    >
-      <span className="relative flex size-6 shrink-0 items-center justify-center">
-        {useButlerMark ? (
-          <ButlerMark name={item.butler!} tone="neutral" />
-        ) : item.icon ? (
-          <NavIcon name={item.icon} className="text-muted-foreground" />
-        ) : (
-          <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
-            {item.label[0]}
-          </span>
-        )}
-        <StatusDot status={butlerStatus} />
-      </span>
-      <span className="flex-1">{item.label}</span>
-      <DestinationChord chord={item.chord} />
-      {unavailableLabel ? (
-        <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
-      ) : count > 0 ? (
-        <span
-          className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
-            item.badgeVariant === 'red'
-              ? 'bg-[var(--red)] text-white'
-              : item.badgeVariant === 'amber'
-                ? 'bg-[var(--amber)] text-white'
-                : 'bg-primary text-primary-foreground'
-          }`}
-        >
-          {count > 99 ? '99+' : count}
+    <div>
+      <NavLink
+        ref={linkRef}
+        to={item.path}
+        end={item.end}
+        onClick={() => {
+          navIntent.onActivate()
+          onNavClick?.()
+        }}
+        onPointerEnter={navIntent.onPointerEnter}
+        onPointerLeave={navIntent.onPointerLeave}
+        onFocus={navIntent.onFocus}
+        onBlur={navIntent.onBlur}
+        className={({ isActive }) =>
+          [
+            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+            isActive
+              ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+              : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
+          ].join(' ')
+        }
+        title={item.tooltip ?? item.label}
+      >
+        <span className="relative flex size-6 shrink-0 items-center justify-center">
+          {useButlerMark ? (
+            <ButlerMark name={item.butler!} tone="neutral" />
+          ) : item.icon ? (
+            <NavIcon name={item.icon} className="text-muted-foreground" />
+          ) : (
+            <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
+              {item.label[0]}
+            </span>
+          )}
+          <StatusDot status={butlerStatus} />
         </span>
-      ) : null}
-    </NavLink>
+        <span className="flex-1">{item.label}</span>
+        <DestinationChord chord={item.chord} />
+        {unavailableLabel ? (
+          <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
+        ) : count > 0 ? (
+          <span
+            className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+              item.badgeVariant === 'red'
+                ? 'bg-[var(--red)] text-white'
+                : item.badgeVariant === 'amber'
+                  ? 'bg-[var(--amber)] text-white'
+                  : 'bg-primary text-primary-foreground'
+            }`}
+          >
+            {count > 99 ? '99+' : count}
+          </span>
+        ) : null}
+      </NavLink>
+      <QaBadgeFeedback item={item} badgeCounts={badgeCounts} linkRef={linkRef} />
+    </div>
   )
 }
 
