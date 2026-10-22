@@ -127,14 +127,14 @@ Scope: v1-mandatory
 - **THEN** preflight and check are non-passing and healthy no-LLM/no-E2E companions still run
 
 ### Requirement: Complete eleven-input independent coverage reporting
-The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/report/badge. An owned daily scheduled, manually invoked and coverage-pipeline-path-triggered PR workflow SHALL freshly collect both complete lane populations, execute all five unit and six integration covered shards, independently reconcile all eleven execution receipts and preserve real smoke fallback and release evidence before reporting. The reporter SHALL bind the actual admitted workflow event to inventory and every coverage input; a schedule, manual or PR run MUST NOT impersonate merge_group. Every prerequisite failure, skip, cancellation, missing input or malformed identity SHALL remain visibly non-passing before publication. PR validation SHALL upload the complete authentic report without updating the main badge; only successful scheduled/manual runs of main MAY update that badge. Required check MUST NOT install or await reporting, and ordinary PR executions SHALL retain identical selection without coverage instrumentation. Protected merge-group and ordinary PR shard execution SHALL use CI_COVERAGE=0 while preserving every existing selected test, worker, marker, timeout and complete-identity receipt. Full covered execution SHALL belong to the owned daily scheduled/manual and coverage-pipeline PR assurance workflow with CI_COVERAGE=1; standalone default covered behavior and strict CI_COVERAGE 0/1 admission SHALL remain.
+The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/report/badge. Full covered execution SHALL run only in the nightly workflow, on its schedule and on manual dispatch (owner decision bu-w72da2 = A). That run SHALL freshly collect both complete lane populations, execute all five unit and six integration covered shards, independently reconcile all eleven execution receipts, preserve real smoke fallback and release evidence, and upload the combined report as an artifact. The reporter SHALL bind the actual admitted workflow event to inventory and every coverage input; a scheduled or manual run MUST NOT impersonate merge_group. Every prerequisite failure, skip, cancellation, missing input or malformed identity SHALL remain visibly non-passing before publication. Only successful scheduled/manual runs of main MAY update the badge; a manual run on another branch validates a coverage-pipeline change without updating it. Required check MUST NOT install or await reporting, and pull-request and merge-group executions SHALL retain identical selection without coverage instrumentation. Protected merge-group and ordinary PR shard execution SHALL use CI_COVERAGE=0 while preserving every existing selected test, worker, marker, timeout and complete-identity receipt. The nightly coverage jobs SHALL use CI_COVERAGE=1; standalone default covered behavior and strict CI_COVERAGE 0/1 admission SHALL remain.
 
 ID: REQ-ci-shard-assurance-006
-Source: bu-ly3lv5.6 P9; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
+Source: bu-ly3lv5.6 P9; original complete S1-S5 and ten folded source objects; adopted testing-and-verification; bu-w72da2 owner decision A (2026-10-21)
 Scope: v1-mandatory
 
 #### Scenario: Eleven real valid inputs pass the actual reader
-- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest and the actual admitted merge-group, scheduled, manual or pipeline-validation PR event
+- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest and the actual admitted scheduled or manual nightly event
 - **THEN** all pass the same installed CoverageData path before combination and report/badge publication
 
 #### Scenario: One bad input refuses publication
@@ -143,17 +143,17 @@ Scope: v1-mandatory
 
 #### Scenario: PR opt-out and standalone compatibility survive
 - **WHEN** CI_COVERAGE is supplied0/1, malformed or absent in standalone execution
-- **THEN** ordinary PR0 and protected merge-group0 have no cov arguments/uploads, owned assurance1 retains unique raw files and standalone defaults1; malformed flags refuse execution and pipeline-validation PRs cannot publish the main badge
+- **THEN** ordinary PR0 and protected merge-group0 have no cov arguments/uploads, the nightly coverage jobs1 retain unique raw files and standalone defaults1; malformed flags refuse execution and a manual run off main cannot publish the main badge
 
 #### Scenario: Historical code is not current source coverage
 - **WHEN** a helper executes a historical module outside the present production source namespace
 - **THEN** its identity is retained as historical and no extra/missing current population is silently omitted or accepted
 
 ### Requirement: Frontend static test and browser evidence is complete
-The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. Vitest children MAY begin directly after successful route admission; browser SHALL still await the source-bound build produced by successful guards. The advisory browser job SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference concurrently with its actual shard execution over the same immutable source/config/lock/runtime and separate private caches; both phases SHALL finish successfully and reconcile before admission. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
+The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. Vitest children MAY begin directly after successful route admission; browser SHALL still await the source-bound build produced by successful guards. The browser (Playwright e2e) job SHALL be required through the required check (owner decision bu-w72da2 = A): it SHALL run for every merge group and main push and for every pull request that changes frontend/, and its failure, cancellation or unexpected skip SHALL fail that check. It SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference concurrently with its actual shard execution over the same immutable source/config/lock/runtime and separate private caches; both phases SHALL finish successfully and reconcile before admission. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
 
 ID: REQ-ci-shard-assurance-007
-Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
+Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopted testing-and-verification; bu-w72da2 owner decision A (2026-10-21)
 Scope: v1-mandatory
 
 #### Scenario: Every frontend contributor is required
@@ -163,6 +163,11 @@ Scope: v1-mandatory
 #### Scenario: Two Vitest shards preserve exact population
 - **WHEN** both installed shard selectors run
 - **THEN** their current collected test population is complete/disjoint and all old assertions/outcomes remain represented
+
+#### Scenario: A browser failure fails the required check
+- **WHEN** the Playwright e2e job fails, is cancelled or is skipped in a merge group, a main push or a pull request that changes frontend/
+- **THEN** the required check refuses success, so the merge group cannot land
+- **AND** a pull request that does not change frontend/ requires the job's explicit skip
 
 #### Scenario: Browser reuses a genuine build only
 - **WHEN** the guards-built dist has valid source/run/attempt/config/lock digests and nonempty contents

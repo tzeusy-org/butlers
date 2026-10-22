@@ -138,7 +138,7 @@ The six-hour observer refreshes uncovered queue and covered nightly costs
 independently. Its existing `ci-weight-candidate` artifact retains the original
 `candidate.json`/`receipt.json` pair from successful `ci.yml` merge-group execution.
 A separate `covered-candidate.json`/`covered-receipt.json` pair comes only from
-successful owned-main scheduled or manual `ci-coverage.yml` execution. The latter
+successful owned-main scheduled or manual `nightly.yml` execution. The latter
 keeps its genuine schedule/manual event, exact source/run/attempt and uniformly
 observed CTracer or SysMonitor; it never impersonates merge_group. Both paths
 require the inventory and all eleven complete execution carriers through the

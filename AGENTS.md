@@ -56,8 +56,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    receipt-producing targets mirror the pytest populations of CI's
    `check-unit (N)` and `check-integration (N)` matrix children when a local reproduction
    is genuinely needed. They retain local covered defaults; required CI runs those
-   populations untraced, and owned daily/manual plus pipeline-PR assurance supplies
-   full eleven-shard coverage:
+   populations untraced, and the nightly workflow's covered jobs supply full
+   eleven-shard coverage as an artifact:
 
    ```bash
    make test-ci-unit
@@ -76,8 +76,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    proves only its named scope; terminal hosted CI is the broad merge evidence.
 
    The merge queue's `merge_group` run is that terminal broad gate: it runs
-   every shard, `guards`, and `frontend` against the exact tree about to land
-   (enforced by the `main-merge-queue` ruleset from
+   every shard, `guards`, `frontend` and Playwright `frontend-e2e` (required
+   through `check`) against the exact tree about to land (enforced by the `main-merge-queue` ruleset from
    `scripts/setup_main_ruleset.sh`). A PR's own CI run is deliberately
    narrower: the stdlib `route` job classifies the diff fail-closed, and a
    docs/spec-only PR skips the backend shards and frontend jobs on purpose,

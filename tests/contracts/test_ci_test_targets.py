@@ -147,6 +147,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         "inventory": "true",
     }
     full["check-affected"]["result"] = "skipped"
+    full["frontend-e2e"]["result"] = "skipped"
     heavy = {"check-unit", "check-integration"}
     contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
     scoped = copy.deepcopy(full)
@@ -167,9 +168,16 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     push = copy.deepcopy(docs)
     push["route"]["outputs"].update(backend="true", frontend="true", mode="push", inventory="true")
     push["inventory"]["result"] = "success"
+    push["frontend-e2e"]["result"] = "success"
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
     merge_group["route"]["outputs"]["frontend"] = "true"
+    merge_group["frontend-e2e"]["result"] = "success"
+    # Required e2e (bu-w72da2 = A): a frontend pull request must pass it too.
+    frontend_pr = copy.deepcopy(full)
+    frontend_pr["route"]["outputs"]["frontend"] = "true"
+    frontend_pr["frontend-e2e"]["result"] = "success"
+    contexts.append(("frontend-pr", "pull_request", "refs/pull/1/merge", frontend_pr, True))
     contexts.append(
         ("merge_group", "merge_group", "refs/heads/gh-readonly-queue/main/x", merge_group, True)
     )
@@ -213,7 +221,15 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             changed["new-needed-job"] = {"result": result, "outputs": {}}
             check(f"{mode}/added/{result}", changed, event, ref, result == "success")
     for mode, event, ref, needs, _ in contexts:
-        for name in ("route", "guards", "inventory", "check-preflight", "check-affected", *heavy):
+        for name in (
+            "route",
+            "guards",
+            "inventory",
+            "check-preflight",
+            "check-affected",
+            "frontend-e2e",
+            *heavy,
+        ):
             changed = copy.deepcopy(needs)
             changed[name]["result"] = "skipped" if needs[name]["result"] == "success" else "success"
             check(f"{mode}/{name}/wrong-pairing", changed, event, ref, False)
@@ -309,6 +325,15 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             gate["run"].replace('results.get(name, "success")', 'results.get(name, job["result"])'),
             "new-needed-job",
             "skipped",
+        ),
+        (
+            "e2e",
+            gate["run"].replace(
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['frontend-e2e']['result']='skipped'",
+            ),
+            "frontend-e2e",
+            "failure",
         ),
         (
             "partial-heavy",
@@ -720,7 +745,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
                 "overwrite": True,
             }
     check_job = jobs["check"]
-    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     coverage_job = covered_workflow["jobs"]["coverage-report"]
     covered_matrix = covered_workflow["jobs"]["coverage-shards"]
     covered_jobs = []
@@ -1302,6 +1327,7 @@ else:
         "check-unit",
         "check-integration",
         "check-affected",
+        "frontend-e2e",
     ]
     assert check_job["if"] == "always()"
     assert "cancelled" not in check_job["if"]
@@ -1379,7 +1405,15 @@ else:
         assert run_step["env"]["COVERAGE_FILE"].endswith(
             f"coverage-{row['lane']}-{row['shard']}.data"
         )
-    assert covered_workflow["env"]["CI_COVERAGE"] == "1"
+    assert all(
+        covered_workflow["jobs"][name]["env"]["CI_COVERAGE"] == "1"
+        for name in (
+            "coverage-inventory",
+            "coverage-shards",
+            "coverage-preflight",
+            "coverage-report",
+        )
+    )
     assert len(covered_jobs) == 11
     assert not any(
         "coverage-data" in str(step)
@@ -1581,49 +1615,6 @@ else:
                 f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
                 "and full setup/recovery headroom"
             )
-    migration_workflow = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/migration-chain-main.yml").read_text()
-    )
-    assert migration_workflow["permissions"] == {"contents": "read"}
-    # PyYAML's YAML1.1 interprets the GitHub `on` key as True.
-    events = migration_workflow[True]
-    assert events["workflow_dispatch"]["inputs"]["image-size-diagnostic"]["default"] is False
-    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
-    ordinary = migration_workflow["jobs"]["migration-chain-head"]
-    assert (
-        ordinary["if"]
-        == "github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])"
-    )
-    assert ordinary["timeout-minutes"] == 14
-    diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]
-    assert (
-        diagnostic["if"]
-        == "github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']"
-    )
-    assert diagnostic["timeout-minutes"] == 60
-    assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
-    assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
-    assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
-    # Both source-bound manual doors refuse a simultaneous request before any
-    # image preparation. Push/default dispatch retains the ordinary migration.
-    for job in (diagnostic, migration_workflow["jobs"]["offline-route-a-build-proof"]):
-        refusal = _workflow_step(job=job, name="Reject conflicting manual build modes")
-        for other_mode, expected in (("false", 0), ("", 0), ("true", 2)):
-            result = subprocess.run(
-                ["bash", "-eu", "-c", refusal["run"]],
-                env={**os.environ, "OTHER_BUILD_MODE": other_mode},
-                capture_output=True,
-                timeout=5,
-            )
-            assert result.returncode == expected
-    assert migration_workflow["jobs"]["offline-route-a-build-proof"]["timeout-minutes"] == 45
-    guard = diagnostic["steps"][2]
-    assert guard["name"] == "Reject conflicting manual build modes"
-    assert guard["env"] == {"OTHER_BUILD_MODE": "${{ inputs['offline-route-a-build-proof'] }}"}
-    assert "exit 2" in guard["run"] and '"${OTHER_BUILD_MODE}" = "true"' in guard["run"]
-    diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
-    assert "ci_image_size_diagnostic.py" in diagnostic_shell
-    assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]
@@ -1633,9 +1624,7 @@ else:
     assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
     assert "--timeout=300 --timeout-method=thread" in nightly_shell
 
-    schedules = yaml.safe_load((REPO_ROOT / ".github/workflows/e2e-main-schedule.yml").read_text())
-    browser_jobs = [jobs["frontend-e2e"], schedules["jobs"]["frontend-e2e"]]
-    for browser_job in browser_jobs:
+    for browser_job in [jobs["frontend-e2e"]]:
         version_step = _workflow_step(job=browser_job, name="Resolve locked Playwright version")
         assert "npm run --silent test:e2e:cache-version" in version_step["run"]
         cache = _workflow_step(job=browser_job, name="Cache locked Playwright browsers")
@@ -1711,36 +1700,28 @@ def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
 
 def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> None:
     """REQ-ci-shard-assurance-006: the real covered producer and publish gates."""
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
+    # Coverage runs only in the nightly schedule/manual workflow (bu-w72da2 = A).
     triggers = workflow[True]
-    assert set(triggers) == {"schedule", "workflow_dispatch", "pull_request"}
-    assert triggers["schedule"] == [{"cron": "37 19 * * *"}]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
     assert "pull_request_target" not in triggers
-    paths = triggers["pull_request"]["paths"]
-    for path in (
-        ".github/workflows/ci.yml",
-        ".github/workflows/ci-coverage.yml",
-        "scripts/check_ci_coverage.py",
-        "scripts/check_ci_test_shards.py",
-        "scripts/ci_partition.py",
-        "scripts/ci_weight_candidates.py",
-        "scripts/install_ci_uv.py",
-        ".github/ci-test-weights.json",
-        "tests/contracts/test_ci_test_targets.py",
-        "pyproject.toml",
-        "uv.lock",
-        "conftest.py",
-    ):
-        assert path in paths
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["env"]["CI_COVERAGE"] == "1"
     jobs = workflow["jobs"]
-    assert set(jobs) == {
+    assert {
         "coverage-inventory",
         "coverage-shards",
         "coverage-preflight",
         "coverage-report",
-    }
+    } <= set(jobs)
+    assert all(
+        jobs[name]["env"]["CI_COVERAGE"] == "1"
+        for name in (
+            "coverage-inventory",
+            "coverage-shards",
+            "coverage-preflight",
+            "coverage-report",
+        )
+    )
     assert "needs" not in jobs["coverage-inventory"]
     shards = jobs["coverage-shards"]
     assert shards["needs"] == ["coverage-inventory"]
@@ -1909,7 +1890,7 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
     )
     assert action["runs"]["using"] == "composite"
-    assert action["inputs"]["request-observer"]["default"] == "false"
+    assert "inputs" not in action
     action_steps = {"steps": action["runs"]["steps"]}
     original = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
         "guards"
@@ -1920,7 +1901,6 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         "Compute exact environment cache key",
         "Restore advisory environment cache",
         "Install dependencies",
-        "Install request file-access observer",
     ):
         actual = _workflow_step(job=action_steps, name=name)
         old = _workflow_step(job=original, name=name)
@@ -1928,7 +1908,8 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         assert actual.get("with") == old.get("with")
     assert all(
         any(step.get("uses") == "./.github/actions/ci-python-environment" for step in job["steps"])
-        for job in jobs.values()
+        for name, job in jobs.items()
+        if name.startswith("coverage-")
     )
 
 
@@ -2061,7 +2042,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             for lane, index in specs
         },
     }
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     fixed = _workflow_step(
         job=workflow["jobs"]["coverage-report"],
         name="Combine coverage from all independent test shards",
@@ -2170,7 +2151,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             payload[field] = value
             metadata.write_text(json.dumps(payload))
         run("fixed-" + case, fixed, 2)
-    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     covered = _workflow_step(
         job=covered_workflow["jobs"]["coverage-report"],
         name="Combine coverage from all independent test shards",

@@ -1044,7 +1044,7 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
     profile["origin"] = {
         **inventory["identity"],
         "repository": "fixture/repo",
-        "workflow": "CI coverage assurance",
+        "workflow": "Nightly Tests",
         "run": "123",
         "attempt": "1",
         "event": "workflow_dispatch",
@@ -1056,7 +1056,7 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         "provenance": {"failure": None, "selected_run": coordinates},
         "source": {
             "repository": "fixture/repo",
-            "workflow": ".github/workflows/ci-coverage.yml",
+            "workflow": ".github/workflows/nightly.yml",
             "branch": "main",
             "event": "workflow_dispatch",
             **coordinates,
@@ -1209,8 +1209,8 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         "head_branch": "main",
         "head_repository": {"full_name": "fixture/repo"},
         "repository": {"full_name": "fixture/repo"},
-        "path": ".github/workflows/ci-coverage.yml",
-        "name": "CI coverage assurance",
+        "path": ".github/workflows/nightly.yml",
+        "name": "Nightly Tests",
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",

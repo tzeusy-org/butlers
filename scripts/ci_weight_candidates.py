@@ -35,6 +35,11 @@ from ci_partition import (
     weight_runtime,
 )
 
+# Full covered execution runs in the nightly workflow (owner decision bu-w72da2 = A).
+COVERED_WORKFLOW_FILE = "nightly.yml"
+COVERED_WORKFLOW_PATH = f".github/workflows/{COVERED_WORKFLOW_FILE}"
+COVERED_WORKFLOW_NAME = "Nightly Tests"
+
 
 class Provenance:
     """Closed diagnostic coordinates, never raw API/exception content or authority."""
@@ -124,7 +129,7 @@ def covered_run(repository: str, trace: Provenance) -> dict:
     for page in range(1, 4):
         attempt = trace.begin("run-index", "run-index", page=page)
         response = api(
-            f"repos/{repository}/actions/workflows/ci-coverage.yml/runs"
+            f"repos/{repository}/actions/workflows/{COVERED_WORKFLOW_FILE}/runs"
             f"?status=success&branch=main&per_page=50&page={page}",
             timeout=5,
         )
@@ -145,8 +150,8 @@ def covered_run(repository: str, trace: Provenance) -> dict:
             and run.get("head_branch") == "main"
             and run.get("head_repository", {}).get("full_name") == repository
             and run.get("repository", {}).get("full_name") == repository
-            and run.get("path") == ".github/workflows/ci-coverage.yml"
-            and run.get("name") == "CI coverage assurance"
+            and run.get("path") == COVERED_WORKFLOW_PATH
+            and run.get("name") == COVERED_WORKFLOW_NAME
             and type(run.get("id")) is int
             and 0 < run["id"] < 10**20
             and type(run.get("run_attempt")) is int
@@ -297,7 +302,7 @@ def candidate(
     if covered and (
         identity["repository"] != repository
         or identity["event"] != run["event"]
-        or identity["workflow"] != "CI coverage assurance"
+        or identity["workflow"] != COVERED_WORKFLOW_NAME
     ):
         raise ValueError("covered source event/workflow mismatch")
     # The explicit historical observer does not rewrite checkout identity or
@@ -377,7 +382,7 @@ def candidate(
                     {
                         "source": {
                             "repository": repository,
-                            "workflow": ".github/workflows/ci-coverage.yml",
+                            "workflow": COVERED_WORKFLOW_PATH,
                             "branch": "main",
                             "event": run["event"],
                             **trace.selected,
@@ -463,11 +468,11 @@ def restored_profile(blob: bytes, prefix: str, repository: str, root: Path) -> t
     if prefix and (
         tracer not in {"CTracer", "SysMonitor"}
         or origin["event"] not in {"schedule", "workflow_dispatch"}
-        or origin["workflow"] != "CI coverage assurance"
+        or origin["workflow"] != COVERED_WORKFLOW_NAME
         or receipt["source"]
         != {
             "repository": repository,
-            "workflow": ".github/workflows/ci-coverage.yml",
+            "workflow": COVERED_WORKFLOW_PATH,
             "branch": "main",
             "event": origin["event"],
             **coordinates,

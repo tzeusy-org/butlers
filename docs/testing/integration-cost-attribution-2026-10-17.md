@@ -2,7 +2,7 @@
 
 The slowest integration child per run has **410s median / 436s nearest-rank p95 job wall**; the slowest integration test command has **385.5s / 414s**. Both exceed the five-minute lane target in this descriptive cohort. Setup dominates the Relationship dedup and optional-schema files; migration bodies remain substantial. These are observations, not measured optimization gains or a passing seven-minute objective. Tests: +0 ~0 -0.
 
-This follows the [2026-10-15 baseline](ci-cost-baseline-2026-10-15.md) with newer untraced hosted phase evidence. The [content-blind data](evidence/2026-10-17-integration-cost-attribution.json) retains run/head/attempt, artifact and receipt SHA-256, projected job/step metadata, source blobs, file phase aggregates and all quantiles. No JUnit, failure text, testcase identifiers, parameters, node hashes, classes or node-to-file maps are committed. No local Docker, profile, secret/provider or cluster operation ran.
+This follows the [2026-10-15 baseline](ci-cost-baseline-2026-10-15.md) with newer untraced hosted phase evidence. The content-blind data, now kept in the cited runs' CI artifacts and in git history before bu-29wkwj.1 rather than committed, retains run/head/attempt, artifact and receipt SHA-256, projected job/step metadata, source blobs, file phase aggregates and all quantiles. No JUnit, failure text, testcase identifiers, parameters, node hashes, classes or node-to-file maps are committed. No local Docker, profile, secret/provider or cluster operation ran.
 
 ## Cohort and method
 
