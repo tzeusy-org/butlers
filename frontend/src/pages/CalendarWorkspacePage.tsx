@@ -15,7 +15,6 @@ import {
   startOfWeek,
 } from "date-fns";
 import { toast } from "sonner";
-import { useSearchParams } from "react-router";
 
 import { Tip } from "@/components/ui/tip";
 
@@ -32,7 +31,6 @@ import type {
   CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceStatusFacet,
   CalendarWorkspaceUserMutationAction,
-  CalendarWorkspaceView,
   CalendarWorkspaceWritableCalendar,
   QuickAddDraft,
   UnifiedCalendarEntry,
@@ -131,6 +129,10 @@ import { ButlerEventDialog } from "@/pages/calendar/ButlerEventDialog";
 import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
 import { useButlerEventEditor } from "@/pages/calendar/use-butler-event-editor";
 import { useButlerLaneActions } from "@/pages/calendar/use-butler-lane-actions";
+import {
+  useCalendarUrlState,
+  useSourceSelectionGuard,
+} from "@/pages/calendar/use-calendar-url-state";
 import { useCalendarSync } from "@/pages/calendar/use-calendar-sync";
 import { useSourceControls } from "@/pages/calendar/use-source-controls";
 import { RecurrenceScopeFieldset } from "@/pages/calendar/RecurrenceScopeFieldset";
@@ -159,18 +161,13 @@ import {
   isPausedEntry,
   isRecurringUserEntry,
   occurrenceImpactText,
-  parseAnchor,
-  parseRange,
-  parseView,
   resolveButlerEventTarget,
   resolveOwnerFromEntry,
-  serializeAnchor,
   shiftAnchor,
   sourceName,
   titleize,
   truncateCalendarId,
   type ButlerLaneRows,
-  type CalendarRange,
   type RecurrenceScope,
 } from "@/pages/calendar/workspace-model";
 
@@ -582,20 +579,18 @@ function CalendarFindTimePanel({
 // ---------------------------------------------------------------------------
 
 export default function CalendarWorkspacePage() {
-  const [searchParams, setSearchParams] = useSearchParams();
 
-  const view = parseView(searchParams.get("view"));
-  const range = parseRange(searchParams.get("range"));
-  const anchor = parseAnchor(searchParams.get("anchor"));
-  const anchorParam = serializeAnchor(anchor);
-  const selectedSourceKey = searchParams.get("source") ?? "all";
-  const selectedCalendarId = searchParams.get("calendar") ?? "all";
-  const selectedStatus = searchParams.get("status") ?? "all";
-  const selectedSourceType = searchParams.get("kind") ?? "all";
-  // Cross-domain overlays are an additive, read-only context layer toggled on
-  // top of the primary user/butler view (not a separate view mode). The toggle
-  // is persisted in the URL so the layered view is shareable.
-  const overlaysEnabled = searchParams.get("overlays") === "1";
+  const {
+    view,
+    range,
+    anchor,
+    selectedSourceKey,
+    selectedCalendarId,
+    selectedStatus,
+    selectedSourceType,
+    overlaysEnabled,
+    updateQuery,
+  } = useCalendarUrlState();
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -1003,131 +998,13 @@ export default function CalendarWorkspacePage() {
     setSelectedEntry(null);
   }
 
-  useEffect(() => {
-    const next = new URLSearchParams(searchParams);
-    let changed = false;
-
-    if (next.get("view") !== view) {
-      next.set("view", view);
-      changed = true;
-    }
-    if (next.get("range") !== range) {
-      next.set("range", range);
-      changed = true;
-    }
-    if (next.get("anchor") !== anchorParam) {
-      next.set("anchor", anchorParam);
-      changed = true;
-    }
-
-    if (view !== "user") {
-      if (next.has("source")) {
-        next.delete("source");
-        changed = true;
-      }
-      if (next.has("calendar")) {
-        next.delete("calendar");
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [anchorParam, range, searchParams, setSearchParams, view]);
-
-  const updateQuery = useCallback(
-    (nextValues: {
-      view?: CalendarWorkspaceView;
-      range?: CalendarRange;
-      anchor?: Date;
-      source?: string;
-      calendar?: string;
-      status?: string;
-      kind?: string;
-      overlays?: boolean;
-    }) => {
-      const next = new URLSearchParams(searchParams);
-
-      if (nextValues.view) next.set("view", nextValues.view);
-      if (nextValues.range) next.set("range", nextValues.range);
-      if (nextValues.anchor)
-        next.set("anchor", serializeAnchor(nextValues.anchor));
-
-      if (nextValues.source !== undefined) {
-        if (!nextValues.source || nextValues.source === "all") {
-          next.delete("source");
-        } else {
-          next.set("source", nextValues.source);
-        }
-      }
-
-      if (nextValues.calendar !== undefined) {
-        if (!nextValues.calendar || nextValues.calendar === "all") {
-          next.delete("calendar");
-        } else {
-          next.set("calendar", nextValues.calendar);
-        }
-      }
-
-      if (nextValues.status !== undefined) {
-        if (!nextValues.status || nextValues.status === "all") {
-          next.delete("status");
-        } else {
-          next.set("status", nextValues.status);
-        }
-      }
-
-      if (nextValues.kind !== undefined) {
-        if (!nextValues.kind || nextValues.kind === "all") {
-          next.delete("kind");
-        } else {
-          next.set("kind", nextValues.kind);
-        }
-      }
-
-      if (nextValues.overlays !== undefined) {
-        if (nextValues.overlays) {
-          next.set("overlays", "1");
-        } else {
-          next.delete("overlays");
-        }
-      }
-
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  useEffect(() => {
-    if (view !== "user") {
-      return;
-    }
-
-    const sourceValid =
-      selectedSourceKey === "all" ||
-      userSources.some((source) => source.source_key === selectedSourceKey);
-    const calendarValid =
-      selectedCalendarId === "all" ||
-      userSources.some((source) => source.calendar_id === selectedCalendarId);
-
-    if (!sourceValid || !calendarValid) {
-      updateQuery({
-        source: sourceValid ? selectedSourceKey : "all",
-        calendar: calendarValid ? selectedCalendarId : "all",
-      });
-      return;
-    }
-
-    if (selectedSourceKey !== "all" && selectedCalendarId !== "all") {
-      const source = userSources.find(
-        (item) => item.source_key === selectedSourceKey,
-      );
-      if (source?.calendar_id !== selectedCalendarId) {
-        updateQuery({ source: "all" });
-      }
-    }
-  }, [selectedCalendarId, selectedSourceKey, updateQuery, userSources, view]);
+  useSourceSelectionGuard({
+    view,
+    selectedSourceKey,
+    selectedCalendarId,
+    userSources,
+    updateQuery,
+  });
 
   // Scroll time grid to default hour when it mounts or the range/anchor changes
   useEffect(() => {
