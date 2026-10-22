@@ -291,20 +291,28 @@ describe("ChatPanel source-specific discovery and search recovery", () => {
     expect(screen.queryByText(/Could not load conversation discovery/)).toBeNull();
   });
 
-  it("keeps implicit new-thread intent after typing then clearing during pending discovery", async () => {
+  it("keeps implicit new-thread intent after enabled typing then clearing during pending discovery refresh", async () => {
     let release!: (response: Response) => void;
-    base = () => new Promise<Response>((resolve) => { release = resolve; });
     const { client } = mount();
-    await waitFor(() => expect(count(BASE)).toBe(1));
+    await settled(client, conversationKeys.list("switchboard"), "success");
+    expect(screen.getByText(EMPTY_THREAD)).toBeTruthy();
+    base = () => new Promise<Response>((resolve) => { release = resolve; });
+    let refresh!: Promise<void>;
+    act(() => { refresh = client.refetchQueries({ queryKey: conversationKeys.list("switchboard"), exact: true }); });
+    await waitFor(() => expect(count(BASE)).toBe(2));
+    expect(client.getQueryState(conversationKeys.list("switchboard"))?.fetchStatus).toBe("fetching");
     const composer = screen.getByRole("textbox", { name: "Type a message..." });
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
     fireEvent.change(composer, { target: { value: "A deliberately new thread" } });
+    expect((composer as HTMLTextAreaElement).value).toBe("A deliberately new thread");
     fireEvent.change(composer, { target: { value: "" } });
-    await act(async () => { release(json([conversation()])); });
+    expect((composer as HTMLTextAreaElement).value).toBe("");
+    await act(async () => { release(json([conversation()])); await refresh; });
     await settled(client, conversationKeys.list("switchboard"), "success");
     expect(screen.getByText("New conversation")).toBeTruthy();
     expect((screen.getByRole("textbox", { name: "Type a message..." }) as HTMLTextAreaElement).value).toBe("");
     expect(count(`${BASE}/existing/messages`)).toBe(0);
-    expect(count(BASE)).toBe(1);
+    expect(count(BASE)).toBe(2);
     expect(screen.getByText(EMPTY_THREAD)).toBeTruthy();
   });
 });
