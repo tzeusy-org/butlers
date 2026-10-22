@@ -22,6 +22,8 @@ it has already been archived.
 - **fold-in**: the change's overlapping deltas move into this change, and the change no longer
   edits that capability.
 - **withdraw**: the change is abandoned unarchived. A recorded owner decision is required.
+- **hold**: the disposition waits on an owner decision; the reason names the recommended
+  option.
 - **archived**: already settled.
 
 The owner column names the bead or PR that carries out the disposition. Where no other epic owns
@@ -29,7 +31,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 
 | Change | Shared capabilities | Disposition | Reason | Owner |
 | --- | --- | --- | --- | --- |
-| `define-dashboard-fast-answer-runtime` | none | withdraw | Adds a dashboard model path outside goals, which D18 forbids. Its implementation PR #4485 was never merged, and the owner-latency need moves to the goal runtime. | owner decision ([HOLD]); successor need `bu-dhloi1.12` |
+| `define-dashboard-fast-answer-runtime` | none | hold | Adds a dashboard model path outside goals, which D18 forbids. Recommended: withdraw, since its implementation PR #4485 was never merged and the owner-latency need moves to the goal runtime. | owner decision ([HOLD]); successor need `bu-dhloi1.12` |
 | `account-security-perception` | domain-event-bus, ingestion-policy | re-scope | Deterministic alert extraction still publishes the security event. Model judgment becomes an admitted goal, and a security label never authenticates a sender. | `bu-u5euwb` |
 | `add-connector-oauth-scope-surface` | connector-base-spec | archive-first | Scope and auth fields are deterministic connector observations. | `bu-u5euwb` |
 | `add-health-workout-last` | butler-health | archive-first | A read-only Health tool that becomes a grant-scoped read capability. | `bu-u5euwb` |
@@ -61,7 +63,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `reconcile-dashboard-conversation-contracts` | ingestion-event-registry | re-scope | A dashboard message admits a goal instead of routing to a target session. Dashboard bodies belong to D19. | `bu-85bqeq` |
 | `recover-ingestion-target-deliveries` | butler-switchboard, conversation-decomposition, ingestion-event-registry, module-pipeline | re-scope | Reasoning ingress becomes one deduplicated goal admission. Legacy target receipts stay readable and drain before the switch. | `bu-mmax8j` |
 | `relationship-fact-effective-time` | butler-relationship, relationship-facts | fold-in | Its temporal fact tools join this change's Relationship tool-surface block. The bitemporal writer contract is unchanged. | `bu-u5euwb`; implementation `bu-h3b7t` |
-| `repair-condensation-request-observation` | testing | archive-first | A CI observation contract; no runtime overlap. | `bu-u5euwb` |
+| `repair-condensation-request-observation` | testing | withdraw | The owner chose to retire the condensation ledger it observes (`bu-lm2b4v` = B); the change is deleted unarchived. | `bu-28av8x.2` |
 | `repair-notification-metadata-read` | core-notify | archive-first | Legacy metadata normalization and bounded repair are deterministic. | `bu-u5euwb` |
 | `repair-telegram-delivery-truth` | core-notify, module-telegram | archive-first | Delivery truth stays with Messenger's service-plane endpoint. | `bu-u5euwb` |
 | `repair-whatsapp-identity-reconciliation` | connector-base-spec, conversation-decomposition, switchboard-identity | re-scope | Speaker attribution stays. Model decomposition and fan-out become deterministic span preservation into one goal. | `bu-wda3im` |
@@ -127,6 +129,6 @@ surviving scenarios unless this change removes the requirement.
 | Bead | Disposition |
 | --- | --- |
 | `bu-p6v8k` (Telegram sticky routing) | Obsolete at the switch. Owner replies join goals through admission, and `specify-telegram-continuity-routed-context-contract` retires sticky affinity. |
-| `bu-0ynlk.6` (in-process dashboard answers) | Superseded by D18 and D19. PR #4485 stays unmerged, `define-dashboard-fast-answer-runtime` is withdrawn pending the owner decision, and owner latency moves to `bu-dhloi1.12`. |
+| `bu-0ynlk.6` (in-process dashboard answers) | Superseded by D18 and D19. PR #4485 stays unmerged, `define-dashboard-fast-answer-runtime` is on hold pending the owner decision (recommended: withdraw), and owner latency moves to `bu-dhloi1.12`. |
 | `bu-2jtfw.9.4` (General capture admission and routing) | Capture classification becomes goal admission through the `compose-general-capture-with-private-custody` fold-in. The capture ledger and receipts remain. |
 | `bu-60pwv6.6` (split oversized dashboard specs) | Superseded by `bu-lsxqb0.20`. The dashboard capabilities belong to the D19 change, not this one. |
