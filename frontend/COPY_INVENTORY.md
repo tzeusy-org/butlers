@@ -2396,6 +2396,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/chat/ChatPanel.tsx`
 
+- Showing cached conversations; this list may be out of date.
+- conversation discovery
 - conversation history
 - Previous conversation
 - Next conversation

@@ -58,6 +58,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [hasNewConversationIntent, setHasNewConversationIntent] = useState(false);
   // Set by a message-search jump-to-message result (bu-qaisp, parity with
   // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
   // has rendered (see the effect below).
@@ -76,8 +77,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const pricingMap = pricingMapData ?? null;
 
   // Fetch conversations list
-  const { data: conversationsData, isLoading: isLoadingConversations } =
-    useConversations(butlerName);
+  const {
+    data: conversationsData,
+    isLoading: isLoadingConversations,
+    isError: isConversationsError,
+    refetch: refetchConversations,
+  } = useConversations(butlerName);
   const conversations: ConversationSummary[] = useMemo(
     () => conversationsData?.data ?? [],
     [conversationsData],
@@ -131,6 +136,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   function switchConversation(direction: 1 | -1) {
     if (conversations.length === 0) return;
     draft.dismiss(() => {
+    hasResumedRef.current = true;
+    setHasNewConversationIntent(false);
     abandonCurrentStream();
     const idx = conversations.findIndex((c) => c.id === activeConversationId);
     if (direction === -1) {
@@ -202,6 +209,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     previousButlerNameRef.current = butlerName;
     abandonCurrentStream();
     hasResumedRef.current = false;
+    setHasNewConversationIntent(false);
     setActiveConversationId(null);
     resetTurnState();
   }, [butlerName, abandonCurrentStream, resetTurnState]);
@@ -238,6 +246,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   function handleNewConversation() {
     draft.dismiss(() => {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
       abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
@@ -258,6 +268,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       ? streaming.dispatchReceipt
       : undefined;
 
+  // No selected history is not proof of an empty thread while initial
+  // discovery is unknown (or its first row is about to auto-resume).
+  // Deliberately choosing New establishes a fresh composer independently.
+  const unresolvedDiscovery = activeConversationId === null && !hasNewConversationIntent &&
+    (conversationsData === undefined || isConversationsError || conversations.length > 0);
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar */}
@@ -266,6 +282,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         activeConversationId={activeConversationId}
         onSelectConversation={(id, messageId) => {
           draft.dismiss(() => {
+          hasResumedRef.current = true;
+          setHasNewConversationIntent(false);
           abandonCurrentStream();
           setActiveConversationId(id);
           setPendingScrollMessageId(messageId ?? null);
@@ -285,7 +303,22 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           routedButler={visibleDispatchReceipt?.routedButler}
         />
 
-        {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
+        {isConversationsError && (
+          <div>
+            <ConversationReadError
+              label="conversation discovery"
+              onRetry={() => void refetchConversations()}
+            />
+            {conversationsData && (
+              <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+                Showing cached conversations; this list may be out of date.
+              </p>
+            )}
+          </div>
+        )}
+
+        {(isLoadingConversations && unresolvedDiscovery) ||
+          (isLoadingMessages && activeConversationId && visibleMessages.length === 0) ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
@@ -293,7 +326,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
-            suppressEmptyState={isMessagesError}
+            suppressEmptyState={isMessagesError || unresolvedDiscovery}
           />
         )}
 
