@@ -736,9 +736,10 @@ call, no rule can be created for the capability, the gate's owner-directed
 auto-approve does not apply, and its approvals never count toward promotion.
 The per-event approval is the owner's approval of the parked call or of the
 owner's edit, the owner's own submit on the owner surface, or one "Approve all"
-tap on a decision set that shows the item's exact call and recipients; an
-approved wait envelope never pre-approves a later call. The mode adds nothing
-to any ceiling. `calendar_respond` declares it (owner item 3), and so do
+tap on a decision set that shows every item's exact call and recipients with
+per-item untick; an approved wait envelope never pre-approves a later call.
+The mode adds nothing to any ceiling. `calendar_respond` declares it
+(author-detail item 3), and so do
 capabilities whose effects must always be the owner's own act, such as
 confirming an owner checklist revision.
 
