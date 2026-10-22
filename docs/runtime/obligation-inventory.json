@@ -379,7 +379,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
+      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
       "butler": "general",
       "name": "eod-tomorrow-prep",
       "dispatch_mode": "prompt",
@@ -390,7 +390,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
+      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
       "butler": "general",
       "name": "collect_briefing_contributions",
       "dispatch_mode": "job",
@@ -400,7 +400,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "3ece22cd534800c7c6450d0335961bd366de8fdeca1fdfecd499fd8d5b3fc46b",
+      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
       "butler": "general",
       "name": "context_producer_calendar",
       "dispatch_mode": "job",
