@@ -27,7 +27,7 @@ export type AvailabilityBadgeState = (
     source: 'discovery' | 'summary'
     stale: boolean
     retrying: boolean
-    retry: () => Promise<unknown>
+    retry: () => Promise<boolean>
   }
 }
 
@@ -64,7 +64,7 @@ export function useQaEscalationsBadge(options?: { sourceDetails?: boolean }): Av
         source,
         stale: query.data !== undefined,
         retrying: query.isFetching,
-        retry: () => query.refetch(),
+        retry: async () => (await query.refetch()).isSuccess,
       },
     }
   }

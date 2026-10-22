@@ -192,10 +192,10 @@ function QaBadgeFeedback({
         disabled={feedback.retrying}
         onClick={async (event) => {
           const button = event.currentTarget
-          await feedback.retry()
+          const recovered = await feedback.retry()
           // When recovery removes the focused retry, return to its destination.
           // A deliberate focus move or an auth-unmounted link is left alone.
-          if (document.activeElement === button || (!button.isConnected && document.activeElement === document.body)) {
+          if (recovered && (document.activeElement === button || (!button.isConnected && document.activeElement === document.body))) {
             linkRef.current?.focus()
           }
         }}

@@ -108,9 +108,13 @@ describe("QA badge prerequisite failure and real source retry", () => {
     expect(document.activeElement).toBe(button);
     expect(screen.getByRole("link", { name: /^QA/ }).getAttribute("href")).toBe("/qa");
     expect(document.body.textContent).not.toContain("diagnostic-detail");
-    rosterStatus = 200;
     await userEvent.setup().keyboard("{Enter}");
     await waitFor(() => expect(calls.roster).toBe(2));
+    await waitFor(() => expect(retry("discovery").hasAttribute("disabled")).toBe(false));
+    expect(document.activeElement).toBe(retry("discovery"));
+    rosterStatus = 200;
+    await userEvent.setup().keyboard("{Enter}");
+    await waitFor(() => expect(calls.roster).toBe(3));
     await waitFor(() => expect(calls.summary).toBe(1));
     await waitFor(() => expect(screen.queryByText("QA discovery unavailable")).toBeNull());
     expect(screen.getByText("7")).toBeTruthy();
