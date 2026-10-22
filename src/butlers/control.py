@@ -52,6 +52,22 @@ def check_private_key_absent(profile: str, *, environment: Mapping[str, str] | N
         ) from None
 
 
+# Literal per-store queries keep both relations visible to the schema-reach contract.
+# Only the metadata column ``secret_key`` is read; no secret value is selected.
+_STORED_PRIVATE_KEY_PROBES = (
+    (
+        "switchboard.butler_secrets",
+        "SELECT EXISTS (SELECT 1 FROM switchboard.butler_secrets "
+        "WHERE starts_with(UPPER(secret_key), $1::text))",
+    ),
+    (
+        "public.butler_secrets",
+        "SELECT EXISTS (SELECT 1 FROM public.butler_secrets "
+        "WHERE starts_with(UPPER(secret_key), $1::text))",
+    ),
+)
+
+
 async def check_stored_private_key_absent(pool: Any) -> None:
     """Reject forbidden credential metadata without selecting secret values.
 
@@ -60,13 +76,9 @@ async def check_stored_private_key_absent(pool: Any) -> None:
     Tables can be absent on first boot before migrations have created them.
     """
     try:
-        for table in ("switchboard.butler_secrets", "public.butler_secrets"):
+        for table, query in _STORED_PRIVATE_KEY_PROBES:
             if await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", table):
-                if await pool.fetchval(
-                    f"SELECT EXISTS (SELECT 1 FROM {table} "
-                    "WHERE starts_with(UPPER(secret_key), $1::text))",
-                    _PRIVATE_KEY_NAME,
-                ):
+                if await pool.fetchval(query, _PRIVATE_KEY_NAME):
                     raise StageConfigurationError(
                         "KEY_ABSENT_STAGE: private-key configuration is forbidden"
                     )

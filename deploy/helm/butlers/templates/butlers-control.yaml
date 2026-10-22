@@ -37,6 +37,8 @@ spec:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
             - {name: BUTLERS_HOST, value: butlers-up}
+            # Switchboard's own identity target resolves here, not on butlers-up.
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "1"}

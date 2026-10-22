@@ -631,6 +631,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.media_refs",
     ): "burn-down: existing switchboard.media_refs coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/control.py",
+        "switchboard.butler_secrets",
+    ): "sanctioned:RFC-0038: KEY_ABSENT_STAGE startup refuses when Switchboard's own secret store holds GOAL private-key metadata (secret_key names only, never values); public.butler_secrets is checked beside it",
+    (
         "src/butlers/core/condition_ledger.py",
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",

@@ -1104,6 +1104,10 @@ def test_key_absent_control_workload_and_session_network_contract():
     for probe in ("readinessProbe", "startupProbe", "livenessProbe"):
         assert control_container[probe]["httpGet"] == {"path": "/health", "port": "service"}
     assert "--exclude switchboard" in " ".join(domain_container["command"])
+    # Both processes reach Switchboard (including its own identity probe) in control.
+    for container in (control_container, domain_container):
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["SWITCHBOARD_MCP_URL"] == "http://butlers-control:41100/sse"
     ports = docs[("Service", "butlers-control")]["spec"]["ports"]
     assert {(port["name"], port["port"]) for port in ports} == {
         ("service", 41100),

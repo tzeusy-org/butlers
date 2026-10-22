@@ -9,7 +9,11 @@ port 41100. Classification, durable ingestion, routing, notify and deliver retai
 their existing handlers. Domains run in `butlers-up --exclude switchboard`.
 `SWITCHBOARD_MCP_URL` selects control for canonical registered localhost:41100;
 `BUTLERS_HOST` selects domains. Remote registered endpoints remain unchanged.
-Dashboard process facts use each resolved endpoint's host.
+Dashboard process facts use each resolved endpoint's host. The same rule picks
+the Switchboard destination for its private runtime-probe control routes
+(`switchboard_control_base_url`, used by the Dashboard model probes) and for the
+receiver identity probe (`expected_from_roster`, used by the Dashboard shadow
+observer and Switchboard's own registry), so both reach `butlers-control`.
 Configuration loading also resolves an explicit canonical
 `[butler.switchboard].url = "http://localhost:41100/mcp"` before notify,
 heartbeat reconnect, fact-authority admission/recovery and runtime consumers
@@ -29,8 +33,8 @@ when empty or unusable. It enumerates names and queries existence only, never
 reads private values, and refuses metadata errors. Deployments contain no GOAL
 private key reference or fixture; no signer provisioning occurs. This assumes
 trusted source/deployment operators and does not grant a malicious host a
-security boundary. Existing unrelated runtime-probe public verification and
-Dashboard signing remain separate contracts.
+security boundary. Runtime-probe public verification and Dashboard signing
+remain separate contracts; only the probe's network destination moves.
 
 Exactly one control process receives one session slot and one domain process
 receives four. This preserves owner bu-6y6f6m's existing aggregate maximum five
