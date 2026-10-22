@@ -507,6 +507,22 @@
       "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
       "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci-shard-watchdog-diagnostic.yml",
+      "job": "diagnostic-inventory",
+      "installed_timeout_minutes": 35,
+      "state": "provisional finite manual diagnostic inventory; healthy calibration UNKNOWN",
+      "sample_source": "bu-ly3lv5.10.3 adopted live watchdog capture contract; original UV640 nominal reserve plus fresh collection and masking; no timing claim",
+      "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci-shard-watchdog-diagnostic.yml",
+      "job": "diagnostic-unit1",
+      "installed_timeout_minutes": 28,
+      "state": "provisional diagnostic subject retains original unit1 watchdog; healthy calibration UNKNOWN",
+      "sample_source": "bu-ly3lv5.10.3 frozen original PR4484 profile; unchanged 28-minute job and UV640 nominal reserve; no timing claim",
+      "p95_s": null
     }
   ],
   "tests": [
