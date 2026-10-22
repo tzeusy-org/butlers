@@ -1631,42 +1631,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - This week
 - Later
 
-## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
-
-- Loading...
-- Recurrence instrumentation is incomplete. Payment-state claims are paused.
-- No recurrence cadence has been evaluated yet.
-- Recurrence instruments are measurable.
-- No upcoming bills -- you are all clear!
-- No spending data for the last 30 days.
-- Set category
-- Normalize merchant
-- No transactions recorded yet.
-- Date
-- Merchant
-- Category
-- Amount
-- No subscriptions tracked yet.
-- No accounts on file yet -- connect or add an account to see net-worth context.
-- Recurrence signal health
-- Upcoming bills
-- Spending by category
-- Combined category chart
-- e.g. groceries
-- e.g. Whole Foods Market
-- Recent transactions
-- Select all transactions
-- Select transaction {}
-- Subscriptions
-- Accounts
-- Monthly spend
-- Active subscriptions
-- Next bill
-- Top category · 30d
-- This overlays the selected transactions' facts. It does not modify the original transaction records.
-- Updated {} transaction fact{}.
-- Bulk update failed.
-
 ## `frontend/src/components/butler-detail/ButlerFrictionPanel.tsx`
 
 - no friction episodes this period
@@ -1677,40 +1641,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - TODAY
 - 7D
 - 30D
-
-## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
-
-- Collections overview
-- Could not load collections overview.
-- Collections
-- Could not load collections.
-- No collections yet.
-- Name
-- Items
-- Created
-- Previous
-- Next
-- Recent items
-- Could not load recent items.
-- No items yet.
-- Collection sizes
-- Could not load size histogram.
-- No collections to display.
-- Quick actions
-- Create collection
-- Add a new collection to store related items.
-- Description
-- (optional)
-- Cancel
-- Create
-- Some data failed to load. Displayed values may be incomplete.
-- Total collections
-- Total items
-- Recently modified
-- Largest collection
-- Search collections...
-- Collection name
-- What is this collection for?
 
 ## `frontend/src/components/butler-detail/ButlerHealthMeasurementsTab.tsx`
 
@@ -1740,57 +1670,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Weight
 - Steps
 - Sleep duration
-
-## `frontend/src/components/butler-detail/ButlerHomeDevicesTab.tsx`
-
-- Loading...
-- Failed to load device count.
-- Failed to load offline count.
-- Failed to load maintenance count.
-- Failed to load snapshot time.
-- Failed to load device inventory.
-- No devices in snapshot cache.
-- Device
-- Domain
-- Area
-- State
-- Health
-- Failed to load maintenance queue.
-- No maintenance items.
-- Failed to load command log.
-- No commands logged.
-- kWh
-- Failed to load energy data.
-- No energy data available.
-- Failed to load top consumers.
-- No consumer data available.
-- Home Assistant
-- Total devices
-- Offline
-- Overdue maintenance
-- Last snapshot
-- Maintenance queue
-- HA command log
-- Person mappings
-- Active devices
-- Recent commands
-- Energy
-- Top consumers
-
-## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
-
-- Could not load taste overview.
-- Could not load taste verdicts.
-- No taste verdicts recorded yet.
-- Could not load recent works.
-- No works recorded yet.
-- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
-- Taste verdicts
-- Recently added
-- Works tracked
-- All signals
-- Signals (7d)
-- Taste overview
 
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
 
@@ -2057,41 +1936,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. config.theme
 - State key "{}" saved
 
-## `frontend/src/components/butler-detail/ButlerTravelTripsTab.tsx`
-
-- Loading…
-- = now && ms
-- No legs or check-ins in the next 7 days.
-- All clear. No pre-trip actions required.
-- No trips found.
-- Previous
-- Next
-- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
-- Close
-- Trip data unavailable.
-- Destination
-- Dates
-- Traveller party
-- No travellers recorded.
-- Connections
-- Connection data unavailable.
-- No connection on this journey.
-- Alerts
-- Timeline
-- No timeline entries yet.
-- Accommodations
-- Upcoming travel
-- Next departure
-- Active trips
-- Planned trips
-- Open actions
-- Week ahead
-- Week ahead schedule
-- Upcoming checklist
-- Trips roster
-- Trip detail
-- Check-in: {}
-
 ## `frontend/src/components/butler-detail/ButlerVerdictOpener.tsx`
 
 - butler board
@@ -2106,43 +1950,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Sleep sessions · 7d
 - Daily summaries · 7d
 - Google Health: {}
-
-## `frontend/src/components/butler-detail/HomeAtmosphereLocationPanel.tsx`
-
-- The atmosphere feed is stale. Saved coordinates remain available.
-- Latitude
-- Longitude
-- Saving home location...
-- Home location saved. The next scheduled refresh will pick up this change.
-- Loading saved home location...
-- Retry
-- The saved location may be out of date.
-- Atmosphere location
-
-## `frontend/src/components/butler-detail/HomePersonMappingPanel.tsx`
-
-- Remove
-- Add mapping
-- Clear
-- Mapping request was not applied. Check the values and try again.
-- Home Assistant person ID {}
-- Person entity UUID {}
-
-## `frontend/src/components/butler-detail/HomeSafetyWatchPanel.tsx`
-
-- Loading safety sensors
-- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
-- Reload safety sensors
-- No safety sensors declared yet.
-- Could not remove the sensor. It is still being watched.
-- Remove
-- Sensor entity ID
-- Hazard
-- Name in alerts
-- Could not save the sensor. Check the details and try again.
-- Safety sensors
-- Stop watching {}
-- Kitchen leak sensor
 
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
@@ -2175,10 +1982,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
 - Navigate to butler
-
-## `frontend/src/components/butler-detail/atoms.tsx`
-
-- Loading...
 
 ## `frontend/src/components/butlers/BoardFooter.tsx`
 
@@ -2834,6 +2637,76 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Struggling Concepts
 - Struggling concepts
 
+## `frontend/src/components/finance/ButlerFinanceFinancesTab.tsx`
+
+- Loading...
+- Recurrence instrumentation is incomplete. Payment-state claims are paused.
+- No recurrence cadence has been evaluated yet.
+- Recurrence instruments are measurable.
+- No upcoming bills -- you are all clear!
+- No spending data for the last 30 days.
+- Set category
+- Normalize merchant
+- No transactions recorded yet.
+- Date
+- Merchant
+- Category
+- Amount
+- No subscriptions tracked yet.
+- No accounts on file yet -- connect or add an account to see net-worth context.
+- Recurrence signal health
+- Upcoming bills
+- Spending by category
+- Combined category chart
+- e.g. groceries
+- e.g. Whole Foods Market
+- Recent transactions
+- Select all transactions
+- Select transaction {}
+- Subscriptions
+- Accounts
+- Monthly spend
+- Active subscriptions
+- Next bill
+- Top category · 30d
+- This overlays the selected transactions' facts. It does not modify the original transaction records.
+- Updated {} transaction fact{}.
+- Bulk update failed.
+
+## `frontend/src/components/general/ButlerGeneralCollectionsTab.tsx`
+
+- Collections overview
+- Could not load collections overview.
+- Collections
+- Could not load collections.
+- No collections yet.
+- Name
+- Items
+- Created
+- Previous
+- Next
+- Recent items
+- Could not load recent items.
+- No items yet.
+- Collection sizes
+- Could not load size histogram.
+- No collections to display.
+- Quick actions
+- Create collection
+- Add a new collection to store related items.
+- Description
+- (optional)
+- Cancel
+- Create
+- Some data failed to load. Displayed values may be incomplete.
+- Total collections
+- Total items
+- Recently modified
+- Largest collection
+- Search collections...
+- Collection name
+- What is this collection for?
+
 ## `frontend/src/components/general/EntityBrowser.tsx`
 
 - All collections
@@ -3120,6 +2993,79 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Filter by name...
 - Symptom deleted.
 - Failed to delete symptom.
+
+## `frontend/src/components/home/ButlerHomeDevicesTab.tsx`
+
+- Loading...
+- Failed to load device count.
+- Failed to load offline count.
+- Failed to load maintenance count.
+- Failed to load snapshot time.
+- Failed to load device inventory.
+- No devices in snapshot cache.
+- Device
+- Domain
+- Area
+- State
+- Health
+- Failed to load maintenance queue.
+- No maintenance items.
+- Failed to load command log.
+- No commands logged.
+- kWh
+- Failed to load energy data.
+- No energy data available.
+- Failed to load top consumers.
+- No consumer data available.
+- Home Assistant
+- Total devices
+- Offline
+- Overdue maintenance
+- Last snapshot
+- Maintenance queue
+- HA command log
+- Person mappings
+- Active devices
+- Recent commands
+- Energy
+- Top consumers
+
+## `frontend/src/components/home/HomeAtmosphereLocationPanel.tsx`
+
+- The atmosphere feed is stale. Saved coordinates remain available.
+- Latitude
+- Longitude
+- Saving home location...
+- Home location saved. The next scheduled refresh will pick up this change.
+- Loading saved home location...
+- Retry
+- The saved location may be out of date.
+- Atmosphere location
+
+## `frontend/src/components/home/HomePersonMappingPanel.tsx`
+
+- Remove
+- Add mapping
+- Clear
+- Mapping request was not applied. Check the values and try again.
+- Home Assistant person ID {}
+- Person entity UUID {}
+
+## `frontend/src/components/home/HomeSafetyWatchPanel.tsx`
+
+- Loading safety sensors
+- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
+- Reload safety sensors
+- No safety sensors declared yet.
+- Could not remove the sensor. It is still being watched.
+- Remove
+- Sensor entity ID
+- Hazard
+- Name in alerts
+- Could not save the sensor. Check the details and try again.
+- Safety sensors
+- Stop watching {}
+- Kitchen leak sensor
 
 ## `frontend/src/components/ingestion/BatchSettingsCard.tsx`
 
@@ -3536,6 +3482,21 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Spend source unavailable
 - Collapse sidebar
 - Main navigation
+
+## `frontend/src/components/lifestyle/ButlerLifestyleTasteTab.tsx`
+
+- Could not load taste overview.
+- Could not load taste verdicts.
+- No taste verdicts recorded yet.
+- Could not load recent works.
+- No works recorded yet.
+- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
+- Taste verdicts
+- Recently added
+- Works tracked
+- All signals
+- Signals (7d)
+- Taste overview
 
 ## `frontend/src/components/memory/AttentionRail.tsx`
 
@@ -4850,6 +4811,41 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Offline / Quarantined
 - Connectors
 
+## `frontend/src/components/travel/ButlerTravelTripsTab.tsx`
+
+- Loading…
+- = now && ms
+- No legs or check-ins in the next 7 days.
+- All clear. No pre-trip actions required.
+- No trips found.
+- Previous
+- Next
+- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
+- Close
+- Trip data unavailable.
+- Destination
+- Dates
+- Traveller party
+- No travellers recorded.
+- Connections
+- Connection data unavailable.
+- No connection on this journey.
+- Alerts
+- Timeline
+- No timeline entries yet.
+- Accommodations
+- Upcoming travel
+- Next departure
+- Active trips
+- Planned trips
+- Open actions
+- Week ahead
+- Week ahead schedule
+- Upcoming checklist
+- Trips roster
+- Trip detail
+- Check-in: {}
+
 ## `frontend/src/components/ui/Display.tsx`
 
 - Secrets
@@ -4898,6 +4894,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Inventory of every credential the system holds.
 - Nothing waiting.
+
+## `frontend/src/components/ui/atoms.tsx`
+
+- Loading...
 
 ## `frontend/src/components/ui/breadcrumbs-control.tsx`
 

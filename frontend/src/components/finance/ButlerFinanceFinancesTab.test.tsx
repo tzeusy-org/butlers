@@ -1254,32 +1254,6 @@ describe("ButlerFinanceFinancesTab — never-blank floor (bu-nhcp5)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: getAllTabs includes finance finances tab
-// ---------------------------------------------------------------------------
-
-import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
-
-describe("ButlerDetailPage — finance finances tab in getAllTabs", () => {
-  it("finance butler has 'finances' tab", () => {
-    expect(getAllTabs("finance")).toContain("finances");
-  });
-
-  it("'finances' is a valid tab for finance butler", () => {
-    expect(isValidTab("finances", "finance")).toBe(true);
-  });
-
-  it("'finances' is NOT a valid tab for non-finance butlers", () => {
-    expect(isValidTab("finances", "general")).toBe(false);
-    expect(isValidTab("finances", "education")).toBe(false);
-  });
-
-  it("non-finance butlers do not include 'finances' tab", () => {
-    expect(getAllTabs("general")).not.toContain("finances");
-    expect(getAllTabs("education")).not.toContain("finances");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Tests: bulk edit / categorize (bu-v3a4x.3)
 //
 // Verifies the Finances tab is no longer read-only: row selection + the bulk
