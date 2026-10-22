@@ -176,7 +176,10 @@ markers = [
     # (uv fetching from PyPI). Certificate validity is checked against the
     # shifted clock, so a +120d leg fails once the real certificate expires
     # inside the offset -- an artifact of the leg, not of the code under test.
-    "faketime_fragile: Test relies on a timed thread-sync primitive expiring or a live TLS certificate check; deselected only from the faketime matrix legs (see bu-tegqi, bu-29wkwj.6)",
+    # Third case: a test that needs a PostgreSQL statement_timeout/lock_timeout
+    # to fire. Once the shared container runs under the offset, those server
+    # timers never expire (even with FAKETIME_DONT_FAKE_MONOTONIC=1).
+    "faketime_fragile: Test relies on a timed thread-sync primitive expiring, a PostgreSQL statement/lock timeout firing, or a live TLS certificate check; deselected only from the faketime matrix legs (see bu-tegqi, bu-29wkwj.6)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here

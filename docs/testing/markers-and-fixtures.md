@@ -28,8 +28,8 @@ read them there. The semantics that matter:
 - **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs. The
   first mixes Postgres and Python clocks; the shared testcontainer now runs under the same offset,
   so new DB tests do not need it and the existing marks are awaiting re-admission. The second waits
-  on a timed thread primitive or needs a live TLS certificate check, neither of which works under a
-  shifted clock. Everywhere else they run.
+  on a timed thread primitive, needs a PostgreSQL statement or lock timeout to fire, or needs a live
+  TLS certificate check, none of which works under a shifted clock. Everywhere else they run.
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 
