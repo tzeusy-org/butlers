@@ -11,7 +11,7 @@ Connectors are transport adapters that normalize events from external systems (T
 
 ## Envelope Contract
 
-The wire shape is defined by Pydantic models in `roster/switchboard/tools/routing/contracts.py`:
+The wire shape is defined by Pydantic models in `roster/switchboard/tools/contracts.py`:
 `IngestEnvelopeV1` and its blocks `IngestSourceV1`, `IngestEventV1`, `IngestSenderV1`,
 `IngestPayloadV1`, and `IngestControlV1`. The closed vocabularies — `SourceChannel`,
 `SourceProvider`, `PolicyTier`, `IngestionTier` — and the allowed channel-to-provider pairs

@@ -129,7 +129,7 @@ async def test_envelope_passes_parse_ingest_envelope(
     """Telegram user-client envelope must validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     msg = _make_message()
     env = await connector._normalize_to_ingest_v1(msg)
@@ -366,7 +366,7 @@ async def test_large_group_envelope_passes_parse(
     """Large-group envelope with interaction_eligible=False must still validate against schema."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     chat_id = "777"
     connector._participant_count_cache[chat_id] = (50, time.monotonic())

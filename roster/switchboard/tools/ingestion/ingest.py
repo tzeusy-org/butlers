@@ -63,7 +63,7 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
@@ -774,11 +774,9 @@ async def ingest_v1(
     # pin must still be rejected instead of accepted as a harmless duplicate.
     pinned_target = envelope.control.pinned_target
     if pinned_target is not None:
-        from butlers.tools.switchboard.routing.classify import (
-            _load_available_butlers,
-        )
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
 
-        available_butlers = await _load_available_butlers(pool)
+        available_butlers = await load_available_butlers(pool)
         if not any(butler["name"] == pinned_target for butler in available_butlers):
             _ingest_metrics.record_ingest_result(
                 source=envelope.source.channel, outcome="validation_error"

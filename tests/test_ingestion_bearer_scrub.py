@@ -123,8 +123,8 @@ def test_untouched_envelope_is_not_flagged() -> None:
 def test_ingest_helper_records_typed_artifacts_without_the_code() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     text = "Your code is 482913, expires in 10 minutes. Order 12345678."
     envelope = parse_ingest_envelope(
@@ -204,8 +204,8 @@ def test_stored_record_aggressive_mode_only_rewrites_message_content() -> None:
 def test_ingest_helper_leaves_service_sender_metadata_untouched() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     record = _service_record()
     before = json.loads(json.dumps(record))

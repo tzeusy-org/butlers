@@ -22,11 +22,11 @@ from butlers.connectors.spotify import (
 )
 from butlers.ingestion_policy import IngestionPolicyEvaluator
 from butlers.modules.pipeline import MessagePipeline
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 from butlers.tools.switchboard.ingestion.ingest import (
     _build_request_context,
     _run_policy_evaluation,
 )
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
 pytestmark = pytest.mark.unit
 

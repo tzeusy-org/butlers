@@ -161,7 +161,7 @@ class TestConnectorAsTransport:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+        from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
         raw_data = {"text": "hello", "chat_id": 12345, "message_id": 99}
         envelope = {
@@ -227,7 +227,7 @@ class TestConnectorAsTransport:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+        from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
         text = "What are my upcoming bills?"
         envelope = {

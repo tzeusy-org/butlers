@@ -239,7 +239,7 @@ def test_activity_idempotency_key_deterministic() -> None:
 def test_activity_envelope_passes_parse_ingest_envelope() -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = build_activity_envelope(
         machine_id=_MACHINE_ID,

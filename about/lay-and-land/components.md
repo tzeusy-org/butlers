@@ -143,7 +143,8 @@ It runs as a standard ButlerDaemon with additional Switchboard-specific tools.
 | **Triage / Thread Affinity** | `tools/triage/thread_affinity.py` | Assigns incoming messages to existing conversation threads or creates new ones. | Maturing |
 | **Classifier** | `tools/routing/classify.py` | LLM-based message classification. Determines target butler using capability matching, intent detection, and regex heuristics. | Maturing |
 | **Router** | `tools/routing/route.py` | Dispatches classified messages to target butler via MCP `route.execute` call. | Stable |
-| **Contracts** | `tools/routing/contracts.py` | Pydantic models for `ingest.v1` and `route.v1` envelope schemas. Defines source channels, providers, notify channels, and policy tiers. | Stable |
+| **Contracts** | `tools/contracts.py`, `tools/routing/contracts.py` | Pydantic models for the `ingest.v1` and `notify.v1` wire contracts (source channels, providers, notify channels, policy tiers) and, separately, the `route.v1` envelope. | Stable |
+| **Transport outcomes** | `tools/transport.py` | Closed delivery outcome and error-class vocabulary shared by `notify` delivery and the runtime-attention worker. | Stable |
 | **Butler Registry** | `tools/registry/` | Tracks which butlers are online, their capabilities, and liveness state. Eligibility sweep job. | Maturing |
 | **Connector Registry** | `tools/connector/` | Tracks connector instances, heartbeats, and health state. | Maturing |
 | **Identity Resolution** | `tools/identity/` | Maps channel identifiers to known contacts before routing. | Stable |

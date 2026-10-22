@@ -26,15 +26,6 @@ import asyncpg
 
 from butlers.metrics_registry import get_or_create_counter
 from butlers.tools.switchboard.notification.deliver import deliver
-from butlers.tools.switchboard.routing.transport import (
-    CONFIRMED,
-    RECIPIENT_UNAVAILABLE,
-    TRANSPORT_TIMEOUT,
-    TransportOutcome,
-    TransportResult,
-    classify_transport_exception,
-    transport_result_from_envelope,
-)
 from butlers.tools.switchboard.runtime_attention.outbox import (
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -42,6 +33,15 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
     OutboxEpisode,
     RuntimeAttentionOutbox,
     ServiceLease,
+)
+from butlers.tools.switchboard.transport import (
+    CONFIRMED,
+    RECIPIENT_UNAVAILABLE,
+    TRANSPORT_TIMEOUT,
+    TransportOutcome,
+    TransportResult,
+    classify_transport_exception,
+    transport_result_from_envelope,
 )
 
 logger = logging.getLogger(__name__)

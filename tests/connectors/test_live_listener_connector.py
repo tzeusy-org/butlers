@@ -72,7 +72,7 @@ def test_voice_envelope_event_id_includes_device(voice_envelope: dict[str, Any])
 def test_voice_envelope_passes_parse_ingest_envelope(voice_envelope: dict[str, Any]) -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(voice_envelope)

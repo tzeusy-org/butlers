@@ -148,7 +148,7 @@ async def test_build_ingest_envelope_passes_parse_ingest_envelope(
     """Envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     envelope = await gmail_runtime._build_ingest_envelope(_make_message())
     try:
@@ -1170,7 +1170,7 @@ async def test_build_ingest_envelope_treats_bad_header_container_as_empty(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """Malformed headers retain the email with documented subject/sender fallbacks."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = None
@@ -1198,7 +1198,7 @@ async def test_build_ingest_envelope_skips_nested_multipart_parts_none(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """A null nested MIME parts collection does not drop the email."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {
@@ -1230,7 +1230,7 @@ async def test_build_ingest_envelope_skips_nested_multipart_malformed_parts(
     malformed_parts: Any,
 ) -> None:
     """Malformed nested MIME parts do not prevent the email from reaching ingest."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {
@@ -1257,7 +1257,7 @@ async def test_build_ingest_envelope_skips_nested_attachment_body_none(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """A null nested attachment body does not drop the email."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {

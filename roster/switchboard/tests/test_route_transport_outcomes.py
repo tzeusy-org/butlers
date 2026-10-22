@@ -21,7 +21,7 @@ import pytest
 from butlers.core.approval_delivery_transport import TrustedRecoveryContext
 from butlers.tools.switchboard.notification.deliver import deliver
 from butlers.tools.switchboard.routing.route import route
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     TransportErrorClass,
     TransportErrorDetail,
     TransportNotAttempted,
@@ -64,7 +64,7 @@ def _resolves_target() -> Any:
 
 class TestTransportVocabulary:
     def test_only_not_attempted_is_retryable(self) -> None:
-        transport = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport = sys.modules["butlers.tools.switchboard.transport"]
 
         assert transport.RECIPIENT_UNAVAILABLE.retryable is True
         assert transport.POLICY_DENIED.retryable is True
@@ -129,7 +129,7 @@ class TestTransportVocabulary:
         )
 
     def test_envelope_roundtrip(self) -> None:
-        transport = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport = sys.modules["butlers.tools.switchboard.transport"]
 
         for result in (
             transport.CONFIRMED,
@@ -1049,7 +1049,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_uncertain_route_failure_is_not_reported_as_retryable(self) -> None:
         pool = _mock_pool()
-        transport_mod = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport_mod = sys.modules["butlers.tools.switchboard.transport"]
 
         route_result = {
             "error": "TimeoutError: deadline",
@@ -1075,7 +1075,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_pre_send_failure_stays_distinguishable(self) -> None:
         pool = _mock_pool()
-        transport_mod = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport_mod = sys.modules["butlers.tools.switchboard.transport"]
 
         route_result = {
             "error": "Butler 'messenger' not found in registry",
