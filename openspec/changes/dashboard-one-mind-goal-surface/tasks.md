@@ -31,3 +31,9 @@
 - [ ] 4.6 Qualify all five amended synthetic mocks across light/dark, desktop/tablet/phone, native pointer/keyboard, Hold/release/unknown/partial status and research disclosure/coverage, including only-Theme theme changes, Dispatch statuses/rows/commit pills, 44×44 coarse targets, contrast and focus/content access.
 - [ ] 4.7 Retain immutable complete default before/after authoring diagnostics and automatic populations, require owned affected-authoring PASS against native1c4c with all owned errors resolved, and run exact strict/overwrite/full guards/fresh inventory/budgets/knip/hygiene on final bytes without a debt reset or product test.
 - [ ] 4.8 Obtain a normal private exact-source checkpoint and fresh independent whole-boundary review before ROOT releases publication; final PR/hosted checks and the existing bu-xmd7yu HOLD sequence remain outstanding.
+
+## 5. Gap amendment (bu-85bqeq.1)
+
+- [x] 5.1 Add REQ-dashboard-goal-continuity-007 (cross-channel continuation by reference) and REQ-dashboard-goal-continuity-008 (typed knowledge gaps in the read-only answer lane, aligned with ask-once-knowledge-gaps and bu-q7vx1q.70).
+- [x] 5.2 Add REQ-dashboard-regions-005 (Situations view), REQ-dashboard-regions-006 (standing orders listing) and REQ-dashboard-regions-007 (page verbs from one registry).
+- [ ] 5.3 Owner answers the cross-channel continuation question and adopts the amendment by merging; on "no", replace REQ-dashboard-goal-continuity-007 with a separate-threads statement before merge.

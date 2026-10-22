@@ -209,8 +209,87 @@ Scope: post-v1
 - **WHEN** an ingestion ledger, calendar entry/audit or episode is read
 - **THEN** its status taxonomy, channels/range/search/saved-view/filter/cursor behavior and exact domain IDs remain, source degradation stays named, and nullable historical session provenance is preserved as historical rather than forged goal lineage.
 
+### Requirement: Cross-channel thread continuation by reference
+
+After the signed D19 design and the existing program M6 cutover, the owner SHALL be able to continue a goal thread on another owner channel, in either direction between the dashboard and an owner-authenticated messaging channel, by reference to the same goal and thread rather than by copying or resuming runtime state. A continuation request SHALL post one owner-only notice through the existing `notify()` owner path that names the goal and carries a stable reference back to its thread; a reply to that notice SHALL join the referenced goal through the immutable outbound binding of REQ-dashboard-goal-continuity-002, and genuine new intent SHALL become a new goal with the bounded prior context of that thread. Continuation SHALL NOT reuse a provider session, resume a spawner session, duplicate the goal, or widen its grant. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
+
+ID: REQ-dashboard-goal-continuity-007
+Source: RFC 0038 D19 and owner decision 11; RFC 0038 D9, D11, D14; REQ-dashboard-goal-continuity-002; bu-85bqeq.1 cross-channel handoff question (pending owner adoption)
+Scope: post-v1
+
+#### Scenario: Continue a dashboard thread on the phone
+
+- **WHEN** the owner asks to continue an open dashboard goal thread on their messaging channel
+- **THEN** exactly one owner-only notice is posted there naming the goal with a reference to its thread, the dashboard thread records the continuation as a receipt, and both channels show the same goal identity and state.
+
+#### Scenario: Continue a phone thread on the dashboard
+
+- **WHEN** the owner opens the reference from a messaging-channel goal on the dashboard
+- **THEN** the dashboard shows that goal's thread, receipts and pending prompts; it creates no new goal and replays no earlier action.
+
+#### Scenario: Reply on the other channel joins the goal
+
+- **WHEN** the owner replies to the continuation notice
+- **THEN** the reply joins the referenced goal through its immutable binding if that goal still accepts input; otherwise it is admitted as new intent with bounded prior context from the referenced thread.
+
+#### Scenario: No runtime resume
+
+- **WHEN** a continued goal needs further model work
+- **THEN** the runtime starts a fresh admitted invocation under the goal's existing grant and budgets; no `provider_session_id`, spawner session or channel-specific context store is reused or copied.
+
+#### Scenario: Terminal or stopped goal
+
+- **WHEN** the owner continues a goal that is completed, failed or stopped
+- **THEN** the other channel shows its terminal receipt only; the goal does not reopen and no parked effect becomes eligible again.
+
+#### Scenario: Repeated or non-owner continuation
+
+- **WHEN** a continuation request repeats, or a request arrives from a sender that is not owner-authenticated
+- **THEN** a repeat returns the existing continuation receipt without a second notice, and a non-owner request records no continuation and sends nothing.
+
+
+### Requirement: Read-only answers record typed knowledge gaps
+
+After the signed D19 design and the existing program M6 cutover, a read-only answer goal that cannot cite a source for a named entity and predicate SHALL decline honestly and MAY record one typed knowledge gap (`entity_id`, `predicate`) instead of guessing. Recording SHALL use the memory module's owner knowledge-gap store and hook defined by the active `ask-once-knowledge-gaps` change, not a second gap store. The gap origin (goal, thread, request and channel) SHALL come from the goal's server-side owner-channel provenance rather than from model arguments, and capture SHALL be limited to owner-authenticated channels. A later answering fact SHALL post one notice into each origin thread under that change's delivery contract. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
+
+ID: REQ-dashboard-goal-continuity-008
+Source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11; REQ-dashboard-goal-continuity-004; active ask-once-knowledge-gaps change (module-memory owner knowledge gaps, butler-switchboard answer-lane decline); bu-q7vx1q.70
+Scope: post-v1
+
+#### Scenario: Unknown fact becomes a gap, not a guess
+
+- **WHEN** an owner question asks for a predicate of a named entity and no consulted source holds it
+- **THEN** the answer says it does not know, cites no invented source, states no guessed value, and records one open gap for that entity and predicate with the goal's thread as its origin.
+
+#### Scenario: Sourced answer records no gap
+
+- **WHEN** the answer cites one or more consulted sources
+- **THEN** no gap is recorded, and a gap supplied alongside sources is refused while the answer still persists.
+
+#### Scenario: Origin is server-derived
+
+- **WHEN** a decline records a gap
+- **THEN** the origin goal, thread, request and channel come from the admitted goal's provenance; model-supplied origin fields are ignored.
+
+#### Scenario: Non-owner sender records nothing
+
+- **WHEN** a question arrives from a sender that is not owner-authenticated
+- **THEN** the decline proceeds under that channel's rules and no gap or origin row is recorded.
+
+#### Scenario: Gap capture failure does not block the answer
+
+- **WHEN** the memory module is absent or the gap write fails
+- **THEN** the decline still reaches the owner and the goal receipt shows the gap as unavailable or failed.
+
+#### Scenario: A later fact answers the gap in its origin thread
+
+- **WHEN** a fact write answers an open gap
+- **THEN** each origin thread receives exactly one notice through its own channel, attributed by the closing fact's server-stamped authority; the original read-only goal is not reopened.
+
+
 ## Source References
 
 - Non-Negotiable Rules 1, 3, 4 and 6 in about/heart-and-soul/vision.md.
 - RFC 0038 D19 and owner decision 11; further exact decisions and current source boundaries remain the per-requirement Source fields.
 - Requirement-level source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md
+- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; the active ask-once-knowledge-gaps change for knowledge-gap capture; pending owner adoption.
