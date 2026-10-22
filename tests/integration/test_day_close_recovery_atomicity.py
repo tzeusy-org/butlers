@@ -138,7 +138,8 @@ async def test_migrated_exact_recovery_is_idempotent_and_source_drift_refuses(po
 
 async def wait_for_lock(pool, table):
     async with asyncio.timeout(5):
-        while not await pool.fetchval(
+        # PostgreSQL lock waits have no Python event; keep this bounded real-DB witness.
+        while not await pool.fetchval(  # noqa: ASYNC110
             "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database()"
             " AND wait_event_type = 'Lock' AND query LIKE $1 AND pid <> pg_backend_pid())",
             f"%{table}%",
