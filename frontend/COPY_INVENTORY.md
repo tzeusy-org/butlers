@@ -3629,6 +3629,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expired retention
 - Catalog drift
 
+## `frontend/src/components/memory/MemoryProvenanceLine.tsx`
+
+- told me
+- · Source:
+- Endorsed by
+- Guidance waiting for you
+- Source attribution
+
 ## `frontend/src/components/memory/MemorySearch.tsx`
 
 - Search memory
@@ -3640,6 +3648,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/memory/RulesRegister.tsx`
 
+- Guidance waiting for you
+- Show all guidance
 - Rule: {}
 - Rules
 - standing orders
