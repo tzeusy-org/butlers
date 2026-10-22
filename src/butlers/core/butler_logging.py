@@ -42,6 +42,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from butlers.db import schema_search_path
+
 logger = logging.getLogger(__name__)
 
 # Ordered list of severity levels for >= comparisons.
@@ -73,6 +75,11 @@ class ButlerLogger:
         Default ``"INFO"`` — DEBUG lines are not written unless explicitly
         lowered.
     """
+
+    # Direct construction retains the legacy diagnostic/search-path contract.
+    # Configured daemons select their owned relation through create_butler_logger.
+    _owning_schema: str | None = None
+    _log_table = "butler_logs"
 
     def __init__(
         self,
@@ -189,10 +196,16 @@ class ButlerLogger:
 
         try:
             async with self._pool.acquire() as conn:
+                if self._owning_schema is not None:
+                    role_matches = await conn.fetchval(
+                        "SELECT current_user = $1", f"butler_{self._owning_schema}_rw"
+                    )
+                    if role_matches is not True:
+                        raise RuntimeError("Structured log runtime role is not verified")
                 if ts is not None:
                     await conn.execute(
-                        """
-                        INSERT INTO butler_logs (ts, level, msg, source, request_id, metadata)
+                        f"""
+                        INSERT INTO {self._log_table} (ts, level, msg, source, request_id, metadata)
                         VALUES ($1, $2, $3, $4, $5::uuid, $6)
                         """,
                         ts,
@@ -204,8 +217,8 @@ class ButlerLogger:
                     )
                 else:
                     await conn.execute(
-                        """
-                        INSERT INTO butler_logs (level, msg, source, request_id, metadata)
+                        f"""
+                        INSERT INTO {self._log_table} (level, msg, source, request_id, metadata)
                         VALUES ($1, $2, $3, $4::uuid, $5)
                         """,
                         norm_level,
@@ -220,6 +233,28 @@ class ButlerLogger:
                 self._schema,
                 exc_info=True,
             )
+
+
+def create_butler_logger(
+    pool: Any,
+    schema: str,
+    min_level: str = "INFO",
+    *,
+    owning_schema: str,
+) -> ButlerLogger:
+    """Select configured owning storage without changing the legacy constructor.
+
+    ``schema`` remains the diagnostic label. The independently validated actual
+    configuration supplies the qualified table and existing acquisition role.
+    This grants no privilege and preserves visible nonfatal write failures.
+    """
+    path = schema_search_path(owning_schema)
+    if path is None:
+        raise ValueError("Configured log storage requires an owning schema")
+    result = ButlerLogger(pool=pool, schema=schema, min_level=min_level)
+    result._owning_schema = path.split(",", 1)[0]
+    result._log_table = f'"{result._owning_schema}".butler_logs'
+    return result
 
 
 # ---------------------------------------------------------------------------
