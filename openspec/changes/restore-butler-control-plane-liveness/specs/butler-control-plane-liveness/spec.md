@@ -4,7 +4,7 @@
 The control plane SHALL enumerate exact expected daemon identities and endpoints from Git-owned roster configuration, probe each on a bounded cadence, and record only receiver-timed observations for the currently registered boot epoch. On every daemon boot, a narrow database registration SHALL allocate a monotonically increasing, durable boot epoch before the daemon advertises readiness. The daemon response SHALL include its exact name, boot UUID and allocated epoch, route contract range, and whether it currently accepts `route.execute` work. Arbitrary caller-provided addresses and daemon-authored timestamps SHALL confer no liveness authority.
 
 ID: REQ-butler-control-plane-liveness-001
-Source: heart-and-soul/vision.md Rules 4-5; RFC 0001 startup and RFC 0008 network boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: heart-and-soul/vision.md Rules 4-5; RFC 0001 startup and RFC 0008 network boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Expected ready daemon advances observation
@@ -47,7 +47,7 @@ Scope: v1-mandatory
 The registry SHALL retain observed health (`healthy`, `stale`, `unavailable`, `observer_unknown`), administrative policy (`active`, `paused`, `quarantined`, `review_required`), and route compatibility as separate dimensions. Routability SHALL require a fresh observation matching the latest durable boot epoch, an accepting compatible daemon, and active administrative policy; observation alone SHALL never revoke policy.
 
 ID: REQ-butler-control-plane-liveness-002
-Source: heart-and-soul/vision.md Rules 4-5; RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4 Owner-set and liveness-derived quarantine
+Source: heart-and-soul/vision.md Rules 4-5; RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §4 Owner-set and liveness-derived quarantine
 Scope: v1-mandatory
 
 #### Scenario: Owner quarantine survives every automatic writer
@@ -69,7 +69,7 @@ Scope: v1-mandatory
 Before separated policy becomes authoritative, the system SHALL classify each existing quarantine by recorded provenance. Proven TTL-derived quarantine SHALL become observation state, proven operator quarantine SHALL become administrative policy, and ambiguous provenance SHALL remain ineligible with `review_required` until an explicit owner decision. Migration and rollback SHALL preserve the original evidence and never silently activate an uncertain target.
 
 ID: REQ-butler-control-plane-liveness-003
-Source: heart-and-soul/vision.md Rule 5; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1 and §6 Phase 1
+Source: heart-and-soul/vision.md Rule 5; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1 and §6 Phase 1
 Scope: v1-mandatory
 
 #### Scenario: Historical automatic quarantine is not made owner policy
@@ -89,7 +89,7 @@ Scope: v1-mandatory
 Before rejecting an otherwise eligible stale target, Switchboard SHALL make at most one bounded receiver-derived probe of that target. A valid current-generation response SHALL refresh observation and allow the route; a failed probe SHALL return the existing typed `not_attempted` transport outcome with a transient target-unavailable reason and SHALL NOT call the target.
 
 ID: REQ-butler-control-plane-liveness-004
-Source: RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] roster/switchboard/tools/routing/transport.py
+Source: RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] roster/switchboard/tools/routing/transport.py
 Scope: v1-mandatory
 
 #### Scenario: Stale healthy daemon recovers without restart
@@ -158,7 +158,7 @@ Scope: v1-mandatory
 After receiver-derived observation is authoritative, the dashboard SHALL reject or remove the old daemon `POST /api/switchboard/heartbeat` mutation and daemons SHALL cease sending it. It SHALL never become anonymous, accept the dashboard owner key from a daemon, or reuse unrelated approval or runtime-probe credentials.
 
 ID: REQ-butler-control-plane-liveness-006
-Source: heart-and-soul/security.md:161-195; openspec/changes/specify-host-authorized-dashboard-enrollment/specs/dashboard-owner-auth/spec.md §Central owner boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4
+Source: heart-and-soul/security.md:161-195; openspec/changes/specify-host-authorized-dashboard-enrollment/specs/dashboard-owner-auth/spec.md §Central owner boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §4
 Scope: v1-mandatory
 
 #### Scenario: Legacy writer has no liveness authority
@@ -178,7 +178,7 @@ The supported rollback of the `core_251` condition-attention producer SHALL roll
 The standard backup excludes both `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`. A valid restore that loses both MAY result in one additional page for a still-active eligible fleet or overdue-QA condition in that restored state, once its protected interfaces and normal producer/controller are available. Existing mandatory append/admission and fenced delivery rules SHALL continue to govern: after the new marker exists, concurrent scans, retries and controller restarts reuse that episode. Ordinary outbox retention, escalation and re-enabling with retained markers SHALL NOT re-page, and a surviving uncertain episode SHALL NOT gain an automatic resend path. The restore allowance does not guarantee successful external delivery; another loss of both records in a later restore is a separate restored state.
 
 ID: REQ-butler-control-plane-liveness-007
-Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
+Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
 Scope: v1-mandatory
 
 #### Scenario: Correlated fleet expiry produces one owner alert episode
@@ -238,7 +238,7 @@ Scope: v1-mandatory
 The Dashboard periodic observer and Switchboard stale-route recovery SHALL use the same exact-roster response verifier and database-reserved per-daemon probe sequence. Dashboard SHALL own the periodic pass; Switchboard SHALL initiate exactly one on-demand probe before refusing an otherwise eligible stale route using its own narrowly authorized control-plane observation operation. Both writers SHALL update the same receiver-derived registry record conditionally on the latest durable boot epoch and probe sequence, within a bounded deadline. Neither writer SHALL accept caller-supplied endpoints or gain dashboard owner-auth authority.
 
 ID: REQ-butler-control-plane-liveness-008
-Source: heart-and-soul/vision.md Rules 3-5; RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: heart-and-soul/vision.md Rules 3-5; RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Switchboard rechecks a stale target from its own process

@@ -56,12 +56,10 @@ change `add-connector-oauth-scope-surface`:
 The cumulative record across runs (north star stated once, run index, tier history, ranked moves by run) is [pursuit-ledger.md](pursuit-ledger.md); read it before any per-run dossier.
 
 Point-in-time UI-maturity audits, listed by run. A newer date is not live
-verification or proof that an earlier finding is resolved. Query the
-`-data.json` sibling, e.g.
-`jq '.audits[] | select(.page=="<key>")' docs/redesigns/<date>-jarvis-pursuit-data.json`.
+verification or proof that an earlier finding is resolved. A run's structured `-data.json` is not kept in the tree; its dossier names the commit to read it from, e.g.
+`git show <sha>:docs/redesigns/<date>-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="<key>")'`.
 
-Retention: only the two newest runs keep `-data.json` in the tree. An older run's dossier
-names the pinned commit to read it from (`git show <sha>:docs/redesigns/<file> | jq …`).
+Retention: no `-data.json` stays in the tree (bu-99t5s3.1); every dossier names the pinned commit to read it from (`git show <sha>:docs/redesigns/<file> | jq …`).
 Harvest and state working files are gitignored. The cap and pruning rule live in the
 `butler-relentless-jarvis-pursuit` skill (Phase 4).
 
