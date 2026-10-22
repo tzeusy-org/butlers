@@ -527,7 +527,16 @@ test("a late schedule success cannot announce or close a reopened schedule", asy
   await expect(dialog).not.toBeVisible();
   await page.getByRole("button", { name: "Add schedule", exact: true }).click();
   await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("Old schedule");
+  const accepted = page.waitForResponse((response) => response.url().endsWith("/api/butlers/switchboard/schedules") && response.request().method() === "POST" && response.status() === 200);
   finish?.();
+  await accepted;
+  await expect.poll(async () => (await rows(page)).some((row) => row.surfaceId === "schedule.form" && row.state === "tombstone" && row.deletionReason === "submitted")).toBe(true);
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("Old schedule");
+  await expect(dialog.getByLabel("Cron Expression", { exact: true })).toHaveValue("0 9 * * *");
+  await expect(dialog.getByLabel("Prompt", { exact: true })).toHaveValue("An ordinary scheduled task");
+  // Follow acknowledged cleanup with a real edit: it must retain the complete successor bundle.
+  await dialog.getByLabel("Name", { exact: true }).fill("Reopened schedule");
+  await named(page, "Reopened schedule");
   await expect(dialog.getByRole("button", { name: "Create Schedule", exact: true })).toBeEnabled();
   await expect(page.getByText('Schedule "Old schedule" created', { exact: true })).toHaveCount(0);
   await expect(dialog).toBeVisible();

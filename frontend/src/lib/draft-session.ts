@@ -1,4 +1,4 @@
-import { browserDrafts, DraftFailure, type DraftFence, type DraftRead } from "./draft-store";
+import { browserDrafts, DraftFailure, type DraftFence, type DraftRead, type DraftSubmissionChange } from "./draft-store";
 import { emptyChatDraft, draftBundle, type DraftFields, type DraftSurface } from "./draft-surfaces";
 export type DraftPresentation = {
     restored: boolean;
@@ -30,6 +30,7 @@ export class DraftSession {
     private savedRevision: string | null = null;
     private pending: Promise<void> | null = null;
     private clearingSubmission: string | null = null;
+    private localSubmissionChange?: DraftSubmissionChange;
     private resolving = false;
     private suppressEmpty = false;
     private submittedReset = false;
@@ -90,7 +91,10 @@ export class DraftSession {
             }
             else if (this.dirty)
                 void this.flush().catch(() => { });
-            this.unsubscribe = browserDrafts.subscribe(() => { void this.reconcile(); });
+            this.unsubscribe = browserDrafts.subscribe((change) => {
+                if (change?.key === this.key) this.localSubmissionChange = change;
+                void this.reconcile();
+            });
         }
         catch {
             if (generation === this.generation)
@@ -117,6 +121,20 @@ export class DraftSession {
             const read = await browserDrafts.read(this.key, this.surface, this.context);
             if (!this.active || (read.fence.storeEpoch === this.fence.storeEpoch && read.fence.writeRevision === this.fence.writeRevision))
                 return;
+            const change = this.localSubmissionChange;
+            // A retired same-tab submission may clear durable C, but not the fields of
+            // a different mounted instance that restored C while that request was pending.
+            // Bind the exception to the exact acknowledged tombstone fence; remote or
+            // subsequently changed records still follow ordinary adoption/conflict rules.
+            if (change?.key === this.key && change.instance !== this.instance &&
+                change.contentRevision === this.revision && read.record?.state === "tombstone" &&
+                read.record.deletionReason === "submitted" &&
+                read.fence.storeEpoch === change.fence.storeEpoch && read.fence.writeRevision === change.fence.writeRevision) {
+                this.fence = read.fence;
+                this.revision = crypto.randomUUID();
+                this.savedRevision = null;
+                return;
+            }
             // Compaction preserves content identity and does not manufacture a conflict.
             if (read.record?.state === "live" && read.record.contentRevision === this.revision) {
                 this.fence = read.fence;
@@ -330,7 +348,7 @@ export class DraftSession {
                     await this.ready;
                     if (this.pending)
                         await this.pending;
-                    const removed = await browserDrafts.remove(this.key, { contentRevision: submission.revision }, "submitted", this.surface, this.context);
+                    const removed = await browserDrafts.remove(this.key, { contentRevision: submission.revision }, "submitted", this.surface, this.context, this.instance);
                     const confirmation = await browserDrafts.read(this.key, this.surface, this.context);
                     if (removed && confirmation.record?.state === "live" && confirmation.record.contentRevision === submission.revision)
                         throw new DraftFailure("unavailable");

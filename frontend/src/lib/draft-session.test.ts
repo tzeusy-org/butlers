@@ -46,3 +46,48 @@ it("adopts a foreign successor observed during submitted cleanup before another 
     }
   } finally { session.dispose(); }
 });
+
+// REQ-dashboard-shell-003/006: acknowledged cleanup from a retired view cannot reset its reopened successor.
+it("keeps a reopened view's fields after the retired submission commits its tombstone", async () => {
+  let record: DraftRecord | null = null;
+  const listeners = new Set<Parameters<typeof browserDrafts.subscribe>[0]>();
+  const read = (): DraftRead => ({ record: structuredClone(record), fence: { storeEpoch: 0, writeRevision: record?.writeRevision ?? 0 }, rejected: false });
+  vi.spyOn(browserDrafts, "key").mockResolvedValue("reopened-schedule");
+  vi.spyOn(browserDrafts, "subscribe").mockImplementation((notify) => { listeners.add(notify); return () => { listeners.delete(notify); }; });
+  vi.spyOn(browserDrafts, "read").mockImplementation(async () => read());
+  vi.spyOn(browserDrafts, "write").mockImplementation(async (key, surface, context, fields, revision, baseline, expected) => {
+    if (expected.writeRevision !== (record?.writeRevision ?? 0)) throw new DraftFailure("conflict");
+    record = { schemaVersion: 1, state: "live", draftKey: key, surfaceId: surface, context, fields, contentRevision: revision, sourceBaseline: baseline, storeEpoch: 0, writeRevision: (record?.writeRevision ?? 0) + 1, updatedAt: Date.now() };
+    return read();
+  });
+  vi.spyOn(browserDrafts, "remove").mockImplementation(async (key, expected, reason, surface, context, instance) => {
+    if (!("contentRevision" in expected) || expected.contentRevision !== record?.contentRevision) return false;
+    record = { schemaVersion: 1, state: "tombstone", draftKey: key, surfaceId: surface, context, storeEpoch: 0, writeRevision: record.writeRevision + 1, updatedAt: Date.now(), deletionReason: reason };
+    listeners.forEach((notify) => notify(instance ? { key, contentRevision: expected.contentRevision, instance, fence: read().fence } : undefined));
+    return true;
+  });
+  const empty = { name: "", cron: "", dispatchMode: "prompt", prompt: "", jobName: "", jobArgsRaw: "", complexity: "workhorse" };
+  const first = new DraftSession("schedule.form", ["switchboard", "create", "new"], empty, () => {});
+  first.start(); await first.ready;
+  const values = { ...empty, name: "Accepted schedule", cron: "0 9 * * *", prompt: "An ordinary task" };
+  const token = first.capture(values); await first.flush(); first.dispose();
+  let visible = empty;
+  const reopened = new DraftSession("schedule.form", ["switchboard", "create", "new"], empty, (fields) => { visible = fields as typeof empty; });
+  reopened.start(); await reopened.ready;
+  const completed = vi.fn();
+  try {
+    expect(visible).toEqual(values);
+    await first.submitted(token, completed);
+    await vi.waitFor(() => expect(read().record?.state).toBe("tombstone"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visible).toEqual(values);
+    expect(completed).not.toHaveBeenCalled();
+    reopened.focus(); await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visible).toEqual(values);
+    // A later explicit edit is a new revision; unchanged render effects cannot resurrect C.
+    reopened.edit(visible); await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(read().record?.state).toBe("tombstone");
+    reopened.edit({ ...visible, name: "A new explicit edit" }); await reopened.flush();
+    expect(read().record?.fields?.name).toBe("A new explicit edit");
+  } finally { reopened.dispose(); }
+});

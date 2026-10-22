@@ -22,6 +22,13 @@ export type DraftRecord = DraftFence & {
     deletedAt?: number;
     deletionReason?: Reason;
 };
+/** Same-tab submission provenance; never persisted or sent through BroadcastChannel. */
+export type DraftSubmissionChange = {
+    key: string;
+    contentRevision: string;
+    instance: symbol;
+    fence: DraftFence;
+};
 export type DraftRead = {
     record: DraftRecord | null;
     fence: DraftFence;
@@ -67,9 +74,9 @@ function validRecord(raw: unknown, key: string, epoch: number): raw is DraftReco
 /** A content-blind, per-origin database. No network, telemetry or access-authority dependency. */
 export class DraftStore {
     private opening: Promise<IDBDatabase> | null = null;
-    private listeners = new Set<() => void>();
+    private listeners = new Set<(change?: DraftSubmissionChange) => void>();
     private channel: BroadcastChannel | null = null;
-    subscribe(listener: () => void): () => void {
+    subscribe(listener: (change?: DraftSubmissionChange) => void): () => void {
         this.listeners.add(listener);
         if (!this.channel && typeof BroadcastChannel !== "undefined") {
             this.channel = new BroadcastChannel("butlers-drafts-v1");
@@ -83,7 +90,7 @@ export class DraftStore {
             }
         };
     }
-    private changed() { this.listeners.forEach((notify) => notify()); this.channel?.postMessage({ changed: true }); }
+    private changed(change?: DraftSubmissionChange) { this.listeners.forEach((notify) => notify(change)); this.channel?.postMessage({ changed: true }); }
     private open(): Promise<IDBDatabase> {
         if (this.opening)
             return this.opening;
@@ -269,8 +276,8 @@ export class DraftStore {
     }
     async remove(key: string, expected: DraftFence | {
         contentRevision: string;
-    }, reason: Reason, surface: DraftSurface, context: string[]): Promise<boolean> {
-        const removed = await this.transaction(async (tx) => {
+    }, reason: Reason, surface: DraftSurface, context: string[], submittedInstance?: symbol): Promise<boolean> {
+        const result = await this.transaction(async (tx) => {
             const epoch = await this.epoch(tx);
             const store = tx.objectStore("drafts");
             const raw: unknown = await request(store.get(key));
@@ -279,17 +286,20 @@ export class DraftStore {
             const current = raw as DraftRecord | undefined;
             if ("contentRevision" in expected) {
                 if (current?.state !== "live" || current.contentRevision !== expected.contentRevision || (current.expiresAt ?? 0) <= Date.now())
-                    return false;
+                    return { removed: false, fence: fence(current ?? null, epoch) };
             }
             else if (!same(expected, fence(current ?? null, epoch)))
                 throw new DraftFailure("conflict");
             if (current?.state === "tombstone")
-                return true;
-            store.put(this.tombstone(current ?? { draftKey: key, surfaceId: surface, context, writeRevision: 0 } as DraftRecord, epoch, reason), key);
-            return true;
+                return { removed: true, fence: fence(current, epoch) };
+            const tombstone = this.tombstone(current ?? { draftKey: key, surfaceId: surface, context, writeRevision: 0 } as DraftRecord, epoch, reason);
+            store.put(tombstone, key);
+            return { removed: true, fence: fence(tombstone, epoch) };
         });
-        this.changed();
-        return removed;
+        const change = result.removed && reason === "submitted" && submittedInstance && "contentRevision" in expected
+            ? { key, contentRevision: expected.contentRevision, instance: submittedInstance, fence: result.fence } : undefined;
+        this.changed(change);
+        return result.removed;
     }
 }
 export const browserDrafts = new DraftStore();
