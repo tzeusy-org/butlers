@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -13,6 +14,16 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.finance._helpers import _row_to_dict
+from butlers.tools.finance.payment_destinations import (
+    REASON_KEY_UNAVAILABLE,
+    REASON_NO_PRIOR,
+    REASON_UNPARSEABLE,
+    VERDICT_KNOWN,
+    VERDICT_NEW,
+    VERDICT_UNVERIFIABLE,
+    fingerprint_destination,
+    normalize_destination,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +129,66 @@ async def _mirror_bill_to_spo(
         )
 
 
+@dataclass(frozen=True)
+class _DestinationStamp:
+    """What track_bill stamps on a bill row for a supplied payment destination.
+
+    Holds only the fingerprint and verdict, never the raw destination. ``reason``
+    is returned to the caller but never stored.
+    """
+
+    fingerprint: str | None
+    verdict: str
+    reason: str | None
+
+
+async def _stamp_destination(
+    conn: asyncpg.Connection,
+    *,
+    payee_key: str,
+    payment_destination: str,
+    existing_fingerprint: str | None,
+) -> tuple[_DestinationStamp | None, bool]:
+    """Fingerprint ``payment_destination`` and record it against ``payee_key``.
+
+    Returns ``(stamp, unchanged)``. ``unchanged`` is true when the bill already
+    carries this exact fingerprint, in which case nothing is counted again and the
+    caller leaves the bill's destination columns alone (idempotent re-ingest).
+    Must run inside a transaction on ``conn`` holding the per-payee advisory lock.
+    """
+    destination = normalize_destination(payment_destination)
+    if destination is None:
+        return _DestinationStamp(None, VERDICT_UNVERIFIABLE, REASON_UNPARSEABLE), False
+    fingerprint = fingerprint_destination(destination)
+    if fingerprint is None:
+        return _DestinationStamp(None, VERDICT_UNVERIFIABLE, REASON_KEY_UNAVAILABLE), False
+    if existing_fingerprint == fingerprint:
+        return None, True
+
+    prior_count = await conn.fetchval(
+        "SELECT count(*) FROM payment_destinations WHERE payee_key = $1", payee_key
+    )
+    inserted = await conn.fetchval(
+        """
+        INSERT INTO payment_destinations (payee_key, kind, fingerprint, last4)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (payee_key, fingerprint) DO UPDATE
+            SET seen_count = payment_destinations.seen_count + 1,
+                last_seen_at = now()
+        RETURNING (xmax = 0)
+        """,
+        payee_key,
+        destination.kind,
+        fingerprint,
+        destination.last4,
+    )
+    if not inserted:
+        return _DestinationStamp(fingerprint, VERDICT_KNOWN, None), False
+    if not prior_count:
+        return _DestinationStamp(fingerprint, VERDICT_UNVERIFIABLE, REASON_NO_PRIOR), False
+    return _DestinationStamp(fingerprint, VERDICT_NEW, None), False
+
+
 async def track_bill(
     pool: asyncpg.Pool,
     payee: str,
@@ -135,6 +206,7 @@ async def track_bill(
     metadata: dict[str, Any] | None = None,
     autopay: bool | None = None,
     predicted: bool | None = None,
+    payment_destination: str | None = None,
 ) -> dict[str, Any]:
     """Create or update a bill obligation in finance.bills.
 
@@ -185,11 +257,23 @@ async def track_bill(
         table (``predict_bills`` is read-only); this flag exists to quarantine
         any that are tracked from the actionable list. ``None`` (default) leaves
         an existing row's flag unchanged and inserts ``false``.
+    payment_destination:
+        The account number, IBAN or payment handle exactly as the bill shows it.
+        It is normalized, classified (iban, account, handle) and reduced to a keyed
+        HMAC fingerprint; Finance keeps the raw value out of its own tables, the SPO mirror,
+        logs and the result (session tool-call records are outside its control, bu-4mfhdq). The
+        bill is stamped with ``destination_verdict``: ``known`` (seen before for
+        this payee), ``new_for_counterparty`` (a payee with history now shows a
+        different destination) or ``unverifiable`` (first destination for the
+        payee, an unparseable value, or no fingerprint key). Omitted: both
+        destination columns are left untouched.
 
     Returns
     -------
     dict
-        BillRecord with all persisted fields.
+        BillRecord with all persisted fields. When ``payment_destination`` was
+        supplied and the verdict is ``unverifiable`` the dict also carries a
+        ``destination_reason`` (not stored).
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"Invalid status {status!r}. Must be one of {_VALID_STATUSES}")
@@ -211,76 +295,68 @@ async def track_bill(
         else:
             paid_at_dt = paid_at
 
-    # Upsert: match on (payee_key, due_date) so payee name variants collapse.
-    # Fall back to legacy payee match for rows predating the payee_key backfill.
-    existing = await pool.fetchrow(
-        "SELECT id FROM bills"
-        " WHERE due_date = $2 AND (payee_key = $1 OR (payee_key IS NULL AND payee = $3))"
-        " ORDER BY payee_key IS NULL"
-        " LIMIT 1",
-        payee_key,
-        due,
-        payee,
-    )
-
-    if existing is not None:
-        row = await pool.fetchrow(
-            """
-            UPDATE bills
-            SET
-                payee                 = $1,
-                payee_key             = $2,
-                amount                = $3,
-                currency              = $4,
-                frequency             = $5,
-                status                = $6,
-                payment_method        = COALESCE($7, payment_method),
-                account_id            = COALESCE($8, account_id),
-                statement_period_start = COALESCE($9, statement_period_start),
-                statement_period_end   = COALESCE($10, statement_period_end),
-                paid_at               = COALESCE($11, paid_at),
-                source_message_id     = COALESCE($12, source_message_id),
-                metadata              = metadata || $13,
-                autopay               = COALESCE($14, autopay),
-                predicted             = COALESCE($15, predicted),
-                updated_at            = now()
-            WHERE id = $16
-            RETURNING *
-            """,
-            payee,
-            payee_key,
-            amount,
-            currency,
-            frequency,
-            status,
-            payment_method,
-            account_uuid,
-            period_start,
-            period_end,
-            paid_at_dt,
-            source_message_id,
-            metadata_value,
-            autopay,
-            predicted,
-            existing["id"],
-        )
-    else:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO bills (
-                payee, payee_key, amount, currency, due_date, frequency, status,
-                payment_method, account_id, statement_period_start,
-                statement_period_end, paid_at, source_message_id, metadata,
-                autopay, predicted
+    async def _upsert(
+        executor: Any, stamp: _DestinationStamp | None, existing_id: Any
+    ) -> asyncpg.Record:
+        """Run the UPDATE or INSERT, adding the destination columns only when stamped."""
+        stamped = stamp is not None
+        if existing_id is not None:
+            destination_sql = (
+                ", destination_fingerprint = COALESCE($17, destination_fingerprint)"
+                ", destination_verdict = CASE WHEN $17::text IS NULL"
+                " AND destination_fingerprint IS NOT NULL"
+                " THEN destination_verdict ELSE $18 END"
+                if stamped
+                else ""
             )
-            VALUES (
-                $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10,
-                $11, $12, $13, $14,
-                COALESCE($15, false), COALESCE($16, false)
+            args: list[Any] = [
+                payee,
+                payee_key,
+                amount,
+                currency,
+                frequency,
+                status,
+                payment_method,
+                account_uuid,
+                period_start,
+                period_end,
+                paid_at_dt,
+                source_message_id,
+                metadata_value,
+                autopay,
+                predicted,
+                existing_id,
+            ]
+            if stamped:
+                args += [stamp.fingerprint, stamp.verdict]
+            return await executor.fetchrow(
+                f"""
+                UPDATE bills
+                SET
+                    payee                 = $1,
+                    payee_key             = $2,
+                    amount                = $3,
+                    currency              = $4,
+                    frequency             = $5,
+                    status                = $6,
+                    payment_method        = COALESCE($7, payment_method),
+                    account_id            = COALESCE($8, account_id),
+                    statement_period_start = COALESCE($9, statement_period_start),
+                    statement_period_end   = COALESCE($10, statement_period_end),
+                    paid_at               = COALESCE($11, paid_at),
+                    source_message_id     = COALESCE($12, source_message_id),
+                    metadata              = metadata || $13,
+                    autopay               = COALESCE($14, autopay),
+                    predicted             = COALESCE($15, predicted),
+                    updated_at            = now(){destination_sql}
+                WHERE id = $16
+                RETURNING *
+                """,
+                *args,
             )
-            RETURNING *
-            """,
+        destination_columns = ", destination_fingerprint, destination_verdict" if stamped else ""
+        destination_values = ", $17, $18" if stamped else ""
+        args = [
             payee,
             payee_key,
             amount,
@@ -297,9 +373,72 @@ async def track_bill(
             metadata_value,
             autopay,
             predicted,
+        ]
+        if stamped:
+            args += [stamp.fingerprint, stamp.verdict]
+        return await executor.fetchrow(
+            f"""
+            INSERT INTO bills (
+                payee, payee_key, amount, currency, due_date, frequency, status,
+                payment_method, account_id, statement_period_start,
+                statement_period_end, paid_at, source_message_id, metadata,
+                autopay, predicted{destination_columns}
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10,
+                $11, $12, $13, $14,
+                COALESCE($15, false), COALESCE($16, false){destination_values}
+            )
+            RETURNING *
+            """,
+            *args,
         )
 
+    # Upsert: match on (payee_key, due_date) so payee name variants collapse.
+    # Fall back to legacy payee match for rows predating the payee_key backfill.
+    _EXISTING_SQL = (
+        "SELECT id, destination_fingerprint FROM bills"
+        " WHERE due_date = $2 AND (payee_key = $1 OR (payee_key IS NULL AND payee = $3))"
+        " ORDER BY payee_key IS NULL"
+        " LIMIT 1"
+    )
+
+    stamp: _DestinationStamp | None = None
+    if payment_destination is None:
+        existing = await pool.fetchrow(
+            "SELECT id FROM bills"
+            " WHERE due_date = $2 AND (payee_key = $1 OR (payee_key IS NULL AND payee = $3))"
+            " ORDER BY payee_key IS NULL"
+            " LIMIT 1",
+            payee_key,
+            due,
+            payee,
+        )
+        row = await _upsert(pool, None, existing["id"] if existing is not None else None)
+    else:
+        # The destination baseline and the bill stamp commit together, serialized per
+        # payee so two bills for one payee with a new destination cannot both read an
+        # empty history. The raw destination lives only in this frame.
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"finance:payment_destinations:{payee_key}",
+            )
+            existing = await conn.fetchrow(_EXISTING_SQL, payee_key, due, payee)
+            stamp, unchanged = await _stamp_destination(
+                conn,
+                payee_key=payee_key,
+                payment_destination=payment_destination,
+                existing_fingerprint=(
+                    existing["destination_fingerprint"] if existing is not None else None
+                ),
+            )
+            row = await _upsert(conn, stamp, existing["id"] if existing is not None else None)
+
     result = _row_to_dict(row)
+    if stamp is not None and stamp.reason is not None:
+        result["destination_reason"] = stamp.reason
 
     # Fire-and-forget SPO mirror write to public.facts. Scheduled as a
     # background task so failures never roll back the primary upsert.

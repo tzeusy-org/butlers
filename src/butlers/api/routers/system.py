@@ -83,7 +83,12 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.models import ApiResponse
 from butlers.api.read_models.insights_v1 import query_insight_delivery_state
-from butlers.api.runtime_attention_status import condition_attention_status, safe_reason
+from butlers.api.runtime_attention_status import (
+    CONDITION_ATTENTION_GRACE,
+    CONDITION_ATTENTION_PASS_ALLOWANCE,
+    condition_attention_status,
+    safe_reason,
+)
 from butlers.core.backup_facts import (
     BACKUP_DIR_ENV,
     BackupFacts,
@@ -1336,13 +1341,25 @@ async def _condition_attention_by_id(
 
 
 def _attention_for(
-    row: dict, attention: dict[str, ConditionAttention] | None
+    row: dict, attention: dict[str, ConditionAttention] | None, *, now: datetime | None = None
 ) -> ConditionAttention | None:
     if (row["source"], row["fingerprint"]) not in _ATTENTION_IDENTITIES:
         return None
     if attention is None:
         return ConditionAttention(status="unavailable")
-    return attention.get(str(row["id"]))
+    marker = attention.get(str(row["id"]))
+    if marker is not None:
+        return marker
+    # No marker: a page is due only once the producer's grace and one controller pass elapse.
+    due_after = CONDITION_ATTENTION_GRACE + CONDITION_ATTENTION_PASS_ALLOWANCE
+    detected = row["first_detected_at"]
+    resolved = row.get("resolved_at")
+    if resolved is not None:
+        # Resolved before a page could be due: nothing should have paged.
+        return ConditionAttention(status="not_raised") if resolved - detected > due_after else None
+    if (now or datetime.now(UTC)) - detected > due_after:
+        return ConditionAttention(status="not_raised")
+    return ConditionAttention(status="within_grace")
 
 
 def _condition_row_to_entry(

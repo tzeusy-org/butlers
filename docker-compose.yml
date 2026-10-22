@@ -291,9 +291,11 @@ services:
     # Dashboard-owned runtime CLI authentication uses a nested Bubblewrap
     # domain.  Keep this exact namespace-capable policy confined to the two
     # Dashboard services; ordinary Butler and restore-drill services retain
-    # their existing security posture.
+    # their existing security posture.  Hosts that restrict unprivileged user namespaces set
+    # BUTLERS_DASHBOARD_APPARMOR_PROFILE to a loaded scoped profile instead of editing this file
+    # (docs/operations/docker-deployment.md); unset keeps apparmor:unconfined.
     security_opt:
-      - apparmor:unconfined
+      - apparmor:${BUTLERS_DASHBOARD_APPARMOR_PROFILE:-unconfined}
       - systempaths=unconfined
       - seccomp:./deploy/seccomp/dashboard-runtime-cli-sandbox.json
     networks: [db, backend, frontend, egress]
@@ -900,7 +902,7 @@ services:
     # Match dashboard-api exactly: this is the only hotreload runtime that
     # may launch a Dashboard CLI-auth child through Bubblewrap.
     security_opt:
-      - apparmor:unconfined
+      - apparmor:${BUTLERS_DASHBOARD_APPARMOR_PROFILE:-unconfined}
       - systempaths=unconfined
       - seccomp:./deploy/seccomp/dashboard-runtime-cli-sandbox.json
     depends_on:

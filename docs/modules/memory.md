@@ -101,6 +101,23 @@ recording the fact reference, a value excerpt and the fact's server-stamped auth
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
 
+When `store_fact` creates a registered inverse or symmetric narrative edge, the generated
+active row also answers the original object's gap. Its citation is the inverse row's own UUID,
+its value is the swapped subject label, and its authority is the original server stamp.
+Mirrored writers reserve both schema-qualified advisory keys in signed database-hash order
+before locking or inserting facts, preventing reciprocal writers from taking opposite lock
+orders. These reservations and both answers commit or roll back with the facts and their graph
+projections. Identity and registry-relational predicates still belong to the Relationship writer.
+
+Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
+failure skips both closures, while an individual closure failure leaves that gap open without
+discarding a successful sibling. Savepoints protect the canonical fact transaction, and failures
+use the existing warning/count. Cancellation or a canonical write/projection error still rolls
+back the enclosing write. Temporal replay and an already-existing inverse key create no new
+answer; inactive retained rows are never reactivated. There is no historical repair scan, and
+later retraction retains the existing answer snapshot. Gaps retain the local single-owner contract:
+they have no tenant or sensitivity field, so this fix adds neither a tenancy nor a delivery policy.
+
 The `memory_knowledge_gap_delivery` maintenance job (every ten minutes, no LLM session) posts one
 notice per origin thread into `public.dashboard_messages` and marks the gap `delivered`. Owner-class
 and system authority read "Now known"; any other authority reads "Reported by <sender>, not
@@ -108,6 +125,9 @@ verified". A failed post keeps the gap `answerable` and retries with bounded bac
 (`delivery_attempts`, `next_attempt_at`); after five attempts it is recorded on the attention
 ledger and listed with `delivery_failed`. Open gaps past `expires_at` (ninety days) become
 `expired`; `dismissed` and `expired` are terminal and never reopen.
+Delivery remains dashboard-only and at least once: a crash after the independently committed
+message post but before the delivery marker commits can repeat the notice. Normal committed
+delivery and fact replay do not post it again.
 
 `memory_open_gaps` and `GET /api/memory/gaps` (keyset pagination, `meta.sources_degraded`) list
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
@@ -361,6 +381,11 @@ None. The memory module is a leaf module with no dependencies on other modules.
   not imply scheduled execution, and NULL stamps do not establish record age. The held-guidance
   link opens the existing rules register with `held=true`; source-episode availability retains
   its separate link/expired/unresolved presentation.
+
+- Generated inverse gap closure stays on the writer's existing connection. Reserve both actual
+  database advisory keys before any property supersession locks; do not replace the reservation
+  with separate closure connections, text/Python hash ordering, or post-commit work. A skipped
+  temporal inverse has no new UUID to cite. No migration, grant or schema change is needed.
 
 - Importing Memory storage or tools leaves `sentence_transformers`, `transformers` and `torch`
   unloaded. `EmbeddingEngine` pays that dependency/model cost at first construction; registered

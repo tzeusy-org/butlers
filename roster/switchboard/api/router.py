@@ -2654,7 +2654,7 @@ async def create_ingestion_rule(
 
     # Re-validate and normalise condition
     try:
-        validated_condition = validate_condition(body.rule_type, body.condition)
+        validated_condition = validate_condition(body.rule_type, body.condition, body.action)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -2809,10 +2809,22 @@ async def update_ingestion_rule(
 
     if body.condition is not None:
         try:
-            validated_condition = validate_condition(effective_rule_type, body.condition)
+            validated_condition = validate_condition(
+                effective_rule_type, body.condition, effective_action
+            )
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         updates["condition"] = validated_condition
+    elif body.action is not None:
+        # An action change must not strand the except-known-contacts option on a verdict
+        # that cannot honor it.
+        stored_condition = existing["condition"]
+        if isinstance(stored_condition, str):
+            stored_condition = json.loads(stored_condition)
+        try:
+            validate_condition(effective_rule_type, stored_condition, effective_action)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     if body.priority is not None:
         updates["priority"] = body.priority
@@ -2985,6 +2997,7 @@ async def test_ingestion_rule(
         headers=body.envelope.headers,
         mime_parts=body.envelope.mime_parts,
         raw_key=body.envelope.raw_key,
+        known_contact=body.envelope.known_contact,
     )
 
     decision = evaluator.evaluate(envelope)

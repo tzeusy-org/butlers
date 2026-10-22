@@ -4,13 +4,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { respondToCalendarInvitation, undoCalendarWorkspaceMutation } from "@/api/index";
+import { getCalendarResponseReceipt, respondToCalendarInvitation, undoCalendarWorkspaceMutation } from "@/api/index";
 import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
 import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePanel";
 import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 
 vi.mock("@/api/index", () => ({
-  respondToCalendarInvitation: vi.fn(), undoCalendarWorkspaceMutation: vi.fn(),
+  respondToCalendarInvitation: vi.fn(), undoCalendarWorkspaceMutation: vi.fn(), getCalendarResponseReceipt: vi.fn(),
 }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
@@ -70,6 +70,42 @@ it("binds contextual keyboard and real palette to one key, honest receipt and si
   expect(undoCalendarWorkspaceMutation).toHaveBeenCalledExactlyOnceWith(receipt.command_id);
   expect(screen.queryByRole("button", { name: "Undo response" })).toBeNull();
   expect(screen.queryByText("Previous response restored.")).toBeNull();
+  // Recover the bound inverse after a lost HTTP reply and disappearing row.
+  const inverse = { ...receipt, command_id: "6fa76e12-1e6d-499a-8767-69c393d8159d",
+    approval_id: "6fa76e12-1e6d-499a-8767-69c393d8159d", status: "approved" as const, undo_available: false };
+  vi.mocked(getCalendarResponseReceipt).mockResolvedValue({ data: inverse, meta: {} });
+  await user.click(screen.getByRole("button", { name: "Check response outcome" }));
+  expect(getCalendarResponseReceipt).toHaveBeenLastCalledWith(receipt.command_id, "messenger", true);
+  expect(screen.getByRole("status").textContent).toContain("awaiting approved execution");
+  await user.click(screen.getByRole("button", { name: "Review response receipt" }));
+  expect(screen.getByRole("link", { name: "Open approval dossier" }).getAttribute("href"))
+    .toContain(inverse.approval_id);
+  vi.mocked(getCalendarResponseReceipt).mockRejectedValueOnce(new Error("temporary read failure"));
+  await user.click(screen.getByRole("button", { name: "Check response outcome" }));
+  expect(screen.getByRole("region", { name: "Response receipt" }).textContent).toContain(inverse.command_id);
+  vi.mocked(getCalendarResponseReceipt).mockResolvedValue({ data: { ...inverse, status: "applied" }, meta: {} });
+  await user.click(screen.getByRole("button", { name: "Check response outcome" }));
+  expect(screen.getByRole("status").textContent).toContain("Previous response restored.");
+  expect(respondToCalendarInvitation).toHaveBeenCalledTimes(1);
+  expect(undoCalendarWorkspaceMutation).toHaveBeenCalledTimes(1);
+  // A received approved inverse follows the same read path while the row is
+  // still present, and remains refreshable after it disappears.
+  cleanup();
+  vi.mocked(respondToCalendarInvitation).mockResolvedValue({ data: receipt, meta: {} });
+  vi.mocked(undoCalendarWorkspaceMutation).mockResolvedValue({ data: {
+    action_id: receipt.command_id!, action_type: "workspace_user_respond",
+    inverse_tool: "calendar_respond", request_id: "inverse-request", undone: false, result: inverse,
+  }, meta: {} });
+  const pendingView = render(<View />);
+  await user.click(screen.getByRole("button", { name: "Accept invitation Actual invitation" }));
+  await user.click(screen.getByRole("button", { name: "Undo response" }));
+  const forwardCalls = vi.mocked(respondToCalendarInvitation).mock.calls.length;
+  vi.mocked(getCalendarResponseReceipt).mockResolvedValue({ data: inverse, meta: {} });
+  await user.click(screen.getByRole("button", { name: "Check response outcome" }));
+  expect(respondToCalendarInvitation).toHaveBeenCalledTimes(forwardCalls);
+  expect(screen.getByRole("status").textContent).toContain("awaiting approved execution");
+  pendingView.rerender(<View entries={[]} />);
+  expect(screen.getByRole("button", { name: "Check response outcome" })).toBeTruthy();
 });
 
 it("refuses disabled capability and preserves an unknown request before exact-key outcome refresh", async () => {

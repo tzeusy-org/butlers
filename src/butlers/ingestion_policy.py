@@ -138,6 +138,14 @@ class IngestionEnvelope:
     callers keep their established argument binding.
     """
 
+    known_contact: bool | None = None
+    """Whether the sender is a known contact; ``None`` means not classified.
+
+    Only a loaded classification may set this. A block or skip rule whose condition carries
+    ``except_known_contacts`` is passed over when this is ``True``; ``False`` and ``None`` leave
+    the rule in force (bu-q7vx1q.88.3).
+    """
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -558,6 +566,15 @@ _MATCHERS: dict[str, Any] = {
 }
 
 
+#: Actions that may carry the per-rule "except people I know" option (bu-q7vx1q.88.3).
+_EXCEPT_KNOWN_CONTACTS_ACTIONS = frozenset({"block", "skip"})
+
+
+def _rule_excepts_known_contacts(rule: dict[str, Any]) -> bool:
+    condition = rule.get("condition")
+    return isinstance(condition, dict) and condition.get("except_known_contacts") is True
+
+
 def _parse_action(action: str) -> tuple[str, str | None]:
     """Parse action string into (action_name, target_butler | None).
 
@@ -800,6 +817,16 @@ class IngestionPolicyEvaluator:
 
             action_str = str(rule.get("action", "pass_through"))
             action_name, target_butler = _parse_action(action_str)
+            if (
+                envelope.known_contact is True
+                and action_name in _EXCEPT_KNOWN_CONTACTS_ACTIONS
+                and _rule_excepts_known_contacts(rule)
+            ):
+                # Owner opted this rule out for people they know; later rules still apply.
+                logger.debug(
+                    "ingestion_policy: rule id=%s passed over for a known contact", rule.get("id")
+                )
+                continue
             rule_id = str(rule.get("id", "")) or None
             rule_type = str(rule.get("rule_type", "")) or None
 

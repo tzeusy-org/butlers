@@ -222,6 +222,7 @@ import type {
   ContactSearchResponse,
   ModelCatalogEntry,
   ModelDeleteImpact,
+  AllowanceObservation,
   ModelAttentionObservation,
   ModelAttentionReissueResult,
   FleetHaltAttentionObservation,
@@ -415,6 +416,7 @@ import type {
   HomeTopConsumer,
   HomeCommandLogEntry,
   OverdueContactsResponse,
+  PendingDebriefsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
   GeneralCollection,
@@ -1621,6 +1623,15 @@ export function getCalendarInvitations(
 }
 
 /** Authenticated owner response through canonical preparation and approval. */
+export function getCalendarResponseReceipt(
+  commandId: string, sourceButler: string, inverse = false,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  const query = new URLSearchParams({ source_butler: sourceButler, inverse: String(inverse) });
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>(
+    `/calendar/workspace/responses/${encodeURIComponent(commandId)}?${query}`,
+  );
+}
+
 export function respondToCalendarInvitation(
   body: CalendarResponseRequest,
 ): Promise<ApiResponse<CalendarResponseReceipt>> {
@@ -2022,6 +2033,11 @@ export function getOverdueContacts(days?: number): Promise<OverdueContactsRespon
   return apiFetch<OverdueContactsResponse>(
     `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** Fetch prompted, unanswered meeting debriefs (bu-q7vx1q.63). */
+export function getPendingMeetingDebriefs(): Promise<PendingDebriefsResponse> {
+  return apiFetch<PendingDebriefsResponse>("/relationship/meeting-debriefs/pending");
 }
 
 /** Build URLSearchParams from group query parameters. */
@@ -5194,6 +5210,10 @@ export function testModelCatalogEntry(
 
 export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservation>> {
   return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
+}
+
+export function getModelAllowance(): Promise<ApiResponse<AllowanceObservation>> {
+  return apiFetch<ApiResponse<AllowanceObservation>>("/settings/models/allowance");
 }
 
 export function reissueModelAttention(

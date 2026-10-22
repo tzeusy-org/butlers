@@ -52,6 +52,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
@@ -351,6 +352,52 @@ def _message_header_entries(message_data: Any) -> list[dict[str, Any]]:
     if not isinstance(headers, list):
         return []
     return [header for header in headers if isinstance(header, dict)]
+
+
+# Observed-time sources, in the order they are tried.
+OBSERVED_AT_INTERNAL_DATE = "internal_date"
+OBSERVED_AT_DATE_HEADER = "date_header"
+OBSERVED_AT_RECEIPT_TIME = "receipt_time"
+
+# A ``Date`` header is sender-controlled, so it is only trusted inside a plausible window:
+# not before 1990 and not more than a day ahead of receipt (clock skew allowance).
+_DATE_HEADER_EARLIEST = datetime(1990, 1, 1, tzinfo=UTC)
+_DATE_HEADER_MAX_SKEW = timedelta(days=1)
+
+
+def _resolve_observed_at(
+    message_data: dict[str, Any], now: datetime | None = None
+) -> tuple[datetime, str]:
+    """Return ``(observed_at, source)`` for a Gmail message.
+
+    Order: Gmail's ``internalDate`` when it parses, else a valid ``Date`` header, else receipt
+    time. A missing and an unparseable ``internalDate`` take the same path, and the epoch is
+    never produced by a fallback. ``source`` names the one used.
+    """
+    internal_date = message_data.get("internalDate")
+    if internal_date is not None:
+        try:
+            observed_at = datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
+        else:
+            return observed_at, OBSERVED_AT_INTERNAL_DATE
+
+    received_at = now if now is not None else datetime.now(UTC)
+    for header in _message_header_entries(message_data):
+        if not _header_name_is(header, "date"):
+            continue
+        try:
+            parsed = parsedate_to_datetime(_header_str_value(header))
+            if parsed.tzinfo is None:
+                break
+            parsed = parsed.astimezone(UTC)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            break
+        if _DATE_HEADER_EARLIEST <= parsed <= received_at + _DATE_HEADER_MAX_SKEW:
+            return parsed, OBSERVED_AT_DATE_HEADER
+        break
+    return received_at, OBSERVED_AT_RECEIPT_TIME
 
 
 class GmailConnectorConfig(BaseModel):
@@ -1523,7 +1570,12 @@ class GmailConnectorRuntime:
                                 )
                             else:
                                 # Ingestion policy gate (backfill path)
-                                _bf_envelope = self._build_ingestion_envelope(message_data)
+                                _bf_envelope = self._build_ingestion_envelope(
+                                    message_data,
+                                    known_contact=self._known_contact_signal(
+                                        self._get_from_header(message_data)
+                                    ),
+                                )
 
                                 # 1. Connector-scope rules
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
@@ -1556,6 +1608,7 @@ class GmailConnectorRuntime:
                                     envelope = await self._build_ingest_envelope(
                                         message_data,
                                         policy_result=policy_result,
+                                        known_contact=_bf_envelope.known_contact,
                                     )
                                     await self._submit_to_ingest_api(envelope)
                                     rows_processed += 1
@@ -2170,13 +2223,9 @@ class GmailConnectorRuntime:
                 _subject = self._get_subject(message_data)
                 _from_header = self._get_from_header(message_data)
                 _thread_id = message_data.get("threadId")
-                _internal_date = message_data.get("internalDate", "0")
-                try:
-                    _observed_at = datetime.fromtimestamp(
-                        int(_internal_date) / 1000, tz=UTC
-                    ).isoformat()
-                except (ValueError, OSError):
-                    _observed_at = datetime.now(UTC).isoformat()
+                _observed_dt, _observed_source = _resolve_observed_at(message_data)
+                _observed_at = _observed_dt.isoformat()
+                self._log_observed_at_fallback(message_id, _observed_source)
 
                 # Capture query truth once, independently of provider event time.
                 _snapshot = self._gmail_policy_evaluator.peek_snapshot()
@@ -2234,7 +2283,12 @@ class GmailConnectorRuntime:
                     return
 
                 # Ingestion policy gate (runs after label filter, before envelope build)
-                _ip_envelope = self._build_ingestion_envelope(message_data)
+                _ip_envelope = self._build_ingestion_envelope(
+                    message_data,
+                    known_contact=_tier_assigner.is_known_contact(_from_header)
+                    if _snapshot.state == "loaded"
+                    else None,
+                )
 
                 # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
@@ -2323,6 +2377,7 @@ class GmailConnectorRuntime:
                 envelope = await self._build_ingest_envelope(
                     message_data,
                     policy_result=policy_result,
+                    known_contact=_ip_envelope.known_contact,
                 )
 
                 # Submit to Switchboard ingest API
@@ -2421,6 +2476,21 @@ class GmailConnectorRuntime:
         return ""
 
     @staticmethod
+    def _log_observed_at_fallback(message_id: str, source: str) -> None:
+        """Record, by identifiers only, that ``observed_at`` did not come from ``internalDate``.
+
+        The ingest.v1 envelope has no field for the timestamp source (``event`` and ``control``
+        forbid extras), so the honest record is this log line: message id and source, no content.
+        """
+        if source != OBSERVED_AT_INTERNAL_DATE:
+            logger.warning(
+                "Gmail message has no usable internalDate; observed_at taken from %s "
+                "(message_id=%s)",
+                source,
+                message_id,
+            )
+
+    @staticmethod
     def _get_subject(message_data: dict[str, Any]) -> str:
         """Extract the Subject header value from a Gmail message payload."""
         headers = _message_header_entries(message_data)
@@ -2464,13 +2534,25 @@ class GmailConnectorRuntime:
             triage_action=action,
         )
 
+    def _known_contact_signal(self, from_header: str) -> bool | None:
+        """Classify a sender against the current snapshot; ``None`` unless it is loaded."""
+        snapshot = self._gmail_policy_evaluator.peek_snapshot()
+        if snapshot.state != "loaded":
+            return None
+        return replace(
+            self._policy_tier_assigner, known_contacts=snapshot.contacts
+        ).is_known_contact(from_header)
+
     @staticmethod
-    def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
+    def _build_ingestion_envelope(
+        message_data: dict[str, Any], known_contact: bool | None = None
+    ) -> IngestionEnvelope:
         """Build an IngestionEnvelope from a Gmail message payload.
 
         Populates sender_address (normalized From header), headers dict,
         labels (Gmail labelIds, for label_match rules), and raw_key (raw From
-        header value) for policy evaluation.
+        header value) for policy evaluation. ``known_contact`` is the loaded-snapshot
+        classification of the sender (``None`` when classification is unknown).
         """
         raw_headers = _message_header_entries(message_data)
         headers_dict: dict[str, str] = {}
@@ -2495,6 +2577,7 @@ class GmailConnectorRuntime:
             headers=headers_dict,
             labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
+            known_contact=known_contact,
         )
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:
@@ -2530,6 +2613,7 @@ class GmailConnectorRuntime:
         self,
         message_data: dict[str, Any],
         policy_result: MessagePolicyResult | None = None,
+        known_contact: bool | None = None,
     ) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data.
 
@@ -2546,11 +2630,14 @@ class GmailConnectorRuntime:
         policy_result:
             Result of policy evaluation (tier + policy_tier). If None, defaults to
             Tier 1 with policy_tier='default' (backward compatible).
+        known_contact:
+            The loaded-snapshot classification of the sender, carried as
+            ``control.known_contact`` so the Switchboard's global rule pass honors
+            "except people I know" too. ``None`` (snapshot not loaded) omits the field,
+            and the rule then applies. Taken from the raw From header, unauthenticated.
         """
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
-        internal_date = message_data.get("internalDate", "0")
-
         # Parse headers
         headers = {
             name: value
@@ -2574,11 +2661,8 @@ class GmailConnectorRuntime:
             effective_policy_tier = policy_result.policy_tier
 
         # Observed timestamp
-        try:
-            observed_timestamp_ms = int(internal_date)
-            observed_at = datetime.fromtimestamp(observed_timestamp_ms / 1000, tz=UTC)
-        except (ValueError, OSError):
-            observed_at = datetime.now(UTC)
+        observed_at, observed_source = _resolve_observed_at(message_data)
+        self._log_observed_at_fallback(message_id, observed_source)
 
         # --- Tier 2: Metadata-only envelope ---
         # Per docs/connectors/gmail-ingestion-policy.md ("Tier 2"): payload.raw=null,
@@ -2624,6 +2708,8 @@ class GmailConnectorRuntime:
             }
             if policy_result is not None and policy_result.automated_kind:
                 metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
+            if known_contact is not None:
+                metadata_envelope["control"]["known_contact"] = known_contact
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
@@ -2693,6 +2779,8 @@ class GmailConnectorRuntime:
                 "policy_tier": effective_policy_tier,
             },
         }
+        if known_contact is not None:
+            envelope["control"]["known_contact"] = known_contact
         # Bearer material (OTP codes, reset/magic links) never leaves the connector.
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed

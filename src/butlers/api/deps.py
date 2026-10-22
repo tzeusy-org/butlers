@@ -253,7 +253,8 @@ class DiscoveryDiagnostics:
 
     ``directories`` holds every roster subdirectory name, including ones skipped
     for lacking ``butler.toml``; ``failed`` holds directories whose config did not
-    parse. A retirement signal needs a found roster and zero failures.
+    parse, or whose ``butler.name`` differs from the directory name. A retirement signal
+    needs a found roster and zero failures.
     """
 
     roster_found: bool = False
@@ -325,6 +326,18 @@ def discover_butlers_with_diagnostics(
                     logger.warning(
                         "Invalid [modules.qa] patrol contract in %s: %s", entry.name, exc
                     )
+            if config.name != entry.name:
+                # The retirement signal keys on the roster directory name while legacy
+                # liveness episodes key on ``butler.name``. A mismatch could make a live
+                # butler read as retired or block a real retirement, so it fails closed:
+                # recording it as failed disables retirement fleet-wide until it is fixed.
+                failed.add(entry.name)
+                logger.warning(
+                    "Butler name %r does not match its roster directory %r; "
+                    "retirement is disabled until they match",
+                    config.name,
+                    entry.name,
+                )
             butlers.append(
                 ButlerConnectionInfo(
                     name=config.name,
