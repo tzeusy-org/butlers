@@ -235,7 +235,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "nightly-analytics",
       "dispatch_mode": "job",
@@ -245,7 +245,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "weekly-mind-map-staleness",
       "dispatch_mode": "job",
@@ -255,37 +255,40 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "weekly-progress-digest",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/education/butler.toml:weekly-progress-digest"
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "weekly-stale-flow-check",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/education/.agents/skills/stale-flow-cleanup/SKILL.md"
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "daily-spaced-repetition-nudge",
       "dispatch_mode": "prompt",
       "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "declaration_status": "declared_static_workflow_pending_verified_catalog_and_admission",
+      "classification": "prompt_obligation",
+      "call_graph": "roster/education/butler.toml:daily-spaced-repetition-nudge"
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "83a903dd15cb8bbfce89830045b7a6b0d45b29044c2b88d00dbe9cc1daf4f8f6",
+      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
       "butler": "education",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",

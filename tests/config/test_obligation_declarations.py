@@ -254,3 +254,80 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
         )
         assert [i.code for i in result] == [expected]
     assert "other__not_locally_registered" not in caplog.text
+
+
+async def test_education_roster_ceilings_cover_actual_registered_workflows(monkeypatch, caplog):
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from butlers.config import load_config
+    from butlers.core.obligation_catalog import diagnose_loaded_schedules
+    from tests.contracts.test_tool_authorization_catalog import _roster_catalog
+
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "roster/education")
+    prompts = {spec.name: spec for spec in config.schedules if spec.dispatch_mode == "prompt"}
+    # These are the workflow branches, including the analytics fallback and
+    # orphan/idempotent cleanup paths in the actual stale-flow skill. They must
+    # resolve against real registered definitions, not a made-up tool catalog.
+    required = {
+        "weekly-progress-digest": {
+            "analytics_get_cross_topic",
+            "analytics_get_trend",
+            "analytics_get_snapshot",
+            "mastery_get_map_summary",
+            "notify",
+        },
+        "weekly-stale-flow-check": {
+            "mind_map_list",
+            "mind_map_get",
+            "teaching_flow_get",
+            "teaching_flow_abandon",
+            "mind_map_update_status",
+            "spaced_repetition_schedule_cleanup",
+            "memory_store_fact",
+            "notify",
+        },
+        "daily-spaced-repetition-nudge": {
+            "mind_map_list",
+            "spaced_repetition_pending_reviews",
+            "notify",
+        },
+    }
+    assert prompts.keys() == required.keys()
+    assert {name: spec.obligation.status for name, spec in prompts.items()} == {
+        name: "valid" for name in required
+    }
+    # Registration and final approval wrapping execute; handler/provider/DB
+    # bodies do not. The resulting local snapshot still is not a verified fleet.
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    registry = await _roster_catalog("education")
+    for name, calls in required.items():
+        ceiling = {g.capability: g for g in prompts[name].obligation.declaration.capabilities}
+        assert ceiling.keys() == {f"education__{call}" for call in calls}
+        for call in calls:
+            descriptor = registry[call]
+            grant = ceiling[f"education__{call}"]
+            assert descriptor.grantable
+            assert descriptor.owner_domain == "education"
+            assert set(dict(grant.resources)) <= set(descriptor.resource_params)
+        # notify cannot acquire an invented channel/owner resource or a policy
+        # exemption through this source declaration. Actual delivery is gated.
+        assert ceiling["education__notify"].resources == ()
+    stale = prompts["weekly-stale-flow-check"].obligation.declaration
+    memory = next(g for g in stale.capabilities if g.capability == "education__memory_store_fact")
+    assert memory.resources == (("predicate", ("study_pattern",)),)
+    assert registry["teaching_flow_abandon"].effect_class == "administer"
+    assert registry["spaced_repetition_schedule_cleanup"].effect_class == "administer"
+    # Dynamic map IDs stay a population, not guessed fixed owner selections.
+    assert all(
+        "mind_map_id" not in dict(grant.resources)
+        for spec in prompts.values()
+        for grant in spec.obligation.declaration.capabilities
+    )
+    result = diagnose_loaded_schedules(
+        config.schedules, owner_domain=config.name, local_catalog=registry
+    )
+    assert len(result) == len(prompts)
+    assert {issue.code for issue in result} == {"fleet_catalog_unavailable"}
+    assert all(spec.prompt not in caplog.text for spec in prompts.values())

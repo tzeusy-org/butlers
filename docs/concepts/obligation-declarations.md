@@ -53,6 +53,29 @@ used by post-registration diagnostics. The projection's definition digest includ
 the declaration, but is not a row UUID, context witness, creator grant or source
 registration. OFF makes no new B2, admission or reservation calls.
 
+### Education schedule inputs
+
+Education's three Git prompt schedules now declare their actual workflow
+capabilities. The weekly digest includes the analytics snapshot/mastery fallback;
+the daily nudge reads all active maps and pending reviews before its conditional
+owner notification. The stale-flow declaration includes the referenced skill's
+orphan-map path, both `administer` cleanup capabilities and its memory write.
+That memory grant restricts the registered `predicate` resource to
+`study_pattern`. Map IDs and memory subjects come from the current source
+population, so they are not replaced by guessed static IDs. Omitted resource
+restrictions mean all IDs for those exact capabilities.
+
+The `notify` capability does not establish an owner recipient or waive exposure
+and approval rules. Its registered resource parameters are `recipient`,
+`entity_id` and `request_context`; `channel` is not a resource constraint, and no
+owner UUID is invented in Git. Actual recipient resolution and broker/domain
+checks remain required. Current prompt text, quiet behavior, schedules, module
+groups and deterministic jobs are unchanged. These declarations flow through
+the same typed loader, normalized sync and final-registry diagnostics described
+above; they still cannot establish a verified fleet catalog or enable admission.
+Education's generated teaching/review obligations remain separate unfinished
+source families, as do the other roster and subscription declarations.
+
 ## Validation and catalog custody
 
 `build_obligation_catalog()` projects immutable final `ToolCatalog` snapshots.
@@ -119,8 +142,8 @@ and safety alerts must keep their original jobs and remain independent of goal
 admission, model availability and budgets. The source inventory guard proves
 census coverage, not a completed semantic sweep or live database inventory.
 
-The remaining full bu-o9qax4 work includes roster declarations; current parser and
-schedule/subscription sync integration; source revisions and durable occurrence
+The remaining full bu-o9qax4 work includes the other roster and subscription
+declarations; production schedule/subscription source registration; durable occurrence
 storage; verified creator/cause interfaces; final-registry publication; actual
 scheduler/deadline/chain/feed/model producers; Home Assistant's read/record/owner
 notify default; removal of unsupported travel-time wording; lifecycle/roster docs;

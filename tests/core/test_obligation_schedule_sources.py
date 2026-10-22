@@ -457,6 +457,9 @@ async def test_role_shadow_wrong_command_and_stale_generation_refuse_before_effe
 
 
 async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from butlers.config import load_config
     from butlers.core import scheduler
     from tests.config.test_obligation_declarations import _loaded_config
     from tests.core.test_sync_schedules_timezone_and_quiet_lint import _FakePool
@@ -464,6 +467,11 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
     config = _loaded_config(tmp_path)
     declared = config.schedules[0]
     plain = type(declared)(name=declared.name, cron=declared.cron, prompt=declared.prompt)
+    education = load_config(Path(__file__).resolve().parents[2] / "roster/education")
+    education_plain = [
+        type(spec).model_validate(spec.model_dump(exclude={"obligation"}))
+        for spec in education.schedules
+    ]
     projections = []
     actual = scheduler.project_loaded_schedule
     from butlers.core import obligations
@@ -503,3 +511,24 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
     # falsely promoting either value to row UUID/context/catalog authority.
     assert projections[0].digest != projections[1].digest
     assert projections[1].declaration.declaration is declared.obligation.declaration
+
+    # Real roster input reaches the same sync consumer. Removing only the new
+    # declarations must leave every old scheduled-row SQL value unchanged,
+    # including deterministic jobs, timezone, delivery prompts and cron slots.
+    before_education = len(projections)
+    c, d = Pool(), Pool()
+    assert await scheduler.sync_schedules(c, education_plain, stagger_key="education") is None
+    assert await scheduler.sync_schedules(d, education.schedules, stagger_key="education") is None
+    assert c.inserted == d.inserted and c.executed == d.executed
+    normalized = projections[before_education:]
+    assert len(normalized) == 2 * len(education.schedules)
+    for original, candidate in zip(
+        normalized[: len(education.schedules)], normalized[len(education.schedules) :], strict=True
+    ):
+        assert original.fields == candidate.fields
+        if candidate["dispatch_mode"] == "prompt":
+            assert original.declaration.status == "missing"
+            assert candidate.declaration.status == "valid"
+            assert original.digest != candidate.digest
+        else:
+            assert original.digest == candidate.digest
