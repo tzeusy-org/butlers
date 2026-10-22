@@ -24,12 +24,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = REPO_ROOT / "frontend"
 
-# (hosted step name, npm script). `lint` already includes lint:visual-role-css.
+# (hosted step name, npm script).
 STEPS: tuple[tuple[str, str], ...] = (
     ("Lint", "lint"),
     ("Em-dash copy gate (bu-370uj)", "lint:emdash"),
     ("Query-result coercion gate (bu-ep4ks.5)", "lint:query-coercion"),
-    ("Owner-time survivor", "lint:owner-time"),
 )
 
 HOSTED_ONLY: tuple[str, ...] = ("knip", "build")

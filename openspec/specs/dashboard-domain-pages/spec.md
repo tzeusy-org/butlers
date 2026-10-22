@@ -1288,16 +1288,16 @@ Scope: v1-mandatory
 
 ### Requirement: Health and General retain distinct Butler identity slots
 
-The dashboard MUST resolve the Health butler to `--category-5` and the General butler to
-`--category-4` through the canonical `ButlerMark` roster order. These identity tokens MUST remain
-confined to Butler letter-marks and MUST NOT be globally replaced with one another.
+The dashboard MUST resolve the Health butler to identity slot 5 and the General butler to
+slot 4 of the `ButlerMark` palette through the canonical roster order. These identity hues MUST
+remain confined to Butler letter-marks and MUST NOT be globally replaced with one another.
 
 #### Scenario: Health and General marks keep their permanent slots
 
 - **WHEN** `ButlerMark` renders Health and General identity marks
-- **THEN** Health MUST use `--category-5`
-- **AND** General MUST use `--category-4`
-- **AND** neither token may be applied as a global replacement for the other
+- **THEN** Health MUST use identity slot 5
+- **AND** General MUST use identity slot 4
+- **AND** neither hue may be applied as a global replacement for the other
 
 ### Requirement: Health measurements page at the canonical route
 
@@ -1421,9 +1421,9 @@ Voice briefing plus a KPI strip; the right column is a quiet attention index. On
 the grid MUST collapse to a single column with the attention index below the briefing.
 
 The Overview MUST follow the Dispatch language: Display headline (not bold), the health butler's
-`--category-5` identity hue only on the `ButlerMark` letter-mark, surfaces-not-cards, and state
+identity slot 5 hue only on the `ButlerMark` letter-mark, surfaces-not-cards, and state
 color (`--red`/`--amber`/`--green`) reserved for genuine health signal, never decoration.
-The General butler's separate `--category-4` identity slot remains unchanged.
+The General butler's separate identity slot 4 remains unchanged.
 
 The Overview MUST contain, in the left column:
 
