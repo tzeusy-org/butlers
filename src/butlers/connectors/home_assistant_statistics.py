@@ -106,7 +106,7 @@ class HAStatisticsClient:
         end: str,
         period: str = "hour",
         types: Sequence[str] = ("change",),
-        timeout_s: float = 30.0,
+        timeout: float = 30.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Return statistics keyed by statistic ID."""
         if period not in VALID_STATISTICS_PERIODS:
@@ -131,7 +131,7 @@ class HAStatisticsClient:
         }
         if self._command_sender is not None:
             try:
-                result = await self._command_sender(command, timeout_s=timeout_s)
+                result = await self._command_sender(command, timeout=timeout)
             except TimeoutError:
                 raise HAStatisticsError("timeout", scope="command") from None
             except HAStatisticsError:
@@ -139,7 +139,7 @@ class HAStatisticsClient:
             except Exception:
                 raise HAStatisticsError("provider_error", scope="command") from None
         else:
-            result = await self._send_one_shot(command, timeout_s=timeout_s)
+            result = await self._send_one_shot(command, timeout=timeout)
 
         if not isinstance(result, dict):
             raise HAStatisticsError("protocol_error", scope="command")
@@ -149,7 +149,7 @@ class HAStatisticsClient:
         self,
         command: dict[str, Any],
         *,
-        timeout_s: float,
+        timeout: float,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         assert self._ha_url is not None
         assert self._ha_token is not None
@@ -162,7 +162,7 @@ class HAStatisticsClient:
             raise HAStatisticsError("invalid_url", scope="connection")
         websocket_url = f"{websocket_url}/api/websocket"
 
-        client_timeout = aiohttp.ClientTimeout(total=timeout_s + 45.0, connect=10.0)
+        client_timeout = aiohttp.ClientTimeout(total=timeout + 45.0, connect=10.0)
         command_sent = False
         try:
             async with aiohttp.ClientSession(timeout=client_timeout) as session:
@@ -187,7 +187,7 @@ class HAStatisticsClient:
                     payload["id"] = 1
                     await websocket.send_json(payload)
                     command_sent = True
-                    response = await websocket.receive_json(timeout=timeout_s)
+                    response = await websocket.receive_json(timeout=timeout)
         except HAStatisticsError:
             raise
         except (aiohttp.ClientError, TimeoutError):

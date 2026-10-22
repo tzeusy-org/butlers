@@ -51,11 +51,15 @@ be rotated, and do not paste it anywhere.
 ### Reviewing an allowance
 
 `.gitleaks.toml` extends the default rules. Each `[[allowlists]]` entry is a reviewed false
-positive that names exact paths and exact rules (`condition = "AND"`) and, where the value has a
-fixed nonsecret shape (a SHA-256 digest, a model id, a timezone), pins that shape too, so a real
-credential in the same file still fails. Add an entry only with its reason in `description`. Never
-allow a directory, all tests, a baseline report, or a value you have not identified. Prefer making a
-test fixture obviously synthetic (for example `abc123`) over widening an allowance.
+positive that names exact paths and exact rules (`condition = "AND"`) and pins the allowed values:
+exact anchored literals (vendored bundle constants, test fixtures, prose identifiers) or a fixed
+nonsecret shape a credential cannot meet (a SHA-256 digest, a model id, a timezone). A real
+credential in the same file therefore still fails. The self-test enforces this: it refuses any
+allowance that is not rule-scoped to exact literal paths, plants random real-shaped values in every
+allowed path, and fails if any goes undetected. Add an entry only with its reason in
+`description`. Never allow a directory, all tests, a baseline report, or a value you have not
+identified. Prefer making a test fixture obviously synthetic (for example `abc123`) over widening
+an allowance.
 
 ## Workflow lint
 
@@ -67,8 +71,9 @@ findings; 2 and 3 are tool errors and also fail.
 ## Detector self-test
 
 `make lint-tools-self-test` proves both detectors on disposable inputs each run: gitleaks must find
-a freshly generated, never-issued AWS-shaped key id and leave it out of its report, and pass a
-clean file; actionlint must pass a valid workflow and flag a malformed one.
+a freshly generated, never-issued AWS-shaped key id and leave it out of its report, pass a clean
+file, and catch random real-shaped values planted in every path a `.gitleaks.toml` allowance
+covers; actionlint must pass a valid workflow and flag a malformed one.
 `tests/contracts/test_standard_lint_tools.py` covers the fail-closed install and report handling,
 and repeats the detector checks when the tools are installed.
 

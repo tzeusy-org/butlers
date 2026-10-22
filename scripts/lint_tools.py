@@ -26,6 +26,7 @@ import io
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import stat
@@ -34,6 +35,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import urllib.request
 from pathlib import Path, PurePosixPath
 
@@ -482,6 +484,45 @@ jobs:
 """
 
 
+def allowance_paths(config: Path = GITLEAKS_CONFIG) -> list[str]:
+    """Every exact path a reviewed ``.gitleaks.toml`` allowance covers.
+
+    Refuses an allowance that is not AND-scoped to named rules and exact literal paths,
+    so no entry can widen to a directory, a glob or every rule.
+    """
+    try:
+        allowances = tomllib.loads(config.read_text(encoding="utf-8")).get("allowlists", [])
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ToolError(f"unreadable reviewed config {config.name}") from exc
+    paths: list[str] = []
+    for allowance in allowances:
+        if allowance.get("condition") != "AND" or not allowance.get("targetRules"):
+            raise ToolError("self-test: every allowance must be AND-scoped to named rules")
+        if not allowance.get("paths"):
+            raise ToolError("self-test: every allowance must name exact paths")
+        for pattern in allowance["paths"]:
+            literal = re.fullmatch(r"\^((?:[^\\^$*+?()\[\]{}|.]|\\\.)+)\$", pattern)
+            if literal is None:
+                raise ToolError("self-test: an allowance path is not an exact literal path")
+            paths.append(literal.group(1).replace("\\.", "."))
+    return sorted(set(paths))
+
+
+def synthetic_generic_secrets() -> list[str]:
+    """Fresh random lines in two real-looking forms the default generic rule detects.
+
+    The alphabets have no vowels, since the generic rule ignores values containing one of
+    its stopwords. A few short stopwords have no vowels, so callers plant several values
+    of each form and require at least one of each to be caught.
+    """
+    mixed = "BCDFGHJKLMNPQRSTVWXZbcdfghjklmnpqrstvwxz0123456789"
+    lower = "bcdfghjklmnpqrstvwxz0123456789"
+    return [
+        'api_key = "' + "".join(secrets.choice(mixed) for _ in range(40)) + '"',
+        "api_key: key_" + "".join(secrets.choice(lower) for _ in range(32)),
+    ]
+
+
 def synthetic_access_key_id() -> str:
     """A freshly random, never-issued AWS-shaped key id that the default rules detect."""
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
@@ -516,6 +557,25 @@ def self_test() -> int:
             run_tool(cmd, cwd=planted)
             if key_id in report.read_text(encoding="utf-8"):
                 raise ToolError("self-test: gitleaks report contains the planted value")
+
+        # Every allowance must still catch a real-shaped value planted in its own files.
+        probes = root / "allowance-probes"
+        paths = allowance_paths()
+        for rel in paths:
+            probe = probes / rel
+            probe.parent.mkdir(parents=True, exist_ok=True)
+            # Lines 1-3 hold the quoted mixed-case form, lines 4-6 the prefixed lowercase form.
+            planted = [synthetic_generic_secrets() for _ in range(3)]
+            lines = [pair[0] for pair in planted] + [pair[1] for pair in planted]
+            probe.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        caught = {
+            (rel, line <= 3)
+            for rel, line, rule in scan_directory(probes, gitleaks)
+            if rule == "generic-api-key"
+        }
+        for rel in paths:
+            if not {(rel, True), (rel, False)} <= caught:
+                raise ToolError(f"self-test: an allowance hides a real-shaped value in {rel}")
 
         workflows = root / ".github" / "workflows"
         workflows.mkdir(parents=True)

@@ -1231,7 +1231,7 @@ class HomeAssistantModule(Module):
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout_s: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - HAStatisticsClient command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1243,7 +1243,7 @@ class HomeAssistantModule(Module):
         command:
             Command dict (``type`` and any other fields). The ``id`` field
             will be overwritten with the next auto-increment value.
-        timeout_s:
+        timeout:
             Seconds to wait for the response before raising ``asyncio.TimeoutError``.
 
         Returns
@@ -1256,7 +1256,7 @@ class HomeAssistantModule(Module):
         RuntimeError
             If the WebSocket is not connected, or if HA returns an error response.
         asyncio.TimeoutError
-            If the response does not arrive within ``timeout_s`` seconds.
+            If the response does not arrive within ``timeout`` seconds.
         """
         if self._ws_connection is None or not self._ws_connected:
             raise RuntimeError("HomeAssistantModule: WebSocket not connected — cannot send command")
@@ -1272,7 +1272,7 @@ class HomeAssistantModule(Module):
 
         try:
             await self._ws_connection.send_json(command)
-            return await asyncio.wait_for(fut, timeout=timeout_s)
+            return await asyncio.wait_for(fut, timeout=timeout)
         except Exception:
             self._ws_pending.pop(cmd_id, None)
             raise
@@ -1520,7 +1520,7 @@ class HomeAssistantModule(Module):
         if not self._ws_connected:
             return
         try:
-            result = await self._ws_command({"type": "config/area_registry/list"}, timeout_s=10.0)
+            result = await self._ws_command({"type": "config/area_registry/list"}, timeout=10.0)
             areas: list[dict[str, Any]] = result if isinstance(result, list) else []
             self._area_cache = {
                 a["area_id"]: CachedArea(area_id=a["area_id"], name=a.get("name", ""))
@@ -1547,7 +1547,7 @@ class HomeAssistantModule(Module):
         if not self._ws_connected:
             return
         try:
-            result = await self._ws_command({"type": "config/entity_registry/list"}, timeout_s=10.0)
+            result = await self._ws_command({"type": "config/entity_registry/list"}, timeout=10.0)
             entities: list[dict[str, Any]] = result if isinstance(result, list) else []
             new_registry: dict[str, CachedEntityRegistryEntry] = {}
             for ent in entities:
@@ -1598,7 +1598,7 @@ class HomeAssistantModule(Module):
                         "type": "subscribe_events",
                         "event_type": event_type,
                     },
-                    timeout_s=5.0,
+                    timeout=5.0,
                 )
                 logger.debug("HomeAssistantModule: subscribed to %s events.", event_type)
             except Exception as exc:
@@ -2362,7 +2362,7 @@ class HomeAssistantModule(Module):
             resp.raise_for_status()
             raw = resp.json()
         elif self._ws_connected:
-            result = await self._ws_command({"type": "get_services"}, timeout_s=10.0)
+            result = await self._ws_command({"type": "get_services"}, timeout=10.0)
             # WS get_services returns dict[domain, dict[service_name, service_obj]]
             # Convert to the same shape as the REST response.
             raw = [{"domain": d, "services": svcs} for d, svcs in result.items()]

@@ -393,7 +393,7 @@ class HAWebSocketClient:
             try:
                 await self._ws_command(
                     {"type": "subscribe_events", "event_type": event_type},
-                    timeout_s=5.0,
+                    timeout=5.0,
                 )
                 logger.debug("HAWebSocketClient: subscribed to %s", event_type)
             except Exception as exc:
@@ -615,21 +615,21 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout_s: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
         Args:
             command: Command dict (``type`` + payload). The ``id`` field
                 will be overwritten with an auto-incrementing value.
-            timeout_s: Seconds to wait before raising ``asyncio.TimeoutError``.
+            timeout: Seconds to wait before raising ``asyncio.TimeoutError``.
 
         Returns:
             The ``result`` payload from the HA response.
 
         Raises:
             RuntimeError: If WebSocket is not connected, or HA returns an error.
-            asyncio.TimeoutError: If response doesn't arrive within ``timeout_s``.
+            asyncio.TimeoutError: If response doesn't arrive within ``timeout``.
         """
         if self._ws_connection is None or not self._connected:
             raise RuntimeError("HAWebSocketClient: not connected — cannot send command")
@@ -645,7 +645,7 @@ class HAWebSocketClient:
 
         try:
             await self._ws_connection.send_json(command)
-            return await asyncio.wait_for(fut, timeout=timeout_s)
+            return await asyncio.wait_for(fut, timeout=timeout)
         except Exception:
             self._ws_pending.pop(cmd_id, None)
             raise

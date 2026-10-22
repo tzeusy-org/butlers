@@ -171,3 +171,27 @@ def test_make_lint_is_the_ci_lint_step_and_runs_every_standard_tool() -> None:
     assert lint["run"] == "make lint"
     assert steps.index("Install dependencies") < steps.index("Install lint tools")
     assert steps.index("Install lint tools") < steps.index("Lint")
+
+
+def test_every_secret_allowance_is_rule_scoped_to_exact_paths(
+    lint_tools: ModuleType, tmp_path: Path
+) -> None:
+    # The reviewed config: every allowance names exact files, so the self-test can plant a
+    # real-shaped value in each one and require gitleaks to catch it.
+    paths = lint_tools.allowance_paths()
+    assert ".github/actions/ci-shard-watchdog-capture/dist/index.js" in paths
+    assert all((REPO_ROOT / path).is_file() for path in paths)
+
+    config = tmp_path / "gitleaks.toml"
+    widened = {
+        "glob path": "condition = 'AND'\ntargetRules = ['generic-api-key']\npaths = ['^tests/.*$']",
+        "unanchored": "condition = 'AND'\ntargetRules = ['generic-api-key']\npaths = ['tests/a\\.py']",
+        "every rule": "condition = 'AND'\npaths = ['^tests/a\\.py$']",
+        "or condition": "condition = 'OR'\ntargetRules = ['generic-api-key']\npaths = ['^tests/a\\.py$']",
+        "no paths": "condition = 'AND'\ntargetRules = ['generic-api-key']\nregexes = ['x']",
+    }
+    for label, body in widened.items():
+        config.write_text(f"[[allowlists]]\n{body}\n", encoding="utf-8")
+        with pytest.raises(lint_tools.ToolError):
+            lint_tools.allowance_paths(config)
+            pytest.fail(f"accepted a {label} allowance")

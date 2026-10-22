@@ -2276,9 +2276,9 @@ class _FakeChatStreamListener:
             self._queue.put_nowait(envelope)
         self.closed = False
 
-    async def get(self, timeout_s: float) -> dict[str, object] | None:
+    async def get(self, timeout: float) -> dict[str, object] | None:  # noqa: ASYNC109 - fakes ChatStreamListener.get
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout=timeout_s)
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except TimeoutError:
             return None
 
@@ -2463,9 +2463,9 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         if listener is not None:
             queued_get = listener.get
 
-            async def receive_wake(timeout_s):
+            async def receive_wake(timeout):  # noqa: ASYNC109 - fakes ChatStreamListener.get
                 observed.append("listener_wait")
-                event = await queued_get(timeout_s)
+                event = await queued_get(timeout)
                 observed.append("listener_wake" if event is not None else "listener_timeout")
                 return event
 
@@ -2513,7 +2513,7 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         assert "".join(token["content"] for token in _token_events(events)) == reply_row["content"]
         assert events[-1].startswith("event: done")
         if listener is not None:
-            listener.get.assert_awaited_once_with(timeout_s=notify_bound_s)
+            listener.get.assert_awaited_once_with(timeout=notify_bound_s)
             assert listener.closed
             assert observed == [
                 "empty_read",

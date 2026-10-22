@@ -166,10 +166,10 @@ async def test_open_chat_stream_listener_queues_and_returns_notify_payloads(monk
     callback(fake_conn, 1, channel, json.dumps({"type": "token", "data": {"content": "hi"}}))
     callback(fake_conn, 1, channel, "not json")  # dropped, not raised
 
-    envelope = await listener.get(timeout_s=1.0)
+    envelope = await listener.get(timeout=1.0)
     assert envelope == {"type": "token", "data": {"content": "hi"}}
 
-    timed_out = await listener.get(timeout_s=0.01)
+    timed_out = await listener.get(timeout=0.01)
     assert timed_out is None
 
     await listener.aclose()
