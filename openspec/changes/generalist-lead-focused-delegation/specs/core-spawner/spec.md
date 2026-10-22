@@ -109,7 +109,7 @@ Scope: v1-mandatory
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the selected runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag and delivers the system prompt through a private per-invocation file named by `GEMINI_SYSTEM_MD`, never on argv
 - **AND** passes only the environment its launcher provides; for a goal invocation that is `PATH`, the staged model credential and the MCP config
 
 #### Scenario: OpenCode adapter invocation
