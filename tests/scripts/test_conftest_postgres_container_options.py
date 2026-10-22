@@ -6,7 +6,10 @@ scheduled run from 2026-07-25 for two reasons this configuration owns:
 1. libfaketime shifted only the pytest process clock, so every DB test that
    compares a Postgres ``now()`` against a Python ``datetime.now()`` failed by
    the leg offset unless someone remembered the ``pg_clock`` marker. The
-   container now runs under the same shifted clock as the process.
+   container now runs under the same shifted clock as the process, as the
+   ``postgres`` user: started as root, libfaketime creates its semaphore
+   ``/faketime_sem_1`` as root, and the entrypoint's drop to ``postgres`` then
+   exits 1 on "sem_open failed ... Permission denied" (run 39770283852).
 2. Docker's default 64 MB ``/dev/shm`` ran out once one container had served a
    third of the suite ("could not resize shared memory segment ... No space
    left on device"), and Postgres then crashed into recovery mode.
@@ -59,7 +62,8 @@ class _RecordingContainer:
         return self
 
     def with_kwargs(self, **kwargs: object) -> Any:
-        self.kwargs.update(kwargs)
+        # testcontainers replaces, not merges, the kwargs on each call.
+        self.kwargs = kwargs
         return self
 
 
@@ -93,6 +97,7 @@ def test_shifted_process_shares_its_offset_with_the_container(preload: str) -> N
     mounted = root_conftest._CONTAINER_FAKETIME_LIBRARY
     assert container.volumes == [(_LIBRARY, mounted, "ro")]
     assert container.env == {"LD_PRELOAD": mounted, "FAKETIME": "+45d"}
+    assert container.kwargs == {"shm_size": root_conftest._POSTGRES_SHM_SIZE, "user": "postgres"}
 
 
 def test_offset_without_the_library_preloaded_is_not_forwarded() -> None:

@@ -536,8 +536,12 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
     ``datetime.now()`` stay in agreement. Without it every DB test comparing the
     two clocks failed by the leg offset unless it carried the ``pg_clock``
     marker, and new tests kept arriving without one (bu-29wkwj.6).
+
+    The shifted container starts as ``postgres``, not root: libfaketime in the
+    root entrypoint creates its ``/faketime_sem_1`` semaphore as root, and after
+    the entrypoint drops to ``postgres`` it exits on "sem_open failed ...
+    Permission denied" (run 39770283852).
     """
-    container = container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE)
     offset = environ.get("FAKETIME")
     library = next(
         (
@@ -548,9 +552,10 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
         None,
     )
     if not offset or library is None:
-        return container
+        return container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE)
     return (
-        container.with_volume_mapping(library, _CONTAINER_FAKETIME_LIBRARY, mode="ro")
+        container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE, user="postgres")
+        .with_volume_mapping(library, _CONTAINER_FAKETIME_LIBRARY, mode="ro")
         .with_env("LD_PRELOAD", _CONTAINER_FAKETIME_LIBRARY)
         .with_env("FAKETIME", offset)
     )
