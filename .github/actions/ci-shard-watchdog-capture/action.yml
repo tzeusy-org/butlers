@@ -1,0 +1,18 @@
+name: CI shard watchdog capture
+description: Bounded diagnostic-only masked live checkpoints; preserves subject exit status.
+inputs:
+  capture:
+    description: Reviewed capture checkout
+    required: true
+  subject:
+    description: Frozen original profile checkout
+    required: true
+  inventory:
+    description: Same-attempt fresh original collector inventory
+    required: true
+  output:
+    description: Job-owned temporary observation directory
+    required: true
+runs:
+  using: node20
+  main: dist/index.js
