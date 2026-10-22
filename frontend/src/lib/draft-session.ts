@@ -119,7 +119,9 @@ export class DraftSession {
             return;
         try {
             const read = await browserDrafts.read(this.key, this.surface, this.context);
-            if (!this.active || (read.fence.storeEpoch === this.fence.storeEpoch && read.fence.writeRevision === this.fence.writeRevision))
+            // Cleanup may have begun while this read was pending. Its own confirmation
+            // owns adoption and completion; an older reconciliation cannot consume it.
+            if (!this.active || this.clearingSubmission || (read.fence.storeEpoch === this.fence.storeEpoch && read.fence.writeRevision === this.fence.writeRevision))
                 return;
             const change = this.localSubmissionChange;
             // A retired same-tab submission may clear durable C, but not the fields of
@@ -153,12 +155,14 @@ export class DraftSession {
         const serialized = draftBundle(fields);
         if (this.submittedReset && serialized === this.initial)
             return;
+        // A queued render of the submitted fields is not a new edit and must not
+        // release the reset barrier before React renders the acknowledged empty fields.
+        if (!this.active || serialized === draftBundle(this.fields))
+            return;
         this.submittedReset = false;
         if (this.suppressEmpty && Object.values(fields).every((value) => value === ""))
             return;
         this.suppressEmpty = false;
-        if (!this.active || serialized === draftBundle(this.fields))
-            return;
         this.fields = structuredClone(fields);
         this.locallyEdited = true;
         this.revision = crypto.randomUUID();

@@ -39,6 +39,39 @@ async function named(page: Page, name: string) {
 
 test.beforeEach(async ({ context }) => { await api(context); });
 
+test("the enrolled research route restores its complete bundle and clears only after successful submission", async ({ page, context }) => {
+  const posts: unknown[] = [];
+  await context.route((url) => url.pathname === "/api/health/research", async (route) => {
+    if (route.request().method() === "POST") {
+      posts.push(route.request().postDataJSON());
+      await route.fulfill({ json: { id: "research-created" } });
+    } else await route.fulfill({ json: { data: [], meta: { total: 0, has_more: false } } });
+  });
+  await page.goto("/health/research");
+  await page.getByRole("button", { name: "Add research", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Title", { exact: true }).fill("A browser research subject");
+  await dialog.getByLabel("Content", { exact: true }).fill("Complete research notes");
+  await dialog.getByLabel("Tags (optional)").fill("sleep, reading");
+  await dialog.getByLabel("Source URL (optional)").fill("https://example.com/research");
+  const fields = { title: "A browser research subject", content: "Complete research notes", tags: "sleep, reading", sourceUrl: "https://example.com/research" };
+  await expect.poll(async () => (await rows(page)).find((row) => row.surfaceId === "health.research" && row.state === "live")?.fields).toEqual(fields);
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Keep draft and close" }).click();
+  await expect(dialog).toBeHidden();
+  await page.getByRole("button", { name: "Add research", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Draft restored", { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue(fields.title);
+  await expect(dialog.getByLabel("Content", { exact: true })).toHaveValue(fields.content);
+  await expect(dialog.getByLabel("Tags (optional)")).toHaveValue(fields.tags);
+  await expect(dialog.getByLabel("Source URL (optional)")).toHaveValue(fields.sourceUrl);
+  await dialog.getByRole("button", { name: "Add research", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(posts).toEqual([{ title: fields.title, content: fields.content, tags: ["sleep", "reading"], source_url: fields.sourceUrl }]);
+  await expect.poll(async () => (await rows(page)).find((row) => row.surfaceId === "health.research")?.state).toBe("tombstone");
+});
+
 test("confirmed bundle survives abrupt tab close and restores once without moving focus", async ({ page, context }) => {
   const dialog = await form(page);
   await dialog.getByLabel("Name", { exact: true }).fill("A browser condition");

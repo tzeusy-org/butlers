@@ -91,3 +91,72 @@ it("keeps a reopened view's fields after the retired submission commits its tomb
     expect(read().record?.fields?.name).toBe("A new explicit edit");
   } finally { reopened.dispose(); }
 });
+
+// REQ-dashboard-shell-003/006: a read started before cleanup cannot consume its acknowledgement.
+it("completes a restored submission when an earlier reconciliation reads its submitted tombstone", async () => {
+  const empty = { title: "", content: "", tags: "", sourceUrl: "" };
+  const values = { ...empty, title: "Restored research", content: "Complete notes" };
+  let record: DraftRecord = { schemaVersion: 1, state: "live", draftKey: "restored-research", surfaceId: "health.research", context: ["create", "new"], fields: values, contentRevision: "restored-C", sourceBaseline: "baseline", storeEpoch: 0, writeRevision: 1, updatedAt: Date.now() };
+  const read = (): DraftRead => ({ record: structuredClone(record), fence: { storeEpoch: 0, writeRevision: record.writeRevision }, rejected: false });
+  let releaseReconciliation!: () => void;
+  let releaseConfirmation!: () => void;
+  let cleanupEntered!: () => void;
+  const reconciliation = new Promise<void>((resolve) => { releaseReconciliation = resolve; });
+  const confirmation = new Promise<void>((resolve) => { releaseConfirmation = resolve; });
+  const entered = new Promise<void>((resolve) => { cleanupEntered = resolve; });
+  let delayedRead = false;
+  vi.spyOn(browserDrafts, "key").mockResolvedValue("restored-research");
+  vi.spyOn(browserDrafts, "subscribe").mockReturnValue(() => {});
+  vi.spyOn(browserDrafts, "read").mockImplementation(async () => {
+    if (delayedRead) { delayedRead = false; await reconciliation; }
+    else if (record.state === "tombstone") await confirmation;
+    return read();
+  });
+  vi.spyOn(browserDrafts, "remove").mockImplementation(async () => {
+    record = { schemaVersion: 1, state: "tombstone", draftKey: "restored-research", surfaceId: "health.research", context: ["create", "new"], storeEpoch: 0, writeRevision: 2, updatedAt: Date.now(), deletionReason: "submitted" };
+    cleanupEntered(); return true;
+  });
+  let visible = empty;
+  const session = new DraftSession("health.research", ["create", "new"], empty, (fields) => { visible = fields as typeof empty; });
+  session.start(); await session.ready;
+  const complete = vi.fn();
+  try {
+    expect(visible).toEqual(values);
+    const token = session.capture(visible);
+    delayedRead = true; session.focus();
+    const cleanup = session.submitted(token, complete); await entered;
+    releaseReconciliation(); await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseConfirmation(); await cleanup;
+    expect(record.state).toBe("tombstone");
+    expect(visible).toEqual(empty);
+    expect(complete).toHaveBeenCalledTimes(1);
+  } finally { releaseReconciliation(); releaseConfirmation(); session.dispose(); }
+});
+
+// REQ-dashboard-shell-006: unchanged queued render effects do not turn cleanup into a successor edit.
+it("keeps submission completion eligible across queued old and reset field effects", async () => {
+  const empty = { title: "", content: "", tags: "", sourceUrl: "" };
+  const values = { ...empty, title: "Restored research", content: "Complete notes" };
+  let record: DraftRecord | null = null;
+  const read = (): DraftRead => ({ record, fence: { storeEpoch: 0, writeRevision: record?.writeRevision ?? 0 }, rejected: false });
+  vi.spyOn(browserDrafts, "key").mockResolvedValue("queued-research");
+  vi.spyOn(browserDrafts, "subscribe").mockReturnValue(() => {});
+  vi.spyOn(browserDrafts, "read").mockImplementation(async () => read());
+  vi.spyOn(browserDrafts, "write").mockImplementation(async (key, surface, context, fields, revision) => {
+    record = { schemaVersion: 1, state: "live", draftKey: key, surfaceId: surface, context, fields, contentRevision: revision, sourceBaseline: "baseline", storeEpoch: 0, writeRevision: 1, updatedAt: Date.now() };
+    return read();
+  });
+  vi.spyOn(browserDrafts, "remove").mockImplementation(async () => { record = null; return true; });
+  let queuedEffects = false;
+  const session = new DraftSession("health.research", ["create", "new"], empty, () => {
+    if (queuedEffects) { queuedEffects = false; session.edit(values); session.edit(empty); }
+  });
+  session.start(); await session.ready;
+  const complete = vi.fn();
+  try {
+    const token = session.capture(values); await session.flush(); queuedEffects = true;
+    await session.submitted(token, complete);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(record).toBeNull();
+  } finally { session.dispose(); }
+});

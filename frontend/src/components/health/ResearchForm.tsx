@@ -29,6 +29,8 @@ import { useCreateResearch, useUpdateResearch } from "@/hooks/use-health";
 interface ResearchFormProps {
   /** When provided, the form edits this note; otherwise it creates a new one. */
   research?: HealthResearch;
+  /** The owning research route explicitly enrolls browser-local recovery. */
+  draftPersistence?: boolean;
   /** Called after a successful create/update so the caller can close the dialog. */
   onDone: () => void;
   /** Called when the user cancels. */
@@ -45,7 +47,7 @@ function parseTags(raw: string): string[] {
   return Array.from(seen);
 }
 
-export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) {
+export function ResearchForm({ research, onDone, onCancel, draftPersistence = false }: ResearchFormProps) {
   const isEdit = research != null;
 
   const [title, setTitle] = useState(research?.title ?? "");
@@ -53,7 +55,7 @@ export function ResearchForm({ research, onDone, onCancel }: ResearchFormProps) 
   const [tags, setTags] = useState((research?.tags ?? []).join(", "));
   const [sourceUrl, setSourceUrl] = useState(research?.source_url ?? "");
 
-  const draft = useDraft("health.research", [isEdit ? "edit" : "create", research?.id ?? "new"], { title, content, tags, sourceUrl }, (next) => { setTitle(next.title as typeof title); setContent(next.content as typeof content); setTags(next.tags as typeof tags); setSourceUrl(next.sourceUrl as typeof sourceUrl); }, true, undefined, research?.updated_at);
+  const draft = useDraft("health.research", [isEdit ? "edit" : "create", research?.id ?? "new"], { title, content, tags, sourceUrl }, (next) => { setTitle(next.title as typeof title); setContent(next.content as typeof content); setTags(next.tags as typeof tags); setSourceUrl(next.sourceUrl as typeof sourceUrl); }, draftPersistence, undefined, research?.updated_at);
 
   const createMutation = useCreateResearch();
   const updateMutation = useUpdateResearch();
