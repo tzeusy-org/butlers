@@ -84,7 +84,6 @@ import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { ButlerMark } from "@/components/ui/ButlerMark";
-import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
 import { Row } from "@/components/ui/Row";
@@ -126,6 +125,8 @@ import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarEntryDetailPanel } from "@/pages/calendar/CalendarEntryDetailPanel";
 import { CalendarSearchPalette } from "@/pages/calendar/CalendarSearchPalette";
 import { ButlerEventDialog } from "@/pages/calendar/ButlerEventDialog";
+import { CalendarHeader } from "@/pages/calendar/CalendarHeader";
+import { CalendarToolbar, type CalendarPanel } from "@/pages/calendar/CalendarToolbar";
 import { SourcesDialog } from "@/pages/calendar/SourcesDialog";
 import { useButlerEventEditor } from "@/pages/calendar/use-butler-event-editor";
 import { useButlerLaneActions } from "@/pages/calendar/use-butler-lane-actions";
@@ -147,12 +148,8 @@ import {
 } from "@/pages/calendar/mutation-result";
 import {
   FIELD_SELECT_CLASS,
-  RANGE_OPTIONS,
   RECURRING_INSTANCE_CAP,
   SELECT_CLASS,
-  SOURCE_TYPE_FACET_OPTIONS,
-  STATUS_FACET_OPTIONS,
-  VIEW_OPTIONS,
   capLaneEntriesByDay,
   formatLaneTitle,
   headlineLabel,
@@ -164,7 +161,6 @@ import {
   resolveButlerEventTarget,
   resolveOwnerFromEntry,
   shiftAnchor,
-  sourceName,
   titleize,
   truncateCalendarId,
   type ButlerLaneRows,
@@ -662,7 +658,7 @@ export default function CalendarWorkspacePage() {
   const sourceControls = useSourceControls(connectedSources);
   const { hiddenSources } = sourceControls;
   const sync = useCalendarSync();
-  const { syncMutation, handleSyncAll, syncButtonLabel } = sync;
+  const { handleSyncAll, syncButtonLabel } = sync;
 
   const sourceFilters = useMemo(() => {
     let filtered = userSources;
@@ -2154,6 +2150,15 @@ export default function CalendarWorkspacePage() {
   const canCreateUserEvents =
     view === "user" && submittableCalendars.length > 0;
 
+  // The four panels are mutually exclusive: opening one closes the others.
+  function togglePanel(panel: CalendarPanel) {
+    setActivityPanelOpen(panel === "activity" ? (prev) => !prev : false);
+    setFindTimePanelOpen(panel === "findTime" ? (prev) => !prev : false);
+    setProposalsPanelOpen(panel === "proposals" ? (prev) => !prev : false);
+    setDuplicatesPanelOpen(panel === "duplicates" ? (prev) => !prev : false);
+    if (panel === "activity") setAuditOffset(0);
+  }
+
   // ---------------------------------------------------------------------
   // Palette verbs + bindings (bu-t64p2 -- reachability sweep, bu-qvnce.11
   // slice 5). Calendar had the fleet's richest toolbar and its sole keydown
@@ -2288,73 +2293,26 @@ export default function CalendarWorkspacePage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" data-shell-scroll-owner="route">
-      {/* Masthead */}
-      <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 pb-5">
-        <div className="min-w-0">
-          <Eyebrow as="div" className="mb-2.5">
-            Calendar · {view === "user" ? "User" : "Butler"} view · {timezone} ·{" "}
-            {format(anchor, "yyyy")}
-          </Eyebrow>
-          <Display>{headlineLabel(range, start, end)}</Display>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Mono muted className="mr-1 tabular-nums">
-            {entries.length} {entries.length === 1 ? "event" : "events"}
-          </Mono>
-          <PillButton
-            onClick={handleSyncAll}
-            disabled={syncMutation.isPending}
-            aria-label="Sync all sources now"
-          >
-            {syncButtonLabel}
-          </PillButton>
-          <PillButton
-            onClick={() => setSearchPaletteOpen(true)}
-            aria-label="Search events"
-          >
-            Search
-          </PillButton>
-          <PillButton
-            onClick={() => setAgendaOpen(true)}
-            aria-label="Open printable agenda"
-          >
-            Agenda
-          </PillButton>
-          <PillButton
-            onClick={() => setPortabilityOpen(true)}
-            aria-label="Export or import calendar"
-          >
-            Export / Import
-          </PillButton>
-          <PillButton
-            onClick={() => setSourcesDialogOpen(true)}
-            aria-label="Configure sources"
-          >
-            Sources
-            {hiddenSources.size > 0 ? (
-              <span className="tabular-nums text-[var(--dim)]">
-                · {hiddenSources.size} hidden
-              </span>
-            ) : null}
-          </PillButton>
-          {view === "butler" ? (
-            <CommitButton
-              onClick={() => openButlerCreateDialog()}
-              disabled={butlerMutation.isPending}
-            >
-              Create butler event
-            </CommitButton>
-          ) : (
-            <CommitButton
-              onClick={() => openUserCreateDialog()}
-              disabled={!canCreateUserEvents || userEventMutation.isPending}
-              aria-label="Create user event"
-            >
-              Create event
-            </CommitButton>
-          )}
-        </div>
-      </header>
+      <CalendarHeader
+        view={view}
+        range={range}
+        timezone={timezone}
+        anchor={anchor}
+        start={start}
+        end={end}
+        entryCount={entries.length}
+        sync={sync}
+        hiddenSourceCount={hiddenSources.size}
+        butlerPending={butlerMutation.isPending}
+        userEventPending={userEventMutation.isPending}
+        canCreateUserEvents={canCreateUserEvents}
+        onSearch={() => setSearchPaletteOpen(true)}
+        onAgenda={() => setAgendaOpen(true)}
+        onPortability={() => setPortabilityOpen(true)}
+        onSources={() => setSourcesDialogOpen(true)}
+        onCreateButlerEvent={() => openButlerCreateDialog()}
+        onCreateUserEvent={() => openUserCreateDialog()}
+      />
 
       <CalendarVerdictOpener
         entriesCount={entries.length}
@@ -2405,253 +2363,29 @@ export default function CalendarWorkspacePage() {
         />
       ) : null}
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-y border-[var(--border)] py-3">
-        <div className="flex items-center gap-2">
-          <Eyebrow>View</Eyebrow>
-          <div className="flex items-center gap-1">
-            {VIEW_OPTIONS.map((option) => (
-              <PillButton
-                key={option.value}
-                active={view === option.value}
-                aria-pressed={view === option.value}
-                onClick={() => updateQuery({ view: option.value })}
-              >
-                {option.label}
-              </PillButton>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Eyebrow>Range</Eyebrow>
-          <div className="flex items-center gap-1">
-            {RANGE_OPTIONS.map((option) => (
-              <PillButton
-                key={option.value}
-                active={range === option.value}
-                aria-pressed={range === option.value}
-                onClick={() => updateQuery({ range: option.value })}
-              >
-                {option.label}
-              </PillButton>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1">
-          <PillButton
-            aria-label="Previous range"
-            onClick={() =>
-              updateQuery({ anchor: shiftAnchor(anchor, range, -1) })
-            }
-          >
-            ‹
-          </PillButton>
-          <PillButton
-            aria-label="Jump to today"
-            onClick={() => updateQuery({ anchor: new Date() })}
-          >
-            Today
-          </PillButton>
-          <PillButton
-            aria-label="Next range"
-            onClick={() =>
-              updateQuery({ anchor: shiftAnchor(anchor, range, 1) })
-            }
-          >
-            ›
-          </PillButton>
-        </div>
-
-        <PillButton
-          active={activityPanelOpen}
-          aria-pressed={activityPanelOpen}
-          onClick={() => {
-            setActivityPanelOpen((prev) => !prev);
-            setFindTimePanelOpen(false);
-            setProposalsPanelOpen(false);
-            setDuplicatesPanelOpen(false);
-            setAuditOffset(0);
-          }}
-        >
-          Activity
-        </PillButton>
-
-        <PillButton
-          active={findTimePanelOpen}
-          aria-pressed={findTimePanelOpen}
-          onClick={() => {
-            setFindTimePanelOpen((prev) => !prev);
-            setActivityPanelOpen(false);
-            setProposalsPanelOpen(false);
-            setDuplicatesPanelOpen(false);
-          }}
-        >
-          Find time
-        </PillButton>
-
-        <PillButton
-          active={proposalsPanelOpen}
-          aria-pressed={proposalsPanelOpen}
-          onClick={() => {
-            setProposalsPanelOpen((prev) => !prev);
-            setActivityPanelOpen(false);
-            setFindTimePanelOpen(false);
-            setDuplicatesPanelOpen(false);
-          }}
-        >
-          Proposals
-        </PillButton>
-
-        <PillButton
-          active={duplicatesPanelOpen}
-          aria-pressed={duplicatesPanelOpen}
-          onClick={() => {
-            setDuplicatesPanelOpen((prev) => !prev);
-            setActivityPanelOpen(false);
-            setFindTimePanelOpen(false);
-            setProposalsPanelOpen(false);
-          }}
-        >
-          Duplicates
-        </PillButton>
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="status-filter"
-              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-            >
-              Status
-            </label>
-            <select
-              id="status-filter"
-              className={SELECT_CLASS}
-              value={selectedStatus}
-              onChange={(event) => updateQuery({ status: event.target.value })}
-            >
-              <option value="all">All statuses</option>
-              {STATUS_FACET_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="type-filter"
-              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-            >
-              Type
-            </label>
-            <select
-              id="type-filter"
-              className={SELECT_CLASS}
-              value={selectedSourceType}
-              onChange={(event) => updateQuery({ kind: event.target.value })}
-            >
-              <option value="all">All types</option>
-              {SOURCE_TYPE_FACET_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            type="button"
-            role="switch"
-            aria-checked={overlaysEnabled}
-            aria-label="Cross-domain overlays"
-            title="Domain overlays: finance bills/renewals, travel, relationship dates, health appointments"
-            onClick={() => updateQuery({ overlays: !overlaysEnabled })}
-            className={cn(
-              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
-              overlaysEnabled
-                ? "border-fg bg-foreground/[0.06] text-fg"
-                : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
-            )}
-          >
-            <StateDot
-              state={
-                overlaysEnabled && overlaysQuery.isError
-                  ? "error"
-                  : overlaysEnabled
-                    ? "ok"
-                    : "waiting"
-              }
-            />
-            Overlays
-            {overlaysEnabled && overlaysQuery.isError ? (
-              <span className="text-[var(--red-text)]">· unavailable</span>
-            ) : overlaysEnabled && overlaysQuery.isFetched && !hasDomainContext ? (
-              <span className="text-[var(--dim)]">· none</span>
-            ) : null}
-          </button>
-
-          {view === "user" ? (
-            <>
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="calendar-filter"
-                  className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-                >
-                  Calendar
-                </label>
-                <select
-                  id="calendar-filter"
-                  className={SELECT_CLASS}
-                  value={selectedCalendarId}
-                  onChange={(event) =>
-                    updateQuery({ calendar: event.target.value, source: "all" })
-                  }
-                >
-                  <option value="all">All calendars</option>
-                  {calendarFilterOptions.map((option) => (
-                    <option key={option.calendarId} value={option.calendarId}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="source-filter"
-                  className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-                >
-                  Source
-                </label>
-                <select
-                  id="source-filter"
-                  className={SELECT_CLASS}
-                  value={selectedSourceKey}
-                  onChange={(event) =>
-                    updateQuery({ source: event.target.value })
-                  }
-                >
-                  <option value="all">All sources</option>
-                  {userSources
-                    .filter((source) =>
-                      selectedCalendarId === "all"
-                        ? true
-                        : source.calendar_id === selectedCalendarId,
-                    )
-                    .map((source) => (
-                      <option key={source.source_key} value={source.source_key}>
-                        {sourceName(source)}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            </>
-          ) : null}
-        </div>
-      </div>
+      <CalendarToolbar
+        view={view}
+        range={range}
+        anchor={anchor}
+        updateQuery={updateQuery}
+        panels={{
+          activity: activityPanelOpen,
+          findTime: findTimePanelOpen,
+          proposals: proposalsPanelOpen,
+          duplicates: duplicatesPanelOpen,
+        }}
+        onTogglePanel={togglePanel}
+        selectedStatus={selectedStatus}
+        selectedSourceType={selectedSourceType}
+        selectedCalendarId={selectedCalendarId}
+        selectedSourceKey={selectedSourceKey}
+        overlaysEnabled={overlaysEnabled}
+        overlaysError={overlaysQuery.isError}
+        overlaysFetched={overlaysQuery.isFetched}
+        hasDomainContext={hasDomainContext}
+        userSources={userSources}
+        calendarFilterOptions={calendarFilterOptions}
+      />
 
       {/* Natural-language quick-add (parse-then-confirm) — user view only */}
       {view === "user" ? (
