@@ -36,6 +36,7 @@ spec:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
             - {name: BUTLERS_HOST, value: butlers-up}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
             - {name: BUTLERS_API_DB_POOL_MIN_SIZE, value: {{ .Values.database.apiPoolMinSize | quote }}}
