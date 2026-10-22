@@ -7,6 +7,7 @@ callback secret are stubbed.
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -386,6 +387,8 @@ async def test_routing_summary_counts_only_otherwise_eligible_unsendable_beads(
     ]
     export = tmp_path / "issues.jsonl"
     export.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    # Freshness compares the kernel's mtime with NOW; pin it so a shifted clock agrees.
+    os.utime(export, (NOW.timestamp(), NOW.timestamp()))
     digest = compute_decision_digest(export, now=NOW)
     assert digest.available
     assert len([bead for bead in digest.open_decisions if bead.id == "bu-unicode"]) == 1
