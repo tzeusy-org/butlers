@@ -1,13 +1,13 @@
 """Reserve explicit dark goal-admission limits without enabling admission.
 
-Revision ID: core_266
-Revises: core_265
+Revision ID: core_273
+Revises: core_272
 """
 
 from alembic import op
 
-revision = "core_266"
-down_revision = "core_265"
+revision = "core_273"
+down_revision = "core_272"
 branch_labels = None
 depends_on = None
 
