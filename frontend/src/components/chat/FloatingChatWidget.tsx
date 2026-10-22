@@ -189,12 +189,17 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (hasResumedRef.current) return;
+    if (activeConversationId == null && inputValue.length > 0) {
+      // Typing into a new thread is also intent; recovery must not replace it.
+      hasResumedRef.current = true;
+      return;
+    }
     if (conversations.length === 0) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
       setActiveConversationId(conversations[0].id);
     }
-  }, [conversations, activeConversationId]);
+  }, [conversations, activeConversationId, inputValue]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;

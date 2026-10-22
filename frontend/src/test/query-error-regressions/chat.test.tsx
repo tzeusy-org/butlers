@@ -134,7 +134,7 @@ it("keeps pending or failed default-thread discovery distinct from confirmed emp
   fireEvent.click(panel().getByRole("button", { name: "Try again" }));
   await settled(value, "error");
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Unsent draft");
-  listResponse = () => json([]);
+  listResponse = () => json([conversation(null)]);
   fireEvent.click(panel().getByRole("button", { name: "Try again" }));
   await settled(value, "success");
   expect(await screen.findByText(/No messages yet/)).toBeDefined();
