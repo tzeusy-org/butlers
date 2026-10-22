@@ -58,6 +58,72 @@ PHASE_KEYS = {
 }
 CANCELLED = []
 AGGREGATE_DEADLINE = None
+CONTROL_STAGES = {
+    "controller-identity",
+    "output-setup",
+    "aggregate-budget",
+    "workload-clone",
+    "workload-checkout",
+    "workload-validation",
+    "uv-install",
+    "environment-prepare",
+    "sentinel-start",
+    "before",
+    "after",
+    "sentinel-cleanup",
+    "summary",
+}
+# Only producer-owned literal refusals may leave the private execution domain.
+REFUSAL_REASONS = {
+    "provider-identity",
+    "provider-run",
+    "controller-checkout",
+    "controller-sha",
+    "controller-workflow-sha",
+    "controller-workflow-ref",
+    "controller-python",
+    "controller-dirty",
+    "aggregate-start",
+    "aggregate-deadline",
+    "workload-clone",
+    "workload-head",
+    "workload-tree",
+    "workload-index",
+    "workload-drift",
+    "runtime-link",
+    "runtime-blob",
+    "runtime-mode",
+    "uv-install",
+    "environment-prepare",
+    "lifecycle",
+    "missing-phase-receipt",
+    "post-call-source-drift",
+}
+
+
+def refusal(error, progress, binding):
+    """A closed diagnostic, never a phase receipt or proof of PG/cleanup."""
+    category = "value-error"
+    if isinstance(error, subprocess.TimeoutExpired):
+        category = "subprocess-timeout"
+    elif isinstance(error, subprocess.SubprocessError):
+        category = "subprocess-error"
+    elif isinstance(error, OSError):
+        category = "os-error"
+    elif isinstance(error, KeyError):
+        category = "missing-key"
+    reason = error.args[0] if len(error.args) == 1 else None
+    return {
+        "schema": "fact-capture-control-refusal.v1",
+        "complete": False,
+        "control_verdict": "UNKNOWN",
+        "stage": progress["stage"] if progress["stage"] in CONTROL_STAGES else "unknown",
+        "error_class": category,
+        "reason": reason if type(reason) is str and reason in REFUSAL_REASONS else "unknown",
+        "binding": binding,
+        "pg_call": "UNKNOWN",
+        "cleanup": "UNKNOWN",
+    }
 
 
 def digest(data):
@@ -411,18 +477,20 @@ def provider_binding(root):
             raise ValueError("provider-run")
     head = git(root, "rev-parse", "HEAD")
     reference = env.get("GITHUB_WORKFLOW_REF", "")
-    if (
-        env.get("GITHUB_SHA") != head
-        or env.get("GITHUB_WORKFLOW_SHA") != head
-        or not re.fullmatch(
-            r"tzeusy-org/butlers/\.github/workflows/"
-            r"fact-source-capture-before-control\.yml@refs/pull/[1-9][0-9]*/merge",
-            reference,
-        )
-        or platform.python_version() != "3.12.15"
-        or git(root, "status", "--porcelain")
+    if env.get("GITHUB_SHA") != head:
+        raise ValueError("controller-sha")
+    if env.get("GITHUB_WORKFLOW_SHA") != head:
+        raise ValueError("controller-workflow-sha")
+    if not re.fullmatch(
+        r"tzeusy-org/butlers/\.github/workflows/"
+        r"fact-source-capture-before-control\.yml@refs/pull/[1-9][0-9]*/merge",
+        reference,
     ):
-        raise ValueError("controller-checkout")
+        raise ValueError("controller-workflow-ref")
+    if platform.python_version() != "3.12.15":
+        raise ValueError("controller-python")
+    if git(root, "status", "--porcelain"):
+        raise ValueError("controller-dirty")
     return {
         "repository": env["GITHUB_REPOSITORY"],
         "workflow": env["GITHUB_WORKFLOW"],
@@ -435,9 +503,13 @@ def provider_binding(root):
     }
 
 
-def execute(root, output):
+def execute(root, output, progress=None):
     global AGGREGATE_DEADLINE
+    if progress is None:
+        progress = {}
+    progress["stage"] = "controller-identity"
     binding = provider_binding(root)
+    progress["stage"] = "aggregate-budget"
     started = float(os.environ["FACT_CAPTURE_CONTROL_STARTED"])
     if not 0 <= time.monotonic() - started < 2480:
         raise ValueError("aggregate-start")
@@ -458,6 +530,7 @@ def execute(root, output):
         workload = private / "workload"
         # Clone only local authenticated checkout objects. No remote command or revision input.
         source = root.parent / "workload-source"
+        progress["stage"] = "workload-clone"
         with (private / "clone.log").open("wb") as stream:
             result = subprocess.run(
                 [
@@ -477,7 +550,9 @@ def execute(root, output):
             )
         if result.returncode:
             raise ValueError("workload-clone")
+        progress["stage"] = "workload-checkout"
         git(workload, "checkout", "--detach", CANDIDATE)
+        progress["stage"] = "workload-validation"
         state = workload_state(workload, "after")
         binding["workload"] = state
         overlay(workload, "before")
@@ -487,7 +562,9 @@ def execute(root, output):
         binding["observer_sha256"] = hashlib.sha256(
             (root / "scripts/fact_source_capture_before_observer.py").read_bytes()
         ).hexdigest()
+        progress["stage"] = "uv-install"
         environment = prepare_uv(root, private, environment, remaining(640))
+        progress["stage"] = "environment-prepare"
         prepared = run_owned(
             [sys.executable, str(workload / "scripts/ci_environment.py"), "prepare"],
             environment,
@@ -496,6 +573,7 @@ def execute(root, output):
         )
         if prepared["exit"] != 0 or not prepared["cleanup_complete"] or prepared["timed_out"]:
             raise ValueError("environment-prepare")
+        progress["stage"] = "sentinel-start"
         sentinel = subprocess.Popen(
             [sys.executable, "-c", "import time;time.sleep(1200)"],
             stdin=subprocess.DEVNULL,
@@ -505,6 +583,7 @@ def execute(root, output):
         )
         try:
             for name in ("before", "after"):
+                progress["stage"] = name
                 overlay(workload, name)
                 state = workload_state(workload, name)
                 config = {
@@ -546,8 +625,14 @@ def execute(root, output):
                 if workload_state(workload, name) != state:
                     raise ValueError("post-call-source-drift")
         finally:
-            sentinel.kill()
-            sentinel.wait(timeout=5)
+            # Retain the failed phase unless cleanup itself fails.
+            try:
+                sentinel.kill()
+                sentinel.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                progress["stage"] = "sentinel-cleanup"
+                raise
+        progress["stage"] = "summary"
         verdict = require_witness(receipts["before"], receipts["after"], binding)
         atomic(
             output / "summary.json",
@@ -569,19 +654,34 @@ def main():
         return 2
     root = Path(__file__).resolve().parents[1]
     output = Path(os.environ.get("RUNNER_TEMP", "/nonexistent")) / "fact-capture-before-evidence"
+    progress = {"stage": "controller-identity"}
+    binding = None
+    output_created = False
     try:
         # Refuse before creating output or starting children on an unbound host.
-        provider_binding(root)
+        binding = provider_binding(root)
+        progress["stage"] = "output-setup"
         output.mkdir(exist_ok=False)
+        output_created = True
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(
                 sig, lambda signum, frame: CANCELLED.append(signum) if not CANCELLED else None
             )
-        execute(root, output)
+        execute(root, output, progress)
         print("fact-capture control WITNESS_COMPLETE; BEFORE test remains FAILED")
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError, KeyError):
-        print("fact-capture control UNKNOWN/refused; no complete witness")
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
+        data = refusal(error, progress, binding)
+        if output_created:
+            try:
+                atomic(output / "control-refusal.json", data)
+            except (OSError, ValueError):
+                # Do not replace the original refusal or print storage/exception values.
+                print("fact-capture control refusal artifact unavailable")
+        print(
+            "fact-capture control UNKNOWN/refused; "
+            f"stage={data['stage']} class={data['error_class']} reason={data['reason']}"
+        )
         return 2
 
 

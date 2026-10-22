@@ -328,7 +328,7 @@ def test_real_pytest_observer_records_setup_refusal_without_claiming_pg(tmp_path
     assert "PRIVATE" not in json.dumps(data)
 
 
-def test_cli_rejects_unbound_environment_before_any_execution(tmp_path):
+def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypatch, capsys):
     env = {
         "PATH": os.environ["PATH"],
         "RUNNER_TEMP": str(tmp_path),
@@ -345,3 +345,147 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path):
     assert run.returncode != 0
     assert b"never-export" not in run.stdout + run.stderr
     assert not list(tmp_path.glob("**/.venv"))
+
+    # A provider-bound refusal must remain diagnostic evidence, never a PG witness.
+    binding = {
+        "run": "123",
+        "attempt": "1",
+        "controller_head": "a" * 40,
+        "controller_tree": "b" * 40,
+        "nonce": "c" * 64,
+        "repository": "tzeusy-org/butlers",
+        "workflow": "Fact Source Capture BEFORE Control",
+        "python": "3.12.15",
+    }
+    real_binding = control.provider_binding
+    monkeypatch.setattr(control, "provider_binding", lambda root: copy.deepcopy(binding))
+    monkeypatch.setattr(control.sys, "argv", ["control"])
+    monkeypatch.setattr(control.signal, "signal", lambda *args: None)
+    real_execute = control.execute
+    cases = [
+        ("workload-clone", subprocess.TimeoutExpired("PRIVATE_COMMAND", 30), "subprocess-timeout"),
+        ("uv-install", ValueError("uv-install"), "value-error"),
+        ("environment-prepare", OSError("PRIVATE_PATH"), "os-error"),
+        ("aggregate-budget", KeyError("PRIVATE_ENV"), "missing-key"),
+        ("PRIVATE_STAGE", ValueError("PRIVATE_PAYLOAD"), "value-error"),
+    ]
+    for index, (stage, error, category) in enumerate(cases):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        monkeypatch.setenv("RUNNER_TEMP", str(directory))
+
+        def refuse(root, output, progress=None):
+            if progress is not None:
+                progress["stage"] = stage
+            raise error
+
+        monkeypatch.setattr(control, "execute", refuse)
+        assert control.main() == 2
+        evidence = directory / "fact-capture-before-evidence"
+        data = json.loads((evidence / "control-refusal.json").read_text())
+        assert data["schema"] == "fact-capture-control-refusal.v1"
+        assert data["stage"] == (stage if stage != "PRIVATE_STAGE" else "unknown")
+        assert data["error_class"] == category
+        assert data["binding"] == binding
+        assert data["complete"] is False and data["control_verdict"] == "UNKNOWN"
+        assert data["pg_call"] == data["cleanup"] == "UNKNOWN"
+        assert not (evidence / "summary.json").exists()
+        with pytest.raises(ValueError):
+            control.safe_phase(data, "before", binding)
+        assert "PRIVATE" not in json.dumps(data) + capsys.readouterr().out
+
+    # Execute the real prephase sequence with closed software dependencies. Neither
+    # installer failure nor frozen-environment failure may reach the PG child.
+    for stage in ("uv-install", "environment-prepare"):
+        directory = tmp_path / ("real-" + stage)
+        directory.mkdir()
+        root = directory / "controller"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts/fact_source_capture_before_observer.py").write_text("# software fixture")
+        progress = {}
+        calls = []
+        with monkeypatch.context() as context:
+            context.setenv("FACT_CAPTURE_CONTROL_STARTED", str(control.time.monotonic()))
+            context.setattr(control, "git", lambda *args, **kwargs: "")
+            context.setattr(control, "workload_state", lambda *args: {})
+            context.setattr(control, "overlay", lambda *args: None)
+            context.setattr(
+                control.subprocess,
+                "run",
+                lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+            )
+
+            def install(*args):
+                calls.append("installer")
+                if stage == "uv-install":
+                    raise ValueError("uv-install")
+                return {}
+
+            def prepare(command, environment, seconds, *, cwd):
+                calls.append("prepare")
+                assert cwd.name == "workload" and command[-1] == "prepare"
+                return {"exit": 2, "cleanup_complete": True, "timed_out": False}
+
+            context.setattr(control, "prepare_uv", install)
+            context.setattr(control, "run_owned", prepare)
+            # Any attempt to start the sentinel/PG child fails the software control.
+            context.setattr(
+                control.subprocess,
+                "Popen",
+                lambda *args, **kwargs: pytest.fail("refused prephase must not start a PG child"),
+            )
+            with pytest.raises(ValueError, match=stage):
+                # Preserve the real execute, replaced only in the main() cases above.
+                real_execute(root, directory, progress)
+        assert progress["stage"] == stage
+        assert calls == (["installer"] if stage == "uv-install" else ["installer", "prepare"])
+
+    # Controller mismatches remain fail-closed, but expose only which predicate failed.
+    with monkeypatch.context() as context:
+        context.setenv("GITHUB_REPOSITORY", "tzeusy-org/butlers")
+        context.setenv("GITHUB_EVENT_NAME", "pull_request")
+        context.setenv("GITHUB_WORKFLOW", "Fact Source Capture BEFORE Control")
+        context.setenv("GITHUB_RUN_ID", "123")
+        context.setenv("GITHUB_RUN_ATTEMPT", "1")
+        context.setenv("GITHUB_SHA", "a" * 40)
+        context.setenv("GITHUB_WORKFLOW_SHA", "a" * 40)
+        context.setenv(
+            "GITHUB_WORKFLOW_REF",
+            "tzeusy-org/butlers/.github/workflows/"
+            "fact-source-capture-before-control.yml@refs/pull/1/merge",
+        )
+        context.setattr(control.platform, "python_version", lambda: "3.12.15")
+        context.setattr(control, "git", lambda root, *args: "" if args[0] == "status" else "a" * 40)
+        assert real_binding(tmp_path)["run"] == "123"
+        for key, reason in (
+            ("GITHUB_SHA", "controller-sha"),
+            ("GITHUB_WORKFLOW_SHA", "controller-workflow-sha"),
+            ("GITHUB_WORKFLOW_REF", "controller-workflow-ref"),
+        ):
+            with monkeypatch.context() as mismatch:
+                mismatch.setenv(key, "PRIVATE_MISMATCH")
+                with pytest.raises(ValueError, match=reason) as caught:
+                    real_binding(tmp_path)
+                data = control.refusal(caught.value, {"stage": "controller-identity"}, None)
+                assert data["reason"] == reason and data["binding"] is None
+                assert "PRIVATE" not in json.dumps(data)
+        context.setattr(control.platform, "python_version", lambda: "wrong")
+        with pytest.raises(ValueError, match="controller-python"):
+            real_binding(tmp_path)
+        context.setattr(control.platform, "python_version", lambda: "3.12.15")
+        context.setattr(
+            control, "git", lambda root, *args: "PRIVATE_PATH" if args[0] == "status" else "a" * 40
+        )
+        with pytest.raises(ValueError, match="controller-dirty"):
+            real_binding(tmp_path)
+
+    # A pre-existing output directory is never overwritten or adopted.
+    directory = tmp_path / "existing"
+    output = directory / "fact-capture-before-evidence"
+    output.mkdir(parents=True)
+    marker = output / "summary.json"
+    marker.write_text("unchanged")
+    monkeypatch.setenv("RUNNER_TEMP", str(directory))
+    assert control.main() == 2
+    assert marker.read_text() == "unchanged"
+    assert not (output / "control-refusal.json").exists()

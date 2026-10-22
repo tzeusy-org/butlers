@@ -46,3 +46,12 @@ in protected runner-temporary files and is removed with the disposable checkout;
 an artifact. DSNs, credentials, payloads, traceback locals and arbitrary logs are excluded.
 Missing/upload/cancelled/incomplete evidence remains UNKNOWN. Actual provider archive digest,
 source readback and independent complete receipt verification are required after execution.
+
+On refusal, the producer prints only a closed stage, error category and allowlisted reason.
+After controller identity validation and creation of its own evidence directory, it also
+writes `control-refusal.json`. This separate `fact-capture-control-refusal.v1` schema always
+reports UNKNOWN, with no claim of PG CALL or cleanup. It cannot satisfy a phase or complete
+witness reader. Failure before identity validation creates no directory or children; its
+closed console diagnostic is the only observation. Exception messages, commands, paths,
+environment values and tracebacks never enter these diagnostics. A failed artifact write
+remains refused and does not overwrite or promote evidence.
