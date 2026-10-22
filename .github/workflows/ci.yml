@@ -504,13 +504,6 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-
-      - name: Preserve bounded Node tooling
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: |
-          node --test --test-timeout=300000 route-a-api-receipt.test.mjs
-
       - name: Bind the single frontend build to this exact checkout and attempt
         if: needs.route.outputs.frontend == 'true'
         run: python3 scripts/ci_frontend_evidence.py seal --artifact "${RUNNER_TEMP}/frontend-build"

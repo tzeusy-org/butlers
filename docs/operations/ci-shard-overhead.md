@@ -166,8 +166,8 @@ separate witnesses; a lock or ENV label cannot supply them. The retired Python
 pgvector and qrcode packages have no Python runtime/entrypoint consumers. The
 PostgreSQL vector extension, Pillow, Go WhatsApp QR encoder/bridge and unrelated
 extras remain. Both Dockerfiles install this same frozen project without the
-obsolete WhatsApp extra or UV_TORCH_BACKEND selector. Route A retains its
-required digest-bound offline dependency cache and its existing admission gates.
+obsolete WhatsApp extra or UV_TORCH_BACKEND selector. (The separate Route A
+meeting-prep evidence image and its launcher were deleted in bu-99t5s3.2.)
 
 ## Advisory environment and duration caches
 
@@ -318,8 +318,9 @@ network stall or a claim of healthy setup latency.
 The image-size diagnostic was a manual `image-size-diagnostic` dispatch on the
 retired Migration Chain Integrity workflow, comparing the fixed original
 e7b7812a3fa65c80f3f070d38ee43f7fa6474881 checkout with a dispatched SHA. That
-workflow was deleted by bu-29wkwj.1 with no remaining caller, and its script is
-scheduled for removal under bu-99t5s3.2. The record below describes what it measured.
+workflow was deleted by bu-29wkwj.1 with no remaining caller, and its script,
+the Route A launcher and the Route A Dockerfiles were deleted by bu-99t5s3.2
+(recoverable from git history). The record below describes what it measured.
 
 The diagnostic builds both real normal and Route A application Dockerfiles,
 records actual Docker image bytes and source stamps, and runs CPU tensor,

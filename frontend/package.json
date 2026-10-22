@@ -12,7 +12,7 @@
     "lint:query-coercion": "node scripts/check-query-result-coercion.mjs",
     "knip": "knip",
     "preview": "vite preview --configLoader runner",
-    "test": "node --test --test-timeout=300000 route-a-api-receipt.test.mjs && vitest run --configLoader runner",
+    "test": "vitest run --configLoader runner",
     "story:test": "vitest run --configLoader runner --reporter=verbose src/**/*.a11y.test.tsx",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",

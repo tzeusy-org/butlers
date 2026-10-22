@@ -26,7 +26,6 @@ HOSTED_COMMANDS = [
 # Hosted commands the runner deliberately does not run.
 _NOT_LOCAL = {
     "npm ci",
-    "node --test --test-timeout=300000 route-a-api-receipt.test.mjs",
 }
 
 
