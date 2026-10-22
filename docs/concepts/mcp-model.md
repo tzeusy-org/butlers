@@ -181,6 +181,7 @@ conflicts with the inventory is refused rather than silently replaced.
 | `output_trust` | `trusted`, `untrusted` or `stamped`; all current declarations conservatively use `untrusted`. |
 | `output_sensitivity` | Whole-payload `ordinary` or `sensitive`; current declarations use `sensitive`. |
 | `resource_params` | Visible argument names selecting resources, excluding message content and display attributes. |
+| `selection_bound` | One explicit true or false per `resource_params` name. True means the argument scopes to sources the owner picks (REQ-capability-authorization-018); a missing, extra or non-boolean entry fails the catalog check. Declarative only: no runtime path reads it yet. |
 | `safety_args` | Existing sensitive visible arguments an approval must pin. |
 | `approval_policy` | Immutable snapshot of the existing actual configured gate, including disabled/absent state. |
 | `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
