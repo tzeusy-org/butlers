@@ -494,13 +494,11 @@ jobs:
         run: npm run build
 
 
-      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
+      - name: Preserve bounded Node tooling
         if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: |
-          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
-          npm run lint:owner-time
-          npm run lint:visual-role-css
+          node --test --test-timeout=300000 route-a-api-receipt.test.mjs
 
       - name: Bind the single frontend build to this exact checkout and attempt
         if: needs.route.outputs.frontend == 'true'

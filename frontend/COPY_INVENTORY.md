@@ -2057,16 +2057,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. config.theme
 - State key "{}" saved
 
-## `frontend/src/components/butler-detail/ButlerStatusBadge.tsx`
-
-- Up
-- Degraded
-- Down
-- Butler status: Up
-- Butler status: Degraded
-- Butler status: Down
-- Butler status: {}
-
 ## `frontend/src/components/butler-detail/ButlerTravelTripsTab.tsx`
 
 - Loading…
