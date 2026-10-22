@@ -192,6 +192,34 @@ The graduated commands and planner behavior live in
 [testing spec](../../openspec/specs/testing/spec.md). The performance target
 does not weaken their escalation rules or the merge queue's full-tree gate.
 
+## Removing or Weakening Tests
+
+Test deletion is governed by review, not by a mechanical gate. There is no
+protected-test inventory, survivor ledger or deletion guard script; a reviewer
+enforces this rule on every pull request.
+
+- **Every test-changing PR states its delta.** The PR body carries
+  `Tests: +a ~m -d` (added, modified, deleted), measured from the PR's own
+  collection rather than estimated.
+- **Every removed check names its survivor or its reason.** Deleting, moving or
+  renaming a test, or weakening one in place (dropping an assertion, a
+  parameter case, a fixture or a marker), names the executing test that still
+  enforces that behavior at the PR head (`Survivor: <old> -> <new>`), or states
+  that the behavior itself is intentionally removed or changed by the same PR.
+- **Protected behavior always keeps a survivor.** Architecture, wire, privacy,
+  authorization, no-send, retry, idempotency and migration-outcome checks are
+  removed only with a named survivor, unless the governing requirement changes
+  in the same PR.
+- **Reviewers refuse** a missing `Tests:` line, a survivor that does not exist
+  or does not exercise the removed behavior, and a protected-check loss with
+  neither a survivor nor a requirement change.
+
+Matching names, smaller counts and deleted production paths are not survivors
+on their own; the reviewer checks what the survivor executes. A mock-call
+assertion (`assert_not_called`, `call_count`) often encodes a real contract such
+as idempotency, delivery cadence or a no-send boundary, so treat it as protected
+until shown otherwise. This rule does not change the per-lane test budget.
+
 ## Evidence Expectations
 
 When reporting completion, include the checks that actually ran. For example:

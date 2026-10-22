@@ -234,13 +234,16 @@ check-duplicate-names:
 # PATH; everything else is a plain python3 script. The frontend-copy inventory
 # check regenerates the committed file and fails on any diff, exactly as CI
 # does, so run it on a clean worktree or expect the diff to be yours.
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links check-condensation-ledger
+# GUARDS_BASE is the fork point the frontend guard diffs against.
+GUARDS_BASE ?= origin/main
+export GUARDS_BASE
+check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/extract-frontend-copy.py
 	git diff --exit-code -- frontend/COPY_INVENTORY.md
-	python3 scripts/frontend_guards.py --base "$${CONDENSATION_BASE}" --skip-inventory
+	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}" --skip-inventory
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \
@@ -304,20 +307,3 @@ install-hooks:
 
 uninstall-hooks:
 	.venv/bin/python scripts/pre_push.py uninstall
-
-# Optional proof tools; required guard activation follows genuine native preparation.
-.PHONY: condense-prove condense-verify
-CONDENSATION_BASE ?= origin/main
-export CLUSTER OUTPUT CONDENSATION_BASE
-condense-prove:
-	@test -n "$${CLUSTER}" -a -n "$${OUTPUT}" || { echo 'CLUSTER plan and fresh OUTPUT required'; exit 2; }
-	uv run --no-sync python scripts/condense_evidence.py prove --config "$${CLUSTER}" --output "$${OUTPUT}"
-
-condense-verify:
-	@test -n "$${CONDENSATION_BASE}" -a -n "$${OUTPUT}" || { echo 'CONDENSATION_BASE and OUTPUT required'; exit 2; }
-	uv run --no-sync python scripts/check_condensation_ledger.py --base "$${CONDENSATION_BASE}" --ledger "$${OUTPUT}/ledger.json"
-
-# One complete source-scan species; missing current proof refuses every loss.
-.PHONY: check-condensation-ledger
-check-condensation-ledger:
-	uv run --no-sync python scripts/check_condensation_ledger.py --base "$${CONDENSATION_BASE}"
