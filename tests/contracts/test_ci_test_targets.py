@@ -469,27 +469,36 @@ def _exercise_browser_installer(root: Path) -> None:
     Only wall-clock literals are scaled in this routine control. Healthy
     boundaries include a deliberate 200 ms startup delay within a two-second
     allowance; stall pairs witness handler readiness before TERM/KILL checks.
-    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
-    actual apt/Chromium execution belongs to the hosted frontend-e2e job.
+    The ignored one-shot receipt exercises unchanged 110/120 browser and 150/160
+    OS-dependency deadlines; actual apt/Chromium execution belongs to the hosted
+    frontend-e2e job. OS dependencies (``install-deps``, apt under sudo) run as
+    their own phase before the browser download so slow apt cannot consume the
+    browser deadline.
     """
     source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
     assert "TERM_MS = 110_000" in source
     assert "KILL_MS = 120_000" in source
+    assert "DEPS_TERM_MS = 150_000" in source
+    assert "DEPS_KILL_MS = 160_000" in source
     assert "BACKOFF_MS = 10_000" in source
-    assert "TOTAL_MS = 380_000" in source
+    assert "TOTAL_MS = 720_000" in source
     scaled = (
         source.replace("110_000", "2_000")
         .replace("120_000", "2_500")
+        .replace("150_000", "2_000")
+        .replace("160_000", "2_500")
         .replace("10_000", "10")
-        .replace("380_000", "8_000")
+        .replace("720_000", "12_000")
     )
     for mode, expected_calls, expected_probes, expected_exit in [
-        ("cold", 1, 1, 0),
-        ("warm", 1, 1, 0),
-        ("fail-once", 2, 1, 0),
-        ("invalid-cache", 2, 2, 0),
-        ("exhaust", 3, 0, 1),
-        ("stall", 3, 0, 1),
+        ("cold", 2, 1, 0),
+        ("warm", 2, 1, 0),
+        ("fail-once", 3, 1, 0),
+        ("invalid-cache", 3, 2, 0),
+        ("exhaust", 4, 0, 1),
+        ("stall", 4, 0, 1),
+        ("deps-exhaust", 2, 0, 1),
+        ("deps-stall", 2, 0, 1),
     ]:
         directory = root / mode
         scripts = directory / "scripts"
@@ -497,6 +506,7 @@ def _exercise_browser_installer(root: Path) -> None:
         scripts.mkdir(parents=True)
         cli.parent.mkdir(parents=True)
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
+        shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
         (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
         ledger = directory / "ledger.json"
         ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
@@ -512,7 +522,8 @@ if Path(sys.argv[0]).name == "node":
     p.write_text(json.dumps(data))
     sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
 data["calls"].append(sys.argv[1:])
-if mode == "stall":
+deps = sys.argv[1] == "install-deps"
+if mode == ("deps-stall" if deps else "stall"):
     signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
     child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
     child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
@@ -525,7 +536,10 @@ if mode == "stall":
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
-if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
+browser_calls = [call for call in data["calls"] if call[0] == "install"]
+if mode == ("deps-exhaust" if deps else "exhaust") or (
+    mode == "fail-once" and not deps and len(browser_calls) == 1
+):
     sys.exit(1)
 """
         cli.write_text(f"#!{sys.executable}\n" + program)
@@ -545,22 +559,25 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=15,
+                timeout=20,
             )
             data = json.loads(ledger.read_text())
             assert result.returncode == expected_exit, (mode, data, result.stderr)
             assert len(data["calls"]) == expected_calls, (mode, data)
             assert data["probes"] == expected_probes, (mode, data)
             assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
-            for index, args in enumerate(data["calls"]):
-                assert args == ["install", "--with-deps", "chromium"] + (
-                    ["--force"] if index else []
-                )
+            deps_calls = [args for args in data["calls"] if args[0] == "install-deps"]
+            browser_calls = [args for args in data["calls"] if args[0] == "install"]
+            assert data["calls"] == deps_calls + browser_calls, (mode, data)  # deps first
+            assert all(args == ["install-deps", "chromium"] for args in deps_calls), data
+            for index, args in enumerate(browser_calls):
+                assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
-            if mode == "stall":
-                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
-                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+            if mode in {"stall", "deps-stall"}:
+                ready_pids = [pid for pair in data["ready"] for pid in pair.get("pids", [])]
+                stalled_calls = 3 if mode == "stall" else 2
+                assert ready_pids == data["pids"] and len(ready_pids) == 2 * stalled_calls, data
                 for pid in ready_pids:
                     assert (directory / f"term-{pid}").exists(), (
                         f"ready stall member {pid} never witnessed TERM before KILL"

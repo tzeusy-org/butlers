@@ -236,7 +236,10 @@ Tests can use this to skip gracefully when Docker is not installed.
   watchdog until healthy measurements justify a separate change.
 - Browser caches require the exact runner OS, architecture, package-lock hash and installed
   locked Playwright version. Cache failure is advisory; installation is mandatory on hits
-  and misses and always includes `--with-deps`. The installed-version reader checks all
+  and misses and always installs the OS dependencies first, as their own bounded
+  `install-deps` phase (apt under sudo; two attempts, 150/160 s) so a slow apt cannot consume
+  the browser download's 110/120 s deadline. A group signal that hits the root-owned apt
+  (`EPERM`) is tolerated like `ESRCH`. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
   Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
   and three force repair; test retries are unchanged.
