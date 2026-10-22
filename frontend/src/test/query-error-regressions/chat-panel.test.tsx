@@ -272,4 +272,39 @@ describe("ChatPanel source-specific discovery and search recovery", () => {
     expect(screen.queryByText(EMPTY_THREAD)).toBeNull();
     expect(document.body.textContent).not.toContain(PRIVATE_ERROR);
   });
+
+  it("preserves the newest implicit new-thread draft when failed discovery retries to an existing thread", async () => {
+    base = () => json(null, 503);
+    const { client } = mount();
+    await settled(client, conversationKeys.list("switchboard"), "error");
+    const composer = screen.getByRole("textbox", { name: "Type a message..." });
+    fireEvent.change(composer, { target: { value: "First new-thread draft" } });
+    fireEvent.change(composer, { target: { value: "Newest new-thread draft" } });
+    const before = [...reads];
+    base = () => json([conversation()]);
+    fireEvent.click(discoveryAlert().getByRole("button", { name: "Try again" }));
+    await settled(client, conversationKeys.list("switchboard"), "success");
+    expect((screen.getByRole("textbox", { name: "Type a message..." }) as HTMLTextAreaElement).value).toBe("Newest new-thread draft");
+    expect(screen.getByText("New conversation")).toBeTruthy();
+    expect(reads.slice(before.length)).toEqual([BASE]);
+    expect(count(`${BASE}/existing/messages`)).toBe(0);
+    expect(screen.queryByText(/Could not load conversation discovery/)).toBeNull();
+  });
+
+  it("keeps implicit new-thread intent after typing then clearing during pending discovery", async () => {
+    let release!: (response: Response) => void;
+    base = () => new Promise<Response>((resolve) => { release = resolve; });
+    const { client } = mount();
+    await waitFor(() => expect(count(BASE)).toBe(1));
+    const composer = screen.getByRole("textbox", { name: "Type a message..." });
+    fireEvent.change(composer, { target: { value: "A deliberately new thread" } });
+    fireEvent.change(composer, { target: { value: "" } });
+    await act(async () => { release(json([conversation()])); });
+    await settled(client, conversationKeys.list("switchboard"), "success");
+    expect(screen.getByText("New conversation")).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Type a message..." }) as HTMLTextAreaElement).value).toBe("");
+    expect(count(`${BASE}/existing/messages`)).toBe(0);
+    expect(count(BASE)).toBe(1);
+    expect(screen.getByText(EMPTY_THREAD)).toBeTruthy();
+  });
 });

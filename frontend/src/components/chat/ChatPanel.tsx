@@ -59,6 +59,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [hasNewConversationIntent, setHasNewConversationIntent] = useState(false);
+  const hasResumedRef = useRef(false);
   // Set by a message-search jump-to-message result (bu-qaisp, parity with
   // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
   // has rendered (see the effect below).
@@ -66,7 +67,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const composerContext = JSON.stringify([butlerName, activeConversationId ?? "new"]);
   const [composer, setComposer] = useState({ context: "", value: "" });
   const inputValue = composer.context === composerContext ? composer.value : "";
-  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const setInputValue = (value: string) => {
+    // Typing or restoring a draft chooses this new thread before a delayed
+    // discovery response can resume an old one. Clearing it keeps that intent.
+    if (activeConversationId === null && value.length > 0) {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
+    }
+    setComposer({ context: composerContext, value });
+  };
   const draft = useDraft("chat.message", [butlerName, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), true, { message: "" });
   const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
   const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
@@ -179,11 +188,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // Resume the most recent conversation ONCE per mount (== once per Sheet
   // open, since ChatContent unmounts entirely when the Sheet closes via the
   // `{open && <ChatContent />}` gate in ChatPanel below) — gated by
-  // hasResumedRef so a later "New conversation" click (which also sets
-  // activeConversationId to null) does not get immediately overridden back
-  // to the existing thread by this same effect. Mirrors FloatingChatWidget's
-  // identical guard.
-  const hasResumedRef = useRef(false);
+  // hasResumedRef so explicit New, typed/restored new-thread work and later
+  // selections cannot be overridden by delayed discovery or refresh results.
   useEffect(() => {
     if (hasResumedRef.current) return;
     if (conversations.length === 0) return;
