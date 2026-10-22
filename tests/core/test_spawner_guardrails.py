@@ -41,6 +41,9 @@ from butlers.core.spawner import (
 from butlers.core.spawner_guardrails import _check_undelivered_interactive_reply
 from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 from butlers.routing_guidance import _INTERACTIVE_ROUTE_CHANNELS
+from tests.core.spawner_permission_store import (  # noqa: F401
+    spawner_permission_store_readable,
+)
 
 pytestmark = pytest.mark.unit
 

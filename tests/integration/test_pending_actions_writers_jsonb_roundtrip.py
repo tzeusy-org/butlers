@@ -68,6 +68,7 @@ from butlers.testing.schema_standins import (
     CONNECTOR_REGISTRY,
     PENDING_ACTIONS,
 )
+from tests.integration.permission_store_table import permission_store_table  # noqa: F401
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

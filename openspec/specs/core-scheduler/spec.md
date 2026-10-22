@@ -179,6 +179,30 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** the due-task query projects `NULL::timestamptz AS until_at`
 - **AND** due cron tasks continue dispatching without applying an auto-disable boundary until the schema is backfilled
 
+### Requirement: Administrative Hold Gate Fails Closed
+A butler under an administrative hold (paused, quarantined or non-active policy state) SHALL NOT run scheduled ticks. When the hold state cannot be read, `tick()` SHALL treat the state as unknown and SHALL NOT dispatch: an unreadable hold is not evidence that no hold exists. A gated tick SHALL leave every task's `next_run_at` and `last_run_at` untouched, so the schedule resumes on the first tick that can read the state.
+
+#### Scenario: Registry lookup failure gates the tick
+- **WHEN** the eligibility lookup raises while `tick()` evaluates a non-QA butler
+- **THEN** `tick()` SHALL skip the deadline and cron passes with reason `eligibility unavailable: registry lookup failed`
+- **AND** the failure SHALL be logged at error level
+- **AND** no task's `next_run_at` SHALL change
+
+#### Scenario: Daemon loop requires a registry pool
+- **WHEN** the daemon scheduler loop calls `tick()` with `require_eligibility_gate=True` and no eligibility pool is available
+- **THEN** `tick()` SHALL skip the deadline and cron passes with reason `eligibility unavailable: no registry pool`
+- **AND** no task's `next_run_at` SHALL change
+
+#### Scenario: A registry pool that failed at startup is retried
+- **WHEN** the daemon's registry pool could not be created at startup
+- **THEN** ticks SHALL stay gated and an error SHALL be logged while the pool is unavailable
+- **AND** the daemon SHALL retry pool creation at most once per backoff window (60 s, doubling to a 10 minute cap) and cache a successful pool
+- **AND** the first tick after the pool is available SHALL evaluate eligibility normally, with `next_run_at` preserved throughout
+
+#### Scenario: Callers without a registry are not gated
+- **WHEN** `tick()` is called without an eligibility pool and without `require_eligibility_gate` (unit tests, tools)
+- **THEN** all passes run as before
+
 ### Requirement: Auto-Disable via until_at Boundary
 When a task has `until_at` set and the computed `next_run_at` exceeds it, the scheduler SHALL automatically set the task to `enabled=false` and `next_run_at=NULL` after its final dispatch.
 

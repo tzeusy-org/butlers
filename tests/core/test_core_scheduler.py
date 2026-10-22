@@ -1259,6 +1259,69 @@ async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired
 
 
 @_asyncio_session
+@pytest.mark.parametrize("cutover", ["1", "0"])
+async def test_dispatch_gate_fails_closed_when_registry_unreadable(monkeypatch, cutover, caplog):
+    """An unreadable hold is not an absent hold: lookup failure gates the tick."""
+    from butlers.core.scheduler import _butler_dispatch_gated
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", cutover)
+    eligibility_pool = AsyncMock()
+    eligibility_pool.fetchrow.side_effect = OSError("private-registry-error")
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+        side_effect=OSError("private-registry-error"),
+    ):
+        reason = await _butler_dispatch_gated(eligibility_pool, "health")
+    assert reason == "eligibility unavailable: registry lookup failed"
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+    # No registry pool: ungated by default, gated when the daemon requires the gate.
+    assert await _butler_dispatch_gated(None, "health") is None
+    assert (
+        await _butler_dispatch_gated(None, "health", require_gate=True)
+        == "eligibility unavailable: no registry pool"
+    )
+
+
+@_asyncio_session
+async def test_tick_gates_and_preserves_schedule_when_eligibility_unavailable(pool):
+    """Registry failure or a required-but-missing registry pool dispatches nothing."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    t1 = await schedule_create(pool, "unavailable-task", "*/1 * * * *", "should not run")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past())
+    due = await pool.fetchval("SELECT next_run_at FROM scheduled_tasks WHERE id = $1", t1)
+
+    failing_pool = AsyncMock()
+    failing_pool.fetchrow.side_effect = OSError("registry down")
+    dispatch = _Dispatch()
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+        side_effect=OSError("registry down"),
+    ):
+        assert await tick(pool, dispatch, butler_name="butlerA", eligibility_pool=failing_pool) == 0
+    assert (
+        await tick(
+            pool,
+            dispatch,
+            butler_name="butlerA",
+            eligibility_pool=None,
+            require_eligibility_gate=True,
+        )
+        == 0
+    )
+
+    assert dispatch.calls == []
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t1
+    )
+    assert row["next_run_at"] == due  # schedule preserved for the first readable tick
+    assert row["last_run_at"] is None
+
+
+@_asyncio_session
 async def test_tick_skips_dispatch_when_butler_quarantined(pool):
     """A paused/quarantined butler must NOT dispatch its due cron tick."""
     from butlers.core.scheduler import schedule_create, tick

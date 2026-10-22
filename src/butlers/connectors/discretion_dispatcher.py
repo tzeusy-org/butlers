@@ -489,10 +489,13 @@ class DiscretionDispatcher:
                 bounded_windows = "; ".join(windows_exceeded)[
                     :_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS
                 ]
-                quota_msg = (
-                    f"Token quota exhausted for catalog entry '{bounded_model_id}': "
-                    f"{bounded_windows}"
-                )
+                if quota.unavailable:
+                    quota_msg = f"Token quota unavailable for catalog entry '{bounded_model_id}'"
+                else:
+                    quota_msg = (
+                        f"Token quota exhausted for catalog entry '{bounded_model_id}': "
+                        f"{bounded_windows}"
+                    )
                 await record_dispatch_attempt(
                     self._pool,
                     catalog_entry_id=catalog_entry_id,
@@ -508,10 +511,11 @@ class DiscretionDispatcher:
                 # data + stable reason only, never prompt/system/identity content.
                 logger.info(
                     "DiscretionDispatcher quota skip: model=%s tier=%s attempt=%d "
-                    "reason=quota_exhausted windows=%s",
+                    "reason=%s windows=%s",
                     bounded_model_id,
                     bounded_effective_tier,
                     attempt_count,
+                    "quota_unavailable" if quota.unavailable else "quota_exhausted",
                     bounded_windows,
                 )
                 attempted_ids.append(catalog_entry_id)

@@ -1656,3 +1656,43 @@ async def test_system_read_uses_daemon_plugin_validator(
         assert result["answered"] is False
         assert "declarations unavailable" in reply.await_args.kwargs["message"]
         route.assert_not_awaited()
+
+
+async def test_system_read_permission_store_outage_is_not_reported_as_unauthorized(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _dashboard_system_answer as system
+
+    patches = _patch_infra()
+    route = AsyncMock(return_value={"error": "unavailable"})
+    monkeypatch.setattr(
+        system,
+        "check_permission",
+        AsyncMock(return_value=SimpleNamespace(allowed=False, unavailable=True)),
+    )
+    _, tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path), patches, mock_route=route
+    )
+    import butlers.tools.switchboard.dead_letter.capture as capture
+
+    dl = AsyncMock(return_value="dl-unavailable")
+    reply = AsyncMock(return_value={"id": "decline"})
+    monkeypatch.setattr(capture, "capture_to_dead_letter", dl)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    _set_dashboard_routing_context()
+    try:
+        result = await tools["answer_question"](
+            scope="system",
+            question="Fleet cost?",
+            system_tool="dashboard_read_spend_summary",
+            system_args={},
+        )
+    finally:
+        _clear_routing_context()
+    assert result["answered"] is False
+    route.assert_not_awaited()
+    recorded = repr(dl.await_args) + repr(reply.await_args)
+    assert "Permission state is unavailable" in recorded
+    assert "not authorized" not in recorded

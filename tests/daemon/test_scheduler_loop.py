@@ -290,6 +290,154 @@ class TestSchedulerLoopBehavior:
         )
         assert all(kwargs["default_timezone"] == "Asia/Singapore" for kwargs in tick_kwargs)
 
+    async def test_daemon_loop_requires_eligibility_gate_even_without_registry_pool(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing audit pool must reach tick() as a required, absent gate (fail closed)."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        tick_kwargs: list[dict] = []
+
+        async def capture_tick(_pool, _dispatch_fn, **kwargs):
+            tick_kwargs.append(kwargs)
+            return 0
+
+        with (
+            patch("butlers.daemon._tick", side_effect=capture_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert tick_kwargs
+        assert all(kwargs["eligibility_pool"] is None for kwargs in tick_kwargs)
+        assert all(kwargs["require_eligibility_gate"] is True for kwargs in tick_kwargs)
+
+    async def test_registry_pool_retry_backs_off_and_caches_recovery(self, tmp_path: Path) -> None:
+        """A registry pool that failed at startup is retried with 60s..600s backoff."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        recovered = object()
+        create = AsyncMock(side_effect=[None, None, None, None, None, None, recovered])
+        clock = [1000.0]
+        attempts: list[float] = []
+        with (
+            patch.object(daemon, "_create_audit_pool", create),
+            patch("butlers.daemon._monotonic", side_effect=lambda: clock[0]),
+        ):
+            for _ in range(2000):
+                before = create.await_count
+                daemon._resolve_eligibility_pool()
+                task = daemon._audit_pool_retry_task
+                if task is not None:
+                    await task
+                if create.await_count > before:
+                    attempts.append(clock[0])
+                if daemon._audit_pool is not None:
+                    break
+                clock[0] += 10
+            assert daemon._audit_pool is recovered
+            # Gaps between attempts double from 60s and cap at 600s.
+            gaps = [b - a for a, b in zip(attempts, attempts[1:], strict=False)]
+            assert gaps == [60, 120, 240, 480, 600, 600]
+            # Success is cached: no further creation attempts.
+            assert daemon._resolve_eligibility_pool() is recovered
+            assert create.await_count == 7
+
+    async def test_registry_pool_retry_never_runs_twice_concurrently(self, tmp_path: Path) -> None:
+        """A retry still connecting must not be joined by another on later ticks."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        gate = asyncio.Event()
+        calls = 0
+
+        async def slow_create(_pool):
+            nonlocal calls
+            calls += 1
+            await gate.wait()
+            return None
+
+        with patch.object(daemon, "_create_audit_pool", slow_create):
+            for _ in range(5):
+                assert daemon._resolve_eligibility_pool() is None
+                await _real_sleep(0)
+            assert calls == 1
+            gate.set()
+            await daemon._audit_pool_retry_task
+
+    async def test_registry_pool_retry_is_cancelled_when_the_loop_exits(
+        self, tmp_path: Path
+    ) -> None:
+        """A retry must not outlive the scheduler loop and set the pool after shutdown."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        started = asyncio.Event()
+
+        async def hanging_create(_pool):
+            started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(daemon, "_create_audit_pool", hanging_create),
+            patch("butlers.daemon._tick", new=AsyncMock(return_value=0)),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            loop_task = asyncio.create_task(daemon._scheduler_loop())
+            await asyncio.wait_for(started.wait(), 5)
+            retry = daemon._audit_pool_retry_task
+            loop_task.cancel()
+            try:
+                await loop_task
+            except asyncio.CancelledError:
+                pass
+            for _ in range(5):
+                await _real_sleep(0)
+            assert retry.cancelled()
+
+    async def test_loop_gates_until_registry_pool_recovers(self, tmp_path: Path) -> None:
+        """Ticks see no pool while creation fails, then the recovered pool on a later tick."""
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon._audit_pool = None
+        recovered = object()
+        create = AsyncMock(side_effect=[None, recovered])
+        seen: list[tuple[object | None, bool]] = []
+
+        async def capture_tick(_pool, _dispatch_fn, **kwargs):
+            seen.append((kwargs["eligibility_pool"], kwargs["require_eligibility_gate"]))
+            return 0
+
+        clock = [0.0]
+
+        async def fast_sleep(_delay):
+            clock[0] += 1000  # every tick is past any backoff window
+            await _real_sleep(0)
+
+        with (
+            patch.object(daemon, "_create_audit_pool", create),
+            patch("butlers.daemon._tick", side_effect=capture_tick),
+            patch("butlers.daemon._monotonic", side_effect=lambda: clock[0]),
+            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            for _ in range(20):
+                await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert seen[0] == (None, True)
+        assert (recovered, True) in seen
+        assert seen.index((recovered, True)) >= 1
+
     async def test_exception_tolerance_and_db_guard_and_custom_interval(
         self, tmp_path: Path
     ) -> None:
