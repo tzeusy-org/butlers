@@ -1311,20 +1311,6 @@
       "scenario": "Exact current registered inventory"
     }
   ],
-  "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Schedules": [
-    {
-      "digest": "a48dc00791e9",
-      "excerpt": "- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, prompt-based: check birthdays/anniversaries in the next 7 ...",
-      "kind": "clause",
-      "scenario": "Scheduled task inventory"
-    },
-    {
-      "digest": "ea8e4da5c28f",
-      "excerpt": "- **AND** the existing scheduled prompt SHALL instruct no reminder or all-clear on that failed read",
-      "kind": "clause",
-      "scenario": "Posture read failure cannot produce a reminder"
-    }
-  ],
   "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Tool Surface \u2014 Dunbar Tier": [
     {
       "digest": "ca83f991a426",
