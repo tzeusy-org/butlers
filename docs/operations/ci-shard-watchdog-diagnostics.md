@@ -147,6 +147,56 @@ admission. Complete expected membership remains present; missing item/phase and
 finalizer boundaries remain UNKNOWN. Duplicate start/phase multiplicities remain
 visible and cannot become apparently exactly-once observations.
 
+## Harmless finalized-artifact retention control
+
+The separate manual **CI Shard Watchdog Retention Control** workflow is source
+for a future ROOT-released mechanism control. It never selects or prepares the
+original workload. After independently reviewed source delivery, ROOT checks the
+registered workflow and chooses its delivered/default-branch dispatch ref, with
+`capture_head` equal to that full delivered SHA. Provider trigger SHA, workflow
+SHA and actual checkout must all agree; a ref race refuses before upload. A raw
+commit SHA is not assumed to be an accepted dispatch ref.
+
+One managed uploader uses the same locked artifact SDK2.3.2 and cleanup boundary.
+It finalizes exactly `manifest.json` and `marker.json`, together at most8KiB, in
+`ci-watchdog-retention-control-<run>-<attempt>-<nonce-prefix>`. Both carry the
+separate `ci-watchdog-retention-control.v1` schema, `complete=false` and
+`mechanism_only=true`. The marker contains only the fixed control category and
+opaque repository/workflow/run/attempt/source/tree/nonce bindings with exact
+control/action/bundle/lock hashes. The manifest hashes the immutable marker.
+Neither diagnostic nor normal execution admission accepts this carrier. No
+original inventory, commands, arbitrary paths, user data or SDK output enter it.
+
+The finalize step has a60-second envelope including owned cleanup. Only a
+validated finalized ID, ZIP digest and archive size with complete owned cleanup
+produce the closed terminal finalization record, including separate hashes and
+sizes for both payloads. Upload failure, unavailable SDK, malformed or duplicate
+IPC, cancellation and incomplete cleanup remain UNKNOWN/nonpass. There is no
+retry, overwrite or deletion. A separately visible ordinary `sleep120` step runs
+only after successful finalize; it has no cancellation immunity. The new whole
+job has a provisional5-minute timeout, not a measured healthy calibration.
+
+ROOT's separately authorized operator observes the successful finalize step and
+authenticated, uniquely bound artifact metadata **while that ordinary wait is
+active**, then issues ONE cancellation and waits finitely for actual cancelled
+terminal state. Live partial job logs may be unavailable. Obtain the exact SDK
+finalized record from terminal logs after cancellation, and match it against
+authenticated same-repository/run/attempt artifact metadata, ZIP digest and
+individual downloaded payload hashes/source bindings. ZIP and payload digests
+are distinct. Suggested operator envelope is300 seconds, each call bounded by
+`min(15s, remaining)`, polling at most every5 seconds. No live finalized metadata,
+ended wait, unconfirmed cancellation, expired/missing/ambiguous artifact, wrong
+source/digest/run or incomplete cleanup means UNKNOWN/refused; never cancel or
+retry blindly. No operator action or provider persistence is earned by local
+mock-SDK controls or normal/protected source CI. Only that exact hosted control
+may precede ROOT's separately released unchanged original investigation; the
+historical cause and original3418 outcomes remain UNKNOWN.
+
+Rollback is a reviewed removal of only the new retention-control workflow and
+action, separate control exports/generated derivative, new timeout row and this
+section. Preserve the existing diagnostic workflow/action/profile, SDK lock,
+normal CI fan-in and all original execution authority.
+
 ## Verification and rollback
 
 Three Python owners exercise actual miniature three-worker privacy/registration,

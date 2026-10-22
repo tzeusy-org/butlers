@@ -523,6 +523,14 @@
       "state": "provisional diagnostic subject retains original unit1 watchdog; healthy calibration UNKNOWN",
       "sample_source": "bu-ly3lv5.10.3 frozen original PR4484 profile; unchanged 28-minute job and UV640 nominal reserve; no timing claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci-shard-watchdog-retention-control.yml",
+      "job": "retention-control",
+      "installed_timeout_minutes": 5,
+      "state": "provisional harmless finalized-artifact retention control; healthy calibration UNKNOWN",
+      "sample_source": "bu-fha45m REQ-testing-060 observation control; upload60s including owned cleanup then ordinary wait120s; no timing claim",
+      "p95_s": null
     }
   ],
   "tests": [

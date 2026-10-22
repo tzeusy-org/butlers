@@ -1,0 +1,44 @@
+name: CI Shard Watchdog Retention Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      capture_head:
+        description: Reviewed delivered control source full SHA (ROOT release required)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-shard-watchdog-retention-control-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  retention-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.capture_head }}
+          path: capture
+          persist-credentials: false
+      - name: Admit delivered control source
+        env:
+          CAPTURE_HEAD: ${{ inputs.capture_head }}
+        run: |
+          set -euo pipefail
+          [[ "$CAPTURE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$CAPTURE_HEAD"
+          test "$GITHUB_WORKFLOW_SHA" = "$CAPTURE_HEAD"
+          test "$(git -C capture rev-parse HEAD)" = "$CAPTURE_HEAD"
+      - name: Finalize harmless retention control
+        id: finalize
+        uses: ./capture/.github/actions/ci-shard-watchdog-retention-control
+        with:
+          capture_head: ${{ inputs.capture_head }}
+      - name: Ordinary post-finalization cancellation window
+        run: sleep 120

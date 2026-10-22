@@ -4,7 +4,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {spawn} = require('node:child_process');
+const {spawn, spawnSync} = require('node:child_process');
+const os = require('node:os');
 const {performance} = require('node:perf_hooks');
 
 const SCHEDULE = Object.freeze([0, 120, 300, 600, 900, 1200, 1440, 1560]);
@@ -378,8 +379,148 @@ async function uploaderMain() {
     else process.exit(2);
   });
 }
+// A separate mechanism-only carrier. The diagnostic reader above is unchanged.
+const RETENTION_SCHEMA = 'ci-watchdog-retention-control.v1';
+const RETENTION_WORKFLOW = 'CI Shard Watchdog Retention Control';
+const RETENTION_PINS = Object.freeze([
+  '.github/workflows/ci-shard-watchdog-retention-control.yml',
+  '.github/actions/ci-shard-watchdog-retention-control/action.yml',
+  '.github/actions/ci-shard-watchdog-retention-control/index.js',
+  '.github/actions/ci-shard-watchdog-capture/src/index.js',
+  '.github/actions/ci-shard-watchdog-capture/dist/index.js',
+  '.github/actions/ci-shard-watchdog-capture/dist/835.index.js',
+  '.github/actions/ci-shard-watchdog-capture/dist/supervisor.py',
+  '.github/actions/ci-shard-watchdog-capture/dist/licenses.txt',
+  '.github/actions/ci-shard-watchdog-capture/package.json',
+  '.github/actions/ci-shard-watchdog-capture/package-lock.json',
+]);
+const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+function exactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join() === [...keys].sort().join();
+}
+function validRetentionBinding(binding) {
+  return exactKeys(binding, ['repository','workflow','run','attempt','source_head','source_tree','nonce','pins']) &&
+    binding.repository === 'tzeusy-org/butlers' && binding.workflow === RETENTION_WORKFLOW &&
+    [binding.run,binding.attempt].every(value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value)) &&
+    [binding.source_head,binding.source_tree].every(value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value)) &&
+    typeof binding.nonce === 'string' && /^[a-f0-9]{64}$/.test(binding.nonce) &&
+    exactKeys(binding.pins, RETENTION_PINS) && Object.values(binding.pins).every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+}
+function retentionName(binding) {
+  return `ci-watchdog-retention-control-${binding.run}-${binding.attempt}-${binding.nonce.slice(0,12)}`;
+}
+function retentionBinding(capture, admittedHead, environment) {
+  if (typeof admittedHead !== 'string' || !/^[a-f0-9]{40}$/.test(admittedHead) ||
+      environment.GITHUB_SHA !== admittedHead || environment.GITHUB_WORKFLOW_SHA !== admittedHead || environment.GITHUB_REPOSITORY !== 'tzeusy-org/butlers' ||
+      environment.GITHUB_EVENT_NAME !== 'workflow_dispatch' || environment.GITHUB_WORKFLOW !== RETENTION_WORKFLOW ||
+      typeof environment.GITHUB_WORKFLOW_REF !== 'string' ||
+      !/^tzeusy-org\/butlers\/\.github\/workflows\/ci-shard-watchdog-retention-control\.yml@refs\/(heads|tags)\/[A-Za-z0-9_./-]+$/.test(environment.GITHUB_WORKFLOW_REF)) throw new Error('control-identity-refused');
+  const git = args => {
+    const result = spawnSync('git', ['-C',capture,...args], {env:{PATH:environment.PATH,LANG:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'},
+      timeout:2000, maxBuffer:MAX_BYTES, stdio:['ignore','pipe','ignore']});
+    if (result.status !== 0) throw new Error('control-source-refused');
+    return result.stdout;
+  };
+  if (git(['rev-parse','HEAD']).toString().trim() !== admittedHead) throw new Error('control-source-refused');
+  const pins = {};
+  for (const name of RETENTION_PINS) {
+    const file = path.join(capture,name);
+    if (fs.lstatSync(file).isSymbolicLink()) throw new Error('control-source-refused');
+    const bytes = fileBytes(file);
+    if (!bytes.equals(git(['show',`${admittedHead}:${name}`]))) throw new Error('control-source-refused');
+    pins[name] = sha256(bytes);
+  }
+  const binding = {repository:environment.GITHUB_REPOSITORY,workflow:RETENTION_WORKFLOW,
+    run:environment.GITHUB_RUN_ID,attempt:environment.GITHUB_RUN_ATTEMPT,source_head:admittedHead,
+    source_tree:git(['rev-parse',`${admittedHead}^{tree}`]).toString().trim(),nonce:crypto.randomBytes(32).toString('hex'),pins};
+  if (!validRetentionBinding(binding)) throw new Error('control-identity-refused');
+  return binding;
+}
+function writeRetentionControl(directory, binding) {
+  if (!validRetentionBinding(binding) || fs.lstatSync(directory).isSymbolicLink() || fs.readdirSync(directory).length) throw new Error('control-refused');
+  const marker = {schema:RETENTION_SCHEMA,complete:false,mechanism_only:true,
+    kind:'finalized-artifact-retention',binding};
+  const bytes = Buffer.from(JSON.stringify(marker));
+  const manifest = Buffer.from(JSON.stringify({schema:RETENTION_SCHEMA,complete:false,mechanism_only:true,
+    binding,files:{'marker.json':{bytes:bytes.length,sha256:sha256(bytes)}}}));
+  if (bytes.length+manifest.length > 8192) throw new Error('control-size-refused');
+  fs.writeFileSync(path.join(directory,'marker.json'),bytes,{flag:'wx',mode:0o444});
+  fs.writeFileSync(path.join(directory,'manifest.json'),manifest,{flag:'wx',mode:0o444});
+  return {name:retentionName(binding),directory,binding};
+}
+function retentionFiles(message, environment) {
+  if (!exactKeys(message,['name','directory','binding']) || !validRetentionBinding(message.binding) ||
+      message.name !== retentionName(message.binding) || typeof message.directory !== 'string' ||
+      message.binding.run !== environment.GITHUB_RUN_ID || message.binding.attempt !== environment.GITHUB_RUN_ATTEMPT ||
+      message.binding.repository !== environment.GITHUB_REPOSITORY ||
+      fs.lstatSync(message.directory).isSymbolicLink() ||
+      fs.readdirSync(message.directory).sort().join() !== 'manifest.json,marker.json') throw new Error('control-refused');
+  const files=['manifest.json','marker.json'].map(name=>path.join(message.directory,name));
+  const [manifestBytes,markerBytes]=files.map(fileBytes);
+  if (manifestBytes.length+markerBytes.length>8192) throw new Error('control-size-refused');
+  // Canonical roundtrip refuses duplicate keys, trailing data and alternate encodings.
+  const [manifest,marker]=[manifestBytes,markerBytes].map(bytes=>{
+    const value=JSON.parse(bytes);
+    if (JSON.stringify(value)!==bytes.toString()) throw new Error('control-refused');
+    return value;
+  });
+  if (!exactKeys(marker,['schema','complete','mechanism_only','kind','binding']) ||
+      !exactKeys(manifest,['schema','complete','mechanism_only','binding','files']) ||
+      marker.kind!=='finalized-artifact-retention' ||
+      ![marker,manifest].every(value=>value.schema===RETENTION_SCHEMA && value.complete===false && value.mechanism_only===true &&
+        JSON.stringify(value.binding)===JSON.stringify(message.binding)) ||
+      !exactKeys(manifest.files,['marker.json']) || !exactKeys(manifest.files['marker.json'],['bytes','sha256']) ||
+      manifest.files['marker.json'].bytes!==markerBytes.length || manifest.files['marker.json'].sha256!==sha256(markerBytes)) throw new Error('control-refused');
+  return files;
+}
+async function uploadRetentionWithClient(client,message,environment) {
+  try {
+    const files=retentionFiles(message,environment);
+    const result=await client.uploadArtifact(message.name,files,message.directory,{retentionDays:14,compressionLevel:0});
+    const output={code:'finalized',id:result.id,digest:result.digest,size:result.size};
+    return finalized(output)?output:unknown();
+  } catch (_) {return unknown();}
+}
+function retentionUploaderMain() {
+  process.once('message',async message=>{
+    let output=unknown();
+    try {
+      retentionFiles(message,process.env);
+      const {DefaultArtifactClient}=require('@actions/artifact');
+      output=await uploadRetentionWithClient(new DefaultArtifactClient(),message,process.env);
+    } catch (_) {}
+    if(process.send) process.send(output,()=>process.exit(0));
+    else process.exit(2);
+  });
+}
+async function runRetentionControl() {
+  const capture=path.resolve(__dirname,'../../../..');
+  const binding=retentionBinding(capture,process.env.INPUT_CAPTURE_HEAD,process.env);
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'watchdog-retention-control-'));
+  const controller=new AbortController();
+  const cancelled=()=>controller.abort();
+  process.once('SIGTERM',cancelled);process.once('SIGINT',cancelled);
+  try {
+    const message=writeRetentionControl(directory,binding);
+    const entry=path.join(capture,'.github/actions/ci-shard-watchdog-retention-control/index.js');
+    const publication=await boundedUpload(message,process.env,60000,entry,controller.signal);
+    if(controller.signal.aborted || !publication.cleanup_complete || publication.result.code!=='finalized') return 2;
+    const files=retentionFiles(message,process.env);
+    process.stdout.write(JSON.stringify({schema:RETENTION_SCHEMA,complete:false,mechanism_only:true,
+      event:'finalized',name:message.name,binding,artifact_id:publication.result.id,
+      zip_sha256:publication.result.digest,archive_bytes:publication.result.size,
+      payloads:Object.fromEntries(files.map(file=>[path.basename(file),{sha256:sha256(fileBytes(file)),bytes:fs.statSync(file).size}])),
+      owned_cleanup_complete:true})+'\n');
+    return 0;
+  } finally {
+    process.removeListener('SIGTERM',cancelled);process.removeListener('SIGINT',cancelled);
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+}
 module.exports = {subjectEnvironment, subjectInputs, uploaderEnvironment, finalized, sealedFiles, uploadWithClient,
-  numericProcess, descendantSamples, managed, cleanup, boundedUpload, runAction, writeAtomic};
+  numericProcess, descendantSamples, managed, cleanup, boundedUpload, runAction, writeAtomic, RETENTION_PINS, retentionBinding, writeRetentionControl,
+  retentionFiles, uploadRetentionWithClient, retentionUploaderMain, runRetentionControl};
 if (require.main === module) {
   if (process.env.WATCHDOG_UPLOADER === '1') uploaderMain();
   else runAction().then(code => { process.exitCode = code; }).catch(() => {
