@@ -221,8 +221,8 @@ credential or protection against a compromised trusted database actor.
 
 ## Dark Switchboard goal ledger
 
-`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions}`
-for RFC0038's unwired admission slice. `core_266` adds a nullable explicit
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions,goal_inbox}`
+for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
 `runtime_config.goal_admission_config` snapshot in each migrated core schema;
 only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
 non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full

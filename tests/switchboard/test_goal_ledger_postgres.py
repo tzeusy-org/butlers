@@ -163,6 +163,15 @@ async def test_reply_binding_preserves_goal_authority(ledger):
     )
     joined = await admit(runtime, facts)
     assert joined.result == "joined" and joined.goal_id == original.goal_id
+    # The join's only delivery path is one goal_inbox row bound to the prompt.
+    inbox = await owner.fetch("SELECT * FROM switchboard.goal_inbox")
+    assert [
+        (r["goal_id"], r["decision_id"], r["delivery_ref"], r["reply_effect_id"], r["consumed_at"])
+        for r in inbox
+    ] == [(original.goal_id, joined.decision_id, "delivery-1", effect_id, None)]
+    assert await runtime.execute("DELETE FROM switchboard.goal_inbox") == "DELETE 0"
+    with pytest.raises(asyncpg.PostgresError):
+        await runtime.execute("UPDATE switchboard.goal_inbox SET delivery_ref='forged'")
     assert (
         dict(await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", original.goal_id))
         == before
@@ -208,6 +217,8 @@ async def test_reply_binding_preserves_goal_authority(ledger):
     assert terminal.result == "admitted" and terminal.goal_id != original.goal_id
     new = await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", terminal.goal_id)
     assert new["origin"] == "owner" and new["caused_by_goal"] is None
+    # New owner goals are not deliveries: only the one live join reached an inbox.
+    assert await owner.fetchval("SELECT count(*) FROM switchboard.goal_inbox") == 1
     assert (
         await owner.fetchval(
             "SELECT delivery_ref FROM switchboard.admission_decisions WHERE id=$1",
@@ -328,7 +339,7 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     lead, effect_id = await effect(owner, a.goal_id)
     child = uuid4()
     await owner.execute(
-        "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'returned','[]','digest',1,1)",
+        "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,exposed,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'returned','[]','digest',true,1,1)",
         child,
         a.goal_id,
         lead,
@@ -337,13 +348,13 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     async with owner.acquire() as conn:
         cases = [
             (
-                "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'launching','[]','digest',1,1)",
+                "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,exposed,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'launching','[]','digest',true,1,1)",
                 uuid4(),
                 a.goal_id,
                 child,
             ),
             (
-                "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'launching','[]','digest',1,1)",
+                "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,exposed,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'launching','[]','digest',true,1,1)",
                 uuid4(),
                 a.goal_id,
             ),
@@ -378,7 +389,7 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
                 lead,
             ),
             (
-                "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'launching','[]','digest',1,1)",
+                "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,exposed,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'launching','[]','digest',true,1,1)",
                 uuid4(),
                 b.goal_id,
                 lead,
@@ -391,6 +402,36 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     assert (
         await owner.fetchval("SELECT goal_id FROM switchboard.effects WHERE id=$1", effect_id)
         == a.goal_id
+    )
+    # thread_id binds once; exposure is per invocation and only increases.
+    thread = uuid4()
+    await owner.execute("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", thread, a.goal_id)
+    owner_goal = await admit(runtime, Evidence("message", "owner", owner=True))
+    clean_lead, _ = await effect(owner, owner_goal.goal_id)
+    assert not await owner.fetchval(
+        "SELECT exposed FROM switchboard.goals WHERE id=$1", owner_goal.goal_id
+    )
+    async with owner.acquire() as conn:
+        for query, *values in [
+            ("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", uuid4(), a.goal_id),
+            ("UPDATE switchboard.goals SET thread_id=NULL WHERE id=$1", a.goal_id),
+            ("UPDATE switchboard.invocations SET exposed=false WHERE id=$1", lead),
+            (
+                "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'returned','[]','digest',1,1)",
+                uuid4(),
+                a.goal_id,
+            ),
+        ]:
+            with pytest.raises(asyncpg.PostgresError):
+                async with conn.transaction():
+                    await conn.execute(query, *values)
+    assert (
+        await owner.fetchval("SELECT thread_id FROM switchboard.goals WHERE id=$1", a.goal_id)
+        == thread
+    )
+    await runtime.execute("UPDATE switchboard.invocations SET exposed=true WHERE id=$1", clean_lead)
+    assert await owner.fetchval(
+        "SELECT exposed FROM switchboard.goals WHERE id=$1", owner_goal.goal_id
     )
 
 

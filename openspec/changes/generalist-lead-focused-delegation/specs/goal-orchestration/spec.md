@@ -112,6 +112,7 @@ Scope: v1-mandatory
 #### Scenario: An owner reply retains an existing goal's authority
 - **WHEN** trusted infrastructure matches an incoming verified owner reply to an exact server-held delivery/effect, recipient channel/entity and live input-accepting prompt
 - **THEN** admission locks the referenced goal before the effect, rechecks expiry/liveness under lock and attaches the unique incoming source to that same goal
+- **AND** the join writes one immutable goal inbox entry, bound to its decision and prompt effect, as the reply's only delivery path to that goal
 - **AND** origin, ceiling, cause and budget remain unchanged, exposure only increases, and no invocation or approval is created
 - **AND** a terminal or expired prompt follows ordinary new-owner-goal admission retaining the delivery/effect reference without a caused-goal link
 - **AND** unknown, foreign or mismatched bindings follow ordinary verified message admission without guessed continuity; concurrent Stop and join serialize on the goal

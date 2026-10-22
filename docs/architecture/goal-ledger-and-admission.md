@@ -20,15 +20,16 @@ are third party, while an unavailable verifier returns a typed refusal.
 
 ## Durable records
 
-All five tables live in Switchboard's schema:
+All six tables live in Switchboard's schema:
 
 | Table | Retained invariant |
 | --- | --- |
-| `goals` | Unique normalized source identity; immutable origin, admitted exposure, ceiling and policy digests; monotone current exposure; same-goal cause/effect FK; D11 state |
-| `invocations` | Same-goal parent which is a lead; depth 0/1 shape; one launching/running lead; immutable grants/scopes and finite inert turn/token caps; timing placeholders and token hash only |
+| `goals` | Unique normalized source identity; immutable origin, admitted exposure, ceiling and policy digests; monotone exposure derived from admission, invocations and joins; `thread_id` bound at most once; same-goal cause/effect FK; D11 state |
+| `invocations` | Same-goal parent which is a lead; depth 0/1 shape; one launching/running lead; immutable grants/scopes and finite inert turn/token caps; monotone per-invocation exposure that starts at the goal's and marks the goal exposed; timing placeholders and token hash only |
 | `effects` | Same-goal invocation FK; capability/argument digests and D11 state; exact unique delivery, verified recipient and finite prompt expiry |
 | `budgets` | One per goal; explicit finite maxima, reserved/used counters and child occupancy; sums bounded by maxima; absolute deadline and config snapshot |
 | `admission_decisions` | Append-only attempts; at most one accepted association per source; fixed refusal reasons, immutable quota window/retry-after, delivery/effect and valid cause references |
+| `goal_inbox` | One row per joined reply: its decision, source, delivery and same-goal prompt effect; immutable except a once-set `consumed_at`; never deleted by the runtime |
 
 No message body, arguments, results, bearer token, approval permission or
 executable predicate is stored here. Telemetry consumers must use identifiers
@@ -75,7 +76,9 @@ mutators are implemented here.
 An owner reply joins only an exact server-held delivery/effect bound to the
 verified owner entity/channel and a live goal whose prompt accepts input. Expiry
 is checked after lock waits. Joining preserves origin, ceiling, cause and budget;
-exposure can only increase, and no invocation or approval is produced. A terminal
+exposure can only increase, and no invocation or approval is produced. The join
+writes one `goal_inbox` row in the same transaction; that row is the goal's only
+delivery path for the reply, and the M2 runner marks it consumed. A terminal
 or expired prompt creates an ordinary verified owner goal with delivery/effect
 reference and no caused-goal link. Unknown/foreign/mismatched bindings follow
 ordinary message admission without guessing continuity.
@@ -85,6 +88,13 @@ writes. Commit uncertainty raises `AdmissionUnavailable`; retrying the same
 durable source resolves any committed association without replenishing budget.
 
 ## Isolation and verification
+
+RFC0038 D6 tracks exposure per invocation. The goal's `exposed` flag is the
+derived report: a trigger refuses an unexposed invocation on an exposed goal and
+marks the goal exposed when any invocation becomes exposed. The richer
+per-invocation label plane (bu-dhloi1.6) and the waiting lifecycle with its
+owner thread (bu-dhloi1.7) await their RFC amendments; until then `status`
+keeps the D11 set and `thread_id` is an unreferenced, bind-once column.
 
 `sw_047` uses enabled **non-FORCE RLS** with exact `current_user` Switchboard
 runtime policies, following `sw_035`. The existing trusted migration/table owner

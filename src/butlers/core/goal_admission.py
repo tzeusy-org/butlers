@@ -472,7 +472,11 @@ class GoalAdmission:
                 in {"admitted", "running", "settling", "awaiting_approval", "recovering"}
             ):
                 await ledger.increase_exposure(goal["id"], exposed)
-                return await ledger.decide(source, attempt_id, "joined", "reply_joined", goal["id"])
+                joined = await ledger.decide(
+                    source, attempt_id, "joined", "reply_joined", goal["id"]
+                )
+                await ledger.deliver(joined, source)
+                return joined
         await ledger.lock_keys(
             [
                 "quota:origin:" + plan.origin + ":" + ledger.window.isoformat(),

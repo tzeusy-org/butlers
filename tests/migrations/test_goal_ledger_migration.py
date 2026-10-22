@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
+from butlers.core.goal_admission import Evidence
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
@@ -46,7 +47,27 @@ async def populate(url):
     async with pools(url) as (owner, runtime):
         await configure(owner, limits())
         result = await admit(runtime)
-        await effect(owner, result.goal_id)
+        # A joined reply populates goal_inbox, so every ledger table has a row.
+        delivery, entity = f"populate-{uuid4()}", uuid4()
+        expiry = await owner.fetchval("SELECT now() + interval '1 hour'")
+        await effect(
+            owner,
+            result.goal_id,
+            delivery=delivery,
+            entity=entity,
+            channel="telegram",
+            accepts=True,
+            expiry=expiry,
+        )
+        reply = Evidence(
+            "message",
+            "owner",
+            owner=True,
+            reply_delivery=delivery,
+            owner_entity=entity,
+            owner_channel="telegram",
+        )
+        assert (await admit(runtime, reply)).result == "joined"
         return result
 
 
@@ -92,7 +113,7 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
     try:
         with engine.connect() as conn:
             posture = snapshot(ledger_url)[1]
-            assert len(posture) == 20 and all(row[2] and not row[3] for row in posture)
+            assert len(posture) == 4 * len(TABLES) and all(row[2] and not row[3] for row in posture)
             expected_counts = {
                 t: conn.execute(text(f"SELECT count(*) FROM switchboard.{t}")).scalar_one()
                 for t in TABLES

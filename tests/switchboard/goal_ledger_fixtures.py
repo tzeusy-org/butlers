@@ -11,7 +11,7 @@ from butlers.core.goal_admission import GoalAdmission, SourceRef, digest
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 
-TABLES = ("goals", "invocations", "effects", "budgets", "admission_decisions")
+TABLES = ("goals", "invocations", "effects", "budgets", "admission_decisions", "goal_inbox")
 
 
 @pytest.fixture(scope="module")
@@ -69,14 +69,18 @@ async def effect(
     owner, goal_id, *, delivery=None, entity=None, channel=None, accepts=False, expiry=None
 ):
     invocation, effect_id = uuid4(), uuid4()
-    grants = await owner.fetchval("SELECT ceiling FROM switchboard.goals WHERE id=$1", goal_id)
+    goal = await owner.fetchrow(
+        "SELECT ceiling,exposed FROM switchboard.goals WHERE id=$1", goal_id
+    )
+    grants = goal["ceiling"]
     await owner.execute(
         "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,"
-        "max_turns,max_tokens) VALUES ($1,$2,0,'lead',0,'returned',$3::jsonb,$4,5,500)",
+        "exposed,max_turns,max_tokens) VALUES ($1,$2,0,'lead',0,'returned',$3::jsonb,$4,$5,5,500)",
         invocation,
         goal_id,
         grants,
         digest(grants),
+        goal["exposed"],
     )
     await owner.execute(
         "INSERT INTO switchboard.effects (id,goal_id,invocation_id,capability,args_digest,status,delivery_ref,"

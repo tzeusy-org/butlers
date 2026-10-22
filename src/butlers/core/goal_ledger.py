@@ -34,7 +34,7 @@ class GoalLedger:
             "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
             "WHERE n.nspname='switchboard' AND c.relname=ANY($1::text[]) "
             "AND pg_has_role(current_user,c.relowner,'MEMBER'))",
-            ["goals", "invocations", "effects", "budgets", "admission_decisions"],
+            ["goals", "invocations", "effects", "budgets", "admission_decisions", "goal_inbox"],
         ):
             raise AdmissionUnavailable("runtime must not own or assume the ledger owner")
 
@@ -97,6 +97,22 @@ class GoalLedger:
             "WHERE id=$1 AND $2 AND NOT exposed",
             goal_id,
             exposed,
+        )
+
+    async def deliver(self, decision, source):
+        # A joined reply reaches its goal only through this inbox row; the
+        # unique source key keeps one delivery per incoming envelope.
+        await self.connection.execute(
+            "INSERT INTO switchboard.goal_inbox "
+            "(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            uuid4(),
+            decision.goal_id,
+            decision.decision_id,
+            source.key,
+            source.id,
+            self.facts.reply_delivery,
+            self.reply_effect,
         )
 
     async def quota_counts(self, origin, source):

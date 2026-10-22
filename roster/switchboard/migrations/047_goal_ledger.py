@@ -11,7 +11,7 @@ down_revision = "sw_046"
 branch_labels = None
 depends_on = None
 
-_TABLES = ("goals", "invocations", "effects", "budgets", "admission_decisions")
+_TABLES = ("goals", "invocations", "effects", "budgets", "admission_decisions", "goal_inbox")
 
 
 def upgrade() -> None:
@@ -25,6 +25,7 @@ def upgrade() -> None:
             origin TEXT NOT NULL CHECK (origin IN ('owner','obligation','third_party','staffer')),
             admitted_exposed BOOLEAN NOT NULL,
             exposed BOOLEAN NOT NULL,
+            thread_id UUID,
             ceiling JSONB NOT NULL CHECK (jsonb_typeof(ceiling) = 'array'),
             ceiling_digest TEXT NOT NULL,
             catalog_digest TEXT NOT NULL,
@@ -60,6 +61,7 @@ def upgrade() -> None:
                 'launching','running','returned','failed','timed_out','stopped','escalated')),
             grant_snapshot JSONB NOT NULL CHECK (jsonb_typeof(grant_snapshot) = 'array'),
             grant_digest TEXT NOT NULL,
+            exposed BOOLEAN NOT NULL DEFAULT false,
             max_turns BIGINT NOT NULL CHECK (max_turns >= 0),
             used_turns BIGINT NOT NULL DEFAULT 0 CHECK (used_turns >= 0 AND used_turns <= max_turns),
             max_tokens BIGINT NOT NULL CHECK (max_tokens >= 0),
@@ -186,6 +188,22 @@ def upgrade() -> None:
                 REFERENCES switchboard.effects(goal_id,id)
         )
     """)
+    # F3 joins deliver through this inbox; the M2 runner marks consumption.
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS switchboard.goal_inbox (
+            id UUID PRIMARY KEY,
+            goal_id UUID NOT NULL REFERENCES switchboard.goals(id),
+            decision_id UUID NOT NULL UNIQUE REFERENCES switchboard.admission_decisions(id),
+            source_key TEXT NOT NULL UNIQUE,
+            source_ref TEXT NOT NULL,
+            delivery_ref TEXT NOT NULL,
+            reply_effect_id UUID NOT NULL,
+            consumed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT fk_inbox_reply_effect FOREIGN KEY (goal_id,reply_effect_id)
+                REFERENCES switchboard.effects(goal_id,id)
+        )
+    """)
     op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_admission_source ON switchboard.admission_decisions(source_key)
         WHERE result IN ('admitted','joined')
@@ -218,7 +236,9 @@ def upgrade() -> None:
             op.execute(f"DROP POLICY IF EXISTS {name} ON {qualified}")
             policy = f"CREATE POLICY {name} ON {qualified} FOR {command} TO butler_switchboard_rw "
             predicate = "current_user='butler_switchboard_rw'"
-            if table == "admission_decisions" and command in {"UPDATE", "DELETE"}:
+            if (table == "admission_decisions" and command in {"UPDATE", "DELETE"}) or (
+                table == "goal_inbox" and command == "DELETE"
+            ):
                 predicate += " AND false"
             if command != "INSERT":
                 policy += f"USING ({predicate}) "
@@ -232,17 +252,28 @@ def upgrade() -> None:
             IF TG_TABLE_NAME='admission_decisions' THEN
                 RAISE EXCEPTION 'Admission history is immutable';
             ELSIF TG_TABLE_NAME='goals' THEN
-                IF (to_jsonb(NEW) - ARRAY['status','exposed','updated_at']) IS DISTINCT FROM
-                   (to_jsonb(OLD) - ARRAY['status','exposed','updated_at'])
-                   OR (OLD.exposed AND NOT NEW.exposed) THEN
+                -- thread_id may be bound once, after admission; never rebound.
+                IF (to_jsonb(NEW) - ARRAY['status','exposed','thread_id','updated_at'])
+                   IS DISTINCT FROM
+                   (to_jsonb(OLD) - ARRAY['status','exposed','thread_id','updated_at'])
+                   OR (OLD.exposed AND NOT NEW.exposed)
+                   OR (OLD.thread_id IS NOT NULL
+                       AND NEW.thread_id IS DISTINCT FROM OLD.thread_id) THEN
                     RAISE EXCEPTION 'Goal authority and source association are immutable';
                 END IF;
             ELSIF TG_TABLE_NAME='invocations' THEN
                 IF (NEW.goal_id,NEW.parent_invocation_id,NEW.depth,NEW.role,NEW.lead_epoch,
                     NEW.grant_snapshot,NEW.grant_digest,NEW.max_turns,NEW.max_tokens) IS DISTINCT FROM
                    (OLD.goal_id,OLD.parent_invocation_id,OLD.depth,OLD.role,OLD.lead_epoch,
-                    OLD.grant_snapshot,OLD.grant_digest,OLD.max_turns,OLD.max_tokens) THEN
-                    RAISE EXCEPTION 'Invocation lineage and grant are immutable';
+                    OLD.grant_snapshot,OLD.grant_digest,OLD.max_turns,OLD.max_tokens)
+                   OR (OLD.exposed AND NOT NEW.exposed) THEN
+                    RAISE EXCEPTION 'Invocation lineage, grant and exposure are immutable';
+                END IF;
+            ELSIF TG_TABLE_NAME='goal_inbox' THEN
+                IF (to_jsonb(NEW) - 'consumed_at') IS DISTINCT FROM (to_jsonb(OLD) - 'consumed_at')
+                   OR (OLD.consumed_at IS NOT NULL
+                       AND NEW.consumed_at IS DISTINCT FROM OLD.consumed_at) THEN
+                    RAISE EXCEPTION 'Goal inbox delivery is immutable';
                 END IF;
             ELSIF TG_TABLE_NAME='effects' THEN
                 IF (NEW.goal_id,NEW.invocation_id,NEW.capability,NEW.args_digest,
@@ -255,13 +286,37 @@ def upgrade() -> None:
             RETURN NEW;
         END $$
     """)
-    for table in ("goals", "invocations", "effects", "admission_decisions"):
+    for table in ("goals", "invocations", "effects", "admission_decisions", "goal_inbox"):
         op.execute(f"DROP TRIGGER IF EXISTS goal_ledger_immutable ON switchboard.{table}")
         event = "UPDATE OR DELETE" if table == "admission_decisions" else "UPDATE"
         op.execute(
             f"CREATE TRIGGER goal_ledger_immutable BEFORE {event} ON switchboard.{table} "
             "FOR EACH ROW EXECUTE FUNCTION switchboard.goal_ledger_immutable()"
         )
+    # RFC0038 D6: exposure is tracked per invocation; the goal's exposed flag is
+    # the derived report. An invocation starts with its goal's exposure, and any
+    # exposed invocation marks its goal exposed.
+    op.execute("""
+        CREATE OR REPLACE FUNCTION switchboard.goal_invocation_exposure()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+            IF TG_OP='INSERT' AND NOT NEW.exposed AND EXISTS (
+                SELECT 1 FROM switchboard.goals WHERE id=NEW.goal_id AND exposed) THEN
+                RAISE EXCEPTION 'An invocation starts with its goal''s exposure';
+            END IF;
+            IF NEW.exposed THEN
+                UPDATE switchboard.goals SET exposed=true, updated_at=now()
+                WHERE id=NEW.goal_id AND NOT exposed;
+            END IF;
+            RETURN NULL;
+        END $$
+    """)
+    op.execute("DROP TRIGGER IF EXISTS goal_invocation_exposure ON switchboard.invocations")
+    op.execute(
+        "CREATE TRIGGER goal_invocation_exposure "
+        "AFTER INSERT OR UPDATE OF exposed ON switchboard.invocations "
+        "FOR EACH ROW EXECUTE FUNCTION switchboard.goal_invocation_exposure()"
+    )
 
 
 def downgrade() -> None:
@@ -280,3 +335,4 @@ def downgrade() -> None:
     for table in reversed(_TABLES):
         op.execute(f"DROP TABLE IF EXISTS switchboard.{table}")
     op.execute("DROP FUNCTION IF EXISTS switchboard.goal_ledger_immutable()")
+    op.execute("DROP FUNCTION IF EXISTS switchboard.goal_invocation_exposure()")
