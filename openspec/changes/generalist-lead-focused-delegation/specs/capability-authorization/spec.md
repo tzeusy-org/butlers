@@ -34,7 +34,9 @@ Scope: v1-mandatory
 ### Requirement: Every model-reachable capability declares authorization metadata
 Every LLM-presentable tool SHALL declare its owner domain, effect class, output
 trust, output sensitivity, resource parameters, safety arguments, approval
-policy, idempotency mode and owner-authority flag. Every tool whose call can
+policy (including its approval mode, `default` or `always_per_event`;
+`REQ-capability-authorization-017`), idempotency mode and owner-authority flag.
+Every tool whose call can
 deliver content to, or invite, another party, whatever its effect class, SHALL
 also declare the arguments that name those parties (recipients, attendees,
 invitees, shares), or declare them undeterminable when its arguments cannot
@@ -435,6 +437,79 @@ Scope: v1-mandatory
 - **WHEN** the owner prepares a dashboard action that delivers content to or invites someone other than the owner and submits it after seeing the exact recipients and content
 - **THEN** the submit click is the confirmation and records per-event approval by the authenticated owner for that exact action before dispatch
 - **AND** this self-approval does not count toward standing-rule promotion suggestions
+
+### Requirement: Catalog-declared always-per-event approval mode
+A capability's catalog entry MAY declare the approval mode `always_per_event`.
+The declaration SHALL travel with the tool's catalog descriptor, and no butler
+configuration, owner policy or standing rule SHALL be able to remove or loosen
+it. The catalog check SHALL fail in CI when a tool declares the mode but its
+owning butler has no approvals gate for that tool, and such a tool SHALL NOT be
+grantable.
+
+The broker SHALL apply a capability that declares the mode as park-only in every
+grant that includes it, whatever the goal's origin, cause or exposure and
+whether the invocation is a lead or a child. Every call SHALL park through the
+owning domain's approvals module for the owner's per-event approval. No standing
+rule SHALL approve such a call, including a rule whose recipient is the owner or
+that is template-pinned, and no rule SHALL be creatable for the capability. The
+mode adds no capability to any origin's ceiling: it only removes automatic
+approval paths.
+
+Only these SHALL count as the per-event approval: the owner's approval of the
+parked call (or of the owner's edit of it) through an owner channel; the
+owner's own submit on the owner surface after seeing the exact call
+(`REQ-capability-authorization-016`); and one "Approve all" tap on a decision
+set that shows every item's exact call and recipients with per-item untick.
+A standing rule SHALL NOT match a decision set, and an approved wait envelope
+SHALL NOT pre-approve a later call to the capability. Approvals of these calls
+SHALL NOT count toward standing-rule promotion.
+
+ID: REQ-capability-authorization-017
+Source: RFC 0038, D4, D5 and D13; bu-p5umi2.4 = A (always-per-event approval mode); bu-qlx055 = A (decision sets and wait envelopes); RFC 0038 owner item 3 (calendar invitation answers)
+Scope: v1-mandatory
+
+#### Scenario: A standing rule matches an unexposed owner goal's call
+- **WHEN** an unexposed owner goal calls a capability that declares `always_per_event` and an active standing rule matches its tool and arguments
+- **THEN** the call parks as `pending` for the owner's per-event approval and the handler does not run
+- **AND** no rule is recorded as its approval and the rule's `use_count` is unchanged
+
+#### Scenario: An exposed goal's call ignores owner-addressed and template-pinned rules
+- **WHEN** an exposed invocation calls a capability that declares `always_per_event` under a standing rule that pins the recipient to the owner or is template-pinned
+- **THEN** the call parks for the owner's per-event approval
+
+#### Scenario: Third-party, obligation and child calls park
+- **WHEN** a third-party goal, an obligation goal whose declared capability set includes the capability, or a child whose lead holds it calls a capability that declares `always_per_event`
+- **THEN** each call parks for the owner's per-event approval, the obligation's declaration pre-approves nothing, and neither the lead nor the child can approve the child's call
+
+#### Scenario: The owner submits the action on the owner surface
+- **WHEN** the owner submits an action backed by a capability that declares `always_per_event` after seeing the exact call
+- **THEN** the submit is the recorded per-event approval for that exact call
+- **AND** it does not count toward standing-rule promotion suggestions
+
+#### Scenario: Approve all on a decision set
+- **WHEN** the owner taps "Approve all" on a decision set whose card shows the exact call and recipients of an always-per-event item, with per-item untick
+- **THEN** that tap is the per-event approval for the item
+- **AND** no standing rule matches the set or any of its always-per-event items
+
+#### Scenario: A wait envelope never pre-approves the capability
+- **WHEN** the owner approved an effect card carrying a wait envelope and the goal later calls a capability that declares `always_per_event` inside that envelope
+- **THEN** the call parks for its own per-event approval
+
+#### Scenario: A rule cannot be created for the capability
+- **WHEN** the owner asks to create a standing rule, or to create a rule from a pending action, for a tool that declares `always_per_event`
+- **THEN** the request is refused with a typed reason and no rule is persisted
+
+#### Scenario: A tool declares the mode without an approvals gate
+- **WHEN** a module declares `always_per_event` for a tool that its owning butler's approvals configuration does not gate
+- **THEN** the catalog check fails in CI and the broker never includes the tool in a grant
+
+#### Scenario: Butler configuration cannot remove the mode
+- **WHEN** a butler's approvals configuration sets expiry or risk tier for a tool that declares `always_per_event`
+- **THEN** those settings apply, the mode is unchanged, and no configuration key unsets it
+
+#### Scenario: Calendar invitation answers declare the mode
+- **WHEN** the catalog describes `calendar_respond`
+- **THEN** it declares `always_per_event`, so every invitation answer needs the owner's per-event approval and no standing rule applies, as today
 
 ## Source References
 

@@ -292,7 +292,8 @@ output_trust          trusted | untrusted | stamped
 output_sensitivity    ordinary | sensitive
 resource_params       argument names that select a resource (entity, account, device)
 safety_args           argument names an approval must pin (RFC 0021)
-approval_policy       existing approvals gating config for the tool
+approval_policy       existing approvals gating config for the tool, plus an
+                      approval mode: default | always_per_event (D13)
 idempotency           none | key_required
 owner_authority       true when the write steers future sessions (rules, profile)
 recipient_params      argument names that identify parties a call delivers content
@@ -723,7 +724,26 @@ unexposed invocations; exposed invocations can use only the standing rules D4
 exempts. A standing rule is **template-pinned** when its argument constraints
 fix every content-bearing argument to an exact value or to an owner-authored
 template whose slots accept only typed values (dates, amounts, identifiers),
-never free text. A Stop-cancelled parked effect takes a new approvals status,
+never free text.
+
+A capability whose catalog entry declares the approval mode
+`always_per_event` is applied as park-only in every grant that includes it,
+whatever the goal's origin, cause or exposure, lead or child. The declaration
+travels with the tool's descriptor, so no butler configuration, owner policy or
+standing rule can remove it, and a tool that declares it without an approvals
+gate in its owning butler is not grantable. No standing rule approves such a
+call, no rule can be created for the capability, the gate's owner-directed
+auto-approve does not apply, and its approvals never count toward promotion.
+The per-event approval is the owner's approval of the parked call or of the
+owner's edit, the owner's own submit on the owner surface, or one "Approve all"
+tap on a decision set that shows every item's exact call and recipients with
+per-item untick; an approved wait envelope never pre-approves a later call.
+The mode adds nothing to any ceiling. `calendar_respond` declares it
+(author-detail item 3), and so do
+capabilities whose effects must always be the owner's own act, such as
+confirming an owner checklist revision.
+
+A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
 executable by the approvals executor and are recorded with goal origin
 `legacy`, a field separate from the approvals module's existing producer
@@ -914,7 +934,7 @@ invocation lineage.
 | 0018 Connector scope | Remains. |
 | 0019 Proactive egress and automation | Remains rejected/parked. Caused admissions run only declared subscriptions; they are not the parked rule engine. |
 | 0020 Calendar overlay read exception | Remains. |
-| 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable (D4, D6, D13). |
+| 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable, and no standing rule targets or approves an `always_per_event` capability (D4, D6, D13). |
 | 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
 | 0023 Approval delivery intent recovery | Remains. |
 | 0024 Messenger correspondence ledger (proposed) | Independent. |
@@ -1068,6 +1088,12 @@ item 1, and authorizes no production change. Every answer excludes enabling
 `transact` and production changes. This confirmation does not release the
 hard-cutover gates or alter the private-custody boundary.
 
+### Later owner decisions
+
+| Recorded | Decision | Effect on this RFC |
+|---|---|---|
+| 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
+
 ## Alternatives considered
 
 - **Keep specialist sessions and add a read-only generalist.** Preserves two
@@ -1118,3 +1144,4 @@ hard-cutover gates or alter the private-custody boundary.
 | `capability-authorization` 014 owner decisions unreachable | D4 |
 | `capability-authorization` 015 `transact` disabled | D4, D5, D9, owner decision 8 |
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
+| `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
