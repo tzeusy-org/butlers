@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 #: not drift: the secrets routes publish it as ``TestResult.message``
 #: (bu-nz4sn), and ``public.audit_log.failure_category`` stores it at rest
 #: (bu-vhie6, migration ``core_202``, whose CHECK constraint mirrors this exact
-#: set).  ``butlers.api.models.audit`` re-exports it for the API surfaces.
+#: set).
 PROBE_FAILURE_VOCABULARY: tuple[str, ...] = (
     "not_set",  # no value is stored for this credential
     "expired",  # the stored value is past a known expiry
@@ -258,7 +258,7 @@ async def write_audit_entry(
     """Append an audit log entry to the canonical ``public.audit_log`` table.
 
     Daemon-side compatibility shim that maps the legacy ``dashboard_audit_log``
-    field shape onto :func:`butlers.api.routers.audit.append` (bu-h47nm):
+    field shape onto :func:`append` (bu-h47nm):
 
     - ``butler``        -> ``actor``
     - ``operation``     -> ``action``

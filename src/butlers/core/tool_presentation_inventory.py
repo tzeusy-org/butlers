@@ -10808,7 +10808,7 @@ STORE_WRITERS = MappingProxyType(
         "public.audit_log": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.api.routers.audit.append",
+                "butlers.core.audit.append",
                 "butlers.core.runtime_config.RuntimeConfigAccessor.seed_if_empty",
             ),
             unknown_writers=True,

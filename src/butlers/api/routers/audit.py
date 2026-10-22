@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,9 +43,6 @@ from butlers.core.audit import (
     on_error_row,
 )
 from butlers.core.credential_keys import normalize_key_param
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

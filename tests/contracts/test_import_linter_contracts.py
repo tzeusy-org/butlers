@@ -79,6 +79,18 @@ def _lint(tmp_path: Path, files: dict[str, str]) -> subprocess.CompletedProcess[
             {"connectors/c.py": "from butlers.api import b\n", "api/b.py": ""},
             "connectors and modules do not import api",
         ),
+        (
+            {"modules/m2.py": "from butlers.api import b\n", "api/b.py": ""},
+            "connectors and modules do not import api",
+        ),
+        (
+            {"core/a.py": "from butlers.connectors import c\n", "connectors/c.py": ""},
+            "core does not import api, connectors or modules",
+        ),
+        (
+            {"core_tools/t.py": "from butlers.modules import m\n", "modules/m.py": ""},
+            "core_tools does not import modules",
+        ),
     ],
 )
 def test_a_forbidden_import_breaks_its_contract(
