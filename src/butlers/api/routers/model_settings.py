@@ -61,6 +61,14 @@ _VERIFY_ALL_CONCURRENCY = 8
 # concurrent request is rejected immediately instead of waiting behind a
 # long-running verification sweep.
 _verify_all_in_flight = False
+# Cross-process, cross-sweep guard.  The endpoint and the hourly job run in different
+# processes, so only the database can exclude them from probing one account together.  The key
+# is hashed by Postgres (``hashtext``) and must stay unique among this repo's advisory locks.
+_VERIFY_ALL_LOCK_KEY = "butlers.model_settings.verify_all"
+
+
+class VerifyAllAlreadyRunning(RuntimeError):
+    """Another verify-all sweep (endpoint or hourly job, any process) holds the sweep lock."""
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -1072,6 +1080,37 @@ async def run_verify_all_models(
     audit_actor: str = "owner",
     caller: str = DASHBOARD_CALLER,
 ) -> VerifyAllResult:
+    """Run one verify-all sweep, refusing when another sweep holds the cross-process lock.
+
+    Serialization inside a sweep (see ``_run_verify_all_locked``) does not stop two sweeps from
+    probing one allowance account together, so the whole sweep runs under a non-blocking,
+    session-scoped Postgres advisory lock held on one pooled connection until the sweep ends.
+    PostgreSQL drops the lock if that connection dies.  Raises :class:`VerifyAllAlreadyRunning`
+    when the lock is held; callers decide how to surface it (the endpoint refuses, the hourly
+    job skips the tick).
+    """
+    async with pool.acquire() as lock_connection:
+        held = await lock_connection.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext($1))", _VERIFY_ALL_LOCK_KEY
+        )
+        if not held:
+            raise VerifyAllAlreadyRunning("a verify-all sweep is already running")
+        try:
+            return await _run_verify_all_locked(pool, audit_actor=audit_actor, caller=caller)
+        finally:
+            released = await lock_connection.fetchval(
+                "SELECT pg_advisory_unlock(hashtext($1))", _VERIFY_ALL_LOCK_KEY
+            )
+            if not released:
+                logger.error("verify-all advisory lock was not held at release")
+
+
+async def _run_verify_all_locked(
+    pool: asyncpg.Pool,
+    *,
+    audit_actor: str,
+    caller: str,
+) -> VerifyAllResult:
     """Probe every enabled model through the signed control plane.
 
     Rows sharing a (runtime, allowance account) are probed serially; groups run in parallel,
@@ -1193,7 +1232,13 @@ async def verify_all_models(
     _verify_all_in_flight = True
     try:
         pool = _shared_pool(db)
-        result = await run_verify_all_models(pool, audit_actor="owner")
+        try:
+            result = await run_verify_all_models(pool, audit_actor="owner")
+        except VerifyAllAlreadyRunning:
+            raise HTTPException(
+                status_code=429,
+                detail="a verify-all sweep is already running — wait for it to finish",
+            ) from None
         _verify_all_last_run = now
         return ApiResponse[VerifyAllResult](data=result)
     finally:

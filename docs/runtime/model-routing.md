@@ -64,6 +64,14 @@ ran under a signed control capability, on the owner's `Test` / verify-all action
 sweep (`src/butlers/jobs/model_verify.py`). Nothing else writes them, and the `SECURITY DEFINER`
 function that does cannot reach `enabled`, `priority`, or breaker state.
 
+A verify-all sweep probes rows that share an allowance account one after another, so it lasts as
+long as its longest account group (up to the per-probe budget times the group size). Only one sweep
+runs at a time: `run_verify_all_models` holds a non-blocking Postgres advisory lock for the whole
+sweep, so the endpoint and the hourly job exclude each other across processes. The endpoint answers
+`429` and the job skips its tick while the lock is held. The dashboard waits for the synchronous
+response for `VERIFY_ALL_TIMEOUT_MS` (`frontend/src/api/client.ts`), sized to that worst case, not
+the default 15 second read timeout.
+
 So keep three signals apart:
 
 | Signal | Says | Does not say |
