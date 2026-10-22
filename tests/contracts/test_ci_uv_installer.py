@@ -32,7 +32,7 @@ def test_uv_installer_consumers_share_the_owned_supervisor():
                 if step.get("name") == "Install uv":
                     consumers.append(path)
                     assert body.strip() == "python3 scripts/install_ci_uv.py"
-    assert len([path for path in consumers if path.parent.name == "workflows"]) == 13
+    assert len([path for path in consumers if path.parent.name == "workflows"]) == 10
 
 
 @pytest.mark.parametrize(

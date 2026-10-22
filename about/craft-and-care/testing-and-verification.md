@@ -119,23 +119,24 @@ These diagnostics do not admit missing evidence, install weights or change test 
 Full-mode smoke may use exact successful child identities only. An uncovered item runs the
 original dedicated command. Derived release evidence names actual child commands, selector
 provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
-The owned daily/manual coverage workflow validates all eleven actual CoverageData databases,
-source population, tracing, digest and same-checkout/run/attempt/computed assignment before
-combination. It also validates coverage-pipeline PR changes with actual event provenance,
-full fresh inventory, all eleven covered children, independent execution reconciliation
-and real smoke fallback. Its always-running preflight/report gates refuse every failed or
-skipped prerequisite. Pipeline PRs upload authentic reports; only successful scheduled/manual
-main runs may update the badge. Reporting integrity remains separate from required
-check/guards/frontend verdicts.
+Coverage runs nightly, not per pull request (owner decision bu-w72da2 = A). The scheduled or
+manually dispatched nightly workflow freshly collects inventory, runs all eleven covered
+children, validates every actual CoverageData database, source population, tracing, digest and
+same-checkout/run/attempt/computed assignment before combination, and uploads the combined
+report as an artifact. Its always-running preflight/report gates refuse every failed or skipped
+prerequisite; only successful scheduled/manual main runs may update the badge. A change to the
+coverage pipeline is validated by dispatching the nightly workflow on its branch. Reporting
+integrity remains separate from required check/guards/frontend verdicts.
 Protected merge-group and ordinary PR shards use CI_COVERAGE=0 with the same complete
-selection, workers, markers, timeouts and execution receipts. The owned assurance workflow
-uses CI_COVERAGE=1; ordinary standalone calls retain covered defaults. Actual covered PR
-validation run 38672598762 established the replacement mechanism before this cadence change.
-It does not prove final-head queue success, queue speedup or the seven-minute goal.
+selection, workers, markers, timeouts and execution receipts. The nightly coverage jobs use
+CI_COVERAGE=1; ordinary standalone calls retain covered defaults.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
-actual test membership. Required frontend fails if guards or either child fails. Browser
+actual test membership. Required frontend fails if guards or either child fails. The
+Playwright browser job is required through `check`: every merge group and main push runs it,
+as does every pull request the route classifies as frontend (a change under `frontend/`,
+`.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
 reuses only the source/attempt/content-bound build and retains locked browser version,
 mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
