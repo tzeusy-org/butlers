@@ -31,11 +31,14 @@ pytestmark = pytest.mark.unit
 class MockPool:
     def __init__(self) -> None:
         self._approvals: list[dict[str, Any]] = []
+        self._pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         return []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        if query == "SELECT * FROM pending_actions WHERE id = $1" and len(args) == 1:
+            return self._pending_actions.get(args[0])
         if "COUNT" in query and args:
             fp = args[0]
             cnt = sum(1 for r in self._approvals if r.get("fingerprint") == fp)
@@ -156,6 +159,14 @@ class TestApprovalCount:
             requested_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
             decided_at = datetime(2026, 1, 1, 12, 0, 30, tzinfo=UTC)
 
+        pool._pending_actions[_FakeAction.id] = {
+            "id": _FakeAction.id,
+            "tool_name": _FakeAction.tool_name,
+            "tool_args": _FakeAction.tool_args,
+            "status": "approved",
+            "requested_at": _FakeAction.requested_at,
+            "decided_at": _FakeAction.decided_at,
+        }
         await record_approval(pool, _FakeAction())
         count = await get_approval_count(pool, fp)
         assert count >= 1

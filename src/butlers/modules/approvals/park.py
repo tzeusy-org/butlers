@@ -26,6 +26,7 @@ from butlers.core.approvals_policy import (
     approval_push_deliver_at,
     get_approvals_policy_quiet_hours,
 )
+from butlers.modules.approvals.models import GOAL_LINEAGE_COLUMNS, GoalCallLineage, PendingAction
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.rollout import read_approval_delivery_rollout
 
@@ -50,6 +51,7 @@ class ParkRequest:
     reversibility: str | None = None
     origin_butler: str = ""
     deduplication_key: str | None = None
+    goal_lineage: GoalCallLineage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,17 @@ def _validate_request(request: ParkRequest) -> None:
         raise ValueError("tool_name must be non-empty")
     if not isinstance(request.tool_args, dict):
         raise ValueError("tool_args must be a JSON object")
+    if request.goal_lineage is not None:
+        from butlers.core.capability_json import arguments_digest
+
+        lineage = request.goal_lineage
+        if (
+            not isinstance(lineage, GoalCallLineage)
+            or lineage.goal_capability != f"{request.origin_butler}__{request.tool_name}"
+            or lineage.goal_args_digest != arguments_digest(request.tool_args)
+            or lineage.goal_approved_args_digest is not None
+        ):
+            raise ValueError("goal_call_binding_mismatch")
     if not isinstance(request.origin_butler, str) or not _ORIGIN_RE.fullmatch(
         request.origin_butler
     ):
@@ -108,7 +121,9 @@ async def _existing_admission(
     *,
     action_id: uuid.UUID,
     deduplication_key: str | None,
+    request: ParkRequest | None = None,
 ) -> ParkAdmission | None:
+    action_id = await _goal_effect_action(connection, action_id, request)
     row = await connection.fetchrow(
         """
         SELECT pa.id AS action_id, adi.id AS intent_id, adi.action_key,
@@ -140,6 +155,7 @@ async def _existing_admission(
     )
     if row is None:
         return None
+    await _check_goal_duplicate(connection, row["action_id"], request)
     return ParkAdmission(
         action_id=row["action_id"],
         intent_id=row["intent_id"],
@@ -158,8 +174,10 @@ async def _existing_pending_action(
     *,
     action_id: uuid.UUID,
     deduplication_key: str | None,
+    request: ParkRequest | None = None,
 ) -> ParkAdmission | None:
     """Resolve a disabled-rollout duplicate without touching recovery tables."""
+    action_id = await _goal_effect_action(connection, action_id, request)
     row = await connection.fetchrow(
         """
         SELECT id
@@ -178,6 +196,7 @@ async def _existing_pending_action(
     )
     if row is None:
         return None
+    await _check_goal_duplicate(connection, row["id"], request)
     return ParkAdmission(
         action_id=row["id"],
         intent_id=None,
@@ -191,12 +210,84 @@ async def _existing_pending_action(
     )
 
 
+async def _goal_effect_action(
+    connection: Any, action_id: uuid.UUID, request: ParkRequest | None
+) -> uuid.UUID:
+    if request is None or request.goal_lineage is None:
+        return action_id
+    lineage = request.goal_lineage
+    existing = await connection.fetchval(
+        "SELECT id FROM pending_actions WHERE goal_id = $1 AND goal_effect_id = $2 FOR UPDATE",
+        lineage.goal_id,
+        lineage.goal_effect_id,
+    )
+    return existing if existing is not None else action_id
+
+
+async def _check_goal_duplicate(
+    connection: Any, action_id: uuid.UUID, request: ParkRequest | None
+) -> None:
+    """A guessed duplicate key cannot borrow another goal's owning approval.
+
+    Ordinary/prepared requests retain their old queries on pre-migration
+    schemas. A goal request requires actual migrated columns; read errors
+    propagate and roll back instead of silently losing its lineage.
+    """
+    if request is None or request.goal_lineage is None:
+        return
+    row = await connection.fetchrow(
+        "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+    )
+    if row is None:
+        raise ValueError("goal_duplicate_missing")
+    stored = PendingAction.from_row(row)
+    from butlers.core.capability_json import arguments_digest
+
+    if (
+        stored.goal_lineage() != request.goal_lineage
+        or stored.tool_name != request.tool_name
+        or arguments_digest(stored.tool_args) != request.goal_lineage.goal_args_digest
+    ):
+        raise ValueError("goal_duplicate_binding_mismatch")
+
+
 async def _insert_pending_action(
     connection: Any,
     request: ParkRequest,
     *,
     origin: str | None = None,
 ) -> None:
+    if request.goal_lineage is not None:
+        # Explicit migrated schema path only. Never hide lineage in evidence,
+        # JSON metadata or the unrelated prepared producer-origin column.
+        await connection.execute(
+            """
+            INSERT INTO pending_actions (
+                id, tool_name, tool_args, agent_summary, session_id, status, origin,
+                requested_at, expires_at, why, evidence, blast_radius, reversibility,
+                deduplication_key, goal_id, invocation_id, goal_depth, goal_exposed,
+                goal_origin, goal_effect_id, goal_capability, goal_args_digest,
+                goal_approved_args_digest
+            ) VALUES ($1, $2, $3, $4, $5, 'pending', $6,
+                      $7, $8, $9, $10, $11, $12, $13,
+                      $14, $15, $16, $17, $18, $19, $20, $21, $22)
+            """,
+            request.action_id,
+            request.tool_name,
+            request.tool_args,
+            request.agent_summary,
+            request.session_id,
+            origin,
+            request.requested_at,
+            request.expires_at,
+            request.why,
+            list(request.evidence),
+            request.blast_radius,
+            request.reversibility,
+            request.deduplication_key,
+            *(request.goal_lineage.columns()[name] for name in GOAL_LINEAGE_COLUMNS),
+        )
+        return
     await connection.execute(
         """
         INSERT INTO pending_actions (
@@ -236,6 +327,7 @@ async def _park_without_delivery(
         connection,
         action_id=request.action_id,
         deduplication_key=request.deduplication_key,
+        request=request,
     )
     if existing is not None:
         return existing
@@ -339,6 +431,7 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
         connection,
         action_id=request.action_id,
         deduplication_key=request.deduplication_key,
+        request=request,
     )
     if existing is not None:
         return existing
@@ -562,6 +655,7 @@ async def park_pending_action(
     origin_butler: str | None,
     approval_push_runtime: ApprovalPushRuntime | None = None,
     deduplication_key: str | None = None,
+    goal_lineage: GoalCallLineage | None = None,
 ) -> ParkAdmission:
     """Park one action through the server-held additive rollout boundary.
 
@@ -584,6 +678,7 @@ async def park_pending_action(
         reversibility=reversibility,
         origin_butler=origin_butler or "",
         deduplication_key=deduplication_key,
+        goal_lineage=goal_lineage,
     )
     _validate_request(request)
     async with _connection(pool) as connection:

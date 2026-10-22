@@ -31,7 +31,10 @@ from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
-from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.delivery_lifecycle import (
+    PendingTransition,
+    transition_pending_action,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
@@ -52,6 +55,35 @@ def _decision_event_actor(actor_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Approve action
 # ---------------------------------------------------------------------------
+
+
+async def cancel_goal_pending_action(
+    source: Any,
+    *,
+    action_id: uuid.UUID,
+    expected_goal_id: uuid.UUID,
+    expected_effect_id: uuid.UUID,
+) -> PendingTransition:
+    """Private infrastructure Stop cleanup, not an owner/model decision tool.
+
+    The actual Stop producer must authenticate these identities. This owning
+    transaction cannot replace broker stopped-goal reauthorization or claim
+    an approved/dispatched effect undone. Missing migrated columns/constraints
+    propagate; the delivery fence and audit write roll back together.
+    """
+    if not all(isinstance(v, uuid.UUID) for v in (action_id, expected_goal_id, expected_effect_id)):
+        raise ValueError("goal_cancellation_identity_required")
+    return await transition_pending_action(
+        source,
+        action_id=action_id,
+        target_status=ActionStatus.CANCELLED,
+        decided_by="system:goal_stop",
+        event_actor="system:goal_stop",
+        event_reason="goal_stopped",
+        event_metadata={"goal_id": str(expected_goal_id), "effect_id": str(expected_effect_id)},
+        expected_goal_id=expected_goal_id,
+        expected_effect_id=expected_effect_id,
+    )
 
 
 async def expire_pending_action_if_stale(
@@ -214,30 +246,35 @@ async def approve_action(
     action = transition.action
     assert action is not None
 
-    # Post-approval autonomy tracker hook (task 7.1)
-    # Wrap in try/except so tracker failure doesn't block approval
-    try:
-        # Re-read to get decided_at
-        updated_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if updated_row is not None:
-            updated_action = PendingAction.from_row(updated_row)
-            await _record_approval(pool, updated_action)
-            # Use a minimal config namespace with defaults (no module import needed)
-            _default_config = type(
-                "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
-            )()
-            await _check_promotion_threshold(
-                pool=pool,
-                pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
-                tool_name=action.tool_name,
-                tool_args=action.tool_args,
-                config=_default_config,
-                action_id=updated_action.id,
+    lineage = action.goal_lineage()
+    exposed_goal_approval = lineage is not None and lineage.goal_exposed
+    if not exposed_goal_approval:
+        # Post-approval autonomy tracker hook (task 7.1)
+        # Wrap in try/except so tracker failure doesn't block approval
+        try:
+            # Re-read to get decided_at
+            updated_row = await pool.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
             )
-    except Exception:
-        logger.exception(
-            "Autonomy tracker hook failed for action %s — approval not blocked", action_id
-        )
+            if updated_row is not None:
+                updated_action = PendingAction.from_row(updated_row)
+                await _record_approval(pool, updated_action)
+                # Use a minimal config namespace with defaults (no module import needed)
+                _default_config = type(
+                    "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+                )()
+                await _check_promotion_threshold(
+                    pool=pool,
+                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                    tool_name=action.tool_name,
+                    tool_args=action.tool_args,
+                    config=_default_config,
+                    action_id=updated_action.id,
+                )
+        except Exception:
+            logger.exception(
+                "Autonomy tracker hook failed for action %s — approval not blocked", action_id
+            )
 
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None

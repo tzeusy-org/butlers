@@ -32,17 +32,20 @@ DeliveryTerminalReason = Literal[
     "action_rejected",
     "action_expired",
     "action_abandoned",
+    "action_cancelled",
 ]
 
 _EVENT_FOR_STATUS = {
     ActionStatus.APPROVED: ApprovalEventType.ACTION_APPROVED,
     ActionStatus.REJECTED: ApprovalEventType.ACTION_REJECTED,
     ActionStatus.EXPIRED: ApprovalEventType.ACTION_EXPIRED,
+    ActionStatus.CANCELLED: ApprovalEventType.ACTION_CANCELLED,
 }
 _REASON_FOR_STATUS: dict[ActionStatus, DeliveryTerminalReason] = {
     ActionStatus.APPROVED: "action_approved",
     ActionStatus.REJECTED: "action_rejected",
     ActionStatus.EXPIRED: "action_expired",
+    ActionStatus.CANCELLED: "action_cancelled",
 }
 _PRESTART_STATES = ("ready", "claimed", "retry_wait")
 
@@ -272,15 +275,25 @@ async def transition_pending_action(
     source: Any,
     *,
     action_id: uuid.UUID,
-    target_status: Literal[ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED],
+    target_status: Literal[
+        ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED, ActionStatus.CANCELLED
+    ],
     decided_by: str,
     event_actor: str,
     event_reason: str,
     event_metadata: dict[str, Any] | None = None,
     now: Any | None = None,
     _already_in_transaction: bool = False,
+    expected_goal_id: uuid.UUID | None = None,
+    expected_effect_id: uuid.UUID | None = None,
 ) -> PendingTransition:
     """Atomically leave pending state and fence that action's delivery work."""
+    if not isinstance(target_status, ActionStatus) or target_status not in _EVENT_FOR_STATUS:
+        raise ValueError("unsupported_pending_transition")
+    if target_status is ActionStatus.CANCELLED and not (
+        isinstance(expected_goal_id, uuid.UUID) and isinstance(expected_effect_id, uuid.UUID)
+    ):
+        raise ValueError("goal_cancellation_identity_required")
     success_observations: list[LifecycleSuccessObservation] = []
     async with _write_scope(
         source,
@@ -294,6 +307,10 @@ async def transition_pending_action(
         if row is None:
             return PendingTransition(None, False)
         action = PendingAction.from_row(row)
+        if target_status is ActionStatus.CANCELLED and (
+            action.goal_id != expected_goal_id or action.goal_effect_id != expected_effect_id
+        ):
+            return PendingTransition(action, False)
         if action.status != ActionStatus.PENDING:
             return PendingTransition(action, False)
 
@@ -306,7 +323,7 @@ async def transition_pending_action(
         effective_status = target_status
         expired_instead = False
         if (
-            target_status != ActionStatus.EXPIRED
+            target_status not in {ActionStatus.EXPIRED, ActionStatus.CANCELLED}
             and action.expires_at is not None
             and action.expires_at < database_now
         ):
@@ -317,14 +334,35 @@ async def transition_pending_action(
             event_metadata = {"tool_name": action.tool_name}
             expired_instead = True
 
-        updated = await connection.fetchrow(
-            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = 'pending' RETURNING *",
-            effective_status.value,
-            decided_by,
-            database_now,
-            action_id,
-        )
+        lineage = action.goal_lineage()
+        if effective_status is ActionStatus.APPROVED and lineage is not None:
+            from butlers.core.capability_json import arguments_digest
+
+            if lineage.goal_approved_args_digest is not None:
+                raise ValueError("pending_goal_approval_digest_present")
+            # Bind the decision to the owning row under its existing lock,
+            # including an owner's persisted edit. Never rewrite the request
+            # digest or accept replacement arguments from a replaying caller.
+            approved_digest = arguments_digest(action.tool_args)
+            updated = await connection.fetchrow(
+                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3, "
+                "goal_approved_args_digest = $4 "
+                "WHERE id = $5 AND status = 'pending' RETURNING *",
+                effective_status.value,
+                decided_by,
+                database_now,
+                approved_digest,
+                action_id,
+            )
+        else:
+            updated = await connection.fetchrow(
+                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
+                "WHERE id = $4 AND status = 'pending' RETURNING *",
+                effective_status.value,
+                decided_by,
+                database_now,
+                action_id,
+            )
         if updated is None:
             latest = await connection.fetchrow(
                 "SELECT * FROM pending_actions WHERE id = $1",

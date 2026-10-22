@@ -18,6 +18,7 @@ class ApprovalEventType(enum.StrEnum):
     ACTION_REJECTED = "action_rejected"
     ACTION_EXPIRED = "action_expired"
     ACTION_ABANDONED = "action_abandoned"
+    ACTION_CANCELLED = "action_cancelled"
     ACTION_EXECUTION_SUCCEEDED = "action_execution_succeeded"
     ACTION_EXECUTION_FAILED = "action_execution_failed"
     APPROVAL_DELIVERY_TERMINAL = "approval_delivery_terminal"

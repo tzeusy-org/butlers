@@ -77,12 +77,18 @@ _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
 
 # Valid status transitions: source -> set of valid targets
 _VALID_TRANSITIONS: dict[ActionStatus, set[ActionStatus]] = {
-    ActionStatus.PENDING: {ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED},
+    ActionStatus.PENDING: {
+        ActionStatus.APPROVED,
+        ActionStatus.REJECTED,
+        ActionStatus.EXPIRED,
+        ActionStatus.CANCELLED,
+    },
     ActionStatus.APPROVED: {ActionStatus.EXECUTED, ActionStatus.ABANDONED},
     ActionStatus.REJECTED: set(),
     ActionStatus.EXPIRED: set(),
     ActionStatus.EXECUTED: set(),
     ActionStatus.ABANDONED: set(),
+    ActionStatus.CANCELLED: set(),
 }
 
 
@@ -814,44 +820,47 @@ class ApprovalsModule(Module):
                 decision_memory_writer=self._decision_memory_writer,
                 origin_butler=self._butler_name,
             )
-        # Post-approval autonomy tracker hook (task 7.1)
-        # Wrap in try/except so tracker failure doesn't block approval
-        try:
-            # Re-read the action to get decided_at for velocity computation
-            updated_action_row = await self._db.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if updated_action_row is not None:
-                updated_action = PendingAction.from_row(updated_action_row)
-                tool_meta = self._tool_metadata.get(action.tool_name)
-                fingerprint = _compute_fingerprint(
-                    action.tool_name, action.tool_args, tool_meta=tool_meta
+        lineage = action.goal_lineage()
+        exposed_goal_approval = lineage is not None and lineage.goal_exposed
+        if not exposed_goal_approval:
+            # Post-approval autonomy tracker hook (task 7.1)
+            # Wrap in try/except so tracker failure doesn't block approval
+            try:
+                # Re-read the action to get decided_at for velocity computation
+                updated_action_row = await self._db.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                await _record_approval(self._db, updated_action, tool_meta=tool_meta)
-                await _check_promotion_threshold(
-                    pool=self._db,
-                    pattern_fingerprint=fingerprint,
-                    tool_name=action.tool_name,
-                    tool_args=action.tool_args,
-                    config=self._config,
-                    action_id=updated_action.id,
-                    tool_meta=tool_meta,
+                if updated_action_row is not None:
+                    updated_action = PendingAction.from_row(updated_action_row)
+                    tool_meta = self._tool_metadata.get(action.tool_name)
+                    fingerprint = _compute_fingerprint(
+                        action.tool_name, action.tool_args, tool_meta=tool_meta
+                    )
+                    await _record_approval(self._db, updated_action, tool_meta=tool_meta)
+                    await _check_promotion_threshold(
+                        pool=self._db,
+                        pattern_fingerprint=fingerprint,
+                        tool_name=action.tool_name,
+                        tool_args=action.tool_args,
+                        config=self._config,
+                        action_id=updated_action.id,
+                        tool_meta=tool_meta,
+                    )
+                    # Compute and persist approval velocity so the dashboard
+                    # fast_approval indicator surfaces (autonomy-tracker spec:
+                    # "Approval Velocity Tracking"). The state store lives in the
+                    # same butler schema, so self._db serves as the state_pool.
+                    await _update_velocity(
+                        pool=self._db,
+                        state_pool=self._db,
+                        pattern_fingerprint=fingerprint,
+                        config=self._config,
+                    )
+            except Exception:
+                logger.exception(
+                    "Autonomy tracker hook failed for action %s — approval not blocked",
+                    action_id,
                 )
-                # Compute and persist approval velocity so the dashboard
-                # fast_approval indicator surfaces (autonomy-tracker spec:
-                # "Approval Velocity Tracking"). The state store lives in the
-                # same butler schema, so self._db serves as the state_pool.
-                await _update_velocity(
-                    pool=self._db,
-                    state_pool=self._db,
-                    pattern_fingerprint=fingerprint,
-                    config=self._config,
-                )
-        except Exception:
-            logger.exception(
-                "Autonomy tracker hook failed for action %s — approval not blocked",
-                action_id,
-            )
 
         # Optionally create an approval rule from this action
         rule_dict: dict[str, Any] | None = None
