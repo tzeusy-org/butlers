@@ -616,7 +616,7 @@ async function siblingButlers(context: BrowserContext) {
   });
 }
 
-test("cached butler transition keeps state input with its owning butler only", async ({ page, context }) => {
+test("cached butler navigation keeps state input with its owning butler only", async ({ page, context }) => {
   await siblingButlers(context);
   await page.goto("/butlers/general?tab=system&section=state");
   await expect(page.getByRole("button", { name: "Set value", exact: true })).toBeVisible();
@@ -644,7 +644,7 @@ test("cached butler transition keeps state input with its owning butler only", a
   await expect(dialog.getByLabel("Value (JSON)")).toHaveValue('"A-only-value"');
 });
 
-test("cached butler transition fences old schedule feedback and keeps current success", async ({ page, context }) => {
+test("cached butler navigation fences old schedule feedback and keeps current success", async ({ page, context }) => {
   await siblingButlers(context);
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
