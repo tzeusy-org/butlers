@@ -128,16 +128,16 @@ Scope: post-v1
 
 ### Requirement: Situations view over fleet cases
 
-After the signed D19 design and the existing program M6 cutover, the owner surface SHALL show a read-only Situations list and situation detail that project RFC 0032 `public.fleet_cases` through the existing bounded Switchboard case read surface. A region page SHALL show the situations its butler contributed evidence or links to, and the Overview SHALL link to the fleet-wide list. Each situation SHALL show its readable correlation key, canonical state (`open`, `watching`, `closing`, `closed`), canonical posture (`silent`, `routine`, `active`, `urgent`), terminal outcome when closed, attributed evidence history and links to the goals and receipts it references. No page action SHALL create, reopen, close, re-posture or merge a case, or trigger a producer. A title or kind taxonomy beyond the correlation key SHALL NOT be added without a separate owner decision. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
+After the signed D19 design and the existing program M6 cutover, the owner surface SHALL show a read-only Situations list and situation detail that project RFC 0032 `public.fleet_cases` through the bounded Switchboard case read surface (REQ-fleet-case-file-007). A region page SHALL show the situations its butler contributed evidence to, using the server-side contributor filter of REQ-fleet-case-file-015, and the Overview SHALL link to the fleet-wide list. Each situation SHALL show its readable correlation key, canonical state (`open`, `watching`, `closing`, `closed`), canonical posture (`silent`, `routine`, `active`, `urgent`), terminal outcome when closed, attributed evidence history and links to the goals and receipts it references. No page action SHALL create, reopen, close, re-posture or merge a case, or trigger a producer. A title or kind taxonomy beyond the correlation key SHALL NOT be added without a separate owner decision. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
 
 ID: REQ-dashboard-regions-005
-Source: RFC 0038 D19 and owner decision 11; RFC 0032 (fleet case file); REQ-fleet-case-file-002 and REQ-fleet-case-file-007; docs/api_and_protocols/response-conventions.md; bu-h40h2b.8
+Source: RFC 0038 D19 and owner decision 11; RFC 0032 (fleet case file); REQ-fleet-case-file-002, REQ-fleet-case-file-007 and REQ-fleet-case-file-015; docs/api_and_protocols/response-conventions.md; bu-h40h2b.8
 Scope: post-v1
 
 #### Scenario: Region situations
 
 - **WHEN** the owner opens a region
-- **THEN** its Situations section lists the non-closed cases that region contributed to, newest update first, each with state, posture and correlation key, and a door to the fleet-wide list including closed cases.
+- **THEN** its Situations section requests the case list with that region's butler as the contributor filter and lists the returned non-closed cases, newest update first, in bounded cursor pages, each with state, posture and correlation key, and a door to the fleet-wide list including closed cases.
 
 #### Scenario: Situation detail
 
@@ -239,4 +239,4 @@ Scope: post-v1
 - RFC 0038 D19 and owner decision 11; further exact decisions and current source boundaries remain the per-requirement Source fields.
 - Requirement-level source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md
 - Amendment source: bu-idcqzy design and D19 owner note (2026-10-15); RFC 0038 D7 and D14; design.md
-- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; RFC 0032 and openspec/specs/fleet-case-file for situations; pending owner adoption.
+- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; RFC 0032 and openspec/specs/fleet-case-file for situations, plus the contributor-filter delta REQ-fleet-case-file-015 in this change; pending owner adoption.

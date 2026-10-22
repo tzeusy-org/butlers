@@ -34,6 +34,6 @@
 
 ## 5. Gap amendment (bu-85bqeq.1)
 
-- [x] 5.1 Add REQ-dashboard-goal-continuity-007 (cross-channel continuation by reference) and REQ-dashboard-goal-continuity-008 (typed knowledge gaps in the read-only answer lane, aligned with ask-once-knowledge-gaps and bu-q7vx1q.70).
-- [x] 5.2 Add REQ-dashboard-regions-005 (Situations view), REQ-dashboard-regions-006 (standing orders listing) and REQ-dashboard-regions-007 (page verbs from one registry).
+- [x] 5.1 Add REQ-dashboard-goal-continuity-007 (cross-channel continuation by reference) and REQ-dashboard-goal-continuity-008 (typed knowledge gaps in the read-only answer lane through one granted Memory gap record capability, aligned with ask-once-knowledge-gaps and bu-q7vx1q.70), and amend REQ-dashboard-goal-continuity-004 to admit that single write.
+- [x] 5.2 Add REQ-fleet-case-file-015 (contributor filter on the case list), REQ-dashboard-regions-005 (Situations view), REQ-dashboard-regions-006 (standing orders listing) and REQ-dashboard-regions-007 (page verbs from one registry).
 - [ ] 5.3 Owner answers the cross-channel continuation question and adopts the amendment by merging; on "no", replace REQ-dashboard-goal-continuity-007 with a separate-threads statement before merge.

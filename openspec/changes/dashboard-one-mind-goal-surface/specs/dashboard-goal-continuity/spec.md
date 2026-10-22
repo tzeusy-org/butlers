@@ -125,16 +125,16 @@ Scope: post-v1
 
 ### Requirement: Read-only answers as admitted goals
 
-After the signed D19 design and the existing program M6 cutover, a dashboard question SHALL execute as an admitted goal with a read-only grant and the normal D7 broker, D9 invocation, D10 finite budgets, D11 receipt and D14 Stop boundaries. It is not a new D18 model-function category. Domain/system selection, exact live registered reads and typed catalog failures remain explicit; visibility metadata does not authorize tools. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
+After the signed D19 design and the existing program M6 cutover, a dashboard question SHALL execute as an admitted goal with a read-only grant and the normal D7 broker, D9 invocation, D10 finite budgets, D11 receipt and D14 Stop boundaries. It is not a new D18 model-function category. The read-only grant's single exception is one broker-granted, non-steering Memory gap `record` capability, granted only to an owner-authenticated answer goal and used only as REQ-dashboard-goal-continuity-008 states; the goal holds no other write, effect or steering capability. Domain/system selection, exact live registered reads and typed catalog failures remain explicit; visibility metadata does not authorize tools. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
 
 ID: REQ-dashboard-goal-continuity-004
-Source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md
+Source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md; bu-85bqeq.1 gap-record exception (RFC 0038 D4, D7)
 Scope: post-v1
 
 #### Scenario: Read-only system question
 
 - **WHEN** the question targets known system facts
-- **THEN** the admitted goal uses only the registered permitted read capabilities and actual selected catalog model; its answer cites consulted sources or declines honestly without a write.
+- **THEN** the admitted goal uses only the registered permitted read capabilities and actual selected catalog model; its answer cites consulted sources or declines honestly, with no write other than the one gap record that REQ-dashboard-goal-continuity-008 admits.
 
 #### Scenario: Domain question
 
@@ -250,21 +250,26 @@ Scope: post-v1
 
 ### Requirement: Read-only answers record typed knowledge gaps
 
-After the signed D19 design and the existing program M6 cutover, a read-only answer goal that cannot cite a source for a named entity and predicate SHALL decline honestly and MAY record one typed knowledge gap (`entity_id`, `predicate`) instead of guessing. Recording SHALL use the memory module's owner knowledge-gap store and hook defined by the active `ask-once-knowledge-gaps` change, not a second gap store. The gap origin (goal, thread, request and channel) SHALL come from the goal's server-side owner-channel provenance rather than from model arguments, and capture SHALL be limited to owner-authenticated channels. A later answering fact SHALL post one notice into each origin thread under that change's delivery contract. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
+After the signed D19 design and the existing program M6 cutover, a read-only answer goal that cannot cite a source for a named entity and predicate SHALL decline honestly and MAY record one typed knowledge gap (`entity_id`, `predicate`) instead of guessing. The gap SHALL be recorded through the single broker-granted, non-steering Memory gap `record` capability that REQ-dashboard-goal-continuity-004 admits as the answer goal's only write (RFC 0038 D4, D7). That capability writes only an open gap and its origin row, and cannot change routing, grants, budgets, other memory or any other region's state. Gaps SHALL use the memory module's owner knowledge-gap store and the central-writer closure and delivery defined by the active `ask-once-knowledge-gaps` change, not a second store or delivery path; that change's answer-lane `conversation_reply` mechanism is not used. The gap origin (goal, thread, request and channel) SHALL come from the admitted goal's server-side owner-channel provenance rather than from model arguments. Capture SHALL be limited to owner-authenticated channels, and capture beyond the dashboard channel depends on bu-q7vx1q.70 widening the store's channel admission. A later answering fact SHALL post one notice into each origin thread under that change's delivery contract. Before that cutover, this requirement SHALL remain dark and SHALL authorize no implementation or activation in this change.
 
 ID: REQ-dashboard-goal-continuity-008
-Source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11; REQ-dashboard-goal-continuity-004; active ask-once-knowledge-gaps change (module-memory owner knowledge gaps, butler-switchboard answer-lane decline); bu-q7vx1q.70
+Source: RFC 0038 D19 and owner decision 11; RFC 0038 D4, D7, D11; REQ-dashboard-goal-continuity-004; active ask-once-knowledge-gaps change (module-memory owner knowledge gaps store; relationship-facts central-writer closure and delivery); generalist-lead-focused-delegation collision-dispositions.md (ask-once re-scope); bu-q7vx1q.70 (owner-channel widening)
 Scope: post-v1
 
 #### Scenario: Unknown fact becomes a gap, not a guess
 
 - **WHEN** an owner question asks for a predicate of a named entity and no consulted source holds it
-- **THEN** the answer says it does not know, cites no invented source, states no guessed value, and records one open gap for that entity and predicate with the goal's thread as its origin.
+- **THEN** the answer says it does not know, cites no invented source, states no guessed value, and records one open gap for that entity and predicate through the granted gap `record` capability, with the goal's thread as its origin.
 
-#### Scenario: Sourced answer records no gap
+#### Scenario: A sourced answer records no gap
 
-- **WHEN** the answer cites one or more consulted sources
-- **THEN** no gap is recorded, and a gap supplied alongside sources is refused while the answer still persists.
+- **WHEN** the answer goal cites one or more consulted sources for the entity and predicate
+- **THEN** no gap is recorded; a gap `record` call for an entity and predicate the same answer cites is refused by the gap capability, the refusal appears on the goal receipt, and the sourced answer still reaches the owner.
+
+#### Scenario: The gap capability cannot steer
+
+- **WHEN** the answer goal attempts any write other than one gap `record`, or a gap `record` that names a target, grant, budget or region
+- **THEN** the broker refuses it before execution; no routing, delegation, memory fact or other region state changes.
 
 #### Scenario: Origin is server-derived
 
@@ -274,7 +279,7 @@ Scope: post-v1
 #### Scenario: Non-owner sender records nothing
 
 - **WHEN** a question arrives from a sender that is not owner-authenticated
-- **THEN** the decline proceeds under that channel's rules and no gap or origin row is recorded.
+- **THEN** the goal's grant carries no gap `record` capability; the decline proceeds under that channel's rules and no gap or origin row is recorded.
 
 #### Scenario: Gap capture failure does not block the answer
 
@@ -292,4 +297,4 @@ Scope: post-v1
 - Non-Negotiable Rules 1, 3, 4 and 6 in about/heart-and-soul/vision.md.
 - RFC 0038 D19 and owner decision 11; further exact decisions and current source boundaries remain the per-requirement Source fields.
 - Requirement-level source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md
-- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; the active ask-once-knowledge-gaps change for knowledge-gap capture; pending owner adoption.
+- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19, D4, D7; the active ask-once-knowledge-gaps change's store, closure and delivery (not its answer-lane hook); bu-q7vx1q.70; pending owner adoption.
