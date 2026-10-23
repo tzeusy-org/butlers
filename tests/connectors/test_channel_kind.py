@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors import google_calendar, google_drive, spotify
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.ingestion_spans import effective_channel_kind
 from butlers.tools.switchboard.connector.heartbeat import (
@@ -115,3 +117,75 @@ def test_feed_connectors_register_the_feed_kind_on_every_heartbeat(module: str) 
 @pytest.mark.parametrize("module", _MESSAGE_MODULES)
 def test_message_connectors_leave_the_kind_undeclared(module: str) -> None:
     assert set(_heartbeat_kinds(module)) <= {None}
+
+
+@pytest.mark.parametrize(
+    ("connector", "expected"),
+    [("spotify", "feed"), ("google_calendar", "message"), ("google_drive", "feed")],
+)
+async def test_native_connector_registers_kind_through_its_heartbeat(
+    connector: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise each real producer, then the Switchboard heartbeat parser. No source scan."""
+    heartbeats: list[ConnectorHeartbeat] = []
+    monkeypatch.setattr(ConnectorHeartbeat, "start", lambda hb: heartbeats.append(hb))
+    if connector == "spotify":
+        runtime = spotify.SpotifyConnector(
+            spotify.SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/sse")
+        )
+        runtime._endpoint_identity = "spotify:user:synthetic"
+        runtime._endpoint_identity_ready()
+        heartbeats.append(runtime._heartbeat)
+    elif connector == "google_calendar":
+        runtime = google_calendar.CalendarConnectorRuntime(
+            google_calendar.CalendarAccountConfig(
+                email="synthetic@example.invalid",
+                client_id="synthetic-client",
+                client_secret="synthetic-secret",
+                refresh_token="synthetic-refresh",
+                switchboard_mcp_url="http://switchboard.test/sse",
+            )
+        )
+        runtime._ingestion_policy.ensure_loaded = AsyncMock()
+        runtime._global_ingestion_policy.ensure_loaded = AsyncMock()
+        runtime._drain_replay_pending = AsyncMock()
+        runtime._run_poll_loop = AsyncMock()
+        await runtime.start()
+    else:
+        manager = google_drive.GDriveConnectorManager(db_pool=None, heartbeat_interval_s=0)
+        manager._mcp_client = MagicMock()
+        manager._start_heartbeat()
+        await manager._account_heartbeat_task
+
+        # Real Drive account identities bypass the MCP heartbeat and update their row directly.
+        endpoint = "google_drive:user:synthetic@example.invalid"
+        manager.get_health = MagicMock(
+            return_value=SimpleNamespace(
+                status="healthy",
+                account_health=[SimpleNamespace(endpoint_identity=endpoint, status="healthy")],
+            )
+        )
+        conn = MagicMock()
+
+        async def updated(*_args):
+            manager._running = False
+
+        conn.execute = AsyncMock(side_effect=updated)
+        manager._cursor_pool = MagicMock()
+        manager._cursor_pool.acquire.return_value.__aenter__.return_value = conn
+        manager._running = True
+        await manager._account_heartbeat_loop()
+        query, *args = conn.execute.await_args.args
+        assert "capabilities = COALESCE(capabilities, '{}'::jsonb)" in query
+        assert "jsonb_build_object('channel_kind', $6::text)" in query
+        assert args[3:] == ["google_drive", endpoint, expected]
+        assert "operational_role = 'runtime_instance'" in query
+
+    assert len(heartbeats) == 1
+    envelope = heartbeats[0]._build_envelope()
+    assert envelope["capabilities"]["channel_kind"] == expected
+    parsed = parse_connector_heartbeat(envelope)
+    assert effective_channel_kind(parsed.capabilities) == expected
+    if connector == "google_drive":
+        assert parsed.capabilities["metadata_only"] is True
+        assert parsed.capabilities["multi_account"] is True
