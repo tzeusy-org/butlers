@@ -491,7 +491,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "weekly-energy-digest",
       "dispatch_mode": "job",
@@ -501,7 +501,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "environment-report",
       "dispatch_mode": "job",
@@ -511,7 +511,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "device-health-check",
       "dispatch_mode": "job",
@@ -521,7 +521,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "maintenance-schedule-check",
       "dispatch_mode": "job",
@@ -531,7 +531,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "atmosphere-feed-refresh",
       "dispatch_mode": "job",
@@ -541,7 +541,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "atmosphere-preconditioning",
       "dispatch_mode": "job",
@@ -551,7 +551,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -561,7 +561,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "context_producer_home_presence",
       "dispatch_mode": "job",
@@ -571,7 +571,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "6de9c50b952f2f6411be807c0563c1621cc7c34bb0855b3e32b076adb1689cad",
+      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
       "butler": "home",
       "name": "home-safety-sentinel",
       "dispatch_mode": "job",

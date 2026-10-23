@@ -31,7 +31,10 @@ from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
-from butlers.core.obligation_catalog import diagnose_loaded_schedules
+from butlers.core.obligation_catalog import (
+    diagnose_loaded_schedules,
+    diagnose_loaded_subscriptions,
+)
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE, get_adapter
 from butlers.core.scheduler import sync_schedules
 from butlers.core.skills import get_skills_dir
@@ -494,6 +497,11 @@ async def run_startup(daemon: Any) -> None:
     final_tool_catalog = await daemon._finalize_tool_catalog()
     diagnose_loaded_schedules(
         daemon.config.schedules,
+        owner_domain=daemon.config.name,
+        local_catalog=final_tool_catalog,
+    )
+    diagnose_loaded_subscriptions(
+        daemon.config.subscriptions,
         owner_domain=daemon.config.name,
         local_catalog=final_tool_catalog,
     )

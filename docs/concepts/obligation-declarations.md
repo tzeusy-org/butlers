@@ -88,7 +88,7 @@ sync and final-registry diagnostics:
 | Health weekly summary | `health_summary`, `trend_report`, `measurement_history`, `medication_list`, `medication_history`, `symptom_history`, `notify` |
 | Lifestyle taste digest | `memory_search`, `notify` |
 | Travel upcoming check | `upcoming_travel`, `notify` |
-| Travel document expiry | `list_trips`, `trip_summary`, `calendar_list_events`, `calendar_create_event`, `notify` |
+| Travel document expiry | `document_expiry_inventory`, `memory_fact_inventory`, `calendar_scan_reminder_events`, `calendar_create_event`, `notify` |
 
 The selected Health graph includes the referenced skill's medication and symptom
 reads. Lifestyle's taxonomy examples do not add memory writes to its search
@@ -112,14 +112,16 @@ undeclared pending their separately owned deterministic conversions. No prompt,
 cron, job, module or current dispatch behavior changes here. The census still
 contains all 102 schedules and 19 producer families, including unfinished ones.
 
-Runtime gaps remain original implementation work: Health's skill examples do
-not match the registered `trend_report` period or medication/symptom history
-arguments; Travel's skill narrows trips to planned/active, lacks complete paging
-and an actual reminder lookup step, and the current store has no standalone
-passport API. General's travel-time wording must be removed at obligation
-conversion unless a real leave-by read is bound. These static ceilings neither
-repair those workflows nor establish complete document coverage, provider
-execution, source authority or admission readiness.
+Health's skill now uses the registered history/trend APIs and distinguishes
+expected coverage from logged observations; General's unbound travel-time
+instruction is removed. Travel's document workflow uses the complete authorized
+document inventory, bounded canonical `passport_expiry` fact inventory and the
+explicit reminder calendar scan. Their new readers preserve incomplete/error
+states rather than claiming empty coverage. Actual both-order reminder-write
+idempotency, exact payload/race/lost-reply proof remains separate unfinished work;
+the existing writer is not repaired or authorized by the read declarations.
+These source changes do not establish provider execution, authenticated source
+or creator authority, a verified fleet catalog or admission readiness.
 
 ## Validation and catalog custody
 
@@ -137,7 +139,8 @@ raises a startup validation error. Neither function toggles a switch or discover
 which due sources exist. That authoritative switched startup integration still
 requires the real control reader and complete published catalog.
 
-Current startup runs `diagnose_loaded_schedules()` only after core/module
+Current startup runs `diagnose_loaded_schedules()` and
+`diagnose_loaded_subscriptions()` only after core/module
 registration and approval wrapping finish and `_finalize_tool_catalog()` returns.
 It can report missing/invalid declarations and disprove unknown or ungrantable
 local capabilities/resources. A valid local declaration, an empty ceiling or a
@@ -166,8 +169,9 @@ ceiling and exposure at creation. Its value check rejects requested widening,
 including removal of a resource restriction or a `park_only` constraint; it does
 not silently clip. The immutable exposure applies to every occurrence. This
 object is not a verifier or request schema. The actual broker-owned creator
-verification and transactional source repository remain required before any
-production caller can construct authoritative evidence.
+verification remains required before a production caller can construct
+authoritative evidence. The owning transactional repository and schedule adapter
+are implemented below; their software controls do not authenticate callers.
 
 ## Dark integration and remaining work
 
@@ -187,12 +191,14 @@ and safety alerts must keep their original jobs and remain independent of goal
 admission, model availability and budgets. The source inventory guard proves
 census coverage, not a completed semantic sweep or live database inventory.
 
-The remaining full bu-o9qax4 work includes the other roster and subscription
-declarations; production schedule/subscription source registration; durable occurrence
-storage; verified creator/cause interfaces; final-registry publication; actual
-scheduler/deadline/chain/feed/model producers; Home Assistant's read/record/owner
-notify default; removal of unsupported travel-time wording; lifecycle/roster docs;
-and real source/admission commit and replay proof. The existing D18 model-function,
+The remaining full bu-o9qax4 work includes the three separately owned Git
+prompt conversions and complete dynamic/model declaration coverage; production
+schedule/subscription source registration and committed occurrence consumption;
+verified creator/cause interfaces; final-registry publication; actual
+scheduler/deadline/chain/feed/model admission producers; and real source/admission
+commit and replay proof. The Home read/record/owner-notify source default and
+required lifecycle/roster declaration documentation are implemented; this does
+not grant a feed any live admission or recipient authority. The existing D18 model-function,
 lead-policy, memory-consolidation, project and allowance units retain their scopes.
 There is no switch activation, migration application, deployment or live send.
 
@@ -202,8 +208,9 @@ There is no switch activation, migration application, deployment or live send.
 replacement config parser or a trusted caller. It copies the complete normalized
 scheduled-row material and declaration. Missing actual context material makes
 the definition unavailable; a supplied Python value does not authenticate the
-context, Git provenance, catalog or creator. The real context producer and typed
-config/sync carry-through remain required before production registration.
+context, Git provenance, catalog or creator. The typed loader and normalized
+schedule sync already carry the declaration. Production registration still
+requires the actual context/source binding and a verified creator/catalog.
 
 The writer uses the same owning connection for actual `scheduled_tasks` row
 insertion/update, source revision, pending/claimed occurrence cancellation,
@@ -228,7 +235,7 @@ Recording-connection tests exercise this software path, not PostgreSQL locks,
 role enforcement or durability. The additional migrated PostgreSQL cases are
 authored but unrun locally. Current OFF schedule/domain-wake hooks still do no
 B2 source IO, admission, reservation or suppression. Verified catalog/control,
-actual config/sync and context producers, final occurrence fences, runtime
+production config/sync source registration and context producers, final occurrence fences, runtime
 creator/cause and other source families remain full-issue implementation work.
 
 ## Engineering context decision
@@ -240,3 +247,31 @@ ambient situational/memory/timezone/routing/blind-spot reads for `qa` and `heali
 before prompt composition. Preserve their empty MCP configuration. Ordinary
 schedule context reads and MCP behavior remain unchanged. This changes source
 behavior without granting engineering executors owner authority or goal access.
+
+## Session-waking subscriptions
+
+[decision] Git-owned domain-event and device-feed ceilings use
+`[[butler.subscription]]` in the same strict loader as schedules, with a unique
+`name`, `kind` (`domain` or `feed`), `source`, and `[butler.subscription.obligation]`.
+A domain source is an exact publisher event type; a feed source is an exact
+registered channel name. Wildcards, duplicate names/source identities and unknown
+keys are errors. Declarations use the existing version1 immutable parser and
+reserved `preconditions` rule. A malformed/missing declaration retains only its
+closed dark diagnostic status.
+
+After final approval-wrapped registration, startup diagnoses these ceilings using
+the actual local catalog. It can disprove a local tool/resource but does not
+publish or verify a fleet catalog. A matching source string does not authenticate
+a feed/event, register a live subscription or enable goal admission. The actual
+registered ingress and committed subscription/source/cause adapter remain required;
+absence of a declaration never licenses a feed goal at cutover. Existing OFF
+routing and deterministic safety/presence/departure producers remain unchanged.
+
+Home declares the HA event workflow as read/record/owner-notify, including the
+actual entity-resolution dependency for fact writes. The fact-write ceiling is
+restricted to scope `home` and the three observed-event predicates
+`comfort_deviation`, `device_issue` and `usage_pattern`; it does not allow writing
+owner preference/policy records. Its feed skill does not
+invoke an HA service or scene. A separately authorized owner action retains the
+existing physical-risk and approval rules; a feed/preference is not that action.
+No caller-supplied creator UUID, grant or exposure is accepted by this format.

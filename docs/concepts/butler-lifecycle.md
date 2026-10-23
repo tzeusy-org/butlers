@@ -76,7 +76,7 @@ A FastMCP server is created and core tools are registered: status, trigger, stat
 Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module and is surfaced as declared-but-not-registered in the console's tool-surface diff.
 
 After approval wrapping and final catalog construction, startup diagnoses loaded
-schedule declarations with fixed index/reason warnings. Local registrations can
+schedule and session-waking subscription declarations with fixed index/reason warnings. Local registrations can
 disprove a local grant, but cannot establish a complete verified fleet catalog.
 Missing fleet authority stays an explicit warning in this dark integration;
 current dispatch continues. Authoritative error-after-switch validation still

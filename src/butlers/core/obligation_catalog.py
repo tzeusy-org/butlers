@@ -15,6 +15,7 @@ from butlers.core.goal_admission import Capability, CatalogView, digest
 from butlers.core.obligations import (
     DeclarationError,
     ObligationDeclaration,
+    ParsedDeclaration,
     parse_declaration,
     project_loaded_schedule,
     qualify_capability,
@@ -22,7 +23,7 @@ from butlers.core.obligations import (
 from butlers.core.tool_catalog import ToolCatalog
 
 if TYPE_CHECKING:
-    from butlers.config import ScheduleSpec
+    from butlers.config import ScheduleSpec, SubscriptionSpec
 
 logger = logging.getLogger(__name__)
 
@@ -150,17 +151,46 @@ def diagnose_loaded_schedules(
     There is no trusted switched control/catalog reader here yet: healthy local
     syntax still reports fleet unavailability and never enables admission.
     """
+    return _diagnose_loaded_declarations(
+        [
+            (index, project_loaded_schedule(spec).declaration)
+            for index, spec in enumerate(schedules)
+            if spec.dispatch_mode == "prompt"
+        ],
+        owner_domain=owner_domain,
+        local_catalog=local_catalog,
+    )
+
+
+def diagnose_loaded_subscriptions(
+    subscriptions: Sequence[SubscriptionSpec], *, owner_domain: str, local_catalog: ToolCatalog
+) -> tuple[DeclarationIssue, ...]:
+    """Inspect actual Git subscriptions after final registration, without IO.
+
+    This does not subscribe to a bus, authenticate an envelope, admit a goal or
+    prove a runtime creator. No declaration means no future feed admission;
+    today's legacy dispatch remains unchanged while the switch is OFF.
+    """
+    return _diagnose_loaded_declarations(
+        [(index, spec.obligation) for index, spec in enumerate(subscriptions)],
+        owner_domain=owner_domain,
+        local_catalog=local_catalog,
+    )
+
+
+def _diagnose_loaded_declarations(
+    values: Sequence[tuple[int, ParsedDeclaration]],
+    *,
+    owner_domain: str,
+    local_catalog: ToolCatalog,
+) -> tuple[DeclarationIssue, ...]:
     try:
         local = build_obligation_catalog({owner_domain: local_catalog})
     except DeclarationValidationError:
         local = None
     resources = dict(local.resource_parameters) if local is not None else {}
     issues = []
-    for index, spec in enumerate(schedules):
-        material = project_loaded_schedule(spec)
-        if material["dispatch_mode"] != "prompt":
-            continue
-        parsed = material.declaration
+    for index, parsed in values:
         if parsed.status != "valid":
             code = f"{parsed.status}_declaration"
         elif local is None:

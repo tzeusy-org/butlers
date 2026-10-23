@@ -127,6 +127,36 @@ _ALLOWED_SCHEDULE_COMPLEXITIES: frozenset[str] = frozenset(
 )
 
 
+class SubscriptionSpec(_StrictModel):
+    """Git ceiling for one session-waking domain event or registered feed.
+
+    Source names select declared inputs, not authentication. Only the trusted
+    ingress may bind an actual feed or committed event to this declaration.
+    The single declaration parser retains dark missing/invalid diagnostics.
+    """
+
+    name: str = Field(strict=True, min_length=1, max_length=128)
+    kind: Literal["feed", "domain"]
+    source: str = Field(strict=True, min_length=1, max_length=128)
+    obligation: object = Field(default=None, validate_default=True, repr=False)
+
+    @field_validator("obligation", mode="before")
+    @classmethod
+    def _obligation_carrier(cls, value: object) -> object:
+        from butlers.core.obligations import parse_loaded_declaration
+
+        return parse_loaded_declaration(value)
+
+    @model_validator(mode="after")
+    def _source_identity(self) -> Self:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", self.name):
+            raise ValueError("invalid_subscription_name")
+        pattern = r"[a-z][a-z0-9_]*" if self.kind == "feed" else r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*"
+        if not re.fullmatch(pattern, self.source):
+            raise ValueError("invalid_subscription_source")
+        return self
+
+
 class ScheduleSpec(_StrictModel):
     """A single scheduled task entry from [[butler.schedule]].
 
@@ -456,6 +486,7 @@ class ButlerConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
     schedules: list[ScheduleSpec] = field(default_factory=list)
+    subscriptions: list[SubscriptionSpec] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
     env_required: list[str] = field(default_factory=list)
     env_optional: list[str] = field(default_factory=list)
@@ -813,6 +844,16 @@ class _ButlerSection(_StrictModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     runtime_seed: RuntimeSeedConfig = Field(default_factory=RuntimeSeedConfig)
     schedule: list[ScheduleSpec] = Field(default_factory=list)
+    subscription: list[SubscriptionSpec] = Field(default_factory=list)
+
+    @field_validator("subscription")
+    @classmethod
+    def _unique_subscriptions(cls, value: list[SubscriptionSpec]) -> list[SubscriptionSpec]:
+        if len({v.name for v in value}) != len(value) or len(
+            {(v.kind, v.source) for v in value}
+        ) != len(value):
+            raise ValueError("duplicate_subscription_identity")
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -979,6 +1020,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         logging=section.logging,
         runtime_seed=section.runtime_seed,
         schedules=section.schedule,
+        subscriptions=section.subscription,
         modules=parsed.modules,
         env_required=section.env.required,
         env_optional=section.env.optional,

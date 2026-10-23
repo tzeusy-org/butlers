@@ -16,6 +16,24 @@ schema = "home"
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
 
+# RFC0038 D2/D5: the registered device feed may read, record and notify.
+# This Git ceiling neither authenticates feed input nor enables admissions.
+[[butler.subscription]]
+name = "ha-event-response"
+kind = "feed"
+source = "home_assistant"
+[butler.subscription.obligation]
+version = 1
+capabilities = [
+  { capability = "home__ha_get_entity_state" },
+  { capability = "home__ha_list_entities" },
+  { capability = "home__ha_get_history" },
+  { capability = "home__memory_recall" },
+  { capability = "home__memory_entity_resolve" },
+  { capability = "home__memory_store_fact", resources = { scope = ["home"], predicate = ["comfort_deviation", "device_issue", "usage_pattern"] } },
+  { capability = "home__notify" },
+]
+
 [modules.home_assistant]
 
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,

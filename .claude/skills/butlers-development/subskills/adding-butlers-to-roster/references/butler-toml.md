@@ -350,3 +350,15 @@ token_env = "BUTLER_TELEGRAM_TOKEN"   # Module validates this env var exists at 
 
 - Unresolved required references are startup-blocking errors.
 - Inline secrets in config values are prohibited — always use env var references.
+
+## Goal obligation ceilings
+
+Prompt schedules use `[butler.schedule.obligation]`; session-waking inputs use
+`[[butler.subscription]]` with unique `name`, `kind="domain"` or `kind="feed"`,
+and exact `source`, followed by `[butler.subscription.obligation]`. Both use the
+single version1 declaration parser in
+[obligation declarations](../../../../../../docs/concepts/obligation-declarations.md).
+Include every real tool dependency and resource restriction; a local declaration
+never supplies verified creator/grant/exposure or registered ingress authority.
+Keep deterministic presence/departure/safety work in job mode. Current OFF
+startup only diagnoses against the final local catalog and does not admit work.

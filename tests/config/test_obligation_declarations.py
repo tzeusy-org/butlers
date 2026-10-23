@@ -190,10 +190,18 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
     from unittest.mock import patch
 
     from butlers import lifecycle
+    from butlers.config import load_config
     from butlers.daemon import ButlerDaemon
     from tests.daemon.test_daemon import _make_registry, _patch_infra
 
-    config = _loaded_config(tmp_path)
+    _loaded_config(tmp_path)
+    path = tmp_path / "butler.toml"
+    path.write_text(
+        path.read_text() + '\n[[butler.subscription]]\nname="fixture"\n'
+        'kind="domain"\nsource="travel.trip_booked"\n'
+        "[butler.subscription.obligation]\nversion=1\ncapabilities=[]\n"
+    )
+    config = load_config(tmp_path)
     registry = await _complete_core_catalog("health")
     order = []
 
@@ -214,6 +222,19 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
         result = actual(schedules, owner_domain=owner_domain, local_catalog=local_catalog)
         assert [i.code for i in result] == ["fleet_catalog_unavailable"]
         order.append("diagnostic")
+        return result
+
+    actual_subscriptions = lifecycle.diagnose_loaded_subscriptions
+
+    def subscription_diagnostic(subscriptions, *, owner_domain, local_catalog):
+        assert order == ["sync", "finalized", "diagnostic"]
+        assert subscriptions[0] is config.subscriptions[0]
+        assert local_catalog is registry
+        result = actual_subscriptions(
+            subscriptions, owner_domain=owner_domain, local_catalog=local_catalog
+        )
+        assert [i.code for i in result] == ["fleet_catalog_unavailable"]
+        order.append("subscription_diagnostic")
         raise Observed
 
     monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
@@ -224,12 +245,13 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
                 stack.enter_context(value)
         stack.enter_context(patch.object(ButlerDaemon, "_finalize_tool_catalog", finalized))
         monkeypatch.setattr(lifecycle, "diagnose_loaded_schedules", diagnostic)
+        monkeypatch.setattr(lifecycle, "diagnose_loaded_subscriptions", subscription_diagnostic)
         lifecycle.sync_schedules.side_effect = lambda *a, **k: order.append("sync")
         daemon = ButlerDaemon(tmp_path, registry=_make_registry())
         daemon.config = config
         with pytest.raises(Observed):
             await daemon.start()
-    assert order == ["sync", "finalized", "diagnostic"]
+    assert order == ["sync", "finalized", "diagnostic", "subscription_diagnostic"]
     assert "Inspect the fixture" not in caplog.text
 
     # A final local registration can disprove a local request. It must not
@@ -460,3 +482,90 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
             # Search filters are API inputs, not registered resource dimensions.
             assert "predicate" not in registry["memory_search"].resource_params
             assert "memory_store_fact" not in workflows["weekly-taste-digest"]
+
+
+async def test_home_feed_is_typed_and_checked_against_actual_registered_non_actuating_ceiling(
+    monkeypatch, caplog
+):
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from butlers.config import load_config
+    from butlers.core import obligation_catalog
+    from tests.contracts.test_tool_authorization_catalog import _roster_catalog
+
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "roster" / "home")
+    assert len(config.subscriptions) == 1
+    subscription = config.subscriptions[0]
+    assert (subscription.name, subscription.kind, subscription.source) == (
+        "ha-event-response",
+        "feed",
+        "home_assistant",
+    )
+    assert subscription.obligation.status == "valid"
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    registry = await _roster_catalog("home")
+    declaration = subscription.obligation.declaration
+    assert {g.capability for g in declaration.capabilities} == {
+        "home__ha_get_entity_state",
+        "home__ha_list_entities",
+        "home__ha_get_history",
+        "home__memory_recall",
+        "home__memory_entity_resolve",
+        "home__memory_store_fact",
+        "home__notify",
+    }
+    writer = next(g for g in declaration.capabilities if g.capability == "home__memory_store_fact")
+    assert dict(writer.resources) == {
+        "scope": ("home",),
+        "predicate": ("comfort_deviation", "device_issue", "usage_pattern"),
+    }
+    for grant in declaration.capabilities:
+        descriptor = registry[grant.capability.removeprefix("home__")]
+        assert set(dict(grant.resources)) <= set(descriptor.resource_params)
+        assert descriptor.grantable and descriptor.owner_domain == "home"
+        assert descriptor.effect_class in {"read", "record", "communicate"}
+        assert not descriptor.owner_authority
+    assert [
+        i.code
+        for i in obligation_catalog.diagnose_loaded_subscriptions(
+            config.subscriptions, owner_domain="home", local_catalog=registry
+        )
+    ] == ["fleet_catalog_unavailable"]
+    assert "home_assistant" not in caplog.text
+
+
+def test_subscription_identity_shape_and_declaration_have_distinct_failure_policies(tmp_path):
+    from butlers.config import ConfigError, load_config
+
+    path = tmp_path / "butler.toml"
+    prefix = '[butler]\nname = "home"\nport = 9100\n'
+    identity = '[[butler.subscription]]\nname="fixture"\nkind="feed"\nsource="home_assistant"\n'
+    path.write_text(
+        prefix + identity + "[butler.subscription.obligation]\nversion=1\ncapabilities=[]\n"
+    )
+    original = load_config(tmp_path).subscriptions[0]
+    assert original.obligation.status == "valid"
+    for declaration, status in [
+        ("", "missing"),
+        ("[butler.subscription.obligation]\nversion=true\ncapabilities=[]\n", "invalid"),
+    ]:
+        path.write_text(prefix + identity + declaration)
+        assert load_config(tmp_path).subscriptions[0].obligation.status == status
+    for bad in [
+        identity.replace('kind="feed"', 'kind="owner"'),
+        identity.replace('source="home_assistant"', 'source="*"'),
+        identity + "unknown=true\n",
+        identity + identity,
+    ]:
+        path.write_text(prefix + bad)
+        with pytest.raises(ConfigError):
+            load_config(tmp_path)
+    path.write_text(
+        prefix
+        + identity.replace('kind="feed"', 'kind="domain"').replace(
+            'source="home_assistant"', 'source="travel.trip_booked"'
+        )
+    )
+    assert load_config(tmp_path).subscriptions[0].source == "travel.trip_booked"
