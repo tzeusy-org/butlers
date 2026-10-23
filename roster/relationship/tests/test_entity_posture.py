@@ -309,6 +309,7 @@ async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator
     created: list[str] = []
     memberships: list[tuple[str, bool | None]] = []
     grants: list[tuple[str, str, str]] = []
+    schema_grants: list[str] = []
     try:
         # Roll back all additions if setup fails partway through either role.
         async with admin.transaction():
@@ -327,6 +328,11 @@ async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator
                     )
                     await admin.execute(f'GRANT "{role}" TO "{quoted_login}" WITH SET TRUE')
                     memberships.append((role, previous_set))
+                if not await admin.fetchval(
+                    "SELECT has_schema_privilege($1, 'public', 'USAGE')", role
+                ):
+                    await admin.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+                    schema_grants.append(role)
                 # Column grants suffice for the unchanged UPDATE/WHERE statements.
                 # Table-level REVOKE would also erase preexisting column grants.
                 for privilege, column in (
@@ -355,6 +361,8 @@ async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator
                 for role, previous_set in reversed(memberships):
                     option = "SET OPTION FOR " if previous_set is not None else ""
                     await admin.execute(f'REVOKE {option}"{role}" FROM "{quoted_login}"')
+                for role in reversed(schema_grants):
+                    await admin.execute(f'REVOKE USAGE ON SCHEMA public FROM "{role}"')
                 for role in reversed(created):
                     await admin.execute(f'DROP ROLE "{role}"')
     finally:
