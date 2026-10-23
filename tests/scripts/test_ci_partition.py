@@ -1044,7 +1044,7 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
     profile["origin"] = {
         **inventory["identity"],
         "repository": "fixture/repo",
-        "workflow": "CI coverage assurance",
+        "workflow": "Nightly Tests",
         "run": "123",
         "attempt": "1",
         "event": "workflow_dispatch",
@@ -1056,7 +1056,7 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         "provenance": {"failure": None, "selected_run": coordinates},
         "source": {
             "repository": "fixture/repo",
-            "workflow": ".github/workflows/ci-coverage.yml",
+            "workflow": ".github/workflows/nightly.yml",
             "branch": "main",
             "event": "workflow_dispatch",
             **coordinates,
@@ -1209,13 +1209,22 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         "head_branch": "main",
         "head_repository": {"full_name": "fixture/repo"},
         "repository": {"full_name": "fixture/repo"},
-        "path": ".github/workflows/ci-coverage.yml",
-        "name": "CI coverage assurance",
+        "path": ".github/workflows/nightly.yml",
+        "name": "Nightly Tests",
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
     }
-    monkeypatch.setattr(candidates, "api", lambda *args, **kwargs: {"workflow_runs": [run]})
+    coverage_job = {"name": "coverage-report", "status": "completed", "conclusion": "success"}
+
+    def covered_api(path, **kwargs):
+        if "/jobs" in path:
+            return {
+                "jobs": [{"name": "faketime-matrix (+45d)", "conclusion": "failure"}, coverage_job]
+            }
+        return {"workflow_runs": [run]}
+
+    monkeypatch.setattr(candidates, "api", covered_api)
     for event in ("schedule", "workflow_dispatch"):
         run["event"] = event
         assert candidates.covered_run("fixture/repo", candidates.Provenance()) == run
@@ -1227,7 +1236,6 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         ("repository", {"full_name": "foreign/repo"}),
         ("path", ".github/workflows/ci.yml"),
         ("status", "in_progress"),
-        ("conclusion", "failure"),
         ("run_attempt", True),
     ):
         original = run[field]
@@ -1235,3 +1243,68 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
         with pytest.raises(ValueError):
             candidates.covered_run("fixture/repo", candidates.Provenance())
         run[field] = original
+
+
+def test_covered_run_selection_reads_the_coverage_job_not_the_run_conclusion(monkeypatch):
+    """A red unrelated nightly job must not starve the covered refresh (bu-ians42 review)."""
+
+    def nightly(run_id: int, conclusion: str) -> dict:
+        return {
+            "id": run_id,
+            "run_attempt": 1,
+            "head_sha": f"{run_id:040x}",
+            "head_branch": "main",
+            "head_repository": {"full_name": "fixture/repo"},
+            "repository": {"full_name": "fixture/repo"},
+            "path": ".github/workflows/nightly.yml",
+            "name": "Nightly Tests",
+            "event": "schedule",
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+
+    runs: list[dict] = []
+    coverage: dict[int, list[dict]] = {}
+    paths: list[str] = []
+
+    def api(path, **kwargs):
+        paths.append(path)
+        if "/jobs" in path:
+            run_id = int(path.split("/actions/runs/")[1].split("/")[0])
+            return {"jobs": coverage[run_id]}
+        return {"workflow_runs": runs}
+
+    def job(conclusion: str, name: str = "coverage-report") -> dict:
+        return {"name": name, "status": "completed", "conclusion": conclusion}
+
+    monkeypatch.setattr(candidates, "api", api)
+    select = lambda: candidates.covered_run("fixture/repo", candidates.Provenance())  # noqa: E731
+
+    # The run failed (faketime matrix) but its coverage job succeeded: selected.
+    runs[:] = [nightly(9, "failure")]
+    coverage[9] = [job("failure", "faketime-matrix (+45d)"), job("success")]
+    assert select()["id"] == 9
+    assert "status=completed" in paths[0] and "status=success" not in paths[0]
+    assert paths[1] == "repos/fixture/repo/actions/runs/9/attempts/1/jobs?per_page=100"
+
+    # A newer run whose coverage job failed is skipped for an older genuine one.
+    runs[:] = [nightly(10, "failure"), nightly(9, "failure")]
+    coverage[10] = [job("failure")]
+    assert select()["id"] == 9
+
+    # Missing, duplicated, cancelled or skipped coverage jobs never qualify.
+    for jobs in ([], [job("success"), job("success")], [job("cancelled")], [job("skipped")]):
+        runs[:] = [nightly(10, "success")]
+        coverage[10] = jobs
+        with pytest.raises(ValueError):
+            select()
+
+    # Job reads are bounded while walking back through red coverage runs.
+    runs[:] = [nightly(100 + n, "failure") for n in range(candidates.COVERED_JOB_LOOKUPS)]
+    runs.append(nightly(99, "failure"))
+    coverage.update({run["id"]: [job("failure")] for run in runs})
+    coverage[99] = [job("success")]
+    paths.clear()
+    with pytest.raises(ValueError):
+        select()
+    assert sum("/jobs" in path for path in paths) == candidates.COVERED_JOB_LOOKUPS

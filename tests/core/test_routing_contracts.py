@@ -8,11 +8,13 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     _ALLOWED_PROVIDERS_BY_CHANNEL,
-    RouteInputV1,
     parse_ingest_envelope,
     parse_notify_request,
+)
+from butlers.tools.switchboard.routing.contracts import (
+    RouteInputV1,
     parse_route_envelope,
 )
 

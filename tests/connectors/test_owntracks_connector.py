@@ -261,7 +261,7 @@ def test_envelopes_pass_parse_ingest_envelope() -> None:
     """OwnTracks location and waypoints envelopes validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     waypoints = {"_type": "waypoints", "tst": 1711447400, "tid": "ph", "waypoints": []}
     envelopes = [

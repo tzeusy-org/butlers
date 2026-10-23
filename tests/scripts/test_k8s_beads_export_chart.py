@@ -158,14 +158,29 @@ def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_butlers_up_runs_the_owner_set_fleet_session_cap(env: str) -> None:
-    # Owner decision 2026-10-15 (bu-6y6f6m): 5 parallel sessions fleet-wide. Every
-    # butler shares the butlers-up process, so its env sets the cap; the code default stays 3.
+    # The owner total stays five: staged dev partitions it across exactly one
+    # control and one domain process; unsplit production retains its old cap.
     names = _by_kind_name(_render(env, *_SITE))
-    container_env = {
-        e["name"]: e.get("value")
-        for e in _pod_spec(names[("Deployment", "butlers-up")])["containers"][0]["env"]
-    }
-    assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
+    domains = names[("Deployment", "butlers-up")]
+    container_env = {e["name"]: e.get("value") for e in _pod_spec(domains)["containers"][0]["env"]}
+    if env == "dev":
+        control = names[("Deployment", "butlers-control")]
+        control_env = {
+            e["name"]: e.get("value") for e in _pod_spec(control)["containers"][0]["env"]
+        }
+        capacities = [
+            int(container_env["BUTLERS_MAX_GLOBAL_SESSIONS"]),
+            int(control_env["BUTLERS_MAX_GLOBAL_SESSIONS"]),
+        ]
+        assert capacities == [4, 1]
+        assert all(capacity > 0 for capacity in capacities)
+        assert sum(capacities) == 5
+        for deployment in (domains, control):
+            assert deployment["spec"]["replicas"] == 1
+            assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    else:
+        assert ("Deployment", "butlers-control") not in names
+        assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
 
 
 @needs_helm

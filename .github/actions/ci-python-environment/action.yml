@@ -1,10 +1,5 @@
 name: CI Python environment
 description: Restore advisory dependencies and always repair the frozen checkout-owned environment.
-inputs:
-  request-observer:
-    description: Install the request file-access observer for actual test consumers.
-    default: 'false'
-    required: false
 runs:
   using: composite
   steps:
@@ -28,16 +23,6 @@ runs:
       with:
         path: .venv
         key: ${{ steps.environment-key.outputs.key }}
-    - name: Install request file-access observer
-      run: |
-        set -euo pipefail
-        if ! command -v strace >/dev/null 2>&1; then
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends strace
-        fi
-        strace --version
-      shell: bash
-      if: inputs.request-observer == 'true'
     - name: Install dependencies
       run: python3 scripts/ci_environment.py prepare
       shell: bash

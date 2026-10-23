@@ -147,6 +147,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         "inventory": "true",
     }
     full["check-affected"]["result"] = "skipped"
+    full["frontend-e2e"]["result"] = "skipped"
     heavy = {"check-unit", "check-integration"}
     contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
     scoped = copy.deepcopy(full)
@@ -167,9 +168,16 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     push = copy.deepcopy(docs)
     push["route"]["outputs"].update(backend="true", frontend="true", mode="push", inventory="true")
     push["inventory"]["result"] = "success"
+    push["frontend-e2e"]["result"] = "success"
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
     merge_group["route"]["outputs"]["frontend"] = "true"
+    merge_group["frontend-e2e"]["result"] = "success"
+    # Required e2e (bu-w72da2 = A): a frontend pull request must pass it too.
+    frontend_pr = copy.deepcopy(full)
+    frontend_pr["route"]["outputs"]["frontend"] = "true"
+    frontend_pr["frontend-e2e"]["result"] = "success"
+    contexts.append(("frontend-pr", "pull_request", "refs/pull/1/merge", frontend_pr, True))
     contexts.append(
         ("merge_group", "merge_group", "refs/heads/gh-readonly-queue/main/x", merge_group, True)
     )
@@ -213,7 +221,15 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             changed["new-needed-job"] = {"result": result, "outputs": {}}
             check(f"{mode}/added/{result}", changed, event, ref, result == "success")
     for mode, event, ref, needs, _ in contexts:
-        for name in ("route", "guards", "inventory", "check-preflight", "check-affected", *heavy):
+        for name in (
+            "route",
+            "guards",
+            "inventory",
+            "check-preflight",
+            "check-affected",
+            "frontend-e2e",
+            *heavy,
+        ):
             changed = copy.deepcopy(needs)
             changed[name]["result"] = "skipped" if needs[name]["result"] == "success" else "success"
             check(f"{mode}/{name}/wrong-pairing", changed, event, ref, False)
@@ -309,6 +325,15 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             gate["run"].replace('results.get(name, "success")', 'results.get(name, job["result"])'),
             "new-needed-job",
             "skipped",
+        ),
+        (
+            "e2e",
+            gate["run"].replace(
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['frontend-e2e']['result']='skipped'",
+            ),
+            "frontend-e2e",
+            "failure",
         ),
         (
             "partial-heavy",
@@ -444,27 +469,42 @@ def _exercise_browser_installer(root: Path) -> None:
     Only wall-clock literals are scaled in this routine control. Healthy
     boundaries include a deliberate 200 ms startup delay within a two-second
     allowance; stall pairs witness handler readiness before TERM/KILL checks.
-    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
-    actual apt/Chromium execution belongs to the hosted frontend-e2e job.
+    The ignored one-shot receipt exercises unchanged 110/120 browser and 150/160
+    OS-dependency deadlines; actual apt/Chromium execution belongs to the hosted
+    frontend-e2e job. OS dependencies (``install-deps``, apt under sudo) run as
+    their own phase before the browser download so slow apt cannot consume the
+    browser deadline.
     """
     source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
     assert "TERM_MS = 110_000" in source
     assert "KILL_MS = 120_000" in source
+    assert "DEPS_TERM_MS = 150_000" in source
+    assert "DEPS_KILL_MS = 160_000" in source
     assert "BACKOFF_MS = 10_000" in source
-    assert "TOTAL_MS = 380_000" in source
+    assert "TOTAL_MS = 720_000" in source
     scaled = (
         source.replace("110_000", "2_000")
         .replace("120_000", "2_500")
+        .replace("150_000", "2_000")
+        .replace("160_000", "2_500")
         .replace("10_000", "10")
-        .replace("380_000", "8_000")
+        .replace("720_000", "12_000")
     )
     for mode, expected_calls, expected_probes, expected_exit in [
-        ("cold", 1, 1, 0),
-        ("warm", 1, 1, 0),
-        ("fail-once", 2, 1, 0),
-        ("invalid-cache", 2, 2, 0),
-        ("exhaust", 3, 0, 1),
-        ("stall", 3, 0, 1),
+        ("cold", 2, 1, 0),
+        ("warm", 2, 1, 0),
+        ("fail-once", 3, 1, 0),
+        ("invalid-cache", 3, 2, 0),
+        ("exhaust", 4, 0, 1),
+        ("stall", 4, 0, 1),
+        ("deps-exhaust", 2, 0, 1),
+        ("deps-stall", 2, 0, 1),
+        ("deps-cleanup-denied", 1, 0, 1),
+        ("deps-cancel", 1, 0, 1),
+        ("deps-eof", 1, 0, -9),
+        ("deps-setup-failure", 1, 0, 1),
+        ("deps-crash", 1, 0, 1),
+        ("deps-unproven-zero", 0, 0, 1),
     ]:
         directory = root / mode
         scripts = directory / "scripts"
@@ -472,6 +512,60 @@ def _exercise_browser_installer(root: Path) -> None:
         scripts.mkdir(parents=True)
         cli.parent.mkdir(parents=True)
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
+        shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
+        supervisor = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+        if mode == "deps-cleanup-denied":
+            # Real lifecycle, with only the OS signalling boundary denied. The
+            # still-running dependency pair must never race another attempt.
+            supervisor = supervisor.replace(
+                "os.killpg(group, signal.SIGKILL)",
+                "(_ for _ in ()).throw(PermissionError('synthetic EPERM'))",
+            )
+        # Observe the real OS boundary, including zombie leaders. No group may
+        # be signalled after its leader was reaped and its identity released.
+        instrumentation = r"""
+from pathlib import Path
+_original_killpg = os.killpg
+def _reserved_killpg(group, sig):
+    stat = Path(f'/proc/{group}/stat')
+    assert stat.exists(), 'owned group identity released before signal'
+    assert int(stat.read_text().split()[4]) == group, 'reserved leader lost its group'
+    with Path(os.environ['M3_INSTALL_LEDGER']).with_name('reserved-signals').open('a') as receipt:
+        receipt.write(str(group)+'\n')
+    return _original_killpg(group, sig)
+os.killpg = _reserved_killpg
+
+def _await_fixture():
+    deadline = time.monotonic() + 5
+    while not Path(os.environ['M3_INSTALL_LEDGER']).with_name('stall-ready').exists():
+        assert time.monotonic() < deadline, 'fault injection never reached live dependency'
+        time.sleep(0.01)
+"""
+        if mode in {"deps-setup-failure", "deps-crash"}:
+            instrumentation += r"""
+_original_selector = selectors.DefaultSelector
+def _fault_selector():
+    value = _original_selector()
+    def register(*_args):
+        _await_fixture()
+        if os.environ['M3_INSTALL_MODE'] == 'deps-crash':
+            os._exit(1)
+        raise RuntimeError('synthetic selector setup failure')
+    value.register = register
+    return value
+selectors.DefaultSelector = _fault_selector
+"""
+        elif mode == "deps-unproven-zero":
+            supervisor = supervisor.replace(
+                "def main() -> int:", "def main() -> int:\n    os._exit(0)"
+            )
+        supervisor = supervisor.replace(
+            "CLEANUP_SECONDS = 2", instrumentation + "\nCLEANUP_SECONDS = 2"
+        )
+        (scripts / "install-playwright-deps.py").write_text(supervisor)
+        sudo = directory / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = -n ] && shift\n[ "$1" = -- ] && shift\nexec "$@"\n')
+        sudo.chmod(0o755)
         (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
         ledger = directory / "ledger.json"
         ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
@@ -487,7 +581,19 @@ if Path(sys.argv[0]).name == "node":
     p.write_text(json.dumps(data))
     sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
 data["calls"].append(sys.argv[1:])
-if mode == "stall":
+deps = sys.argv[1] == "install-deps"
+if deps:
+    for prior_pid in data["pids"]:
+        prior = Path(f"/proc/{prior_pid}/stat")
+        if prior.exists() and prior.read_text().split()[2] != "Z":
+            data.setdefault("overlap", []).append(prior_pid)
+if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof"}):
+    if mode in {"deps-cleanup-denied", "deps-crash"}:
+        # Surviving processes must not keep the harness capture pipes open.
+        sink = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(sink, 1)
+        os.dup2(sink, 2)
+        os.close(sink)
     signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
     child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
     child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
@@ -497,10 +603,14 @@ if mode == "stall":
     child.stdout.close()
     data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
     p.write_text(json.dumps(data))
+    (p.parent / "stall-ready").touch()
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
-if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
+browser_calls = [call for call in data["calls"] if call[0] == "install"]
+if mode == ("deps-exhaust" if deps else "exhaust") or (
+    mode == "fail-once" and not deps and len(browser_calls) == 1
+):
     sys.exit(1)
 """
         cli.write_text(f"#!{sys.executable}\n" + program)
@@ -515,36 +625,68 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
         )
         env["PATH"] = str(directory) + os.pathsep + os.environ["PATH"]
         try:
-            result = subprocess.run(
-                [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=15,
-            )
+            command = [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")]
+            if mode in {"deps-cancel", "deps-eof"}:
+                process = subprocess.Popen(
+                    command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                deadline = time.monotonic() + 5
+                while not (directory / "stall-ready").exists():
+                    assert time.monotonic() < deadline, "dependency cancellation never became ready"
+                    time.sleep(0.02)
+                if mode == "deps-eof":
+                    process.kill()
+                else:
+                    process.terminate()
+                stdout, stderr = process.communicate(timeout=10)
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            else:
+                result = subprocess.run(
+                    command, env=env, text=True, capture_output=True, timeout=20
+                )
             data = json.loads(ledger.read_text())
             assert result.returncode == expected_exit, (mode, data, result.stderr)
             assert len(data["calls"]) == expected_calls, (mode, data)
+            assert not data.get("overlap"), (mode, data)
             assert data["probes"] == expected_probes, (mode, data)
             assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
-            for index, args in enumerate(data["calls"]):
-                assert args == ["install", "--with-deps", "chromium"] + (
-                    ["--force"] if index else []
-                )
+            deps_calls = [args for args in data["calls"] if args[0] == "install-deps"]
+            browser_calls = [args for args in data["calls"] if args[0] == "install"]
+            if deps_calls and mode not in {"deps-crash", "deps-cleanup-denied"}:
+                assert (directory / "reserved-signals").exists(), "group ownership never checked"
+            assert data["calls"] == deps_calls + browser_calls, (mode, data)  # deps first
+            assert all(args == ["install-deps", "chromium"] for args in deps_calls), data
+            for index, args in enumerate(browser_calls):
+                assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
-            if mode == "stall":
-                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
-                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+            if mode in {
+                "deps-cleanup-denied",
+                "deps-crash",
+                "deps-unproven-zero",
+                "deps-setup-failure",
+            }:
+                assert "cleanup could not be confirmed" in result.stderr
+            if mode in {"stall", "deps-stall"}:
+                ready_pids = [pid for pair in data["ready"] for pid in pair.get("pids", [])]
+                stalled_calls = 3 if mode == "stall" else 2
+                assert ready_pids == data["pids"] and len(ready_pids) == 2 * stalled_calls, data
                 for pid in ready_pids:
                     assert (directory / f"term-{pid}").exists(), (
                         f"ready stall member {pid} never witnessed TERM before KILL"
                     )
             for pid in data["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
-                assert not stat.exists() or stat.read_text().split()[2] == "Z", (
-                    f"ordinary installer descendant{pid} survived watchdog"
-                )
+                if mode in {"deps-cleanup-denied", "deps-crash"}:
+                    assert stat.exists() and stat.read_text().split()[2] != "Z", (
+                        "denied cleanup control never reached a surviving dependency"
+                    )
+                elif mode.startswith("deps-"):
+                    assert not stat.exists(), f"dependency descendant {pid} was not reaped"
+                else:
+                    assert not stat.exists() or stat.read_text().split()[2] == "Z", (
+                        f"ordinary installer descendant {pid} survived watchdog"
+                    )
         finally:
             for pid in json.loads(ledger.read_text())["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
@@ -720,7 +862,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
                 "overwrite": True,
             }
     check_job = jobs["check"]
-    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     coverage_job = covered_workflow["jobs"]["coverage-report"]
     covered_matrix = covered_workflow["jobs"]["coverage-shards"]
     covered_jobs = []
@@ -1302,6 +1444,7 @@ else:
         "check-unit",
         "check-integration",
         "check-affected",
+        "frontend-e2e",
     ]
     assert check_job["if"] == "always()"
     assert "cancelled" not in check_job["if"]
@@ -1379,7 +1522,15 @@ else:
         assert run_step["env"]["COVERAGE_FILE"].endswith(
             f"coverage-{row['lane']}-{row['shard']}.data"
         )
-    assert covered_workflow["env"]["CI_COVERAGE"] == "1"
+    assert all(
+        covered_workflow["jobs"][name]["env"]["CI_COVERAGE"] == "1"
+        for name in (
+            "coverage-inventory",
+            "coverage-shards",
+            "coverage-preflight",
+            "coverage-report",
+        )
+    )
     assert len(covered_jobs) == 11
     assert not any(
         "coverage-data" in str(step)
@@ -1581,49 +1732,20 @@ else:
                 f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
                 "and full setup/recovery headroom"
             )
-    migration_workflow = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/migration-chain-main.yml").read_text()
+    browser_budget = next(
+        row
+        for row in register["jobs"]
+        if row["workflow"] == ".github/workflows/ci.yml" and row["job"] == "frontend-e2e"
     )
-    assert migration_workflow["permissions"] == {"contents": "read"}
-    # PyYAML's YAML1.1 interprets the GitHub `on` key as True.
-    events = migration_workflow[True]
-    assert events["workflow_dispatch"]["inputs"]["image-size-diagnostic"]["default"] is False
-    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
-    ordinary = migration_workflow["jobs"]["migration-chain-head"]
+    installer_source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
+    installer_budget_ms = int(
+        re.search(r"const TOTAL_MS = ([\d_]+)", installer_source)[1].replace("_", "")
+    )
+    assert browser_budget["review_browser_hard_retry_interval_s"] * 1000 == installer_budget_ms
     assert (
-        ordinary["if"]
-        == "github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])"
+        browser_budget["installed_timeout_minutes"] == jobs["frontend-e2e"]["timeout-minutes"] == 20
     )
-    assert ordinary["timeout-minutes"] == 14
-    diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]
-    assert (
-        diagnostic["if"]
-        == "github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']"
-    )
-    assert diagnostic["timeout-minutes"] == 60
-    assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
-    assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
-    assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
-    # Both source-bound manual doors refuse a simultaneous request before any
-    # image preparation. Push/default dispatch retains the ordinary migration.
-    for job in (diagnostic, migration_workflow["jobs"]["offline-route-a-build-proof"]):
-        refusal = _workflow_step(job=job, name="Reject conflicting manual build modes")
-        for other_mode, expected in (("false", 0), ("", 0), ("true", 2)):
-            result = subprocess.run(
-                ["bash", "-eu", "-c", refusal["run"]],
-                env={**os.environ, "OTHER_BUILD_MODE": other_mode},
-                capture_output=True,
-                timeout=5,
-            )
-            assert result.returncode == expected
-    assert migration_workflow["jobs"]["offline-route-a-build-proof"]["timeout-minutes"] == 45
-    guard = diagnostic["steps"][2]
-    assert guard["name"] == "Reject conflicting manual build modes"
-    assert guard["env"] == {"OTHER_BUILD_MODE": "${{ inputs['offline-route-a-build-proof'] }}"}
-    assert "exit 2" in guard["run"] and '"${OTHER_BUILD_MODE}" = "true"' in guard["run"]
-    diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
-    assert "ci_image_size_diagnostic.py" in diagnostic_shell
-    assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell
+    assert "provisional" in browser_budget["state"] and "source-derived" in browser_budget["state"]
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]
@@ -1633,9 +1755,7 @@ else:
     assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
     assert "--timeout=300 --timeout-method=thread" in nightly_shell
 
-    schedules = yaml.safe_load((REPO_ROOT / ".github/workflows/e2e-main-schedule.yml").read_text())
-    browser_jobs = [jobs["frontend-e2e"], schedules["jobs"]["frontend-e2e"]]
-    for browser_job in browser_jobs:
+    for browser_job in [jobs["frontend-e2e"]]:
         version_step = _workflow_step(job=browser_job, name="Resolve locked Playwright version")
         assert "npm run --silent test:e2e:cache-version" in version_step["run"]
         cache = _workflow_step(job=browser_job, name="Cache locked Playwright browsers")
@@ -1711,36 +1831,28 @@ def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
 
 def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> None:
     """REQ-ci-shard-assurance-006: the real covered producer and publish gates."""
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
+    # Coverage runs only in the nightly schedule/manual workflow (bu-w72da2 = A).
     triggers = workflow[True]
-    assert set(triggers) == {"schedule", "workflow_dispatch", "pull_request"}
-    assert triggers["schedule"] == [{"cron": "37 19 * * *"}]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
     assert "pull_request_target" not in triggers
-    paths = triggers["pull_request"]["paths"]
-    for path in (
-        ".github/workflows/ci.yml",
-        ".github/workflows/ci-coverage.yml",
-        "scripts/check_ci_coverage.py",
-        "scripts/check_ci_test_shards.py",
-        "scripts/ci_partition.py",
-        "scripts/ci_weight_candidates.py",
-        "scripts/install_ci_uv.py",
-        ".github/ci-test-weights.json",
-        "tests/contracts/test_ci_test_targets.py",
-        "pyproject.toml",
-        "uv.lock",
-        "conftest.py",
-    ):
-        assert path in paths
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["env"]["CI_COVERAGE"] == "1"
     jobs = workflow["jobs"]
-    assert set(jobs) == {
+    assert {
         "coverage-inventory",
         "coverage-shards",
         "coverage-preflight",
         "coverage-report",
-    }
+    } <= set(jobs)
+    assert all(
+        jobs[name]["env"]["CI_COVERAGE"] == "1"
+        for name in (
+            "coverage-inventory",
+            "coverage-shards",
+            "coverage-preflight",
+            "coverage-report",
+        )
+    )
     assert "needs" not in jobs["coverage-inventory"]
     shards = jobs["coverage-shards"]
     assert shards["needs"] == ["coverage-inventory"]
@@ -1909,7 +2021,7 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
     )
     assert action["runs"]["using"] == "composite"
-    assert action["inputs"]["request-observer"]["default"] == "false"
+    assert "inputs" not in action
     action_steps = {"steps": action["runs"]["steps"]}
     original = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
         "guards"
@@ -1920,7 +2032,6 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         "Compute exact environment cache key",
         "Restore advisory environment cache",
         "Install dependencies",
-        "Install request file-access observer",
     ):
         actual = _workflow_step(job=action_steps, name=name)
         old = _workflow_step(job=original, name=name)
@@ -1928,7 +2039,8 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         assert actual.get("with") == old.get("with")
     assert all(
         any(step.get("uses") == "./.github/actions/ci-python-environment" for step in job["steps"])
-        for job in jobs.values()
+        for name, job in jobs.items()
+        if name.startswith("coverage-")
     )
 
 
@@ -2061,7 +2173,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             for lane, index in specs
         },
     }
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     fixed = _workflow_step(
         job=workflow["jobs"]["coverage-report"],
         name="Combine coverage from all independent test shards",
@@ -2170,7 +2282,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             payload[field] = value
             metadata.write_text(json.dumps(payload))
         run("fixed-" + case, fixed, 2)
-    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     covered = _workflow_step(
         job=covered_workflow["jobs"]["coverage-report"],
         name="Combine coverage from all independent test shards",

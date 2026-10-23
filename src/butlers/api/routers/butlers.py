@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -302,14 +301,15 @@ def _build_process_facts(
 ) -> ProcessFacts:
     """Assemble process facts from stable topology sources.
 
-    - ``container_name``: derived from the ``BUTLERS_HOST`` env var (the MCP
-      host the dashboard uses to reach butler daemons). Absent when unset or
-      resolves to ``localhost``.
+    - ``container_name``: the resolved MCP endpoint host, including the
+      separate Switchboard service. Absent for local loopback.
     - ``port``: from ``ButlerConnectionInfo.port``.
     - ``registered_duration_seconds``: seconds since switchboard registration.
     - ``config_path``: roster-relative path, e.g. ``roster/general/butler.toml``.
     """
-    host = os.environ.get("BUTLERS_HOST", "localhost")
+    from urllib.parse import urlparse
+
+    host = urlparse(connection_info.sse_url).hostname
     container_name: str | None = host if host and host != "localhost" else None
 
     toml_path = roster_dir / connection_info.name / "butler.toml"

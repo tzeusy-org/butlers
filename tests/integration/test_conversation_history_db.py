@@ -397,7 +397,7 @@ async def test_production_outbound_writer_preserves_stable_conversation_history(
     from butlers.db import register_jsonb_codec
     from butlers.testing.migration import create_migrated_test_db, migration_db_name
     from butlers.tools.switchboard import _write_outbound_message_inbox
-    from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+    from butlers.tools.switchboard.contracts import NotifyRequestV1
 
     dsn = await asyncio.to_thread(
         create_migrated_test_db,

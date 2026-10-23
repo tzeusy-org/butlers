@@ -54,12 +54,12 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
     parse_notify_request,
-    parse_route_envelope,
 )
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
+from butlers.tools.switchboard.transport import (
     POLICY_DENIED,
     PROVIDER_REJECTED,
     RECIPIENT_UNAVAILABLE,

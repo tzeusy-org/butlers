@@ -810,7 +810,7 @@ class TestKnowledgeGapClosure:
 @pytest.mark.unit
 class TestMcpSurface:
     @staticmethod
-    async def _register():
+    async def _register(groups: list[str] | None = None):
         from fastmcp import FastMCP
 
         from butlers.modules._roster_relationship import (
@@ -822,20 +822,46 @@ class TestMcpSurface:
         mcp = FastMCP("test-relationship")
         await mod.register_tools(
             mcp,
-            RelationshipModuleConfig(groups=["entity"]),
+            RelationshipModuleConfig(groups=["entity"] if groups is None else groups),
             db=None,
             butler_name="relationship",
         )
         return mcp
 
     async def test_evidence_and_coverage_reads_are_registered(self):
-        mcp = await self._register()
+        mcp = await self._register(groups=["entity", "entity_write"])
         names = {t.name for t in await mcp.list_tools()}
         assert {
             "relationship_fact_evidence",
             "relationship_predicate_coverage",
             "relationship_record_coverage",
         } <= names
+
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("entity_resolve", {"name": "unavailable target"}),
+            ("entity_get", {"entity_id": "00000000-0000-0000-0000-000000000001"}),
+            ("entity_neighbors", {"entity_id": "00000000-0000-0000-0000-000000000001"}),
+            ("relationship_fact_evidence", {"fact_id": "00000000-0000-0000-0000-000000000001"}),
+            (
+                "relationship_predicate_coverage",
+                {
+                    "entity_id": "00000000-0000-0000-0000-000000000001",
+                    "predicates": ["has-email"],
+                },
+            ),
+            ("relationship_lookup", {"entity_ref": "unavailable target"}),
+        ],
+    )
+    async def test_registered_reads_propagate_unavailable_backend(self, name, arguments):
+        from fastmcp.exceptions import ToolError
+
+        mcp = await self._register()
+        # Real registered handlers with no database must fail through MCP, not
+        # fabricate a domain miss/unknown/unavailable successful response.
+        with pytest.raises(ToolError):
+            await mcp.call_tool(name, arguments)
 
     async def test_assert_tool_has_no_source_parameter_at_all(self):
         """An LLM session cannot name its own source, approved or not (bu-vj46x).

@@ -23,12 +23,10 @@ HOSTED_COMMANDS = [
     for line in step["run"].splitlines()
     if line.strip()
 ]
-# Hosted commands the runner deliberately does not run (`npm run lint` chains visual-role-css).
+# Hosted commands the runner deliberately does not run.
 _NOT_LOCAL = {
     "npm ci",
-    "npm run lint:visual-role-css",
-    "node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs"
-    " route-a-api-receipt.test.mjs",
+    "node --test --test-timeout=300000 route-a-api-receipt.test.mjs",
 }
 
 
@@ -48,9 +46,6 @@ def test_every_hosted_frontend_command_is_run_locally_or_declared_hosted_only() 
     local = {f"npm run {script}" for _, script in runner.STEPS}
     hosted_only = {f"npm run {script}" for script in runner.HOSTED_ONLY}
     assert set(HOSTED_COMMANDS) == local | hosted_only | _NOT_LOCAL
-    # `npm run lint` chains lint:visual-role-css, which is why it is not a local step of its own.
-    lint = json.loads((ROOT / "frontend/package.json").read_text())["scripts"]["lint"]
-    assert "lint:visual-role-css" in lint
 
 
 @pytest.mark.unit

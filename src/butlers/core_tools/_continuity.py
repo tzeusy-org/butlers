@@ -7,7 +7,7 @@ concluded, and the scheduler's dispatch seam
 record into the next opted-in run's prompt.
 
 ``continuity=true`` is restricted to PROMPT-mode schedules (see
-``ScheduleConfig`` validation): it exists to carry narrative conclusions
+``ScheduleSpec`` validation): it exists to carry narrative conclusions
 forward for LLM-authored digests and reviews. Every staffer butler
 (concierge, messenger, switchboard, qa) currently declares only job-mode
 schedules -- deterministic Python handlers, not narrative prompts -- so

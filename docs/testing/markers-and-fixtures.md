@@ -215,7 +215,7 @@ Tests can use this to skip gracefully when Docker is not installed.
   corrupt, stale or mismatched inputs fail
   reporting before publication. Coverage reporting never changes required test verdicts.
 - Protected merge-group and ordinary PR heavy shards receive exact `CI_COVERAGE=0`;
-  the owned daily/manual and pipeline-PR coverage workflow receives `1`. The standalone
+  the nightly coverage jobs (scheduled or manual) receive `1`. The standalone
   runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
   enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
@@ -236,15 +236,29 @@ Tests can use this to skip gracefully when Docker is not installed.
   watchdog until healthy measurements justify a separate change.
 - Browser caches require the exact runner OS, architecture, package-lock hash and installed
   locked Playwright version. Cache failure is advisory; installation is mandatory on hits
-  and misses and always includes `--with-deps`. The installed-version reader checks all
+  and misses and always installs the OS dependencies first, as their own bounded
+  `install-deps` phase (apt under sudo; two attempts, 150/160 s) so a slow apt cannot consume
+  the browser download's 110/120 s deadline. The deps supervisor runs under noninteractive
+  sudo, starts apt in its own process group, and terminates and reaps that group's members
+  before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
+  unproven cleanup fails closed without starting another attempt. Reserved supervisor exit
+  outcomes 80/81/82 establish cleaned success/failure/timeout; generic zero, nonzero or signal
+  exits never authorize retry. Setup shares the child's cleanup lifetime. Non-reaping leader
+  observation retains the group identity through its last signal, before reaping. `EPERM` never crashes
+  the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
   Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
   and three force repair; test retries are unchanged.
-  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
-  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
-  ordinary descendants even when their shell exits first; these bounds do not establish
+  The installer has a 720-second outer budget: two dependency attempts (TERM150/KILL160,
+  up to two seconds each for cleanup, one ten-second backoff), then three browser attempts
+  (TERM110/KILL120, two ten-second backoffs). It cleans ordinary descendants even when
+  their shell exits first; these bounds do not establish
   containment of deliberately detached hostile processes. Local synthetic install controls
-  prove the supervisor, not actual OS-package installation or hosted cache behavior.
+  prove the supervisor, not actual OS-package installation or hosted cache behavior. The
+  frontend-e2e job cap is provisionally 20 minutes: ceil((2*228s historical whole-job envelope
+  + 720s full installer reserve)/60). This source-derived adjustment retains observed setup
+  and does not establish current healthy p95 calibration. See the active
+  [failure matrix](playwright-installer-failure-matrix.md).
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the
@@ -269,13 +283,14 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ### Owned coverage pipeline validation
 
-`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
-coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
+The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
+coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same fresh full inventory,
 five unit and six integration commands, complete execution reconciliation and
 smoke fallback before the strict CoverageData reader. Inventory, execution and
 coverage metadata preserve the actual event, checkout, run and attempt. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
-unknown. PR runs produce full report artifacts; only scheduled/manual main
+unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from
 the local setup composite, with existing finite job caps retained per row.
 

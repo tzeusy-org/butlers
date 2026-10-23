@@ -110,3 +110,21 @@ https://{{ .Values.publicUrl.host }}
 {{- define "butlers.beadsExportMount" -}}
 - {name: beads-export, mountPath: /app/.beads, readOnly: true}
 {{- end -}}
+
+{{/* Only dev opts into the key-absent topology; existing service port stays 41100. */}}
+{{- define "butlers.switchboardHost" -}}
+{{- if .Values.butlersControl.enabled -}}butlers-control{{- else -}}butlers-up{{- end -}}
+{{- end -}}
+
+{{/* Preserve owner cap5 across exactly one control + one domain process.
+     No shared counter or frozen spawner change; idle reservations are not lent. */}}
+{{- define "butlers.domainSessionCapacity" -}}
+{{- if .Values.butlersControl.enabled -}}
+{{- if not (regexMatch "^[2-5]$" (toString .Values.butlersUp.maxGlobalSessions)) -}}
+{{- fail "key-absent fleet capacity must be between 2 and owner maximum 5" -}}
+{{- end -}}
+{{- sub (int .Values.butlersUp.maxGlobalSessions) 1 -}}
+{{- else -}}
+{{- .Values.butlersUp.maxGlobalSessions -}}
+{{- end -}}
+{{- end -}}
