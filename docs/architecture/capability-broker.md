@@ -221,7 +221,54 @@ schema/producer/executor integration still requires the delivered S1 approvals
 chain and its serialized migration/foreign-hunk custody. The verified current
 catalog factory still requires delivered M1 publication plus explicit per-resource
 selection-bound metadata (bu-n7zmbp.6); omission is never converted to false.
-The isolated production startup, genuine runner/session inputs, ordinary signed
-forwarder, owning standing-rule/risk adapters, exposed owner-notify inertness and
+The isolated production startup, genuine runner/session inputs, owning standing-rule/risk adapters, exposed owner-notify inertness and
 positive UnitB/replay remain required. The runtime stays dark/default OFF; this
 increment does not complete the original nine acceptance criteria.
+
+
+## Ordinary signed MCP forwarding
+
+`SignedMCPDomains` is the concrete `Domains.dispatch` implementation consumed by
+`Broker.call`. The isolated control owner supplies a fixed domain-to-MCP-endpoint
+mapping; tool arguments cannot select an endpoint. Endpoints require an explicit
+port and `/mcp` path. Plain HTTP is accepted only on literal loopback addresses;
+remote endpoints require HTTPS with normal certificate verification. Constructing
+this adapter neither starts a listener nor enables the default-OFF profile.
+
+Each forward snapshots and digest-checks the exact arguments before its first
+await. It sends the native tool name to the configured owner and carries the
+broker's `X-Butlers-Assertion` unchanged. For a `key_required` effect,
+`Idempotency-Key` is exactly the effect UUID covered by that assertion; no key is
+injected into or substituted for the raw arguments. Downstream D7 verification
+and the owning handler's idempotency/receipt implementation remain required.
+
+The adapter performs one standard Streamable HTTP MCP initialization and one
+`tools/call`. An initialized stateful session ID is scoped to that call and exact
+endpoint. Both JSON and SSE replies are read under a one-MiB raw-byte ceiling;
+requests have a 256-KiB encoded ceiling. Compressed responses, duplicate JSON
+names, malformed or mismatched RPC identity, redirects and incomplete SSE
+refuse. The client does not use environment proxies, follow redirects, retry
+HTTP requests or reconnect/resume an interrupted event stream. The active
+exchange has a twenty-second bound plus a separately bounded five-second client
+cleanup, within the broker's existing thirty-second forward bound. Cancellation
+retains the one owned exchange/cleanup task through its bound and propagates
+cancellation afterward. Incomplete cleanup is explicit and retains the handle;
+it is never successful settlement.
+
+A successful read returns the validated MCP result after central settlement and
+output-exposure persistence. A read error returns no content. An effect's generic
+MCP success, error, `structuredContent`, or text claiming a receipt is always
+UNKNOWN here, with no value or trusted-output stamp. Only a future actual owning
+committed-receipt producer can establish effect commitment. The existing central
+duplicate-digest check refuses a subsequent UNKNOWN effect; this adapter never
+re-dispatches it. PARK has no ordinary-MCP fallback: it remains the separate
+purpose-bound owning approvals consumer.
+
+The two-listener software control exercises the actual session HTTP endpoint,
+broker reservation/signing, ordinary stateful FastMCP HTTP/SSE handler, and
+settlement, including independent signature/raw-argument verification at the test
+peer. It uses controlled central storage and ephemeral test signing material;
+it proves neither migrated PostgreSQL nor a deployed domain verifier or durable
+effect receipt. Actual M1 current-fleet delivery, owning selection/policy and A2
+receipt producers, the runner/profile, full nine-criterion runtime acceptance,
+current hosted/protected delivery and activation remain separate obligations.

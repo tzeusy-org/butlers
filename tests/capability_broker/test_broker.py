@@ -935,3 +935,362 @@ async def test_token_issuer_refuses_invalid_lineage_reissue_and_uncertain_commit
     with pytest.raises(BrokerRefused, match="broker_unavailable"):
         await broker.issue_invocation_token(connection.goal, connection.invocation)
     assert not domains.calls
+
+
+@pytest.mark.parametrize("effect", [False, True], ids=["read", "unproven-effect"])
+async def test_real_session_forwards_signed_mcp_once_without_inventing_effect_commit(effect):
+    """Real two-listener consumer; controlled central rows are not SQL proof."""
+    import httpx
+    from fastmcp import FastMCP
+    from fastmcp.server.dependencies import get_http_request
+
+    from butlers.capability_broker.assertions import verify_assertion
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.capability_broker.session import BrokerSessionListener
+    from butlers.control import SessionRefusalListener
+
+    observed = []
+    args = {"x": {"text": "raw café", "n": 1.5}}
+    capability = Capability(
+        "health",
+        "read",
+        "record" if effect else "read",
+        "untrusted",
+        (),
+        recipient_params=RecipientParameters(),
+        idempotency="key_required" if effect else "none",
+        input_schema={"type": "object", "properties": {"x": {"type": "object"}}, "required": ["x"]},
+    )
+    broker, connection, _, _ = token_broker()
+    broker.authorities.capability = capability
+    remote = FastMCP("signed domain test")
+
+    @remote.tool
+    async def read(x: dict) -> dict:
+        request = get_http_request()
+        wire = {"x": x}
+        verified = verify_assertion(
+            request.headers["X-Butlers-Assertion"],
+            keys={"test": broker.signer.private_key.public_key()},
+            audience="health",
+            capability="read",
+            arguments=wire,
+            now=100,
+            claim_call_id=lambda *_: True,
+        )
+        assert not connection.in_transaction and connection.events[-1] == "commit"
+        assert verified["goal_id"] == str(connection.goal)
+        assert verified["invocation_id"] == str(connection.invocation)
+        if effect:
+            assert request.headers["Idempotency-Key"] == verified["effect_id"]
+        else:
+            assert "Idempotency-Key" not in request.headers and verified["effect_id"] is None
+        observed.append(wire)
+        # Even a successful result claiming commitment is not durable evidence.
+        return {"status": "committed", "echo": x}
+
+    app = remote.http_app(path="/mcp", stateless_http=False, json_response=False)
+
+    class DomainListener(SessionRefusalListener):
+        def _application(self):
+            return app
+
+        def _application_lifespan(self):
+            return app.router.lifespan_context(app)
+
+    domain = DomainListener(host="127.0.0.1", port=0)
+    await domain.start()
+    listener = None
+    try:
+        broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{domain.port}/mcp"})
+        token = await broker.issue_invocation_token(connection.goal, connection.invocation)
+        connection.invocation_status = "running"
+        listener = BrokerSessionListener(broker, host="127.0.0.1", port=0)
+        await listener.start()
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "health__read",
+                    "arguments": args,
+                },
+            }
+            response = await client.post(
+                f"http://127.0.0.1:{listener.port}/goals/{connection.goal}/mcp/",
+                json=request,
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Accept": "application/json,text/event-stream",
+                },
+            )
+            assert response.status_code == 200
+            result = response.json()["result"]["structuredContent"]
+            assert result["status"] == ("unknown" if effect else "returned")
+            assert observed == [args] and connection.used == 1
+            assert connection.exposed is True
+            if effect:
+                assert result["value"] is None and result["effect_id"] == str(connection.effect)
+                # UNKNOWN is durable central state, not permission to retry.
+                again = await client.post(
+                    f"http://127.0.0.1:{listener.port}/goals/{connection.goal}/mcp/",
+                    json={**request, "id": 2},
+                    headers={
+                        "Authorization": "Bearer " + token,
+                        "Accept": "application/json,text/event-stream",
+                    },
+                )
+                assert (
+                    again.json()["result"]["structuredContent"]["reason"]
+                    == "effect_already_recorded"
+                )
+                assert observed == [args] and connection.used == 1
+            else:
+                assert result["value"]["structuredContent"]["echo"] == args["x"]
+    finally:
+        try:
+            if listener is not None:
+                await listener.close()
+        finally:
+            await domain.close()
+    assert domain.cleanup_complete and listener.cleanup_complete
+    assert domain.task.done() and listener.task.done()
+
+
+async def test_signed_forwarder_refuses_peer_faults_without_redirect_resume_or_retry():
+    """Real TCP peer fault responses, not a simulated transport/retry counter."""
+    import json
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.control import SessionRefusalListener
+
+    mode = "redirect"
+    calls = []
+    requests = []
+
+    async def peer(scope, receive, send):
+        request = Request(scope, receive)
+        value = await request.json()
+        method = value["method"]
+        requests.append(method)
+        if mode == "redirect":
+            response = Response(status_code=307, headers={"Location": "/untrusted"})
+        elif method == "initialize":
+            response = Response(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "serverInfo": {"name": "fault-peer", "version": "1"},
+                        },
+                    }
+                ),
+                media_type="application/json",
+            )
+        elif method == "notifications/initialized":
+            response = Response(status_code=202)
+        else:
+            assert method == "tools/call"
+            calls.append(value)
+            if mode == "duplicate":
+                body = (
+                    '{"jsonrpc":"2.0","id":' + json.dumps(value["id"]) + ',"result":{},"result":{}}'
+                )
+            elif mode == "wrong_id":
+                body = json.dumps({"jsonrpc": "2.0", "id": "other-call", "result": {}})
+            elif mode == "error":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "error": {
+                            "code": -32603,
+                            "message": "synthetic closed control",
+                        },
+                    }
+                )
+            elif mode == "coerced_error":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "content": [],
+                            "isError": "false",
+                        },
+                    }
+                )
+            elif mode == "incomplete_sse":
+                body = "id: resume-me\nevent: ping\n\n"
+            else:
+                assert mode == "oversize"
+                body = " " * (1048576 + 1)
+            response = Response(
+                body,
+                media_type=(
+                    "text/event-stream" if mode == "incomplete_sse" else "application/json"
+                ),
+            )
+        await response(scope, receive, send)
+
+    class FaultListener(SessionRefusalListener):
+        def _application(self):
+            return peer
+
+    listener = FaultListener(host="127.0.0.1", port=0)
+    await listener.start()
+    try:
+        for mode in [
+            "redirect",
+            "duplicate",
+            "wrong_id",
+            "error",
+            "coerced_error",
+            "incomplete_sse",
+            "oversize",
+        ]:
+            broker, connection, _, _, token = build()
+            broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{listener.port}/mcp"})
+            requests.clear()
+            calls.clear()
+            result = await broker.call(connection.goal, token, "health__read", {"x": 1})
+            assert result.status == "unknown" and result.value is None
+            assert requests == (
+                ["initialize"]
+                if mode == "redirect"
+                else [
+                    "initialize",
+                    "notifications/initialized",
+                    "tools/call",
+                ]
+            )
+            assert len(calls) == (0 if mode == "redirect" else 1)
+            assert connection.used == 1
+    finally:
+        await listener.close()
+    assert listener.cleanup_complete and listener.task.done()
+
+
+async def test_signed_forwarder_local_binding_refuses_before_network_and_park_never_falls_back():
+    from butlers.capability_broker.contracts import Decision, Reservation
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+
+    broker, connection, authorities, _, _ = build()
+    principal = Principal(connection.goal, connection.invocation, 0, "owner", False, "v1", ())
+    args = {"x": "exact"}
+    reservation = Reservation(
+        principal,
+        authorities.capability,
+        Decision(Disposition.DISPATCH),
+        uuid4(),
+        None,
+        arguments_digest(args),
+    )
+    # The unused literal endpoint refuses connections; every failure below must
+    # be a local closed binding refusal, not a caught HTTP error.
+    domains = SignedMCPDomains({"health": "http://127.0.0.1:1/mcp"})
+    for bad_args, assertion, key in [
+        ({"x": "changed"}, "signed", None),
+        (args, "header\r\ninjection", None),
+        (args, "signed", str(uuid4())),
+    ]:
+        with pytest.raises(BrokerRefused) as caught:
+            await domains.dispatch(reservation, bad_args, assertion, idempotency_key=key)
+        assert caught.value.reason is Reason.AUTHENTICATION
+    with pytest.raises(BrokerRefused) as caught:
+        await domains.park(reservation, args, "signed")
+    assert caught.value.reason is Reason.UNAVAILABLE
+    for url in [
+        "http://remote.example:80/mcp",
+        "https://owner.example/mcp",
+        "https://owner.example:443/other",
+        "https://user:pass@owner.example:443/mcp",
+        "https://owner.example:443/mcp?redirect=elsewhere",
+    ]:
+        with pytest.raises(ValueError):
+            SignedMCPDomains({"health": url})
+
+
+async def test_signed_forwarder_double_cancel_closes_owned_http_without_retry_or_settlement():
+    import json
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.control import SessionRefusalListener
+
+    entered, disconnected = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def peer(scope, receive, send):
+        request = Request(scope, receive)
+        value = await request.json()
+        if value["method"] == "initialize":
+            response = Response(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "serverInfo": {"name": "stall-peer", "version": "1"},
+                        },
+                    }
+                ),
+                media_type="application/json",
+            )
+        elif value["method"] == "notifications/initialized":
+            response = Response(status_code=202)
+        else:
+            calls.append(value)
+            entered.set()
+            async with asyncio.timeout(3):
+                while (await receive())["type"] != "http.disconnect":
+                    pass
+            disconnected.set()
+            return
+        await response(scope, receive, send)
+
+    class StallListener(SessionRefusalListener):
+        def _application(self):
+            return peer
+
+    listener = StallListener(host="127.0.0.1", port=0)
+    await listener.start()
+    task = None
+    try:
+        broker, connection, _, _, token = build()
+        broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{listener.port}/mcp"})
+        task = asyncio.create_task(broker.call(connection.goal, token, "health__read", {}))
+        await asyncio.wait_for(entered.wait(), 3)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(task), 6)
+        await asyncio.wait_for(disconnected.wait(), 3)
+        assert len(calls) == 1 and connection.used == 1
+        assert connection.events == ["commit"]
+        assert not [
+            t
+            for t in asyncio.all_tasks()
+            if not t.done()
+            and getattr(t.get_coro(), "__qualname__", "").startswith("SignedMCPDomains.")
+        ]
+    finally:
+        try:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=6)
+        finally:
+            await listener.close()
+    assert listener.cleanup_complete and listener.task.done()
