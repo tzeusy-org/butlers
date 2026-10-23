@@ -124,6 +124,7 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
         "check-integration",
         "check-affected",
         "frontend-e2e",
+        "go-bridge",
     }
     if not isinstance(needs, dict) or not expected <= needs.keys():
         return False
@@ -185,6 +186,7 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
         # Playwright e2e is required wherever it runs: every merge group and main
         # push, and pull requests the route marks as frontend changes.
         "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
+        "go-bridge": "success" if outputs["backend"] == "true" else "skipped",
     }
     return all(job["result"] == results.get(name, "success") for name, job in needs.items())
 
