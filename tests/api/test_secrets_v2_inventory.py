@@ -43,6 +43,7 @@ from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     _SYSTEM_KEY_USED_BY,
     DEFAULT_EXPIRING_LEAD_TIME,
@@ -65,7 +66,6 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_user_secrets,
     _fingerprint,
     _format_probe_time,
-    _get_db_manager,
     _infer_provider_from_type,
     _is_missing_secrets_schema_error,
     _published_provider,
@@ -265,7 +265,7 @@ def _make_db_manager(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -1473,7 +1473,7 @@ def test_inventory_identity_filter_restricts_user_array():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get(f"/api/secrets/inventory?identity={target_entity}")
@@ -1509,7 +1509,7 @@ def test_inventory_no_identity_uses_owner_default():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/inventory")
@@ -1619,7 +1619,7 @@ def test_inventory_aggregates_across_butler_schemas():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/inventory")
@@ -1826,7 +1826,7 @@ def test_inventory_includes_identity_info_with_real_names():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/inventory")
@@ -2197,7 +2197,7 @@ def _build_app_with_shared_pool(shared_pool: AsyncMock) -> TestClient:
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 

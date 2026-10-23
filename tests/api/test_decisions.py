@@ -29,6 +29,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
+
 pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 7, 11, 12, 0, 0, tzinfo=UTC)
@@ -332,7 +334,7 @@ async def test_list_decisions_attaches_recorded_intents(app, tmp_path):
 
     export = tmp_path / "issues.export.jsonl"
     _write_export(export, [_decision("bu-a"), _decision("bu-b", created_days_ago=2)])
-    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    app.dependency_overrides[get_db] = _SwitchboardOnly
     latest = AsyncMock(return_value={"bu-a": _intent_row("bu-a")})
 
     with patch.object(decisions_router, "latest_intents", latest):
@@ -354,7 +356,7 @@ async def test_list_decisions_degrades_only_the_intent_field(app, tmp_path):
 
     export = tmp_path / "issues.export.jsonl"
     _write_export(export, [_decision("bu-a")])
-    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    app.dependency_overrides[get_db] = _SwitchboardOnly
 
     with patch.object(
         decisions_router, "latest_intents", AsyncMock(side_effect=OSError("db down"))
@@ -381,7 +383,7 @@ async def test_record_intent_maps_refusals_to_status_codes(app, reason, kind, st
     from butlers.api.routers import decisions as decisions_router
     from butlers.core.decision_desk import DecisionIntentError
 
-    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    app.dependency_overrides[get_db] = _SwitchboardOnly
     refusal = AsyncMock(side_effect=DecisionIntentError(reason, kind=kind))
     with (
         patch.object(decisions_router, "record_decision_intent", refusal),
@@ -399,13 +401,12 @@ async def test_record_intent_maps_refusals_to_status_codes(app, reason, kind, st
 
 
 async def test_record_intent_without_switchboard_db_is_503(app):
-    from butlers.api.routers import decisions as decisions_router
 
     class _NoSwitchboard:
         def pool(self, butler_name: str):
             raise KeyError(butler_name)
 
-    app.dependency_overrides[decisions_router._get_db_manager] = _NoSwitchboard
+    app.dependency_overrides[get_db] = _NoSwitchboard
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -420,7 +421,7 @@ async def test_digest_forwards_reopening_evidence_and_projects_superseded_histor
 
     export = tmp_path / "issues.export.jsonl"
     _write_export(export, [_decision("bu-a", updated_at=_iso(_NOW))])
-    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    app.dependency_overrides[get_db] = _SwitchboardOnly
     latest = AsyncMock(
         return_value={"bu-a": _intent_row("bu-a", status="superseded", failure_reason=None)}
     )
@@ -485,7 +486,7 @@ def _callback_app(monkeypatch):
     app = create_app(api_key="synthetic-owner-key")
     app.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
     app.state.approval_callback_connector_token = _CALLBACK_CREDENTIAL
-    app.dependency_overrides[decisions._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     resolve = AsyncMock()
     real_resolve = CredentialStore.resolve
 

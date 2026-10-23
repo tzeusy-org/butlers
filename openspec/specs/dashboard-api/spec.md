@@ -8,12 +8,16 @@ Defines the complete data access layer connecting the Butlers dashboard frontend
 ### Requirement: FastAPI Application Factory
 The `create_app()` function in `src/butlers/api/app.py` SHALL build the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
 
+ID: REQ-dashboard-api-070
+Source: bu-q11586.3 accepted S1 registry/dependency packet
+Scope: v1-mandatory
+
 #### Scenario: Application startup
 - **WHEN** the FastAPI lifespan starts
 - **THEN** `init_dependencies()` discovers all butlers from the roster directory and registers them in the `MCPClientManager` singleton
 - **AND** `init_pricing()` loads `pricing.toml` into the `PricingConfig` singleton
 - **AND** `init_db_manager()` creates asyncpg pools for each discovered butler plus the shared credential pool
-- **AND** `wire_db_dependencies()` overrides the `_get_db_manager` stub in every static and dynamic router module
+- **AND** core and dynamic router modules consume one public `get_db`/`Db` dependency backed by that singleton, with the existing optional/uninitialized-read adapter preserved
 
 #### Scenario: CORS configuration
 - **WHEN** `create_app(cors_origins=None)` is called
@@ -331,9 +335,9 @@ Scope: v1-mandatory
 - **AND** modules without `router` or with non-APIRouter exports are logged as warnings and skipped
 
 #### Scenario: DB dependency wiring
-- **WHEN** `wire_db_dependencies()` is called with dynamic modules
-- **THEN** each dynamic module with a `_get_db_manager` stub has it overridden with the `get_db_manager` singleton
-- **AND** the override applies via FastAPI's `dependency_overrides` mechanism
+- **WHEN** a dynamic module declares its database dependency
+- **THEN** it consumes the public `get_db`/`Db` singleton dependency shared with core routers
+- **AND** callers may override that public dependency via FastAPI's `dependency_overrides` mechanism
 
 #### Scenario: Namespace and discovery share the actual router
 - **WHEN** a butler router or models namespace is requested and explicit discovery later runs

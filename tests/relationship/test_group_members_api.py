@@ -7,7 +7,7 @@ Covers:
 
 Pattern mirrors tests/relationship/test_group_labels_api.py: create_app()
 loads the relationship router dynamically into
-sys.modules["relationship_api_router"]; override its _get_db_manager.
+sys.modules["relationship_api_router"]; override the shared public get_db.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -64,7 +65,7 @@ def _make_app(pool):
     rel_module = sys.modules.get("relationship_api_router")
     if rel_module is None:
         raise RuntimeError("relationship_api_router not found in sys.modules after create_app()")
-    app.dependency_overrides[rel_module._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 

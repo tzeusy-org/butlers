@@ -14,6 +14,7 @@ import pytest
 
 from butlers.api.audit_emit import build_user_context, emit_dashboard_audit, redact_body
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db as _audit_get_db
 from tests.api.auth_helpers import _DOMAIN_KEY
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -404,7 +405,6 @@ class TestDashboardAuditMiddleware:
 class TestAuditReadEndpoint:
     async def test_get_audit_log_returns_paginated_structure(self):
         """GET /api/audit-log still works correctly after middleware changes."""
-        from butlers.api.routers.audit import _get_db_manager as _audit_get_db
 
         mock_pool = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=0)

@@ -13,8 +13,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
-from butlers.api.routers.calendar_workspace import _get_db_manager
 from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
 from tests.api.auth_helpers import create_authenticated_domain_app
 
@@ -122,7 +122,7 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
             updated_events=[events[0]],
             cancelled_ids=[],
         )
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

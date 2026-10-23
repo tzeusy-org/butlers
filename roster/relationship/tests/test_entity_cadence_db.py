@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -89,7 +90,7 @@ async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool)
     app.include_router(router_module.router)
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

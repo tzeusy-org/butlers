@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.meeting_debrief import meeting_debrief_pending
@@ -122,9 +123,9 @@ async def test_endpoint_matches_the_tool_including_posture_filtering(pool: async
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: db
             break
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

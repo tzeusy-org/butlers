@@ -74,6 +74,7 @@ from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -109,11 +110,6 @@ class Briefing(BaseModel):
 # ---------------------------------------------------------------------------
 # Dependency stub (overridden at startup or in tests)
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -839,7 +835,8 @@ async def _compose_briefing(
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
 async def get_dashboard_briefing(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),

@@ -18,7 +18,7 @@ from fastmcp.exceptions import ToolError
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
 from butlers.api.models.calendar import (
     CalendarWorkspaceButlerMutationRequest,
@@ -236,11 +236,6 @@ def _format_writable_calendar_label(
     if provider == "google":
         return f"[Google] {formatted}"
     return formatted
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _normalize_json_object(value: object) -> dict[str, Any]:
@@ -1126,7 +1121,8 @@ def _project_prep_contributions(
 @router.get("/prep/{event_id}", response_model=ApiResponse[CalendarPrepResponse])
 async def get_meeting_prep(
     event_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarPrepResponse]:
     """Return the meeting-prep rail context for a selected calendar event.
 
@@ -1166,7 +1162,8 @@ async def get_day_briefing(
     ),
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
     butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarDayBriefingResponse]:
     """Return the structured "tomorrow at a glance" day-briefing card for a date.
 
@@ -1232,7 +1229,8 @@ async def get_workspace(
         description="Max entries per page (keyset pagination)",
     ),
     cursor: str | None = Query(None, description="Opaque keyset cursor from a prior page"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceReadResponse]:
     """Return normalized workspace entries for the requested time range.
 
@@ -1467,7 +1465,8 @@ async def get_workspace_invitations(
     timezone: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None, max_length=2048),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarInvitationsResponse]:
     """Read only explicit unanswered projection truth in the visible window."""
     if start.tzinfo is None or end.tzinfo is None:
@@ -1600,7 +1599,8 @@ async def get_workspace_conflicts(
     overloaded_day_hours: float = Query(
         6.0, gt=0, le=24, description="Daily meeting-hours budget before a day is 'overloaded'"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConflictScanResponse]:
     """Proactively scan the forward window for scheduling problems.
 
@@ -1681,7 +1681,8 @@ async def search_workspace(
     butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
     sources: list[str] | None = Query(None, description="Optional source_key filters"),
     limit: int = Query(50, ge=1, le=200, description="Max matches to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceSearchResponse]:
     """Full-text search over the calendar projection, ranked by trigram relevance.
 
@@ -1731,7 +1732,8 @@ async def search_workspace(
 async def get_entry_detail(
     entry_id: UUID,
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UnifiedCalendarEntry]:
     """Fetch a single calendar workspace entry by instance ID."""
     display_tz: ZoneInfo | None = None
@@ -1767,7 +1769,8 @@ async def get_entry_detail(
 
 @router.get("/meta", response_model=ApiResponse[CalendarWorkspaceMetaResponse])
 async def get_workspace_meta(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceMetaResponse]:
     """Return workspace metadata: capabilities, sources, lanes, writable calendars."""
@@ -1841,7 +1844,8 @@ async def get_workspace_meta(
 async def set_primary_calendar(
     body: SetPrimaryCalendarRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SetPrimaryCalendarResponse]:
     """Set the primary calendar for a butler via the calendar_set_primary MCP tool."""
     result = await _call_mcp_tool(
@@ -1871,7 +1875,8 @@ async def set_primary_calendar(
 )
 async def sync_workspace(
     request: CalendarWorkspaceSyncRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceSyncResponse]:
     """Queue projection/provider sync for all sources or one selected source.
@@ -2193,7 +2198,8 @@ def _quick_add_shared_authority_pool(db: DatabaseManager):
 @router.post("/parse-quick-add", response_model=ApiResponse[QuickAddParseResponse])
 async def parse_quick_add_event(
     body: QuickAddParseRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QuickAddParseResponse]:
     """Parse a natural-language string into a draft event for confirmation.
 
@@ -2337,7 +2343,8 @@ async def get_response_receipt(
     command_id: UUID,
     source_butler: str = Query(..., min_length=1, max_length=64),
     inverse: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarRespondResponse]:
     """Read the exact retained response or its server-bound inverse, without dispatch.
 
@@ -2493,7 +2500,8 @@ async def respond_to_invitation(
     body: CalendarRespondRequest,
     http_request: Request,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarRespondResponse]:
     """Compose an authenticated owner decision with the exact owning gated tool."""
     targets = db.configured_butlers_with_module("calendar")
@@ -2524,7 +2532,8 @@ async def respond_to_invitation(
 async def mutate_user_event(
     body: CalendarWorkspaceUserMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceMutationResponse]:
     """Create a user-view provider event (quick-add confirmation) through calendar MCP.
 
@@ -2787,7 +2796,8 @@ def _result_indicates_not_found(result: dict[str, Any]) -> bool:
 async def mutate_butler_event(
     body: CalendarWorkspaceButlerMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceMutationResponse]:
     """Create/update/delete/toggle/dismiss/snooze butler-view events via calendar MCP tools.
 
@@ -2960,7 +2970,8 @@ async def accept_proposal(
     proposal_id: UUID,
     body: CalendarProposalAcceptRequest | None = Body(default=None),
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarProposalActionResponse]:
     """Accept a calendar proposal — create the event on the Butlers subcalendar.
 
@@ -3088,7 +3099,8 @@ async def accept_proposal(
 )
 async def dismiss_proposal(
     proposal_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarProposalActionResponse]:
     """Dismiss a calendar proposal — discard it with no provider write.
 
@@ -3207,7 +3219,8 @@ async def get_calendar_audit(
     limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Number of entries to skip"),
     butler: str | None = Query(None, description="Restrict to a single butler schema"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarAuditResponse]:
     """Return paginated calendar mutation audit log entries.
 
@@ -3281,8 +3294,7 @@ async def get_calendar_audit(
 # Accounts control plane + per-calendar source toggle
 #
 # These endpoints live under /api/calendar (NOT /api/calendar/workspace) so a
-# separate router is exported. ``deps.wire_db_dependencies`` overrides the
-# shared ``_get_db_manager`` stub for this module, which both routers reference.
+# separate router is exported. Both routers use the public ``Db`` dependency.
 # ===========================================================================
 
 accounts_router = APIRouter(prefix="/api/calendar", tags=["calendar", "accounts"])
@@ -3396,7 +3408,8 @@ def _build_account_health(heartbeat: dict[str, Any] | None) -> CalendarAccountHe
 
 @accounts_router.get("/accounts", response_model=ApiResponse[CalendarAccountsResponse])
 async def list_calendar_accounts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarAccountsResponse]:
     """List connected Google accounts joined with Google Calendar connector health.
 
@@ -3444,7 +3457,8 @@ async def list_calendar_accounts(
 @accounts_router.post("/sources", response_model=ApiResponse[CalendarSourceToggleResponse])
 async def toggle_calendar_source(
     request: CalendarSourceToggleRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarSourceToggleResponse]:
     """Enable or disable a single calendar as a sync source.
 

@@ -33,12 +33,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
-from butlers.api.routers.system import (
-    _commits_behind_main,
-    _get_db_manager,
-)
+from butlers.api.routers.system import _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -103,7 +100,7 @@ def _install_fake_github(monkeypatch, *, status_code: int = 200, payload: dict |
 
 def _make_app_with_db(mock_db):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -1816,7 +1813,7 @@ def _make_heartbeat_app(mock_db, roster_names):
     the scenario under test.
     """
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     configs = [ButlerConnectionInfo(name=n, port=40000) for n in roster_names]
     app.dependency_overrides[get_butler_configs] = lambda: configs
     return app

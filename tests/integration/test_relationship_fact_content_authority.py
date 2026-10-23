@@ -30,6 +30,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from starlette.applications import Starlette
 
+from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError, OwnerAuthService
@@ -409,7 +410,7 @@ async def _owner_app(env, *, browser=False):
     module = await _router()
     app.include_router(module.router)
     manager = SimpleNamespace(pool=lambda _name: env.rel)
-    app.dependency_overrides[module._get_db_manager] = lambda: manager
+    app.dependency_overrides[get_db] = lambda: manager
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://butlers.example.test"
     ) as client:

@@ -17,8 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
-from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_db_manager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.config import ConfigError, load_config
 from butlers.core.runtime_config import resolve_effective_core_groups
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
@@ -147,10 +146,6 @@ class RuntimeConfigPatch(BaseModel):
         return v
 
 
-def _get_db_manager() -> DatabaseManager:
-    return get_db_manager()
-
-
 def _get_roster_dir() -> Path:
     return _DEFAULT_ROSTER_DIR
 
@@ -268,7 +263,8 @@ def _row_to_response(
 @router.get("/{name}/runtime-config")
 async def get_runtime_config(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     roster_dir: Path = Depends(_get_roster_dir),
     mcp_manager: MCPClientManager = Depends(_get_mcp_client_manager),
 ) -> RuntimeConfigResponse:
@@ -304,7 +300,8 @@ async def patch_runtime_config(
     name: str,
     request: Request,
     patch: RuntimeConfigPatch,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     roster_dir: Path = Depends(_get_roster_dir),
 ) -> PatchResponse:
     """Partially update the runtime config for a butler."""
