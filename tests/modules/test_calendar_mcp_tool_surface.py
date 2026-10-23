@@ -9,6 +9,9 @@ name across default and explicit group configurations (REQ-module-calendar-031).
 
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+
 import pytest
 
 from butlers.modules.calendar import CalendarModule
@@ -80,3 +83,15 @@ async def _registered_tools(groups: list[str] | None) -> set[str]:
 )
 async def test_calendar_module_registers_the_full_tool_surface(groups):
     assert await _registered_tools(groups) == EXPECTED_CALENDAR_TOOLS
+
+
+def test_calendar_package_source_units_stay_bounded():
+    """The accepted mechanical split keeps source and registration readable."""
+    package = Path(inspect.getfile(CalendarModule)).parent
+    assert Path(inspect.getfile(CalendarModule)).name == "__init__.py"
+    sizes = {
+        str(path.relative_to(package)): len(path.read_text().splitlines())
+        for path in package.rglob("*.py")
+    }
+    assert sizes and max(sizes.values()) <= 2_000, sizes
+    assert len(inspect.getsource(CalendarModule.register_tools).splitlines()) <= 300

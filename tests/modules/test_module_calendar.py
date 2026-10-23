@@ -96,7 +96,7 @@ def _allow_effects_for_provider_tests(request, monkeypatch):
     """Provider-only unit tests assume an available grant; gate tests use real reads."""
     if request.cls is not TestCalendarWritePermissionEnforcement:
         monkeypatch.setattr(
-            "butlers.modules.calendar.require_permission", AsyncMock(return_value=None)
+            "butlers.modules.calendar.mutations.require_permission", AsyncMock(return_value=None)
         )
 
 
@@ -240,6 +240,15 @@ class TestModuleABCCompliance:
         assert issubclass(mod.config_schema, BaseModel)
         assert mod.dependencies == []
         assert mod.migration_revisions() is None
+
+        from butlers.modules.calendar.google import _GoogleProvider as DefinedProvider
+        from butlers.modules.calendar.models import CalendarConfig as DefinedConfig
+        from butlers.modules.registry import default_registry
+
+        assert default_registry()._modules["calendar"] is CalendarModule
+        assert CalendarModule.__module__ == "butlers.modules.calendar"
+        assert CalendarConfig is DefinedConfig
+        assert CalendarModule._PROVIDER_CLASSES["google"] is DefinedProvider
 
     def test_provider_interface_abstract_methods(self):
         abstract_methods = CalendarProvider.__abstractmethods__
@@ -759,7 +768,7 @@ class TestCalendarWritePermissionEnforcement:
     Mirrors the spawn gate: a revoked grant blocks the provider write outright
     (PermissionDenied raised before any provider call); a granted/default grant
     lets the write proceed. The gate consults public.permissions via
-    butlers.modules.calendar.require_permission, which fails open on DB error.
+    butlers.modules.calendar.mutations.require_permission, which fails open on DB error.
     """
 
     async def _make_module(self) -> tuple[CalendarModule, _ProviderDouble, _StubMCP]:
@@ -788,7 +797,7 @@ class TestCalendarWritePermissionEnforcement:
 
         _, provider, mcp = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
         ):
@@ -805,7 +814,7 @@ class TestCalendarWritePermissionEnforcement:
 
         _, provider, mcp = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
         ):
@@ -818,7 +827,7 @@ class TestCalendarWritePermissionEnforcement:
 
         _, provider, mcp = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
         ):
@@ -830,7 +839,7 @@ class TestCalendarWritePermissionEnforcement:
         """Granted (require_permission returns None) lets the create proceed."""
         _, provider, mcp = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -852,7 +861,7 @@ class TestCalendarWritePermissionEnforcement:
 
         mod, provider, _ = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
         ):
@@ -868,7 +877,7 @@ class TestCalendarWritePermissionEnforcement:
         """Granted (require_permission returns None) lets create_user_event proceed."""
         mod, provider, _ = await self._make_module()
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -939,7 +948,7 @@ class TestCalendarWritePermissionEnforcement:
         mod._resolved_calendar_id = "butlers@group.calendar.google.com"
         mod._primary_calendar_id = "owner@example.com"
         with patch(
-            "butlers.modules.calendar.require_permission",
+            "butlers.modules.calendar.mutations.require_permission",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -993,7 +1002,7 @@ class TestCalendarWriteAuditEmit:
         )
 
         with patch(
-            "butlers.modules.calendar.write_audit_entry", new_callable=AsyncMock
+            "butlers.modules.calendar.mutations.write_audit_entry", new_callable=AsyncMock
         ) as mock_emit:
             await mcp.tools["calendar_create_event"](
                 title="Meeting",
@@ -1028,7 +1037,7 @@ class TestCalendarWriteAuditEmit:
         )
 
         with patch(
-            "butlers.modules.calendar.write_audit_entry", new_callable=AsyncMock
+            "butlers.modules.calendar.mutations.write_audit_entry", new_callable=AsyncMock
         ) as mock_emit:
             await mcp.tools["calendar_delete_event"](event_id="evt-1")
 
@@ -1091,7 +1100,7 @@ class TestReversibleMutationPreStateCapture:
         mod, provider, mcp = await self._make_module_with_event(existing)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1125,7 +1134,7 @@ class TestReversibleMutationPreStateCapture:
 
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1170,7 +1179,7 @@ class TestReversibleMutationPreStateCapture:
 
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1216,7 +1225,7 @@ class TestReversibleMutationPreStateCapture:
         )
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1262,7 +1271,7 @@ class TestReversibleMutationPreStateCapture:
 
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1303,7 +1312,7 @@ class TestReversibleMutationPreStateCapture:
         mod, _, mcp = await self._make_module_with_event(created)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1324,7 +1333,7 @@ class TestReversibleMutationPreStateCapture:
         mod, _, mcp = await self._make_module_with_event(None)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2007,7 +2016,7 @@ class TestHomeCalendarResolution:
         mod, mcp = await self._register_tool_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2035,7 +2044,7 @@ class TestHomeCalendarResolution:
         mod, mcp = await self._register_tool_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2098,7 +2107,7 @@ class TestInternalProjectionPollerFailureHandling:
 
         caplog.set_level(logging.DEBUG, logger="butlers.modules.calendar")
         with patch(
-            "butlers.modules.calendar.asyncio.sleep",
+            "butlers.modules.calendar.sync.asyncio.sleep",
             new=AsyncMock(side_effect=asyncio.CancelledError),
         ):
             await mod._run_internal_projection_poller()
@@ -2118,7 +2127,7 @@ class TestInternalProjectionPollerFailureHandling:
 
         caplog.set_level(logging.DEBUG, logger="butlers.modules.calendar")
         with patch(
-            "butlers.modules.calendar.asyncio.sleep",
+            "butlers.modules.calendar.sync.asyncio.sleep",
             new=AsyncMock(side_effect=asyncio.CancelledError),
         ):
             await mod._run_internal_projection_poller()
@@ -2906,7 +2915,9 @@ class TestCreateEventAuthorship:
             butler_name="general",
         )
 
-        with patch("butlers.modules.calendar._get_session_id", return_value="test-sess-123"):
+        with patch(
+            "butlers.modules.calendar.event_tools._get_session_id", return_value="test-sess-123"
+        ):
             result = await mcp.tools["calendar_create_event"](
                 title="Meeting",
                 start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
@@ -3080,7 +3091,7 @@ class TestProjectInternalSourcesNoReminders:
 
         monkeypatch.setattr(mod, "_project_scheduler_source", project_scheduler)
         monkeypatch.setattr(
-            "butlers.modules.calendar.publish_fleet_event",
+            "butlers.modules.calendar.internal_projection.publish_fleet_event",
             publish_mock,
             raising=False,
         )
@@ -4069,7 +4080,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4099,7 +4110,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4127,7 +4138,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4146,7 +4157,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4180,7 +4191,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4212,7 +4223,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4243,7 +4254,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4268,7 +4279,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -4310,7 +4321,7 @@ class TestRecurrenceScopedMutation:
         mod, mcp = await self._make_module(provider)
         with (
             patch(
-                "butlers.modules.calendar.require_permission",
+                "butlers.modules.calendar.mutations.require_permission",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
