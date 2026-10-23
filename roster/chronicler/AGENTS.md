@@ -817,8 +817,8 @@ explicitly-opted-in surfaces"; this is one of them. The day-close narration is
 left untouched.
 
 - **Surface:** its own `[[butler.schedule]]` in `butler.toml`
-  (`chronicler_gap_interview`, `dispatch_mode="prompt"`, `cron = "0 9 * * *"` in
-  the owner's timezone). Runs after the 01:05 day-close, at a civil hour.
+  (`chronicler_gap_interview`, `dispatch_mode="job"`, `cron = "0 9 * * *"` in
+  the owner's timezone; no session, bu-idc5mx.4). Runs after the 01:05 day-close, at a civil hour.
   **Max one message per day** (dedupe key `gap_interview:asked:<YYYY-MM-DD>` in
   the KV `state` store).
 - **Trigger** (`chronicler/gap_interview.py::evaluate_gap_interview`, pure): the
@@ -830,7 +830,9 @@ left untouched.
 - **Ask:** `chronicler_gap_interview(date_label, timezone)` does the whole ask
   itself: evaluate → per-day dedupe → quiet-hours/`delivery_preferences` gate →
   deliver a **Telegram inline-button** message (✅ Work day / ✏️ Not work /
-  🚫 Dismiss). The scheduled prompt only calls this tool; it sends nothing. The
+  🚫 Dismiss). The tool and the 09:00 job share
+  `chronicler/gap_interview_job.py::ask_gap_interview`; the job computes
+  yesterday in the general timezone and sends nothing else. The
   telegram send is a self-contained `gap_interview.GapInterviewTransport` impl
   (`gap_interview_telegram.TelegramInlineButtonTransport`) that resolves the
   owner chat (`public.entity_info`) + bot token (`butler_secrets`) and POSTs
