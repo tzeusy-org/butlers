@@ -1122,7 +1122,7 @@ def test_key_absent_control_workload_and_session_network_contract():
     assert {
         peer["podSelector"]["matchLabels"]["app.kubernetes.io/component"]
         for peer in session_rule["from"]
-    } == {"session-host", "control-session-health"}
+    } == {"session-egress", "control-session-health"}
     assert all(
         peer["podSelector"]["matchLabels"]["app.kubernetes.io/instance"] == "butlers"
         for peer in session_rule["from"]

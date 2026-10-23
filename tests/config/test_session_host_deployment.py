@@ -81,6 +81,8 @@ def test_rendered_policy_union_preserves_host_egress_and_control_only_ingress():
     )
     docs = _render(
         "--set",
+        "butlersControl.enabled=true",
+        "--set",
         "sessionHost.enabled=true",
         "--set",
         "sessionHost.image=registry.invalid/host@sha256:" + "a" * 64,
@@ -135,6 +137,10 @@ def test_rendered_policy_union_preserves_host_egress_and_control_only_ingress():
         (None, 443),
     ):
         assert not allowed("session-host", peer, port)
+    assert allowed("session-egress", "butlers-control", 41199)
+    assert allowed("butlers-control", "session-egress", 41199, "Ingress")
+    assert not allowed("session-host", "butlers-control", 41199)
+    assert not allowed("butlers-control", "session-host", 41199, "Ingress")
     assert allowed("session-egress", "butlers-control", 41300, "Ingress")
     assert not allowed("session-egress", "dashboard-api", 41300, "Ingress")
     assert not allowed("session-host", "dashboard-api", 41299, "Ingress")
