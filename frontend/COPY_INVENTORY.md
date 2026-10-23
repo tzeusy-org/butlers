@@ -543,6 +543,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
+- Retry
+- All-time notification statistics are stale. The latest refresh failed.
 - Butler
 - Channel
 - Status
@@ -554,6 +556,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next
 - Notifications
 - Monitor notification delivery across all butlers.
+- All-time notification statistics unavailable
+- The statistics request failed. Try again to load the counts.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.

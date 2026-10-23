@@ -34,7 +34,15 @@ class GoalLedger:
             "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
             "WHERE n.nspname='switchboard' AND c.relname=ANY($1::text[]) "
             "AND pg_has_role(current_user,c.relowner,'MEMBER'))",
-            ["goals", "invocations", "effects", "budgets", "admission_decisions", "goal_inbox"],
+            [
+                "goals",
+                "invocations",
+                "effects",
+                "budgets",
+                "admission_decisions",
+                "goal_inbox",
+                "admission_attempt_bindings",
+            ],
         ):
             raise AdmissionUnavailable("runtime must not own or assume the ledger owner")
 
@@ -45,8 +53,15 @@ class GoalLedger:
 
     async def existing(self, source_key, attempt_id):
         row = await self.connection.fetchrow(
-            "SELECT * FROM switchboard.admission_decisions WHERE attempt_id=$1", attempt_id
+            "SELECT d.* FROM switchboard.admission_attempt_bindings a "
+            "JOIN switchboard.admission_decisions d "
+            "ON (d.id,d.source_key)=(a.decision_id,a.source_key) WHERE a.attempt_id=$1",
+            attempt_id,
         )
+        if not row:
+            row = await self.connection.fetchrow(
+                "SELECT * FROM switchboard.admission_decisions WHERE attempt_id=$1", attempt_id
+            )
         if row and row["source_key"] != source_key:
             raise AdmissionUnavailable("attempt identity belongs to another durable source")
         if not row:
@@ -56,8 +71,22 @@ class GoalLedger:
                 source_key,
             )
         if row:
+            # The caller holds both attempt and source transaction locks. Bind
+            # every returned attempt before commit, including source-deduped
+            # retries which reuse a different attempt's immutable decision.
+            await self.bind_attempt(attempt_id, source_key, row["id"])
             return AdmissionResult(row["id"], row["goal_id"], row["result"], row["reason"])
         return None
+
+    async def bind_attempt(self, attempt_id, source_key, decision_id):
+        await self.connection.execute(
+            "INSERT INTO switchboard.admission_attempt_bindings "
+            "(attempt_id,source_key,decision_id) VALUES ($1,$2,$3) "
+            "ON CONFLICT (attempt_id) DO NOTHING",
+            attempt_id,
+            source_key,
+            decision_id,
+        )
 
     async def context(self, config_digest, catalog_digest, facts, window):
         self.config_digest, self.catalog_digest = config_digest, catalog_digest
@@ -213,4 +242,5 @@ class GoalLedger:
             source.occurrence,
             self.reply_effect,
         )
+        await self.bind_attempt(attempt_id, source.key, id)
         return AdmissionResult(id, goal_id, result, reason)
