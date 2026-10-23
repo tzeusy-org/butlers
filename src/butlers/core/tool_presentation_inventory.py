@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from butlers.core.tool_catalog import RecipientParameters, StoreWriters, ToolPresentation
+from butlers.core.tool_catalog import (
+    OwnerNotifyBranch,
+    RecipientParameters,
+    StoreWriters,
+    ToolPresentation,
+)
 
 
 def _declare(
@@ -1063,6 +1068,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(
             argument_names=("recipient", "entity_id", "request_context"),
             undeterminable=True,
+            owner_notify_branch=OwnerNotifyBranch.TELEGRAM_SEND_INSIGHT_WITHOUT_PARTY,
             default_owner_condition=(
                 "only telegram send/insight after no explicit entity/recipient/context endpoint"
             ),

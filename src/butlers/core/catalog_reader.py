@@ -12,7 +12,7 @@ from butlers.core.catalog_publication import (
     verify_role,
 )
 from butlers.core.goal_admission import Capability, CatalogView, EvidenceRefused
-from butlers.core.tool_catalog import ToolCatalog
+from butlers.core.tool_catalog import OwnerNotifyBranch, RecipientParameters, ToolCatalog
 
 # An omission is not an empty eligible fleet. Membership changes require an
 # explicit checked-in migration+reader change, never a publishing caller list.
@@ -56,6 +56,31 @@ class FleetSnapshot:
             if item.domain == domain:
                 return item
         raise EvidenceRefused("catalog_unavailable")
+
+
+def _owner_notify_eligible(descriptor, domain: str) -> bool:
+    """Preserve one declared native branch, not ownership of any actual call.
+
+    The typed marker describes eligibility for a ceiling containing notify.
+    Explicit/non-owner/unknown/inherited recipients still need the actual
+    broker checks. A tool name, prose condition or marker on another tool
+    cannot turn arbitrary communication into an owner-directed capability.
+    """
+    recipients = descriptor.recipient_params
+    return (
+        descriptor.canonical_name == "notify"
+        and descriptor.module_name == "core"
+        and descriptor.group_name == "notifications"
+        and descriptor.namespace == "core.notifications"
+        and descriptor.owner_domain == domain
+        and descriptor.effect_class == "communicate"
+        and descriptor.owner_authority is False
+        and descriptor.grantable
+        and isinstance(recipients, RecipientParameters)
+        and recipients.owner_notify_branch is OwnerNotifyBranch.TELEGRAM_SEND_INSIGHT_WITHOUT_PARTY
+        and recipients.argument_names == ("recipient", "entity_id", "request_context")
+        and recipients.undeterminable is True
+    )
 
 
 class PublishedCatalogProvider:
@@ -147,9 +172,9 @@ class PublishedCatalogProvider:
                 registration.domain,
                 item.effect_class,
                 owner_authority=item.owner_authority,
-                # Conditional recipient prose is NOT executable owner authority.
-                # Broker still resolves real call recipients/selection per D4.
-                owner_default=False,
+                # Existing admission flag means a conditional branch is eligible,
+                # never that explicit or inherited recipients are the owner.
+                owner_default=_owner_notify_eligible(item, registration.domain),
                 presentable=item.grantable,
             )
             for registration in snapshot.registrations
