@@ -239,9 +239,12 @@ async def test_real_claim_reclaim_ACK_and_dispatch_witness(ledger):
     await stop.stop_goal(goal, uuid4(), "a" * 64)
     row = await owner.fetchrow("SELECT * FROM switchboard.effects WHERE id=$1", result.effect_id)
     binding = identity(row)
+    assert await stop.cancel_candidates() == (binding,)
     first = await stop.claim_cancel_work(binding, lease_seconds=1)
+    assert await stop.cancel_candidates() == ()
     assert await stop.claim_cancel_work(binding) is None
     await asyncio.sleep(1.05)  # actual DB-time lease expiry, not edited stored deadlines
+    assert await stop.cancel_candidates() == (binding,)
     second = await stop.claim_cancel_work(binding)
     assert second.generation == first.generation + 1 and second.claim_id != first.claim_id
     for invalid in (first, replace(second, identity=replace(binding, args_digest="b" * 64))):
@@ -263,6 +266,7 @@ async def test_real_claim_reclaim_ACK_and_dispatch_witness(ledger):
             )
             == "acknowledged"
         )
+    assert await stop.cancel_candidates() == ()
     # An associated effect cannot enter dispatch without a durable witness.
     _, other_goal, _, other, _ = await parked(ledger)
     async with runtime.acquire() as connection, connection.transaction():
@@ -288,6 +292,7 @@ async def test_real_claim_reclaim_ACK_and_dispatch_witness(ledger):
         )
     local = await stop.stop_goal(other_goal, uuid4(), "a" * 64)
     assert local.cancellation_work == 0
+    assert await stop.cancel_candidates() == ()
     assert (
         await owner.fetchval("SELECT status FROM switchboard.effects WHERE id=$1", other.effect_id)
         == "unknown"

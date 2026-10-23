@@ -293,6 +293,30 @@ class GoalStop:
                 raise StopUnavailable("cancel_claim_conflict")
             return CancelClaim(identity, claim_id, claimed["generation"])
 
+    async def cancel_candidates(self, *, limit: int = 4) -> tuple[CancelIdentity, ...]:
+        """Read bounded stale-able work hints; only claim_cancel_work authorizes work.
+
+        No row locks or mutations precede the later goal-first claim transaction.
+        Discovery releases its connection before any owning-domain request.
+        """
+        if type(limit) is not int or not 1 <= limit <= 4:
+            raise ValueError("invalid_cancel_limit")
+        async with self._transaction() as connection:
+            rows = await connection.fetch(
+                "SELECT w.goal_id,w.effect_id,a.owning_domain,a.action_id,"
+                "e.capability,e.args_digest FROM switchboard.goal_approval_cancel_work w "
+                "JOIN switchboard.goal_park_associations a USING(goal_id,effect_id) "
+                "JOIN switchboard.effects e ON (e.goal_id,e.id)=(w.goal_id,w.effect_id) "
+                "JOIN switchboard.goals g ON g.id=w.goal_id "
+                "WHERE g.status='stopped' AND a.dispatch_intent_id IS NULL "
+                "AND e.status IN ('requested','parked','approved','unknown') "
+                "AND (w.state='pending' OR "
+                "(w.state='claimed' AND w.lease_expires_at<=clock_timestamp())) "
+                "ORDER BY w.updated_at,w.effect_id LIMIT $1",
+                limit,
+            )
+            return tuple(_identity(row) for row in rows)
+
     async def ack_cancel_work(self, claim: CancelClaim, receipt_digest: str, outcome: str) -> None:
         """Persist an already-authenticated owning cancel/fence result, never no-row alone."""
         if type(claim) is not CancelClaim or outcome not in {"cancelled", "fenced_absent"}:

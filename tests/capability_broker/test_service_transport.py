@@ -1121,3 +1121,331 @@ async def test_server_cleanup_failure_still_exits_real_lifespan_and_reports_fail
             await asyncio.gather(writer.wait_closed(), return_exceptions=True)
         await until(lambda: private.slot_count == 0)
     assert not private.protocols
+
+
+async def test_cancellation_consumer_reclaims_exact_tuple_over_real_private_MCP(
+    material, monkeypatch
+):
+    from butlers.capability_broker.cancel_worker import CancellationWorker
+    from butlers.core.goal_stop import CancelClaim, CancelIdentity
+
+    value = call_value()
+    i = value["identity"]
+    from uuid import UUID
+
+    identity = CancelIdentity(
+        UUID(i["goal_id"]),
+        UUID(i["effect_id"]),
+        "health",
+        UUID(i["action_id"]),
+        i["capability"],
+        i["args_digest"],
+    )
+
+    # Software repository control only: not actual A0 commit/lease/RLS proof.
+    class StopControl:
+        def __init__(self):
+            self.claim = CancelClaim(identity, uuid4(), 2)
+            self.acks = []
+            self.held = False
+            self.ack_error = False
+
+        async def claim_cancel_work(self, candidate, *, lease_seconds):
+            assert candidate == identity and lease_seconds == 60
+            return self.claim
+
+        async def ack_cancel_work(self, claim, receipt, outcome):
+            assert not self.held and claim is self.claim
+            if self.ack_error:
+                raise RuntimeError("controlled_ACK_commit_unknown")
+            self.acks.append((claim, receipt, outcome))
+
+        async def cancel_candidates(self, *, limit):
+            assert limit == 4
+            return (identity,)
+
+    stop = StopControl()
+    observed = "unknown"
+    calls = []
+    phase_clock = [time.monotonic()]
+    spend_lookup_budget = False
+
+    async def operation(outgoing, peer, assertion):
+        assert not stop.held and assertion is None
+        assert peer.role == "broker-control" and peer.domain == "health"
+        assert outgoing["identity"] == i
+        calls.append(outgoing["operation"])
+        if outgoing["operation"] == "LOOKUP":
+            if spend_lookup_budget:
+                phase_clock[0] += 15
+            if observed == "unknown":
+                return {
+                    k: outgoing[k] for k in ("protocol", "operation", "request_id", "identity")
+                } | {
+                    "outcome": "unknown",
+                    "receipt": None,
+                }
+            return fixture_reply(outgoing, observed)
+        return fixture_reply(outgoing, "fenced_absent")
+
+    server_context, client_context = material()
+    server = PrivateServer(PrivateApp("health", operation), server_context, CONTROL)
+    async with server.run():
+        client = PrivateClient(
+            TransportConfig(f"https://localhost:{server.port}/mcp", SERVICE), client_context
+        )
+        try:
+            worker = CancellationWorker(stop, {"health": client})
+            # Claim-before-send crash recovery: fresh unknown is not an ACK but
+            # permits one atomic owning revalidation. Fixture receipt is NOT A2.
+            assert await worker.run_batch() == ("acknowledged",)
+            assert calls == ["LOOKUP", "CANCEL"]
+            assert len(stop.acks) == 1 and stop.acks[0][2] == "fenced_absent"
+            for outcome in ("dispatched", "committed"):
+                observed = outcome
+                calls.clear()
+                stop.acks.clear()
+                assert await worker.process(identity) == "unknown"
+                assert calls == ["LOOKUP"] and stop.acks == []
+            # An uncertain central ACK must never trigger a second CANCEL.
+            observed = "unknown"
+            calls.clear()
+            stop.ack_error = True
+            assert await worker.process(identity) == "unknown"
+            assert calls == ["LOOKUP", "CANCEL"] and stop.acks == []
+            # Advance only the worker's admission clock, not TLS/SDK timers.
+            # Fifteen seconds remaining cannot admit native10 + ACK5 + book1.
+            import butlers.capability_broker.cancel_worker as consumer
+
+            monkeypatch.setattr(consumer, "monotonic", lambda: phase_clock[0])
+            spend_lookup_budget = True
+            stop.ack_error = False
+            calls.clear()
+            assert await worker.process(identity) == "unknown"
+            assert calls == ["LOOKUP"] and stop.acks == []
+            # A missing configured service never claims/discovers transport.
+            assert await CancellationWorker(stop, {}).process(identity) == "unavailable"
+        finally:
+            await client.aclose()
+    assert not server.protocols and not server.handshakes and server.slot_count == 0
+
+
+def broker_lifecycle_listener():
+    """Real listener/MCP lifetime only; these collaborators grant no authority."""
+    from butlers.capability_broker.service import Broker
+    from butlers.capability_broker.session import BrokerSessionListener
+
+    broker = Broker(None, object(), object(), object())
+    return BrokerSessionListener(broker, host="127.0.0.1", port=0)
+
+
+@pytest.mark.parametrize("phase", ["startup", "shutdown"])
+async def test_broker_listener_repeated_cancel_retains_real_MCP_lifetime(monkeypatch, phase):
+    listener = broker_lifecycle_listener()
+    app = listener._app.app
+    original = app.router.lifespan_context
+    entered, closing, release, exited = (asyncio.Event() for _ in range(4))
+    lifecycle_tasks = []
+
+    @asynccontextmanager
+    async def tracked(application):
+        lifecycle_tasks.append(asyncio.current_task())
+        async with original(application):
+            entered.set()
+            if phase == "startup":
+                await release.wait()  # actual MCP entered; listener not yet ready
+            yield
+            closing.set()
+            if phase == "shutdown":
+                await release.wait()
+        assert asyncio.current_task() is lifecycle_tasks[0]
+        exited.set()  # actual MCP task group exited on its entering task
+
+    monkeypatch.setattr(app.router, "lifespan_context", tracked)
+    starting = asyncio.create_task(listener.start())
+    closing_call = None
+    writer = None
+    accepted_sockets = []
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+            if phase == "shutdown":
+                await starting
+                reader, writer = await asyncio.open_connection("127.0.0.1", listener.port)
+                writer.write(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                await writer.drain()
+                assert b"401" in await reader.readuntil(b"\r\n\r\n")
+                assert listener._server.server_state.connections
+                accepted_sockets = [
+                    connection.transport.get_extra_info("socket")
+                    for connection in listener._server.server_state.connections
+                ]
+                closing_call = asyncio.create_task(listener.close())
+                await closing.wait()
+            else:
+                closing_call = starting
+        closing_call.cancel("original_listener_cancel")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not closing_call.done() and not exited.is_set()
+        closing_call.cancel("second_listener_cancel")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not closing_call.done() and not exited.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError, match="original_listener_cancel"):
+            async with asyncio.timeout(6):
+                await closing_call
+        assert exited.is_set() and listener.task.done()
+        assert listener._socket.fileno() == -1
+        assert all(sock.fileno() == -1 for sock in accepted_sockets)
+        assert not listener._server.server_state.connections
+        assert not listener._server.server_state.tasks
+        assert all(task.done() for task in lifecycle_tasks)
+        await listener.close()  # same completed cleanup; no second lifetime
+        assert len(lifecycle_tasks) == 1
+    finally:
+        release.set()
+        if writer is not None:
+            writer.transport.abort()
+            await asyncio.gather(writer.wait_closed(), return_exceptions=True)
+        # Test-owned release makes even the old faulty listener finite on RED.
+        await asyncio.wait({starting, *(lifecycle_tasks)}, timeout=2)
+        if closing_call is not None:
+            await asyncio.gather(closing_call, return_exceptions=True)
+        await asyncio.gather(listener.close(), return_exceptions=True)
+        pending = {task for task in lifecycle_tasks if not task.done()}
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=2)
+
+
+@pytest.mark.parametrize("resistant", ["lifespan", "server"])
+async def test_broker_listener_resistant_shutdown_is_bounded_and_honestly_incomplete(
+    monkeypatch, resistant
+):
+    listener = broker_lifecycle_listener()
+    app = listener._app.app
+    original = app.router.lifespan_context
+    entered, closing, release, exited = (asyncio.Event() for _ in range(4))
+    lifecycle_tasks = []
+
+    async def resist():
+        closing.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue  # controlled application resistance, released by finally
+
+    @asynccontextmanager
+    async def tracked(application):
+        lifecycle_tasks.append(asyncio.current_task())
+        async with original(application):
+            entered.set()
+            yield
+            if resistant == "lifespan":
+                await resist()
+        exited.set()
+
+    monkeypatch.setattr(app.router, "lifespan_context", tracked)
+    await listener.start()
+    actual_shutdown = listener._server.shutdown
+
+    async def shutdown(*args, **kwargs):
+        await actual_shutdown(*args, **kwargs)
+        if resistant == "server":
+            await resist()
+
+    monkeypatch.setattr(listener._server, "shutdown", shutdown)
+    call = asyncio.create_task(listener.close())
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(3):
+            await closing.wait()
+        done, _ = await asyncio.wait({call}, timeout=6.5)
+        assert call in done, "shutdown exceeded its original absolute six-second bound"
+        with pytest.raises(TimeoutError, match="cleanup incomplete"):
+            await call
+        assert time.monotonic() - started < 6.5
+        assert listener._socket.fileno() == -1
+        assert not listener._server.server_state.connections
+        assert not listener._server.server_state.tasks
+        assert listener.cleanup_complete is False
+        assert not listener.task.done() or not exited.is_set()
+        # Repeated close must observe the original failed cleanup, not reset it.
+        again = time.monotonic()
+        with pytest.raises(TimeoutError, match="cleanup incomplete"):
+            await listener.close()
+        assert time.monotonic() - again < 0.2
+    finally:
+        release.set()
+        await asyncio.wait({call, listener.task, *lifecycle_tasks}, timeout=2)
+        await asyncio.gather(call, return_exceptions=True)
+    assert listener.task.done() and exited.is_set()
+
+
+@pytest.mark.parametrize("failure", ["entry", "shutdown"])
+async def test_broker_listener_stage_error_preserves_error_and_attempts_all_resources(
+    monkeypatch, failure
+):
+    listener = broker_lifecycle_listener()
+    app = listener._app.app
+    original = app.router.lifespan_context
+    original_error = RuntimeError("synthetic listener stage failed")
+    exited = asyncio.Event()
+    lifecycle_tasks = []
+    accepted_sockets = []
+    writer = None
+
+    @asynccontextmanager
+    async def tracked(application):
+        lifecycle_tasks.append(asyncio.current_task())
+        try:
+            async with original(application):
+                if failure == "entry":
+                    raise original_error
+                yield
+        finally:
+            assert asyncio.current_task() is lifecycle_tasks[0]
+            exited.set()
+
+    monkeypatch.setattr(app.router, "lifespan_context", tracked)
+    try:
+        # Actual AnyIO startup wraps an entry failure in its task-group error.
+        # Preserve that real group and the exact original leaf, never flatten it.
+        error_type = BaseExceptionGroup if failure == "entry" else RuntimeError
+        with pytest.raises(error_type) as caught:
+            await listener.start()
+            reader, writer = await asyncio.open_connection("127.0.0.1", listener.port)
+            writer.write(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            assert b"401" in await reader.readuntil(b"\r\n\r\n")
+            accepted_sockets = [
+                connection.transport.get_extra_info("socket")
+                for connection in listener._server.server_state.connections
+            ]
+            assert accepted_sockets
+
+            async def failed_shutdown(*args, **kwargs):
+                raise original_error  # earlier stage fails BEFORE transport teardown
+
+            monkeypatch.setattr(listener._server, "shutdown", failed_shutdown)
+            await listener.close()
+        if failure == "entry":
+            assert caught.value.exceptions == (original_error,)
+        else:
+            assert caught.value is original_error
+        assert exited.is_set() and listener.task.done()
+        assert all(task.done() for task in lifecycle_tasks)
+        assert listener._socket.fileno() == -1
+        assert all(sock.fileno() == -1 for sock in accepted_sockets)
+        assert not listener._server.server_state.connections
+        assert not listener._server.server_state.tasks
+        assert listener.cleanup_complete is False  # error is never reported as success
+    finally:
+        if writer is not None:
+            writer.transport.abort()
+            await asyncio.gather(writer.wait_closed(), return_exceptions=True)
+        await asyncio.gather(listener.close(), return_exceptions=True)

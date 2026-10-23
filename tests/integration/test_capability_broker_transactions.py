@@ -173,3 +173,93 @@ async def test_runtime_role_and_token_revocation_are_checked_on_real_connection(
     with pytest.raises(BrokerRefused) as revoked:
         await broker.call(goal, token, cap.mcp_name, {})
     assert revoked.value.reason is Reason.AUTHENTICATION and domain.calls == []
+
+
+async def test_real_token_issue_race_hash_only_commit_and_terminal_revocation(ledger):
+    from butlers.capability_broker.contracts import token_hash
+    from butlers.core.goal_admission import (
+        Capability as AdmissionCapability,
+    )
+    from butlers.core.goal_admission import (
+        CatalogView,
+        GoalAdmission,
+        SourceRef,
+    )
+    from tests.switchboard.goal_admission_fixtures import Sources
+
+    owner, runtime = ledger
+    cap = Capability(
+        "health", "read", "read", "trusted", (), recipient_params=RecipientParameters()
+    )
+
+    class CanonicalCatalog:
+        async def load(self, connection):
+            return CatalogView(
+                "controlled-session-v1", (AdmissionCapability(cap.identity, "health", "read"),)
+            )
+
+    admitted = await GoalAdmission(
+        runtime, Sources(Evidence("message", "controlled-owner", owner=True)), CanonicalCatalog()
+    ).admit_submission(SourceRef("message", str(uuid4())), uuid4())
+    goal, invocation = admitted.goal_id, uuid4()
+    await owner.execute("UPDATE switchboard.goals SET status='running' WHERE id=$1", goal)
+    grants = encode_grants((Grant(cap.identity),))
+    await owner.execute(
+        "INSERT INTO switchboard.invocations "
+        "(id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) "
+        "VALUES ($1,$2,0,'lead',0,'launching',$3::jsonb,$4,5,500)",
+        invocation,
+        goal,
+        grants,
+        digest(grants),
+    )
+    domain = ControlledDomain()
+    broker = Broker(
+        runtime,
+        ControlledAuthority(cap),
+        domain,
+        AssertionSigner("software-test", Ed25519PrivateKey.generate()),
+    )
+    results = await asyncio.gather(
+        broker.issue_invocation_token(goal, invocation),
+        broker.issue_invocation_token(goal, invocation),
+        return_exceptions=True,
+    )
+    tokens = [result for result in results if isinstance(result, str)]
+    assert len(tokens) == 1
+    refused = [result for result in results if isinstance(result, BrokerRefused)]
+    assert len(refused) == 1 and refused[0].reason is Reason.AUTHENTICATION
+    token = tokens[0]
+    async with runtime.acquire() as readback:
+        row = await readback.fetchrow(
+            "SELECT token_hash,status FROM switchboard.invocations WHERE goal_id=$1 AND id=$2",
+            goal,
+            invocation,
+        )
+        assert row["token_hash"] == token_hash(token) and row["token_hash"] != token
+        assert row["status"] == "launching"
+    # Issuance does not fabricate the runner's successful launch transition.
+    with pytest.raises(BrokerRefused):
+        await broker.authenticate(goal, token)
+    await owner.execute(
+        "UPDATE switchboard.invocations SET status='running' WHERE id=$1", invocation
+    )
+    assert (await broker.call(goal, token, cap.identity, {})).status == "returned"
+    with pytest.raises(BrokerRefused):
+        await broker.revoke_invocation_token(goal, invocation)
+    await owner.execute(
+        "UPDATE switchboard.invocations SET status='returned' WHERE id=$1", invocation
+    )
+    await broker.revoke_invocation_token(goal, invocation)
+    async with runtime.acquire() as readback:
+        assert (
+            await readback.fetchval(
+                "SELECT token_hash FROM switchboard.invocations WHERE id=$1", invocation
+            )
+            is None
+        )
+    with pytest.raises(BrokerRefused):
+        await broker.issue_invocation_token(goal, invocation)
+    with pytest.raises(BrokerRefused):
+        await broker.call(goal, token, cap.identity, {})
+    assert len(domain.calls) == 1

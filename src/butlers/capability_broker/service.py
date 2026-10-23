@@ -43,6 +43,35 @@ class Broker:
         if self.signer is None or self.authorities is None or self.domains is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
 
+    async def issue_invocation_token(self, goal_id: UUID, invocation_id: UUID) -> str:
+        """Private runner integration; never an MCP/HTTP token-issuance route.
+
+        The runner must first commit its authenticated invocation/goal mapping.
+        Only the resulting hash is persisted, and plaintext leaves this method
+        only after confirmed commit. No automatic retry follows commit loss.
+        """
+        self.require_available()
+        try:
+            async with asyncio.timeout(self.transaction_timeout):
+                async with self.pool.acquire() as connection, connection.transaction():
+                    token = await BrokerLedger(connection).issue_token(goal_id, invocation_id)
+            return token
+        except BrokerRefused:
+            raise
+        except Exception:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+
+    async def revoke_invocation_token(self, goal_id: UUID, invocation_id: UUID) -> None:
+        """Private runner completion hook; failed persistence remains a refusal."""
+        try:
+            async with asyncio.timeout(self.transaction_timeout):
+                async with self.pool.acquire() as connection, connection.transaction():
+                    await BrokerLedger(connection).revoke_token(goal_id, invocation_id)
+        except BrokerRefused:
+            raise
+        except Exception:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+
     async def authenticate(self, goal_id: UUID, token: str) -> None:
         self.require_available()
         async with asyncio.timeout(self.transaction_timeout):

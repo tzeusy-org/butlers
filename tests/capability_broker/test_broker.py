@@ -768,3 +768,170 @@ def test_exposure_rule_cannot_remove_independent_refusals(effect, origin, depth,
     decision = decide(principal, capability, Grant(capability.identity), evidence)
     assert decision.disposition is Disposition.REFUSE
     assert decision.allow_standing_rule is False
+
+
+class TokenConnection(Connection):
+    """Mutable software row boundary, including actual token-hash selection.
+
+    This records SQL state transitions; PostgreSQL locks/RLS/rollback remain
+    separate hosted obligations.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.token_digest = None
+        self.invocation_status = "launching"
+        self.ceiling = encode_grants(self.grants)
+
+    def invocation_row(self):
+        return (
+            dict(
+                id=self.invocation,
+                goal_id=self.goal,
+                status=self.invocation_status,
+                token_hash=self.token_digest,
+                lease_valid=True,
+                depth=0,
+                lead_epoch=0,
+                exposed=False,
+                grant_snapshot=encode_grants(self.grants),
+                grant_digest=digest(encode_grants(self.grants)),
+            )
+            | self.invocation_changes
+        )
+
+    async def fetch(self, sql, *args):
+        assert "token_hash=$2" in sql
+        if args != (self.goal, self.token_digest) or self.token_digest is None:
+            return []
+        return [self.invocation_row()]
+
+    async def fetchrow(self, sql, *args):
+        if "FROM switchboard.invocations" in sql:
+            assert args == (self.goal, self.invocation)
+            return self.invocation_row()
+        if "UPDATE switchboard.invocations SET token_hash" in sql:
+            assert args[:2] == (self.goal, self.invocation)
+            if len(args) == 3:
+                if self.token_digest is not None:
+                    return None
+                self.token_digest = args[2]
+            else:
+                assert (
+                    "AND status IN ('returned','failed','timed_out','stopped','escalated')" in sql
+                )
+                if self.invocation_status not in {
+                    "returned",
+                    "failed",
+                    "timed_out",
+                    "stopped",
+                    "escalated",
+                }:
+                    return None
+                self.token_digest = None
+            self.events.append("token_write")
+            return {"id": self.invocation}
+        row = await super().fetchrow(sql, *args)
+        if "FROM switchboard.goals" in sql:
+            row["ceiling"] = self.ceiling
+        return row
+
+
+def token_broker():
+    broker, _, authority, _, _ = build()
+    connection = TokenConnection()
+    domains = Domains(connection)
+    broker.pool, broker.domains = Pool(connection), domains
+    return broker, connection, authority, domains
+
+
+async def test_real_session_listener_uses_issued_hash_grants_and_live_revocation():
+    import httpx
+
+    from butlers.capability_broker.contracts import token_hash
+    from butlers.capability_broker.session import BrokerSessionListener
+
+    broker, connection, _, domains = token_broker()
+    token = await broker.issue_invocation_token(connection.goal, connection.invocation)
+    assert connection.token_digest == token_hash(token) and connection.token_digest != token
+    assert connection.events[-1] == "commit"
+    connection.invocation_status = "running"
+    listener = BrokerSessionListener(broker, host="127.0.0.1", port=0)
+    await listener.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{listener.port}", timeout=3, follow_redirects=False
+        ) as client:
+            path = f"/goals/{connection.goal}/mcp/"
+            headers = {
+                "Authorization": "Bearer " + token,
+                "Accept": "application/json,text/event-stream",
+            }
+            listing = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+            assert (await client.post(path, json=listing)).status_code == 401
+            listed = await client.post(path, json=listing, headers=headers)
+            assert listed.status_code == 200
+            assert [t["name"] for t in listed.json()["result"]["tools"]] == ["health__read"]
+            call = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "health__read", "arguments": {"x": 1}},
+            }
+            returned = await client.post(path, json=call, headers=headers)
+            assert returned.status_code == 200 and returned.json()["result"]["isError"] is False
+            assert connection.used == 1 and len(domains.calls) == 1
+            assert (await client.post("/mcp", json=listing, headers=headers)).status_code == 401
+            connection.epoch = 1
+            assert (await client.post(path, json=listing, headers=headers)).status_code == 401
+            # A child retains its token when the lead epoch changes.
+            connection.invocation_changes = {"depth": 1}
+            assert (await client.post(path, json=listing, headers=headers)).status_code == 200
+            # The runner owns terminal status and process/budget settlement.
+            # A live row cannot be cleared and then silently issued a new token.
+            with pytest.raises(BrokerRefused):
+                await broker.revoke_invocation_token(connection.goal, connection.invocation)
+            connection.invocation_status = "returned"
+            assert (await client.post(path, json=call, headers=headers)).status_code == 401
+            await broker.revoke_invocation_token(connection.goal, connection.invocation)
+            assert connection.token_digest is None
+            with pytest.raises(BrokerRefused):
+                await broker.issue_invocation_token(connection.goal, connection.invocation)
+            assert (await client.post(path, json=call, headers=headers)).status_code == 401
+            assert connection.used == 1 and len(domains.calls) == 1
+    finally:
+        await listener.close()
+    assert listener.task.done()
+    with pytest.raises(httpx.ConnectError):
+        async with httpx.AsyncClient(timeout=1) as client:
+            await client.get(f"http://127.0.0.1:{listener.port}/health")
+
+
+async def test_token_issuer_refuses_invalid_lineage_reissue_and_uncertain_commit():
+    from butlers.core.goal_admission import encode_grants
+
+    for mutation in (
+        lambda c: setattr(c, "status", "stopped"),
+        lambda c: setattr(c, "epoch", 1),
+        lambda c: setattr(c, "ceiling", encode_grants((Grant("other__tool"),))),
+        lambda c: setattr(c, "invocation_status", "returned"),
+        lambda c: setattr(c, "invocation_changes", {"grant_digest": "corrupt"}),
+        lambda c: setattr(c, "invocation_changes", {"lease_valid": False}),
+    ):
+        broker, connection, _, domains = token_broker()
+        mutation(connection)
+        with pytest.raises(BrokerRefused):
+            await broker.issue_invocation_token(connection.goal, connection.invocation)
+        assert connection.token_digest is None and not domains.calls
+    broker, connection, _, _ = token_broker()
+    first = await broker.issue_invocation_token(connection.goal, connection.invocation)
+    with pytest.raises(BrokerRefused):
+        await broker.issue_invocation_token(connection.goal, connection.invocation)
+    from butlers.capability_broker.contracts import token_hash
+
+    assert connection.token_digest == token_hash(first)
+    broker, connection, _, domains = token_broker()
+    connection.fail_commit = True
+    with pytest.raises(BrokerRefused, match="broker_unavailable"):
+        await broker.issue_invocation_token(connection.goal, connection.invocation)
+    assert not domains.calls

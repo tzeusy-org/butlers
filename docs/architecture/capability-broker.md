@@ -53,3 +53,72 @@ The complete RFC0038 broker acceptance criteria, positive UnitB/replay producer,
 A2 storage and receipt projection, A4 worker, genuine PostgreSQL tests, exact-head
 hosted/protected evidence, provisioning and activation remain required. This
 foundation alone is not feature completion.
+
+
+## Session endpoint and invocation credentials
+
+`BrokerSessionListener` owns a separate broker-only socket using the existing
+control listener's finite startup/shutdown lifecycle and the real FastMCP ASGI
+lifespan. It mounts only `/goals/<goal-id>/mcp/`; every HTTP request authenticates
+before MCP processing. Discovery and calls re-read the invocation and current
+catalog in their own goal-locked transactions. The existing `KEY_ABSENT_STAGE`
+command still creates only `SessionRefusalListener`. No new deployment profile,
+key resolver, ambient broker, public token route, or activation is provided.
+
+The broker's private `issue_invocation_token` hook issues 256 random bits for an
+already committed, runner-owned **launching** invocation. It checks the actual
+Switchboard role, locks goal then invocation, requires a running goal, current
+lead epoch (children remain independent), valid lease and canonical stored grant
+within the goal ceiling. A conditional update stores only the token hash.
+Plaintext is returned only after confirmed commit. Repeated issuance while that
+hash exists refuses; an uncertain commit returns no credential and is not retried.
+The runner must finish or recover that invocation through its own lifecycle.
+
+`revoke_invocation_token` clears the hash only after the runner records one of
+its existing terminal statuses. It refuses a still-live invocation rather than
+making it eligible for a replacement token. Stop already clears credentials
+under the same goal-first order. These private methods do not create invocation
+rows, authenticate a runner request, write sandbox MCP configurations, terminate
+processes, supply D8 tools, or perform invocation budget accounting. Those actual
+runner/session-to-goal producers remain required. Missing catalog publication,
+selection/recipient/rule authority and owning execution adapters likewise remain
+fail-closed dependencies; injecting a test implementation establishes none of
+that production authority.
+
+
+## Bounded Stop cancellation consumer
+
+`GoalStop.cancel_candidates()` reads at most four stale-able pending or expired
+claim identities under the existing role/schema checks and five-second local
+transaction bound. Discovery mutates/locks no work row; the later goal-first
+claim revalidates the actual stopped goal, dispatch witness, effect and tuple.
+
+`CancellationWorker.run_batch()` is an explicitly invoked, sequential finite
+consumer. It constructs no transport, background task or scheduler. The isolated
+resource owner must provide actual purpose-bound `PrivateClient` instances for
+fixed domains. First-generation claims may CANCEL once; reclaimed generations
+first LOOKUP the original tuple. A fresh pending/approved or unknown/null LOOKUP
+may ask the owning A2 producer to atomically revalidate and CANCEL once. Unknown
+is never an absence or completion proof. Dispatched/committed/refused LOOKUP,
+malformed RPC/receipt, transport failure and uncertain ACK cause no further
+request in that item. Only a matching cancelled/fenced-absent receipt reaches
+`ack_cancel_work` with the original local claim; A0 rechecks the current DB lease,
+generation, stopped goal, tuple and no-dispatch witness before committing ACK.
+
+The consumer admits whole native phases: existing five-second SQL operations,
+existing ten-second private calls including their cleanup, five seconds for ACK
+and one second bookkeeping reserve. Item admission is bounded by 30 seconds;
+batch admission by 125 seconds. The worst-case reclaimed path need not make
+progress in one item: if the complete next phase plus ACK reserve does not fit,
+it remains unknown rather than clipping a transport timeout or refreshing grace.
+Client idle cleanup remains the resource owner's separate five-second phase,
+after the consumer is terminal. No automatic retry, lease renewal or release,
+new daemon/profile attachment, or global Stop-completed response is introduced.
+
+Real TLS software controls exercise this bridge using explicitly synthetic
+owning receipts and a repository control. They establish neither A2 durable
+commit authority nor SQL claim/ACK/race correctness. The actual A2 gate/tombstone
+producer, authenticated approved replay/executor handoff, isolated production
+profile and resource-owner attachment, genuine role/PG/transport races, runner
+termination and terminal hosted/protected evidence remain mandatory before
+production enablement or full broker acceptance.

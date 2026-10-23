@@ -11,6 +11,7 @@ import os
 import signal
 import socket
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -107,12 +108,25 @@ async def session_refusal_app(scope: Any, receive: Any, send: Any) -> None:
 class SessionRefusalListener:
     """Own a separate socket and bounded lifecycle for the stage listener."""
 
+    _lifespan = "off"
+
+    def _application(self):
+        return session_refusal_app
+
+    def _application_lifespan(self):
+        return nullcontext()
+
     def __init__(self, *, host: str, port: int = CONTROL_SESSION_PORT) -> None:
         self.host = host
         self.port = port
         self.task: asyncio.Task | None = None
         self._server: uvicorn.Server | None = None
         self._socket: socket.socket | None = None
+        self._closing: asyncio.Task | None = None
+        self._stopping = False
+        self._lifetime_complete = False
+        self._server_closers: dict[asyncio.Server, asyncio.Task] = {}
+        self.cleanup_complete: bool | None = None
 
     async def start(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -124,41 +138,137 @@ class SessionRefusalListener:
             sock.listen(128)
             self._server = uvicorn.Server(
                 uvicorn.Config(
-                    session_refusal_app,
-                    lifespan="off",
+                    self._application(),
+                    lifespan=self._lifespan,
                     access_log=False,
                     log_level="warning",
                     timeout_graceful_shutdown=5,
                 )
             )
-            self.task = asyncio.create_task(self._server.serve(sockets=[sock]))
+            self.task = asyncio.create_task(self._run())
             async with asyncio.timeout(10):
                 while not self._server.started:
                     if self.task.done():
                         await self.task
                         raise RuntimeError("control session listener exited during startup")
                     await asyncio.sleep(0.01)
-        except BaseException:
-            await self.close()
+        except BaseException as original:
+            try:
+                await self.close()
+            except BaseException:
+                original.add_note("control session startup cleanup failed or was interrupted")
             raise
 
-    async def close(self) -> None:
-        try:
-            if self._server is not None:
-                self._server.should_exit = True
-            if self.task is not None:
+    async def _run(self) -> None:
+        # The real application context enters/exits on this same retained task.
+        # Uvicorn's own lifespan is off: it otherwise hides a detached ASGI task.
+        error = None
+        async with self._application_lifespan():
+            try:
+                if not self._stopping:
+                    await self._server.serve(sockets=[self._socket])
+            except BaseException as exc:
+                error = exc
+        self._lifetime_complete = True
+        if error is not None:
+            raise error
+
+    def _stop_resources(self, *, force: bool) -> bool:
+        """Attempt EVERY owned resource; failures cannot skip later attempts."""
+        failed = False
+        server = self._server
+        if server is not None:
+            server.should_exit = True
+            for listener in getattr(server, "servers", ()):
                 try:
-                    async with asyncio.timeout(6):
-                        await asyncio.shield(self.task)
-                except TimeoutError:
-                    self.task.cancel()
-                    try:
-                        await self.task
-                    except asyncio.CancelledError:
-                        pass
-        finally:
-            if self._socket is not None:
+                    listener.close()
+                    if listener not in self._server_closers:
+                        self._server_closers[listener] = asyncio.create_task(listener.wait_closed())
+                except Exception:
+                    failed = True
+            for connection in tuple(server.server_state.connections):
+                try:
+                    if force:
+                        connection.transport.abort()
+                    else:
+                        connection.shutdown()
+                except Exception:
+                    failed = True
+            if force:
+                for task in tuple(server.server_state.tasks):
+                    if not task.cancelling():
+                        task.cancel()
+        if self._socket is not None:
+            try:
                 self._socket.close()
+            except OSError:
+                failed = True
+        return failed
+
+    async def _close(self, deadline: float) -> None:
+        self._stopping = True
+        failed = self._stop_resources(force=False)
+        loop = asyncio.get_running_loop()
+        if self.task is not None and not self.task.done():
+            # Preserve the existing five-second graceful phase and reserve the
+            # final second of the ORIGINAL six-second bound for forced cleanup.
+            await asyncio.wait({self.task}, timeout=max(0, deadline - 1 - loop.time()))
+        if self.task is not None and not self.task.done():
+            failed |= self._stop_resources(force=True)
+            if not self.task.cancelling():
+                self.task.cancel()  # never re-cancel an in-progress lifespan exit
+        # Abort accepted connections even after an earlier shutdown/entry error.
+        failed |= self._stop_resources(force=True)
+        owned = set(self._server_closers.values())
+        if self.task is not None:
+            owned.add(self.task)
+        if self._server is not None:
+            owned.update(self._server.server_state.tasks)
+        if owned:
+            _, pending = await asyncio.wait(owned, timeout=max(0, deadline - loop.time()))
+            failed |= bool(pending)
+        original_error = None
+        for task in owned:
+            if task.done() and not task.cancelled():
+                error = task.exception()
+                if error is not None:
+                    failed = True
+                    if original_error is None or task is self.task:
+                        original_error = error
+        if self.task is not None:
+            failed |= not self._lifetime_complete
+        if self._server is not None:
+            failed |= bool(self._server.server_state.connections or self._server.server_state.tasks)
+        self.cleanup_complete = not failed
+        if original_error is not None:
+            raise original_error
+        if failed:
+            # Pending task references remain owned above; cancellation/abort is
+            # never presented as proof that application cleanup actually ended.
+            raise TimeoutError("control session cleanup incomplete")
+
+    async def close(self) -> None:
+        if self._closing is None:
+            deadline = asyncio.get_running_loop().time() + 6
+            self._closing = asyncio.create_task(self._close(deadline))
+        original_cancel = None
+        while not self._closing.done():
+            try:
+                await asyncio.shield(self._closing)
+            except asyncio.CancelledError as exc:
+                if original_cancel is None:
+                    original_cancel = exc
+            except Exception:
+                break
+        try:
+            self._closing.result()
+        except BaseException:
+            if original_cancel is not None:
+                original_cancel.add_note("control session cleanup incomplete")
+                raise original_cancel
+            raise
+        if original_cancel is not None:
+            raise original_cancel
 
 
 async def run_control(config_dir: Path, *, profile: str, session_host: str) -> None:

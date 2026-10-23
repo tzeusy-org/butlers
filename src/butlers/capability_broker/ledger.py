@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from butlers.core.goal_admission import decode_grants, digest, encode_grants
+from butlers.core.goal_admission import decode_grants, digest, encode_grants, intersect
 from butlers.core.goal_ledger import GoalLedger
 
 from .contracts import (
@@ -21,6 +21,7 @@ from .contracts import (
     Principal,
     Reason,
     Reservation,
+    mint_token,
     token_hash,
 )
 from .domains import Authorities
@@ -30,6 +31,94 @@ from .policy import bind_recipient_policy, decide, grantable
 class BrokerLedger:
     def __init__(self, connection: asyncpg.Connection):
         self.connection = connection
+
+    async def issue_token(self, goal_id: UUID, invocation_id: UUID) -> str:
+        """Issue once for an existing runner-owned launching invocation.
+
+        This never creates an invocation or accepts a grant/epoch from a caller.
+        The service returns plaintext only after this transaction commits. A
+        lost commit cannot be recovered by issuing a second bearer credential.
+        """
+        await GoalLedger(self.connection).verify_role()
+        await self.connection.execute("SET LOCAL lock_timeout='5s'")
+        await self.connection.execute("SET LOCAL statement_timeout='5s'")
+        goal = await self.connection.fetchrow(
+            "SELECT id,status,ceiling FROM switchboard.goals WHERE id=$1 FOR UPDATE", goal_id
+        )
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        row = await self.connection.fetchrow(
+            "SELECT *,lease_expires_at IS NULL OR lease_expires_at>clock_timestamp() "
+            "AS lease_valid FROM switchboard.invocations WHERE goal_id=$1 AND id=$2 FOR UPDATE",
+            goal_id,
+            invocation_id,
+        )
+        if (
+            row is None
+            or row["status"] != "launching"
+            or row["token_hash"] is not None
+            or row["lease_valid"] is not True
+            or type(row["depth"]) is not int
+            or row["depth"] not in (0, 1)
+        ):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        if row["depth"] == 0:
+            epoch = await self.connection.fetchval(
+                "SELECT max(lead_epoch) FROM switchboard.invocations WHERE goal_id=$1 AND depth=0",
+                goal_id,
+            )
+            if epoch != row["lead_epoch"]:
+                raise BrokerRefused(Reason.EPOCH)
+        try:
+            snapshot = row["grant_snapshot"]
+            grants = decode_grants(snapshot)
+            ceiling = decode_grants(goal["ceiling"])
+            if (
+                encode_grants(grants) != snapshot
+                or digest(snapshot) != row["grant_digest"]
+                or intersect(grants, ceiling) != grants
+            ):
+                raise ValueError("invalid_grant_snapshot")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise BrokerRefused(Reason.AUTHENTICATION) from None
+        token, hashed = mint_token()
+        updated = await self.connection.fetchrow(
+            "UPDATE switchboard.invocations SET token_hash=$3,updated_at=now() "
+            "WHERE goal_id=$1 AND id=$2 AND status='launching' AND token_hash IS NULL RETURNING id",
+            goal_id,
+            invocation_id,
+            hashed,
+        )
+        if updated is None:
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        return token
+
+    async def revoke_token(self, goal_id: UUID, invocation_id: UUID) -> None:
+        """Clear credentials after the runner commits a terminal invocation.
+
+        Stop uses this same goal-first order and clears all invocation tokens.
+        Requiring the terminal row prevents a still-launching invocation from
+        obtaining a replacement token after revocation. Ending the process and
+        recording its outcome/budget accounting remain the runner's job.
+        A missing goal/invocation is not silently reported as a completed revoke.
+        """
+        await GoalLedger(self.connection).verify_role()
+        await self.connection.execute("SET LOCAL lock_timeout='5s'")
+        await self.connection.execute("SET LOCAL statement_timeout='5s'")
+        goal = await self.connection.fetchrow(
+            "SELECT id FROM switchboard.goals WHERE id=$1 FOR UPDATE", goal_id
+        )
+        if goal is None:
+            raise BrokerRefused(Reason.GOAL)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.invocations SET token_hash=NULL,updated_at=now() "
+            "WHERE goal_id=$1 AND id=$2 "
+            "AND status IN ('returned','failed','timed_out','stopped','escalated') RETURNING id",
+            goal_id,
+            invocation_id,
+        )
+        if row is None:
+            raise BrokerRefused(Reason.AUTHENTICATION)
 
     async def authenticate(self, goal_id: UUID, token: str) -> Principal:
         hashed = token_hash(token)
