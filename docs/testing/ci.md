@@ -4,7 +4,7 @@
 > **Audience:** Agents and developers choosing test scope, running gates or changing CI.
 > **Prerequisites:** [Testing](index.md).
 
-Moved verbatim from `AGENTS.md` (Test Scope Policy and the CI bullets of "PRs, merge route and CI guards").
+Originally moved from `AGENTS.md` (Test Scope Policy and the CI bullets of "PRs, merge route and CI guards").
 `AGENTS.md` keeps a short summary and links here.
 
 ## Agent test ladder
@@ -66,8 +66,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    make test-ci-integration
    ```
 
-   CI also runs `guards` for static checks, `inventory` for fresh inventory/budgets, and
-   `check-preflight` for complete-identity reconciliation and smoke/release evidence,
+   CI also runs `guards` for static checks, `check-preflight` for the lane-group
+   totals, per-lane budgets and smoke/release evidence,
    plus the fail-closed `check` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
    Docker-backed lane at a time, and only one owner may run a broad local lane
@@ -89,7 +89,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
    a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
    Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `inventory` enforces the freshly collected inventory against the per-lane
+   `check-preflight` enforces one fresh `--collect-only` count per lane against
+   the sum of that lane's pytest-split group counts and against the per-lane
    collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
@@ -111,9 +112,11 @@ No local gate command matches CI's scope; check which command produced a number.
 | --- | --- |
 | `make test-qg` (and `test-qg-serial`, `test-qg-parallel`) | `pytest tests/` minus `test_db.py`, `test_migrations.py`, `tests/e2e` |
 | low-context backend gate | `pytest tests/ --ignore=tests/e2e` (~40 min contended, ~21 min alone) |
-| CI `check-unit-N` / `check-integration-N` | `scripts/check_ci_test_shards.py run --lane {unit,integration} --shard N` |
+| CI `check-unit (N)` / `check-integration (N)` | `scripts/ci_lanes.py run --lane {unit,integration} --group N --output DIR` |
 | `make lint` | `ruff check src/ tests/ roster/ scripts/`, package-layer contracts, pinned secret/workflow checks and detector self-tests; Ruff omits root `conftest.py` |
 
+- `scripts/check_ci_test_shards.py` and the computed inventory/partition tooling remain only for
+  the manual shard-watchdog diagnostic (bu-29wkwj.8); required and nightly lanes use `ci_lanes.py`.
 - `tests/` does not collect `roster/`: they are sibling roots, so a `tests/`-rooted "full gate" never
   runs `roster/<butler>/tests/`. Add `roster/` whenever the diff touches a roster butler; `pytest
   tests/ --ignore=tests/e2e` plus `pytest roster/` covers CI's Python scope between them.
@@ -218,7 +221,7 @@ guidance. The required twenty-natural-push p95 below 30 seconds remains unearned
 ## Cheap standing pre-push checks
 
 ```bash
-make check-ci-test-shards     # fresh actual pytest inventory, exact whole-file5+6 assignment and unchanged budgets
+make check-test-budget        # fresh collect-only count per lane against scripts/test-budget-baseline.json
 make check-guards             # every `guards` CI step (dashes, spec, names, frontend-copy inventory, ...)
 ```
 
@@ -227,28 +230,30 @@ make check-guards             # every `guards` CI step (dashes, spec, names, fro
 
 CI environment restoration is advisory: `scripts/ci_environment.py prepare`
 always performs finite frozen editable repair and validates the current real
-venv/src. Never run it on a linked/shared venv. Shard duration receipts retain
-exact membership and lexical UNKNOWN fallback; worker/core experiment options
-retain normal defaults until complete comparable evidence selects a change.
-[CI shard overhead](../operations/ci-shard-overhead.md) defines the actual
-receipt scopes and original pending hard targets. Preserve the test ladder,
-watchdogs, healthy-workload floors, full merge-group and coverage publisher.
+venv/src. Never run it on a linked/shared venv. Current backend groups publish
+collected counts and use `.test_durations` only for balancing. The computed-runner
+receipts and lexical UNKNOWN fallback in
+[CI shard overhead](../operations/ci-shard-overhead.md) are historical or belong
+to the retained manual watchdog diagnostic, not required/nightly lane evidence. Preserve
+the test ladder, watchdogs, healthy-workload floors, full merge-group and coverage publisher.
 
 ## CI fan-out and guard predicates
 
-- CI fan-out: route→inventory→five unit/six integration matrix children→complete-identity `check-preflight`, then
+- CI fan-out: route→five unit/six integration pytest-split groups→lane totals, budgets and dedicated
+  smoke/release evidence in `check-preflight`, then
   the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
   `always()` alone does not enforce prerequisites: route and guards verdicts
-  must succeed, inventory succeeds for full/main-push and skips only for scoped/docs,
-  and preflight is checked independently of the heavy-shard consistency state.
+  must succeed, and preflight is checked independently of the heavy-shard consistency state.
   Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
   success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
   classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
   accept success and deny skips until an explicit policy is added. Malformed or missing results,
   classifier outputs or planner paths fail closed.
   Lock, lint, format and SQL safety run in guards with their original scopes;
-  fresh inventory/budgets run in the early inventory job;
-  exact-once and smoke/release evidence remain in preflight. `make check-guards` includes the same
+  the lane-group totals (each lane's pytest-split group counts against one fresh
+  `--collect-only` count), budgets and smoke/release evidence run in preflight. Lane groups
+  balance on the committed `.test_durations`; the nightly `durations-refresh` job opens a PR
+  to update it (bu-29wkwj.2). `make check-guards` includes the same
   nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).
   Never add `!cancelled()` to it (a skipped check can read green to branch protection). Never use
   `--cov-append` across jobs, and give artifact uploads `overwrite: true`.

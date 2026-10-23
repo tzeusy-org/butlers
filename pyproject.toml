@@ -76,6 +76,7 @@ dev = [
     "moto[s3,server]>=5.0.0",
     "pytest-timeout>=2.4.0",
     "import-linter>=2.15",
+    "pytest-split>=0.11.0",
 ]
 
 [project.scripts]
