@@ -141,7 +141,7 @@ def _calendar_response_enabled_butlers() -> set[str]:
         groups = calendar.get("groups")
         if (
             calendar.get("response_enabled") is True
-            and (not groups or "core" in groups)
+            and (not groups or "response" in groups)
             and approval.get("enabled") is True
             and "calendar_respond" in (approval.get("gated_tools") or {})
         ):

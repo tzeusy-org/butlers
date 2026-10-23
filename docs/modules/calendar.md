@@ -228,10 +228,23 @@ owners, without keeping a second engine. Every Calendar package Python file is l
 ## Approval-bound invitation responses
 
 `calendar_respond` is opt-in (`response_enabled = true`) and requires the
-Calendar core group, an enabled owning approval gate and the captured shared
+explicit `response` group, an enabled owning approval gate and the captured shared
 executor. Only the Messenger and Relationship source configurations install
-this capability. An invitation owned by a different daemon is not rerouted to
-borrow it. Public arguments are the projection occurrence `entry_id`, an
+this capability. Messenger selects only `groups = ["response"]`; Relationship
+selects `groups = ["core", "response"]` and retains normal Calendar startup.
+Omitted or empty groups retain the full tool surface. An explicit group list
+with responses enabled must include `response`; `core` alone does not select it.
+
+Response-only startup resolves the configured account and canonical DB-backed
+credentials and constructs the lazy provider. It does not discover or create
+calendars, restore or persist calendar targets, clean source ledgers, recover or
+drain force-sync commands, or start sync/internal projection pollers. Response
+admission still requires the existing eligible projected source and verified
+credential account; missing projection state never triggers discovery or
+backfill. Successful approved responses retain their existing projection updates.
+Both owners keep the direct historical `calendar_response_fence_status` read,
+including when response execution is disabled. An invitation owned by a different
+daemon is not rerouted to borrow it. Public arguments are the projection occurrence `entry_id`, an
 accepted/declined/tentative choice, a UUID `request_id` and `send_updates`
 (default `none`; `all` and `externalOnly` are explicit notification choices).
 

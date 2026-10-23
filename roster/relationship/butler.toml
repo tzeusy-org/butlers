@@ -133,7 +133,7 @@ job_name = "email_identity_enrichment"
 [modules.calendar]
 response_enabled = true
 provider = "google"
-groups = ["core"]
+groups = ["core", "response"]
 
 [modules.calendar.conflicts]
 policy = "suggest"

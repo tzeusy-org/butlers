@@ -32,7 +32,7 @@ job_name = "calendar_prep_contribution"
 [modules.calendar]
 response_enabled = true
 provider = "google"
-groups = ["core"]
+groups = ["response"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
