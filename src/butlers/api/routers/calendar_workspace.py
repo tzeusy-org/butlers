@@ -73,7 +73,7 @@ from butlers.api.models.calendar_workspace import (
     UnifiedCalendarEntry,
 )
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
-from butlers.api.read_models.calendar_workspace_v1 import (
+from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
     CalendarProposalRow,
@@ -524,8 +524,8 @@ async def _fetch_sources(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch calendar source rows via the versioned read-model boundary.
 
-    Delegates to :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`
-    and converts the typed :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarSourceRow`
+    Delegates to :func:`~butlers.api.read_models.calendar_workspace.query_calendar_sources`
+    and converts the typed :class:`~butlers.api.read_models.calendar_workspace.CalendarSourceRow`
     DTOs back to plain dicts for the existing downstream helpers
     (``_to_source_freshness``, ``_normalize_entry``, etc.) that expect
     ``Mapping[str, Any]`` inputs.
@@ -559,9 +559,9 @@ async def _fetch_workspace_rows(
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
     Delegates to
-    :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_workspace`
+    :func:`~butlers.api.read_models.calendar_workspace.query_calendar_workspace`
     and converts the typed
-    :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarWorkspaceRow`
+    :class:`~butlers.api.read_models.calendar_workspace.CalendarWorkspaceRow`
     DTOs back to plain dicts for the existing downstream helpers
     (``_normalize_entry``, deduplication logic, etc.) that expect
     ``Mapping[str, Any]`` inputs.

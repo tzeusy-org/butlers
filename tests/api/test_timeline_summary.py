@@ -26,7 +26,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.api.read_models.timeline_v1 import (
+from butlers.api.read_models.timeline import (
     query_timeline_notifications_single,
     query_timeline_sessions_fan_out,
 )

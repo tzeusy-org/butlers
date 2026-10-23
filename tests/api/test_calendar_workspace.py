@@ -2567,7 +2567,7 @@ async def test_butler_event_snooze_unknown_id_returns_404(app):
 # ---------------------------------------------------------------------------
 
 import butlers.api.routers.calendar_workspace as _cw  # noqa: E402
-from butlers.api.read_models.calendar_workspace_v1 import (  # noqa: E402
+from butlers.api.read_models.calendar_workspace import (  # noqa: E402
     CalendarProposalRow,
 )
 

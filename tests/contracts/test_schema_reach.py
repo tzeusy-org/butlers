@@ -499,11 +499,11 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/activity_v1.py",
+        "src/butlers/api/read_models/activity.py",
         "<dynamic:{episodes_relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/search_v1.py",
+        "src/butlers/api/read_models/search.py",
         "relationship.entity_facts",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (

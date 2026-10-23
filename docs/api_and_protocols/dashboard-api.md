@@ -90,6 +90,26 @@ an Allowance strip and the `/system` verdict adds an allowance source (a 403 is 
 unreadable table reads "allowance unknown"). It never writes, resets, or probes. The model-routing
 contract page cross-links this section after the contract-evolution change that owns it lands.
 
+## Typed read-model boundaries
+
+Dashboard query implementations live in `src/butlers/api/read_models/`. Their
+internal module paths are independent of the explicit `READ_MODEL_VERSION`
+contract markers:
+
+| Module | Version marker |
+| --- | --- |
+| `activity.py` | `activity_v1` |
+| `butlers.py` | `butlers_v1` |
+| `calendar_workspace.py` | `calendar_workspace_v1` |
+| `insights.py` | `insights_v1` |
+| `search.py` | `search_v1` |
+| `sessions.py` | `sessions_v1` |
+| `timeline.py` | `timeline_v1` |
+
+These internal paths do not change API routes, response shapes, cursor formats,
+or authority boundaries. The explicit markers preserve the existing query and
+DTO versions.
+
 ## Auto-Discovered Butler Routers
 
 Butler-specific API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. The discovery process:

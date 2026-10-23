@@ -20,8 +20,8 @@ from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.api.read_models.activity_v1 import ActivitySessionRow
-from butlers.api.read_models.timeline_v1 import TimelineSessionRow
+from butlers.api.read_models.activity import ActivitySessionRow
+from butlers.api.read_models.timeline import TimelineSessionRow
 from butlers.api.routers.activity_feed import _normalize_tz, _session_to_event
 from butlers.api.routers.timeline import _session_dto_to_event
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app

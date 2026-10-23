@@ -25,10 +25,10 @@ _PACKAGES = ("api", "connectors", "core", "core_tools", "modules")
 # fixture reproduces them; that same check is what forces a fixed violation out of the baseline.
 _BASELINE = {
     "modules/dashboard_read/queries.py": (
-        "from butlers.api.read_models import insights_v1, sessions_v1\n"
+        "from butlers.api.read_models import insights, sessions\n"
     ),
-    "api/read_models/insights_v1.py": "",
-    "api/read_models/sessions_v1.py": "",
+    "api/read_models/insights.py": "",
+    "api/read_models/sessions.py": "",
     "modules/pipeline.py": "from butlers.api import conversations\n",
     "api/conversations.py": "",
 }

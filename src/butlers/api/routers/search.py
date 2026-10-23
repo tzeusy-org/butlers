@@ -20,7 +20,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.models.search import SearchResponse, SearchResult
-from butlers.api.read_models.search_v1 import (
+from butlers.api.read_models.search import (
     query_contact_search,
     query_entity_search,
     query_session_search,

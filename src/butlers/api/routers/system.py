@@ -82,7 +82,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, Db, get_butler_configs
 from butlers.api.models import ApiResponse
-from butlers.api.read_models.insights_v1 import query_insight_delivery_state
+from butlers.api.read_models.insights import query_insight_delivery_state
 from butlers.api.runtime_attention_status import (
     CONDITION_ATTENTION_GRACE,
     CONDITION_ATTENTION_PASS_ALLOWANCE,

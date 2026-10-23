@@ -14,7 +14,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
+from butlers.api.read_models.calendar_workspace import query_calendar_invitations
 from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
 from tests.api.auth_helpers import create_authenticated_domain_app
 
