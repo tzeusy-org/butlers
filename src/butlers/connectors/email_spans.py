@@ -14,10 +14,11 @@ so ``>`` quote markers appear as ``&gt;``; both spellings are recognised.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
-from butlers.ingestion_spans import make_span, whole_text_span
+from butlers.ingestion_spans import make_span, span_in_text, whole_text_span
 
 _FORWARD_MARKER = re.compile(
     r"^\s*(?:-{2,}\s*Forwarded message\s*-{2,}|Begin forwarded message:)\s*$", re.IGNORECASE
@@ -38,7 +39,12 @@ def _lines_with_offsets(text: str) -> list[tuple[int, str]]:
 
 
 def email_untrusted_spans(
-    normalized_text: str, *, subject: str, has_attached_message: bool
+    normalized_text: str,
+    *,
+    subject: str,
+    has_attached_message: bool,
+    body_text: str = "",
+    body_quote_spans: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Spans over the stripped ``normalized_text`` for forwarded, quoted and embedded parts."""
     text = normalized_text.strip()
@@ -46,6 +52,17 @@ def email_untrusted_spans(
         return [whole_text_span("embedded", text)]
     lines = _lines_with_offsets(text)
     spans: list[dict[str, Any]] = []
+    prefix = len(f"Subject: {html.escape(subject)}\n\n")
+    for span in body_quote_spans or []:
+        start, end = span["start"], span["end"]
+        spans.append(
+            span_in_text(
+                "quoted",
+                normalized_text,
+                prefix + len(html.escape(body_text[:start])),
+                prefix + len(html.escape(body_text[:end])),
+            )
+        )
     index = 0
     while index < len(lines):
         offset, line = lines[index]

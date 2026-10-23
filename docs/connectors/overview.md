@@ -115,9 +115,10 @@ routing path reads them. Helpers live in `butlers.ingestion_spans`.
 | Connector | What it marks |
 | --- | --- |
 | Telegram bot | A forward marks the whole text as `forwarded`, with the original author. `blockquote` entities become `quoted` spans. `external_reply` (a reply to another chat) marks the whole text as `quoted`. A same-chat reply sets `in_reply_to_ref`. |
-| Telegram user client | A forwarded message (`fwd_from`) marks its whole text, or its own line in a batch transcript. |
-| WhatsApp | A forward (the bridge's `content.is_forwarded`) marks its whole text, or its own line in a batch. WhatsApp names no original author. A quoted reply carries only `quoted_message_id`, so nothing is marked. |
-| Gmail (full tier) | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. The metadata tier is not marked. |
+| Telegram user client | A forward (`fwd_from`) marks its text or batch line. Locked Telethon blockquote entities use UTF-16 offsets mapped through HTML escaping for single events and transcript prefixes for batches. Provider quote/external-reply metadata with no reliable body range marks the whole body. Ordinary same-chat replies carry the provider `in_reply_to_ref`; they do not mark new text by themselves. |
+| Live listener | Existing explicit textual forward/quote markers in the transcript use the same span parser. Filtered transcript privacy tiers preserve only exposure kinds. Arbitrary spoken or pasted text without a known marker is not inferred to be quoted. |
+| WhatsApp | A forward (the bridge's `content.is_forwarded`) marks its whole text, or its own line in a batch. WhatsApp names no original author. A quoted reply carries its bridge `quoted_message_id` as `event.in_reply_to_ref`; no earlier text is inserted or marked. Batched history retains each reply locator. A one-message batch also carries `in_reply_to_ref`; a mixed batch cannot bind several reply targets to one event, so it conservatively marks the quoted-reply message line and retains that exposure through privacy replay. |
+| Gmail | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. Selected HTML blockquote/cite structure also survives visible-text and whitespace normalization, HTML escaping and bearer scrubbing. MIME preference is unchanged. Metadata-only envelopes retain known exposure kinds conservatively over their subject-only text without fetching body attachments. |
 | Home Assistant, ActivityWatch, OwnTracks, Steam, Google Health | Register `channel_kind = "feed"` on every heartbeat. |
 
 ## Checkpoint Persistence
@@ -335,3 +336,16 @@ failure skips that evidence write instead of storing raw text. One gap remains: 
 The HA connector's state and recursive attribute content uses the shared ingestion bearer scrubber before filtering/discretion, submission, filtered-event buffering, person-history writes, and wellness emission. It withholds the shared detector's recognized keyword OTPs and reset/magic links in both normalized text and raw duplicates. The adapter also checks the existing assembled label/state normalization context before discretion retains it and projects recognized redactions into matching content copies. Each available state is checked under its own friendly name and units as well as the actual transition, so new or missing metadata cannot erase old-state context. Contextual projection replaces only complete selected lexical values, including quoted or prose echoes, and protects existing placeholders. Quotes and opening brackets may precede a copied value; closing brackets and sentence punctuation may follow it. Other leading punctuation, internal punctuation, signs, and unit symbols stay part of a distinct value: fractional decimals, decimal amounts and compound identifiers containing selected digits remain exact. Its ordered alignment uses bounded scans and refuses unestablished edits with a fixed content-free error. The HA adapter does not enable Telegram's aggressive bare-number mode; ordinary readings and enum states keep their existing representation and event identity.
 
 Scrub failure withholds the affected content and logs a fixed warning. Replay protects outgoing content without restoring withheld values or backfilling old rows. The transient REST comparison cache retains provider values for correct diff membership; only its copied downstream event is admitted to content consumers. This connector guarantee does not claim remediation of the separate module-owned HA entity snapshot/cache or the shared full-payload/error-custody investigations. No notification capability, allowlist, or authentication behavior is changed.
+
+
+### Provider quote normalization boundaries
+
+Quote metadata is representation, not verified origin, recipient, selection or
+D7 authority. A Telethon reply-header quote offset indexes the earlier message,
+not the owner's new body; it must never index that body. Gmail marks only the
+selected MIME body's structural citation ranges, leaving surrounding owner text
+unmarked when boundaries survive. Known but unlocatable quote content uses the
+existing whole-text rule. Filter/error/replay privacy rewrites collapse retained
+kinds onto their actual replacement text; they do not retain hidden quote bodies.
+Unmarked pasted text remains the RFC 0038 D5 known limit. These normalizers do not
+invoke providers or grant accepted-source authentication (.9 owns that boundary).
