@@ -435,6 +435,20 @@
       "state": "provisional diagnostic subject retains original unit1 watchdog; healthy calibration UNKNOWN",
       "sample_source": "bu-ly3lv5.10.3 frozen original PR4484 profile; unchanged 28-minute job and UV640 nominal reserve; no timing claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/fact-source-capture-before-control.yml",
+      "job": "fact-capture-before-control",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 45,
+      "installed_timeout_minutes": 45,
+      "retry_extra_s": 0,
+      "state": "provisional finite control; no hosted observation or calibration yet",
+      "sample_source": "bu-g0fmdv separate immutable old-runtime PG control source",
+      "review_uv_nominal_envelope_s": 640,
+      "review_setup_placement": "start one2480s aggregate before checkout; owned UV640/environment640/two480s phases including cleanup/setup120/evidence120;45min job provisional"
     }
   ],
   "tests": [

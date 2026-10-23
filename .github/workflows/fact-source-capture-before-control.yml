@@ -1,0 +1,47 @@
+name: Fact Source Capture BEFORE Control
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/fact-source-capture-before-control.yml
+      - scripts/fact_source_capture_before_control.py
+      - scripts/fact_source_capture_before_observer.py
+      - tests/scripts/test_fact_source_capture_before_control.py
+
+permissions:
+  contents: read
+
+jobs:
+  fact-capture-before-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Start finite aggregate budget
+        run: python3 -c 'import time; print("FACT_CAPTURE_CONTROL_STARTED=" + str(time.monotonic()))' >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 9b46e8e7342411cf3e8f2b75c139d077509233b0
+          path: workload-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+      - name: Observe unchanged old failure and paired candidate success
+        working-directory: control
+        run: python3 scripts/fact_source_capture_before_control.py
+      - name: Upload closed control evidence
+        timeout-minutes: 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fact-capture-before-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fact-capture-before-evidence/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14

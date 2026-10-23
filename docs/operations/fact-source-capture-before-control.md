@@ -1,0 +1,71 @@
+# Old-runtime fact-capture PostgreSQL witness
+
+The separately named `Fact Source Capture BEFORE Control` workflow is a regression-evidence
+control. It does not change ordinary CI fan-in and does not replace the full protected gate.
+Only a separately reviewed and ROOT-admitted PR-triggered execution supplies evidence. There
+is no manual dispatch, arbitrary command, selector, revision input or deployed database.
+
+The fixed workload is `9b46e8e7342411cf3e8f2b75c139d077509233b0`. In a disposable checkout,
+only `src/butlers/core/fact_authority.py` is replaced with its immutable
+`37d3917c38080a0e43aa73d8f114b715c2377568` blob. The complete mode/blob manifest, physical
+overlay tree, runtime hash, lock, interpreter, controller source, run/attempt and fresh nonce
+remain bound. Its real venv imports that disposable checkout's source.
+
+The existing `test_capacity_one_registered_owner_capture_and_concurrent_sources` node runs
+unchanged, with its actual migrated PostgreSQL roles, capacity-one pool and registered
+Relationship MCP fixtures. The original 15-second capture and 300-second item limits remain.
+Only a genuine in-CALL old-code nested-acquire `TimeoutError` qualifies as the expected RED.
+Setup failure, missing CALL, skip, another exception, healthy BEFORE, timeout or incomplete
+cleanup remains refused/UNKNOWN. A registered endpoint does not prove the blocked old code
+reached a network lookup. The observer records only actual known reachability.
+
+Before fixture teardown the observer checks cancelled capture settlement, pool reacquisition,
+transaction release and `SELECT 1`, zero partial durable and in-memory reports. Complete actual
+fixture/process teardown and an unrelated sentinel must survive. Observation never replaces
+or mocks the pool, migration, resolver, transaction or test body. After complete cleanup the
+candidate runtime is restored exactly and the same node executes once in a fresh process.
+It must pass setup/CALL/teardown. No source retry is allowed.
+
+The old test remains **FAILED**. `WITNESS_COMPLETE` is a separate aggregate control verdict for
+that observed RED, paired candidate GREEN and complete cleanup. Its schema stays distinct
+from complete shard, smoke, coverage or release evidence. Existing candidate AFTER evidence
+and the mandatory full protected source tree remain separate.
+
+The producer invokes the existing owned `install_ci_uv.py` within its own confined domain,
+with a private path-output sink. The existing thirteen workflow installer consumers remain
+unchanged; installation is part of this control rather than a new workflow installer step.
+The existing confined child subreaper owns every execution domain. The aggregate 2480-second
+budget starts before checkout and includes the preserved 640-second UV installer and
+640-second environment reserve, two 480-second node envelopes including cleanup, and 120
+seconds each for setup and evidence. The 45-minute job is provisional, not measured p95.
+Every phase receives remaining time and retains cleanup reserve; expiration/cancellation
+cannot produce a witness. No local Docker/PG privilege retry is supported.
+
+Only bounded closed JSON identity/phase/cleanup receipts are uploaded. Raw failure output stays
+in protected runner-temporary files and is removed with the disposable checkout; it is never
+an artifact. DSNs, credentials, payloads, traceback locals and arbitrary logs are excluded.
+Missing/upload/cancelled/incomplete evidence remains UNKNOWN. Actual provider archive digest,
+source readback and independent complete receipt verification are required after execution.
+
+On refusal, the producer prints only a closed stage, error category and allowlisted reason.
+After controller identity validation and creation of its own evidence directory, it also
+writes `control-refusal.json`. This separate `fact-capture-control-refusal.v1` schema always
+reports UNKNOWN, with no claim of PG CALL or cleanup. It cannot satisfy a phase or complete
+witness reader. Failure before identity validation creates no directory or children; its
+closed console diagnostic is the only observation. Exception messages, commands, paths,
+environment values and tracebacks never enter these diagnostics. A failed artifact write
+remains refused and does not overwrite or promote evidence.
+
+An environment-preparation refusal additionally retains a closed `preparation` diagnostic.
+Its lifecycle projection distinguishes the child exit/signal, supervisor exit, timeout,
+cancellation, protocol refusal, and the existing supervisor's fixed refusal reason/counts.
+These observations do not supply a missing cleanup verdict or prove any PostgreSQL call.
+The unchanged, SHA256-pinned `ci_environment.py prepare` runs with its original argv, cwd,
+environment, subprocess commands, exception handling and exit status. An observer labels only
+compatibility/UV-version, lock-check, frozen-sync, own-source validation or metadata-write
+events and allowlisted exception classes. It does not intercept subprocess execution or
+publish stdout, stderr, exception messages, paths or environment values. The private helper
+observation is validated against an exact schema before projection. A cancelled/terminated
+helper may leave no such observation, which remains unknown; lifecycle refusal is never
+promoted to a successful preparation or paired witness. The original preparation, aggregate
+and process-cleanup deadlines and predicates are unchanged.
