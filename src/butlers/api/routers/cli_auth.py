@@ -174,16 +174,19 @@ async def list_providers(
     Runs live health probes against each provider's status command to
     determine whether tokens are actually valid (not just present on disk).
     """
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
     store = _make_credential_store(db_manager)
     health_results = await probe_all(credential_store=store, codex_authority=store)
 
     result = []
     for p in PROVIDERS.values():
         # Show api_key providers even if binary is not installed
-        if not p.is_available() and p.auth_mode != "api_key":
+        if remote is None and not p.is_available() and p.auth_mode != "api_key":
             continue
         health = health_results.get(p.name)
-        if p.name == "codex":
+        if remote is not None or p.name == "codex":
             # The local file is merely the runtime projection of the selected
             # authority. A stale file must not make the dashboard claim Codex
             # is authenticated when the strict authority probe failed.
@@ -201,7 +204,7 @@ async def list_providers(
                 authenticated=authenticated,
                 health=CLIAuthHealthState(health.state) if health else None,
                 health_detail=health.detail if health else None,
-                token_path=str(p.token_path) if p.token_path else None,
+                token_path=str(p.token_path) if remote is None and p.token_path else None,
                 env_var=p.env_var or None,
             )
         )
@@ -227,7 +230,12 @@ async def start_auth(
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
 
-    if not provider_def.is_available():
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None and provider not in {"codex", "opencode-openai"}:
+        raise HTTPException(status_code=503, detail="Provider host operation is unavailable.")
+    if remote is None and not provider_def.is_available():
         raise HTTPException(
             status_code=503,
             detail=f"CLI binary '{provider_def.binary()}' not found on PATH.",
@@ -332,6 +340,49 @@ async def save_api_key(
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
         )
 
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        if provider_def.name != "opencode-go":
+            raise HTTPException(status_code=503, detail="Provider host operation is unavailable.")
+        from butlers.cli_auth.persistence import _project_opencode_go_runtime_entry
+
+        if _project_opencode_go_runtime_entry({"type": "api", "key": body.api_key}) is None:
+            raise HTTPException(status_code=422, detail="Invalid provider credential.")
+        store = _make_credential_store(db_manager)
+        if store is None:
+            raise HTTPException(status_code=503, detail="Credential authority is unavailable.")
+        try:
+            before = await store.load_opencode_cli_auths()
+            content = json.dumps({"opencode-go": {"type": "api", "key": body.api_key}})
+            stored = await store.store_shared_if_unchanged(
+                "cli-auth/opencode-go",
+                content,
+                expected_value=before["opencode-go"],
+                category="cli-auth",
+                is_sensitive=True,
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="Credential authority is unavailable."
+            ) from None
+        if not stored:
+            raise HTTPException(status_code=409, detail="Credential authority changed.")
+        try:
+            # No supplied bytes are a host snapshot. Control independently
+            # reads the selected committed authority, including its peer entry.
+            await remote.sync_provider("opencode-go")
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="Credential stored; host projection unavailable."
+            ) from None
+        return CLIAuthApiKeyResponse(
+            provider=provider_def.name,
+            stored=True,
+            message=f"API key saved for {provider_def.display_name}.",
+        )
+
     # Write the key into the CLI's auth.json so the binary can use it
     if provider_def.token_path is not None:
         try:
@@ -392,6 +443,29 @@ async def delete_api_key(
             status_code=400,
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
         )
+
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        if provider_def.name != "opencode-go":
+            raise HTTPException(status_code=503, detail="Provider host operation is unavailable.")
+        store = _make_credential_store(db_manager)
+        if store is None:
+            raise HTTPException(status_code=503, detail="Credential authority is unavailable.")
+        try:
+            await store.delete_opencode_cli_auth("opencode-go")
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="Credential authority is unavailable."
+            ) from None
+        try:
+            await remote.sync_provider("opencode-go")
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="Credential deleted; host projection unavailable."
+            ) from None
+        return {"status": "deleted", "provider": provider_def.name}
 
     # Remove from the CLI's auth.json
     if provider_def.token_path is not None and provider_def.token_path.exists():
@@ -531,24 +605,64 @@ async def _persist_codex_test_outcome_if_current(
     latency_ms: int,
     expected_store_value: str,
 ) -> bool:
-    """Persist one Codex probe only while its credential bytes still win.
+    return await _persist_selected_test_outcome_if_current(
+        store,
+        provider="codex",
+        key=key,
+        ok=ok,
+        detail=detail,
+        message=message,
+        latency_ms=latency_ms,
+        expected_store_value=expected_store_value,
+    )
+
+
+async def _persist_selected_test_outcome_if_current(
+    store: CredentialStore,
+    *,
+    provider: str,
+    key: str,
+    ok: bool,
+    detail: str | None,
+    message: str | None,
+    latency_ms: int,
+    expected_store_value: str,
+) -> bool:
+    """Persist a fixed Codex/OpenCode probe only while its selected bytes still win.
 
     The fenced health update locks the current credential row.  Keeping the
     probe-log and audit inserts in that same transaction prevents a Passport
     token save from landing between those durable records and making an old
     failure look newer than the replacement.  The caller passes the exact
-    bytes that the canonical ``auth.json`` matched immediately before and
-    after the external probe; this helper never logs those bytes.
+    selected database value associated with the probe; this helper never logs
+    those bytes. Legacy Codex callers additionally compare their file snapshot.
     """
-    pool = store.require_system_global_pool()
+    if provider not in {"codex", "opencode-openai"} or key != "cli-auth/" + provider:
+        raise ValueError("Unsupported credential authority")
+    pool = (
+        store.require_system_global_pool()
+        if provider == "codex"
+        else store.shared_pool
+        if store.shared_pool is not None
+        else store.pool
+    )
     async with pool.acquire() as conn:
         async with conn.transaction():
-            recorded = await store.record_codex_cli_auth_test_result_if_unchanged_on_connection(
-                conn,
-                ok=ok,
-                message=None if ok else message,
-                expected_value=expected_store_value,
-            )
+            if provider == "codex":
+                recorded = await store.record_codex_cli_auth_test_result_if_unchanged_on_connection(
+                    conn,
+                    ok=ok,
+                    message=None if ok else message,
+                    expected_value=expected_store_value,
+                )
+            else:
+                recorded = await store.record_test_result_if_unchanged_on_connection(
+                    conn,
+                    key,
+                    ok=ok,
+                    message=None if ok else message,
+                    expected_value=expected_store_value,
+                )
             if not recorded:
                 return False
 
@@ -660,6 +774,20 @@ async def test_api_key(
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        try:
+            health = await remote.probe_provider(provider, record=True)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Credential test unavailable.") from None
+        return CLIAuthTestResponse(
+            provider=provider,
+            success=health.state == AuthHealthState.authenticated,
+            detail=health.detail or health.state.value,
+        )
 
     store = _make_credential_store(db_manager)
     expected_store_value: str | None = None

@@ -207,6 +207,18 @@ async def probe_provider(
     sandbox: DashboardCLIAuthSandbox | None = None,
 ) -> AuthHealthResult:
     """Run a provider's status command and determine auth health."""
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        try:
+            return await remote.probe_provider(provider.name)
+        except Exception:
+            return AuthHealthResult(
+                provider.name,
+                AuthHealthState.probe_failed,
+                "CLI auth host operation is unavailable; probe was not run.",
+            )
     if provider.name == "codex":
         if codex_authority_prepared:
             expected_codex_authority = prepared_codex_authority
@@ -418,6 +430,9 @@ async def probe_all(
     codex_authority: CredentialStore | None = None,
 ) -> dict[str, AuthHealthResult]:
     """Probe all registered providers concurrently."""
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
     tasks = {
         name: asyncio.create_task(
             probe_provider(
@@ -427,7 +442,7 @@ async def probe_all(
             )
         )
         for name, provider in PROVIDERS.items()
-        if provider.is_available() or provider.auth_mode == "api_key"
+        if remote is not None or provider.is_available() or provider.auth_mode == "api_key"
     }
     results: dict[str, AuthHealthResult] = {}
     for name, task in tasks.items():

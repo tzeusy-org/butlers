@@ -1,0 +1,60 @@
+# Explicit dark-source overlay, never included by the ordinary launcher.
+# Enable only after exact-image conformance and provisioned service identities.
+# The app image contains the pinned CLI inputs/shim, but this service runs ONLY
+# the session-host entrypoint. No DB, env_file, runtime-home or connector secret.
+services:
+  session-host:
+    profiles: [session-host]
+    image: ${SESSION_HOST_IMAGE:?set exact reviewed application image digest}
+    entrypoint: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, host, --enable, --config, /etc/session-host/host.json]
+    restart: "no"
+    read_only: true
+    user: "0:0"  # Supervisor leases a distinct outer UID, then unprivileged bwrap.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, KILL]
+    security_opt:
+      - apparmor:unconfined
+      - systempaths=unconfined
+      - seccomp:./deploy/seccomp/dashboard-runtime-cli-sandbox.json
+    tmpfs:
+      # Actual host factory stages below /tmp/session-host-stage (root0711).
+      - /tmp:rw,nosuid,nodev,size=256m
+    volumes:
+      - ./deploy/session-host/host.json:/etc/session-host/host.json:ro
+      - ${SESSION_HOST_PROOFS:?install independently verified immutable proofs}:/run/session-proofs:ro
+      - ${SESSION_HOST_TLS:?install host service TLS identity}:/run/session-tls:ro
+    dns: [172.30.253.2]
+    networks:
+      session-isolated: {ipv4_address: 172.30.253.3}
+    depends_on: [session-egress]
+  session-egress:
+    profiles: [session-host]
+    image: ${SESSION_HOST_IMAGE:?set exact reviewed application image digest}
+    entrypoint: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, gateway, --enable, --config, /etc/session-host/gateway.json]
+    restart: "no"
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./deploy/session-host/gateway.json:/etc/session-host/gateway.json:ro
+    # Only this gateway joins both networks. Provider TLS remains end-to-end;
+    # broker traffic reaches only 41199. No arbitrary DNS or HTTP proxy exists.
+    networks:
+      session-isolated: {ipv4_address: 172.30.253.2}
+      session-control-relay: {ipv4_address: 172.30.254.2}
+      control-session: {}
+      egress: {}
+  butlers-control:
+    networks:
+      session-control-relay: {}
+networks:
+  session-isolated:
+    internal: true
+    # Docker >=28: internal alone still exposes host services on the bridge IP.
+    driver_opts: {com.docker.network.bridge.gateway_mode_ipv4: isolated}
+    ipam: {config: [{subnet: 172.30.253.0/24}]}
+  session-control-relay:
+    internal: true
+    ipam: {config: [{subnet: 172.30.254.0/24}]}

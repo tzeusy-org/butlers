@@ -13,6 +13,7 @@ import ctypes
 import fcntl
 import json
 import logging
+import math
 import os
 import select
 import signal
@@ -250,6 +251,7 @@ def build_bubblewrap_launch_plan(
     info_fd: int,
     block_fd: int,
     shim_gate_fd: int,
+    immutable_home: bool = False,
 ) -> BubblewrapLaunchPlan:
     """Build the empty-root Bubblewrap command for one trusted invocation.
 
@@ -296,8 +298,18 @@ def build_bubblewrap_launch_plan(
     # accidentally leak through a parent bind.
     argv.extend(("--tmpfs", "/"))
     argv.extend(_mount_parent_directories(child_inputs))
-    argv.extend(("--bind", str(stage_home), _RUNTIME_HOME))
+    if type(immutable_home) is not bool:
+        raise SandboxLaunchValidationError("sandbox HOME mount mode is invalid")
+    argv.extend(("--ro-bind" if immutable_home else "--bind", str(stage_home), _RUNTIME_HOME))
     argv.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"))
+    if immutable_home:
+        # Protect the entire ancestry of the configuration and system prompt,
+        # not merely the final files. A child cannot rename a writable parent
+        # to replace its MCP/deny-tool configuration. Cache and scratch are
+        # separate disposable mounts; legacy device-login HOME stays writable.
+        # Cache stays inside the same bounded server staging volume. It is
+        # the only RW overlay of HOME and contains no configuration authority.
+        argv.extend(("--bind", str(stage_home / ".cache"), f"{_RUNTIME_HOME}/.cache"))
     for child_input in child_inputs:
         argv.extend(("--ro-bind", str(child_input.source), str(child_input.destination)))
     argv.extend(
@@ -554,6 +566,7 @@ async def _read_bounded_to_eof(
     reader: asyncio.StreamReader,
     *,
     timeout_s: float,
+    maximum_bytes: int = _MAX_READONLY_COMMAND_OUTPUT_BYTES,
 ) -> bytes:
     """Collect bounded untrusted stdout through EOF under one absolute deadline."""
 
@@ -565,12 +578,12 @@ async def _read_bounded_to_eof(
             # before EOF.  Keep reading until EOF, while requesting at most
             # one byte beyond remaining capacity so no unbounded value is
             # materialized before the cap check.
-            remaining = _MAX_READONLY_COMMAND_OUTPUT_BYTES - total
+            remaining = maximum_bytes - total
             chunk = await reader.read(min(_READONLY_COMMAND_READ_CHUNK_BYTES, remaining + 1))
             if not chunk:
                 return b"".join(chunks)
             total += len(chunk)
-            if total > _MAX_READONLY_COMMAND_OUTPUT_BYTES:
+            if total > maximum_bytes:
                 raise SandboxUnavailableError(
                     "Dashboard CLI-auth sandbox stdout exceeded its safe bound"
                 )
@@ -980,6 +993,7 @@ class BubblewrapDashboardCLIAuthSandbox:
         self._pidfd_is_dead = pidfd_is_dead
         self._release_payload = release_payload or self._write_payload_release
         self._quarantined_startup_gates: list[_QuarantinedStartupGate] = []
+        self._session_workers: set[asyncio.Task] = set()
 
     @staticmethod
     def _missing_pidfd_open(_pid: int, _flags: int = 0) -> int:
@@ -1132,8 +1146,22 @@ class BubblewrapDashboardCLIAuthSandbox:
         shim_readonly_inputs: tuple[ReadonlySandboxInput, ...],
         relative_output_path: Path | None,
         authority: ReadonlySandboxAuthority | None,
+        authorities: tuple[ReadonlySandboxAuthority, ...] = (),
+        immutable_home: bool = False,
     ) -> _BubblewrapDeviceAuthHandle:
         """Start one typed child domain through the shared PID1 handshake."""
+        if authorities and authority is not None:
+            raise SandboxLaunchValidationError("sandbox staging modes conflict")
+        if type(authorities) is not tuple or len(authorities) > 8:
+            raise SandboxLaunchValidationError("sandbox authority set is invalid")
+        destinations = set()
+        for item in authorities:
+            if type(item) is not ReadonlySandboxAuthority:
+                raise SandboxLaunchValidationError("sandbox authority set is invalid")
+            parts = _authority_relative_parts(item)
+            if parts in destinations:
+                raise SandboxLaunchValidationError("sandbox authority targets conflict")
+            destinations.add(parts)
         identity = await self._identity_pool.acquire()
         stage: SandboxStage | None = None
         process: SandboxedChildProcess | None = None
@@ -1150,6 +1178,19 @@ class BubblewrapDashboardCLIAuthSandbox:
             phase = "authority_stage"
             if authority is not None:
                 _stage_readonly_authority(stage, identity, authority)
+            for item in authorities:
+                _stage_readonly_authority(stage, identity, item)
+            if immutable_home:
+                # The target exists before the protected HOME is mounted.
+                os.mkdir(".cache", 0o700, dir_fd=stage.root_fd)
+                cache_fd = os.open(
+                    ".cache", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stage.root_fd
+                )
+                try:
+                    os.fchown(cache_fd, identity.uid, identity.gid)
+                    os.fchmod(cache_fd, 0o700)
+                finally:
+                    os.close(cache_fd)
             phase = "pipe_create"
             info_read, info_write = os.pipe2(os.O_CLOEXEC)
             block_read, block_write = os.pipe2(os.O_CLOEXEC)
@@ -1166,6 +1207,7 @@ class BubblewrapDashboardCLIAuthSandbox:
                 info_fd=info_write,
                 block_fd=block_read,
                 shim_gate_fd=shim_gate_read,
+                immutable_home=immutable_home,
             )
             phase = "spawn"
             process = await self._spawn(
@@ -1321,3 +1363,97 @@ class BubblewrapDashboardCLIAuthSandbox:
         if handle.process.returncode is None:
             raise SandboxUnavailableError("Dashboard CLI-auth sandbox child exit was not observed")
         return SandboxedCommandResult(returncode=handle.process.returncode, output=output)
+
+    async def run_staged_command(
+        self,
+        provider: CLIAuthProviderDef,
+        *,
+        command: tuple[str, ...],
+        expected_executable: Path,
+        authorities: tuple[ReadonlySandboxAuthority, ...],
+        timeout_s: float,
+    ) -> SandboxedCommandResult:
+        """Run one session-host profile using the existing exact-image PID1 owner.
+
+        This is a trusted server interface, never a wire operation. Its caller
+        constructs the fixed command and staging set after tuple eligibility.
+        The image resolver independently binds the same executable. Only the
+        closed inherited environment is forwarded. No output is accepted until
+        namespace death is proven; unknown death retains the existing stage/UID.
+
+        One worker owns startup, stdout and termination. External cancellation
+        cancels it once, then joins it despite repeated cancellation for at most
+        30 seconds. A resistant worker remains quarantined and cannot release a
+        result or identity. Existing dashboard methods keep their old behavior.
+        """
+        if (
+            type(timeout_s) not in (int, float)
+            or not math.isfinite(timeout_s)
+            or not 0 < timeout_s <= 300
+        ):
+            raise SandboxUnavailableError("Session sandbox timeout is invalid")
+        self._exact_image_preflight()
+        shim_inputs = self._shim_input_resolver(self._shim_path)
+        invocation = self._readonly_invocation_resolver(provider, command)
+        if not expected_executable.is_absolute() or invocation.command[0] != str(
+            expected_executable
+        ):
+            raise SandboxUnavailableError("Session sandbox executable binding changed")
+        _merge_readonly_inputs(invocation.readonly_inputs, shim_inputs)
+
+        async def run() -> SandboxedCommandResult:
+            handle = await self._launch_invocation(
+                command=invocation.command,
+                readonly_inputs=invocation.readonly_inputs,
+                shim_readonly_inputs=shim_inputs,
+                relative_output_path=None,
+                authority=None,
+                authorities=authorities,
+                immutable_home=True,
+            )
+            try:
+                if not isinstance(handle.process.stdout, asyncio.StreamReader):
+                    raise SandboxUnavailableError("Session sandbox stdout is unavailable")
+                output = await _read_bounded_to_eof(
+                    handle.process.stdout, timeout_s=timeout_s, maximum_bytes=1024 * 1024
+                )
+                if not await handle.complete_readonly():
+                    raise SandboxUnavailableError("Session sandbox domain death is unproved")
+                if handle.process.returncode is None:
+                    raise SandboxUnavailableError("Session sandbox exit is unobserved")
+                return SandboxedCommandResult(handle.process.returncode, output)
+            except BaseException:
+                await handle.terminate()
+                raise
+
+        worker = asyncio.create_task(run(), name="session-sandbox-domain")
+        self._session_workers.add(worker)
+
+        def settled(task):
+            self._session_workers.discard(task)
+            if not task.cancelled():
+                task.exception()  # Retrieve quarantined failures without logging payloads.
+
+        worker.add_done_callback(settled)
+        interrupted = False
+        timed_out = False
+        try:
+            done, _ = await asyncio.wait({worker}, timeout=timeout_s)
+            timed_out = not done
+        except asyncio.CancelledError:
+            interrupted = True
+        if timed_out or interrupted:
+            worker.cancel()
+            deadline = asyncio.get_running_loop().time() + 30
+            while not worker.done():
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait({worker}, timeout=remaining)
+                except asyncio.CancelledError:
+                    interrupted = True
+            if interrupted:
+                raise asyncio.CancelledError
+            raise SandboxUnavailableError("Session sandbox execution timed out")
+        return worker.result()

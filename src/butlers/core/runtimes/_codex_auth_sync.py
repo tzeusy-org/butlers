@@ -384,10 +384,17 @@ async def reconcile_codex_auth(
     replaces the local file.  Missing files clear stale process cache state so
     a subsequent local login can be conditionally created again.
     """
+    from butlers.session_host.service_auth import _enabled, reconcile_runtime_codex
+
+    if _enabled():
+        await reconcile_runtime_codex(authority)
+        # A synchronized host file does not authorize this legacy local CLI
+        # consumer. Real typed runner dispatch/settled rotation remains separate.
+        return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
     key = _cache_key(token_path)
     async with _lock_for(token_path):
         local_snapshot = _read_valid_auth_snapshot(token_path)
-        if local_snapshot is None and not token_path.exists():
+        if local_snapshot is None and not await asyncio.to_thread(token_path.exists):
             _clear_auth_baseline(token_path)
 
         cached_authority = _AUTH_AUTHORITY_CACHE.get(key)
@@ -525,6 +532,11 @@ async def finalize_codex_auth_rotation(
     later dashboard refresh must not be replaced by reading a mutable process
     baseline cache and treating an older operation's local result as new.
     """
+    from butlers.session_host.service_auth import _enabled
+
+    if _enabled():
+        # No local path/artifact can become a host-domain settlement receipt.
+        return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
     if not authority_known or expected_store_value is None:
         # A pre-spawn store read failed, yielded an unsafe document, or
         # confirmed that the credential was deleted.  Do not reinterpret
@@ -546,7 +558,7 @@ async def finalize_codex_auth_rotation(
 
     async with _lock_for(token_path):
         local_snapshot = _read_valid_auth_snapshot(token_path)
-        if local_snapshot is None and not token_path.exists():
+        if local_snapshot is None and not await asyncio.to_thread(token_path.exists):
             _clear_auth_baseline(token_path)
 
         if local_snapshot is None:

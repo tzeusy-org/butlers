@@ -1,0 +1,12 @@
+{
+  "listen_host": "0.0.0.0",
+  "binary": "/usr/local/bin/codex",
+  "model_function_binary": "/usr/local/bin/opencode",
+  "broker_url": "http://broker.session.internal:41199/mcp",
+  "proof_index": "/run/session-proofs/index.json",
+  "tls": {
+    "ca": "/run/session-tls/ca.crt",
+    "certificate": "/run/session-tls/tls.crt",
+    "private_key": "/run/session-tls/tls.key"
+  }
+}

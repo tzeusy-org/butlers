@@ -47,7 +47,7 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: session-host
+              app.kubernetes.io/component: session-egress
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}

@@ -155,6 +155,11 @@ _DASHBOARD_SANDBOX: DashboardCLIAuthSandbox | None = None
 
 def dashboard_cli_auth_sandbox() -> DashboardCLIAuthSandbox:
     """Return the only production launcher without a direct-child fallback."""
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        return remote
     global _DASHBOARD_SANDBOX
     if _DASHBOARD_SANDBOX is None:
         # Import lazily because the Linux platform module consumes the public

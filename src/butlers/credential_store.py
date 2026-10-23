@@ -881,6 +881,37 @@ class CredentialStore:
             return None
         return row["secret_value"]
 
+    async def load_opencode_cli_auths(self) -> dict[str, str | None]:
+        """Read the two fixed OpenCode authorities from their CAS-write pool.
+
+        A missing shared pool selects the flat pool, exactly as
+        ``store_shared_if_unchanged`` does. Driver/schema failures propagate;
+        they are never converted into authoritative absence or a local-first
+        fallback. Both entries belong to one actual query snapshot.
+        """
+        names = ("opencode-openai", "opencode-go")
+        pool = self.shared_pool if self.shared_pool is not None else self.pool
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"SELECT secret_key,secret_value FROM {_TABLE} "
+                "WHERE secret_key=ANY($1::text[]) "
+                "AND (expires_at IS NULL OR expires_at>now())",
+                [f"cli-auth/{name}" for name in names],
+            )
+        values = {row["secret_key"]: row["secret_value"] for row in rows}
+        return {name: values.get(f"cli-auth/{name}") for name in names}
+
+    async def delete_opencode_cli_auth(self, provider: str) -> bool:
+        """Delete only a fixed OpenCode key from the same selected authority."""
+        if provider not in {"opencode-openai", "opencode-go"}:
+            raise ValueError("unsupported CLI authority")
+        pool = self.shared_pool if self.shared_pool is not None else self.pool
+        async with pool.acquire() as connection:
+            result = await connection.execute(
+                f"DELETE FROM {_TABLE} WHERE secret_key=$1", f"cli-auth/{provider}"
+            )
+        return result.endswith(" 1")
+
     async def load(self, key: str) -> str | None:
         """Load a secret value directly from the database.
 
