@@ -45,8 +45,10 @@ from already-captured evidence: read, project, preserve provenance, and accept c
 - Every Tier-2 input MUST be a token-bounded bundle. Always use `chronicler_day_close_bundle`
   for day-close and drilldown seeds. NEVER use `chronicler_list_events` or
   `chronicler_list_episodes` for Tier 2; their interactive/read-only results lack masking and hard caps.
-- For day-close, call the bundle exactly once with the trusted scheduled or refresh target's
-  `date_label` and `timezone`; never recompute or substitute either from the runtime clock.
+- For day-close, the invocation prompt supplies a trusted scheduled target (or
+  trusted refresh target). Call `chronicler_day_close_bundle` exactly once with
+  that target's `date_label` and `timezone`. Do not recompute or substitute
+  either value from the runtime clock.
 - Projection adapters NEVER call an LLM.
 
 ### Memory write-back loop (bu-93y4rt, normative)
