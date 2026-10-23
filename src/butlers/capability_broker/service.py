@@ -19,6 +19,7 @@ from .assertions import AssertionSigner
 from .contracts import BrokerRefused, BrokerResult, Capability, Disposition, Reason, Reservation
 from .domains import Authorities, DomainReceipt, Domains, ParkReceipt
 from .ledger import BrokerLedger
+from .owning import PrivateApprovals
 
 
 class Broker:
@@ -29,6 +30,7 @@ class Broker:
         domains: Domains,
         signer: AssertionSigner | None,
         *,
+        approvals: PrivateApprovals | None = None,
         clock: Callable[[], float] = time.time,
         transaction_timeout: float = 5,
         forward_timeout: float = 30,
@@ -36,6 +38,9 @@ class Broker:
         if not 0 < transaction_timeout <= 5 or not 0 < forward_timeout <= 60:
             raise ValueError("finite_broker_bounds_required")
         self.pool, self.authorities, self.domains, self.signer = pool, authorities, domains, signer
+        if approvals is not None and type(approvals) is not PrivateApprovals:
+            raise ValueError("private_approvals_required")
+        self.approvals = approvals
         self.clock = clock
         self.transaction_timeout, self.forward_timeout = transaction_timeout, forward_timeout
 
@@ -116,7 +121,8 @@ class Broker:
         try:
             async with asyncio.timeout(self.forward_timeout):
                 if reserved.decision.disposition is Disposition.PARK:
-                    parked = await self.domains.park(reserved, args, assertion)
+                    approvals = self.approvals if self.approvals is not None else self.domains
+                    parked = await approvals.park(reserved, args, assertion)
                     if not isinstance(parked, ParkReceipt):
                         raise BrokerRefused(Reason.UNAVAILABLE)
                 else:

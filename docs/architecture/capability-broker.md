@@ -1,9 +1,9 @@
 # Capability broker transport foundation
 
 The daemon's dedicated private transport is default OFF. It is separate from the
-ordinary model-presentable MCP catalog. This foundation does not implement the
-owning approval producer, cancellation worker, authenticated Stop route, runner,
-or approved replay executor.
+ordinary model-presentable MCP catalog. The central cancellation and replay
+consumers below remain distinct from the missing owning approval producer,
+authenticated Stop ingress, runner and positive owning replay executor.
 
 `[butler.capability_broker_transport]` is a strict typed section mapped by
 `load_config()` into `ButlerConfig.capability_broker_transport`. `enabled` accepts
@@ -151,3 +151,43 @@ These consumers perform no domain network request and create no owning receipt.
 Actual A2 approval/schema/receipt authority is still blocked on the separately
 delivered approvals migration chain; positive UnitB, authenticated owning replay,
 real PostgreSQL outcomes and full original broker acceptance remain unearned.
+
+## Private PARK and same-transaction recipient readers
+
+The broker's explicit `approvals=PrivateApprovals(...)` consumer sends the
+already committed original PARK intent to a fixed, purpose-bound owning-service
+`PrivateClient`. It snapshots the arguments before awaiting, binds the action ID
+to the effect ID, carries the signed D7 assertion and standing-rule restriction,
+and accepts only the matching original-tuple `parked` receipt/reference. Missing
+peers, unknown/refused/malformed responses and transport failures settle UNKNOWN;
+a configured consumer never falls back to the ordinary domain adapter or retries.
+Stop during the forward can retain the late matching reference while keeping the
+central effect unknown and its cancellation work outstanding. Existing callers
+that supply only `Domains` retain their established interface. The client owner
+still supplies acquisition and finite shutdown; this consumer opens no listener,
+reads no material and enables no profile.
+
+`RecipientAuthorities` wraps the real catalog/selection/policy authority without
+replacing it. On the broker's existing transaction/connection it reads at most two
+live owner entities and locks the selected rows, resolves explicit entity/channel
+selectors through the actual identity rules, and binds the result to the exact
+capability and raw-argument digest. Unknown, conflicting, ambiguous, inherited or
+unsupported parties remain non-owner. Only the verified native core-notify
+resolver may distinguish its declared implicit Telegram owner branch from its
+conditional unresolved reply/context branch. Its internal resolver tag must come
+from the verified final core.notifications descriptor; neither a caller field nor
+a model's owner-looking text can supply it. Recipient-free calls do no identity
+I/O. This reader does not prove link inertness, template pinning, a standing rule,
+actuation risk or any permission to bypass the existing exposure matrix.
+
+Software controls exercise actual Broker.call and loopback private MCP. The new
+PostgreSQL identity/retirement-lock control is authored and collected, not run
+locally. These controls do not establish owning durable receipts. Actual A2
+schema/producer/executor integration still requires the delivered S1 approvals
+chain and its serialized migration/foreign-hunk custody. The verified current
+catalog factory still requires delivered M1 publication plus explicit per-resource
+selection-bound metadata (bu-n7zmbp.6); omission is never converted to false.
+The isolated production startup, genuine runner/session inputs, ordinary signed
+forwarder, owning standing-rule/risk adapters, exposed owner-notify inertness and
+positive UnitB/replay remain required. The runtime stays dark/default OFF; this
+increment does not complete the original nine acceptance criteria.

@@ -48,7 +48,16 @@ def bind_recipient_policy(
         or (b.default_owner and (present or not r.default_owner_condition))
     ):
         raise BrokerRefused(Reason.POLICY)
-    if r.undeterminable or b.undeterminable or b.owner_id is None:
+    # An unconditional unknown party is never resolved away. A conditional
+    # native branch needs the trusted producer's complete exact-call evidence.
+    native_branch = (
+        capability.recipient_resolver == "core_notify"
+        and capability.name == "notify"
+        and capability.effect_class == "communicate"
+        and bool(r.undeterminable_condition)
+    )
+    unresolved = r.undeterminable and not native_branch
+    if unresolved or b.undeterminable or b.owner_id is None:
         recipient = "non_owner"
     elif b.targets:
         recipient = "owner" if all(t == b.owner_id for t in b.targets) else "non_owner"
