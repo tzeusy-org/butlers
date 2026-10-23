@@ -71,12 +71,12 @@ cost on every merge; more of them is not free.
 
 A pull request whose diff clears the docs filter uses the stdlib-only `route` job.
 It reuses the established affected-test planner with more conservative omission admission:
-only proven unchanged collection inputs may use a fresh scoped subset without full inventory.
+only proven unchanged collection inputs may use a fresh scoped subset.
 All test, conftest, dependency/config, CI and unknown changes widen to full collection and
-execution. Merge-group always uses fresh complete inventory and all eleven5+6 children.
-Push to main collects/budget-checks fresh inventory but skips heavy execution after protected
-validation. Docs-only skips remain explicit. The required `check` verifies exact event/mode
-pairings from prerequisite verdicts only, with no checkout, installation or report work.
+execution. Merge-group always runs all five unit and six integration groups, followed by
+fresh lane collection for totals and budgets. Push to main skips backend groups and preflight
+after the merge queue has validated the tree. Docs-only skips remain explicit. The required `check`
+verifies exact event/mode pairings from prerequisite verdicts only, with no checkout, installation or report work.
 
 Test support modules and package markers with unproved import ownership escalate to every
 configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
@@ -94,43 +94,47 @@ reference, execution and independently verified proof carriers; required check a
 its explicit successful verifier output. Each subprocess belongs to the same finite affected
 job envelope and cleans up only its own process group. No cached inventory or full-lane evidence
 is borrowed to certify a scoped execution.
-Completion/exit/count/start fields require their exact JSON boolean or integer representations.
-A boolean is never an integer count/exit, and an equal floating-point number is never a count.
-Both scoped and full-matrix consumers reject malformed representations without coercion;
-finite nonnegative integer or floating-point phase timers remain valid numeric durations.
+Affected-receipt completion/exit/count/start fields require their exact JSON boolean or integer
+representations; finite nonnegative integer or floating-point phase timers remain valid durations.
+Backend lane-group records require integer group identifiers and nonnegative integer counts;
+booleans and floating-point counts are rejected. Malformed evidence fails without coercion.
 
 The backend lanes run as pytest-split groups: five unit and six integration children, each
 selecting its slice of the lane's fresh marker selection with `duration_based_chunks` over the
 committed `.test_durations`. Durations only balance the groups; a test without one gets the
 average and still runs. Each child records how many tests it collected, and check-preflight sums
 each lane's groups and compares the sum with one fresh `--collect-only` count of the same
-selection, so a group that drops or duplicates a test fails the run. Those same fresh counts feed
+selection. Missing, extra or duplicate group records and lane-total mismatches fail the run.
+These totals are count evidence, not per-item execution receipts. The fresh lane counts feed
 both lane budgets. Lane children, affected, Vitest and the browser job (which builds its own
 bundle) start after route; every final required verdict still requires successful guards. The
 nightly covered groups measure per-test durations, and its `durations-refresh` job opens a pull
 request with the merged file instead of pushing to main (bu-29wkwj.2).
 
-The read-only scheduled weight observer retains closed provenance for both CANDIDATE and
-UNKNOWN: known selected run/attempt/head, completed and unavailable bounded index reads,
-required artifact identifiers, download digests, archive-member attempts and the failing stage.
-Unselected and partial reads remain explicit; unknown identity fields stay null. Failure kinds
-come from fixed categories, never raw exception arguments, child output or arbitrary API fields.
-These diagnostics do not admit missing evidence, install weights or change test membership.
+The scheduled weight observer is retired. The computed partition, inventory collector and
+shard observer remain only for the manual `ci-shard-watchdog-diagnostic.yml` workflow, whose
+retirement is tracked in bu-29wkwj.8. Required and nightly lanes use `scripts/ci_lanes.py` and
+do not consume that diagnostic's identity or phase receipts. Diagnostic UNKNOWN results remain
+explicit and cannot supply missing required-CI evidence or change lane membership.
 
-Full-mode smoke may use exact successful child identities only. An uncovered item runs the
-original dedicated command. Derived release evidence names actual child commands, selector
-provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
+Preflight runs the dedicated smoke command
+`uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short` in both full and scoped CI modes,
+and in nightly coverage preflight. Its release evidence records the actual command, checkout
+SHA, exit code, status, elapsed time and skipped classes. Smoke evidence is not derived from
+backend group identities.
 Coverage runs nightly, not per pull request (owner decision bu-w72da2 = A). The scheduled or
-manually dispatched nightly workflow freshly collects inventory, runs all eleven covered
-children, validates every actual CoverageData database, source population, tracing, digest and
-same-checkout/run/attempt/computed assignment before combination, and uploads the combined
-report as an artifact. Its always-running preflight/report gates refuse every failed or skipped
-prerequisite; only successful scheduled/manual main runs may update the badge. A change to the
-coverage pipeline is validated by dispatching the nightly workflow on its branch. Reporting
-integrity remains separate from required check/guards/frontend verdicts.
-Protected merge-group and ordinary PR shards use CI_COVERAGE=0 with the same complete
-selection, workers, markers, timeouts and execution receipts. The nightly coverage jobs use
-CI_COVERAGE=1; ordinary standalone calls retain covered defaults.
+manually dispatched nightly workflow runs all eleven covered groups, checks their counts and
+budgets against fresh lane collections, and validates every actual CoverageData database before
+combination. `ci-coverage.v2` metadata binds each input to the checkout head, workflow run, attempt,
+event, lane, group, lane configuration, source population and data digest. Validation also checks
+compatible tracing and executed source lines, rejecting missing, extra, unreadable, stale or
+incompatible inputs. The combined report is uploaded as an artifact. Its always-running
+preflight/report gates refuse failed or skipped prerequisites; only successful scheduled/manual
+main runs may update the badge. A coverage-pipeline change is validated by dispatching the nightly
+workflow on its branch. Reporting integrity remains separate from required check/guards/frontend
+verdicts. Protected merge-group and ordinary PR groups use `CI_COVERAGE=0` with the same lane
+selection, workers, markers, timeouts and collected-count publication. Nightly groups use
+`CI_COVERAGE=1`; ordinary standalone calls retain covered defaults.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
@@ -138,9 +142,9 @@ actual test membership. Required frontend fails if guards or either child fails.
 Playwright browser job is required through `check`: every merge group and main push runs it,
 as does every pull request the route classifies as frontend (a change under `frontend/`,
 `.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
-reuses only the source/attempt/content-bound build and retains locked browser version,
-mandatory OS dependencies on cache hits/misses (two bounded attempts with privileged group
-cleanup), then three bounded browser attempts within the 720-second installer budget.
+builds its own checked-out frontend after route, independently of guards, and retains the locked
+browser version, mandatory OS dependencies on cache hits/misses (two bounded attempts with privileged
+group cleanup), then three bounded browser attempts within the 720-second installer budget.
 Dependency retries require confirmed termination and reaping of the owned process group.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
 
@@ -252,17 +256,15 @@ the repo notes first.
 
 ## CI fixed-overhead observations
 
-The preserved runner within the computed eleven-child topology records private hashed selected identities and
-real phase/worker/tracer observations. Advisory duration ordering never changes
-membership; unavailable or incompatible timings fall back lexically with
-UNKNOWN. Environment caches always run frozen editable repair and verify the
-current checkout's real venv/import. Experimental unit workers and coverage
-cores preserve ordinary defaults until complete comparable evidence selects a
-change. See [CI shard overhead](../../docs/operations/ci-shard-overhead.md) for
-exact receipt meanings, twelve-job service retirement, CPU dependencies and
-rollback. These mechanisms do not establish the staged five-minute goal or
-replace the terminal hosted gate, original hard targets or ten-run observations.
-
+Required and nightly backend lanes use pytest-split with measured `.test_durations` values
+for balancing. Environment caches remain advisory: setup always runs frozen editable repair
+and verifies the current checkout's real venv/import. The computed-runner identity, phase and
+worker/tracer observations described in
+[CI shard overhead](../../docs/operations/ci-shard-overhead.md) are historical or belong to the
+retained manual watchdog diagnostic; they are not receipts from the current lane groups.
+Unavailable diagnostic observations remain UNKNOWN. Neither the balancing data nor those
+diagnostics establish the staged five-minute goal or replace the terminal hosted gate,
+original hard targets or ten-run observations.
 
 The [2026-10-15 ten-run historical cost baseline](../../docs/testing/ci-cost-baseline-2026-10-15.md)
 preserves exact main/run/attempt identities, job and step decompositions,
