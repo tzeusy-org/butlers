@@ -1189,7 +1189,8 @@ jobs:
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
-    timeout-minutes: 14
+    # Provisional: ceil((2*228s before envelope + 720s installer reserve)/60).
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     needs: [route, guards]
     # Required through the `check` verdict (owner decision bu-w72da2 = A):

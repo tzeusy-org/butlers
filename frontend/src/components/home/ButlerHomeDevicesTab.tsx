@@ -24,13 +24,13 @@ import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
 import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
+import { Panel, KpiCell, ErrorLine } from "@/components/ui/atoms";
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { chartColor } from "@/lib/chart-colors";
-import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
-import { HomeSafetyWatchPanel } from "@/components/butler-detail/HomeSafetyWatchPanel";
-import { HomePersonMappingPanel } from "@/components/butler-detail/HomePersonMappingPanel";
+import { HomeAtmosphereLocationPanel } from "@/components/home/HomeAtmosphereLocationPanel";
+import { HomeSafetyWatchPanel } from "@/components/home/HomeSafetyWatchPanel";
+import { HomePersonMappingPanel } from "@/components/home/HomePersonMappingPanel";
 import {
   useHomeSnapshotStatus,
   useHomeDevices,

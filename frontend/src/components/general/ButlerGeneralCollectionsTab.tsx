@@ -38,7 +38,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell, ErrorLine } from "./atoms";
+import { KpiCell, ErrorLine } from "@/components/ui/atoms";
 import { chartColorAlpha } from "@/lib/chart-colors";
 import {
   useGeneralCollections,
