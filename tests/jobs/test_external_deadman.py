@@ -216,6 +216,10 @@ async def test_run_check_success_records_audit_row(monkeypatch):
     assert append_mock.await_count == 2
     assert append_mock.await_args.args[1] == "external_deadman"
     assert append_mock.await_args.args[2] == "external_deadman_ping_success"
+    assert [(call.args[2], call.kwargs["result"]) for call in append_mock.await_args_list] == [
+        ("external_deadman_tick", "claimed"),
+        ("external_deadman_ping_success", "success"),
+    ]
 
 
 async def test_run_check_failure_records_nothing(monkeypatch):

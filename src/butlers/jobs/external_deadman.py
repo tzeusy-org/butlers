@@ -262,6 +262,7 @@ async def run_external_deadman_check(
                         _TICK_ACTION,
                         target="external_deadman",
                         request_id=tick_id,
+                        result="claimed",
                     )
             # A separate acquisition observes the committed claim, not our own
             # uncommitted write. A commit-loss ambiguity withholds this tick.
