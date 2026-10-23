@@ -15,6 +15,10 @@ const KILL_MS = 120_000
 const BACKOFF_MS = 10_000
 const TOTAL_MS = 720_000
 const CLEANUP_MS = 2_000
+// Reserved supervisor outcomes are emitted only after termination and reaping.
+const DEPS_CLEANED_SUCCESS = 80
+const DEPS_CLEANED_FAILURE = 81
+const DEPS_CLEANED_TIMEOUT = 82
 const depsSupervisor = path.join(frontendRoot, 'scripts/install-playwright-deps.py')
 const BROWSER = {
   script: 'set -euo pipefail; "$1" install chromium ${3:+"$3"}; node "$2" --verify-browser',
@@ -44,9 +48,11 @@ function dependencyAttempt() {
     child.once('error', () => { cleanupFailed = true })
     child.once('close', code => {
       activeDeps = undefined
-      // A signal, launch failure or cleanup refusal cannot authorize a retry.
-      if (code === null || code === 125 || code === 126 || code === 127) cleanupFailed = true
-      resolve(code === 0 && !expired)
+      // Generic zero/nonzero/signal exits cannot prove that cleanup ran.
+      if (![DEPS_CLEANED_SUCCESS, DEPS_CLEANED_FAILURE, DEPS_CLEANED_TIMEOUT].includes(code)) {
+        cleanupFailed = true
+      }
+      resolve(code === DEPS_CLEANED_SUCCESS && !expired)
     })
   })
 }

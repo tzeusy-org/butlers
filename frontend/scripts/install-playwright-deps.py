@@ -1,8 +1,7 @@
 """Privileged, finite supervisor for only this installer's dependency group.
 
-Run under sudo before starting Playwright so apt never changes privilege or
-escapes through a nested sudo session. EOF from the Node parent cancels the
-attempt. Exit 124 means a cleaned timeout; 125 forbids retry (cleanup unproven).
+Only reserved exit codes 80/81/82 establish cleaned success/failure/timeout.
+Every other exit is unproven and forbids retry. EOF from Node cancels the attempt.
 """
 
 from __future__ import annotations
@@ -16,14 +15,17 @@ import sys
 import time
 
 CLEANUP_SECONDS = 2
+CLEANED_SUCCESS = 80
+CLEANED_FAILURE = 81
+CLEANED_TIMEOUT = 82
+UNPROVEN = 125
 
 
 def main() -> int:
-    # Adopt orphaned grandchildren, so their exit is reaped here rather than
-    # delegated to the runner's init. This supervisor never launches other work.
+    # Adopt orphaned grandchildren. This supervisor never launches other work.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         print("Cannot establish dependency cleanup ownership", file=sys.stderr)
-        return 125
+        return UNPROVEN
     term_seconds, kill_seconds = (float(value) / 1000 for value in sys.argv[1:3])
     cancelled = False
 
@@ -31,74 +33,82 @@ def main() -> int:
         nonlocal cancelled
         cancelled = True
 
-    signal.signal(signal.SIGTERM, cancel)
-    signal.signal(signal.SIGINT, cancel)
-    signal.signal(signal.SIGHUP, cancel)
-    # Preserve the caller's locked Node executable without forwarding its env
-    # through sudo. Playwright's executable uses /usr/bin/env node.
-    node_directory = os.path.dirname(sys.argv[3])
-    child = subprocess.Popen(
-        [sys.argv[4], "install-deps", "chromium"],
-        start_new_session=True,
-        env={**os.environ, "PATH": node_directory + os.pathsep + os.environ["PATH"]},
-    )
-    group = child.pid
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, cancel)
 
-    def send(sig: signal.Signals) -> None:
-        try:
-            os.killpg(group, sig)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            # A denied signal is never proof of cleanup, even under sudo.
-            pass
-
-    def reaped() -> bool:
-        # poll() owns the direct child's status. waitpid then reaps any adopted
-        # descendants, and ECHILD proves none of our processes remain alive.
-        child.poll()
-        while True:
-            try:
-                pid, _ = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                return True
-            if pid == 0:
-                return False
-
-    selector = selectors.DefaultSelector()
-    selector.register(sys.stdin, selectors.EVENT_READ)
+    child = None
+    selector = None
+    outcome = UNPROVEN
+    cleaned = False
     started = time.monotonic()
-    termed = False
-    result = 124
     try:
+        # Lifetime protection starts before Popen, including every setup step.
+        # Preserve the locked Node path without forwarding the caller's env.
+        node_directory = os.path.dirname(sys.argv[3])
+        child = subprocess.Popen(
+            [sys.argv[4], "install-deps", "chromium"],
+            start_new_session=True,
+            env={**os.environ, "PATH": node_directory + os.pathsep + os.environ["PATH"]},
+        )
+        selector = selectors.DefaultSelector()
+        selector.register(sys.stdin, selectors.EVENT_READ)
+        termed = False
         while True:
-            elapsed = time.monotonic() - started
-            code = child.poll()
-            if code is not None and not termed:
-                result = code
+            # WNOWAIT reserves even an exited leader's PID/PGID. Never poll or
+            # wait before the final killpg: root must not signal a reused group.
+            status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if status is not None and not termed:
+                outcome = (
+                    CLEANED_SUCCESS
+                    if status.si_code == os.CLD_EXITED and status.si_status == 0
+                    else CLEANED_FAILURE
+                )
                 break
+            elapsed = time.monotonic() - started
             if cancelled or elapsed >= kill_seconds:
+                outcome = CLEANED_TIMEOUT
                 break
             if not termed and elapsed >= term_seconds:
                 termed = True
-                send(signal.SIGTERM)
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass  # The finalizer must still establish actual cleanup.
             if selector.select(0.02):
-                # EOF or any cancellation message means the parent is leaving.
                 os.read(sys.stdin.fileno(), 4096)
                 cancelled = True
+    except Exception as error:
+        # Generic supervisor/setup failure never authorizes retry, even if its
+        # finalizer succeeds. Do not include arbitrary child/OS error values.
+        print(f"Playwright dependency supervisor failed: {type(error).__name__}", file=sys.stderr)
     finally:
-        selector.close()
-        send(signal.SIGKILL)
-        deadline = time.monotonic() + CLEANUP_SECONDS
-        while not reaped():
-            if time.monotonic() >= deadline:
-                print(
-                    "Playwright dependency cleanup could not be confirmed; refusing retry",
-                    file=sys.stderr,
-                )
-                return 125
-            time.sleep(0.01)
-    return result
+        if child is not None:
+            group = child.pid
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            # Only now release the reserved leader and reap adopted descendants.
+            deadline = time.monotonic() + CLEANUP_SECONDS
+            while True:
+                child.poll()
+                try:
+                    pid, _ = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    cleaned = True
+                    break
+                if pid == 0:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
+        if selector is not None:
+            selector.close()
+    if not cleaned or outcome == UNPROVEN:
+        print(
+            "Playwright dependency cleanup could not be confirmed; refusing retry", file=sys.stderr
+        )
+        return UNPROVEN
+    return outcome
 
 
 if __name__ == "__main__":
