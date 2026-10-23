@@ -50,7 +50,7 @@ from butlers.api.models.ingestion_event import (
     ReplayHistoryEntry,
     SenderContactResolution,
 )
-from butlers.api.pagination import Page
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
     ingestion_classification_uncertainty,
@@ -79,6 +79,7 @@ from butlers.identity import (
     resolve_contact_by_channel,
     resolve_contacts_by_channel_bulk,
 )
+from butlers.pagination import InvalidCursorError as CoreInvalidCursorError
 
 logger = logging.getLogger(__name__)
 
@@ -284,19 +285,22 @@ async def list_ingestion_events(
     if trace_id is not None and trace_id.strip():
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
-    result = await ingestion_events_list(
-        pool,
-        limit=limit,
-        cursor=cursor,
-        channels=channel_list,
-        status=status,
-        statuses=status_list,
-        q=q,
-        from_dt=from_dt,
-        to_dt=to_dt,
-        sort=sort,
-        event_ids=event_ids,
-    )
+    try:
+        result = await ingestion_events_list(
+            pool,
+            limit=limit,
+            cursor=cursor,
+            channels=channel_list,
+            status=status,
+            statuses=status_list,
+            q=q,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            sort=sort,
+            event_ids=event_ids,
+        )
+    except CoreInvalidCursorError as exc:
+        raise InvalidCursorError() from exc
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
 

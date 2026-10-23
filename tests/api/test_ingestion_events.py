@@ -1466,19 +1466,55 @@ async def test_sort_cost_forwarded_to_core(app):
     assert call_kwargs.get("sort") == "cost"
 
 
-async def test_sort_cost_invalid_cursor_returns_400(app):
-    """GET /api/ingestion/events?sort=cost with a keyset cursor returns 400."""
+@pytest.mark.parametrize(
+    ("sort", "cursor"),
+    [
+        ("cost", encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), uuid4()))),
+        ("cost", encode_cursor((-10,))),
+        ("cost", "not-a-cursor"),
+        ("recent", "not-a-cursor"),
+        ("recent", encode_cursor((10,))),
+        ("recent", encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), uuid4())) + "x"),
+    ],
+    ids=[
+        "cost-foreign",
+        "negative-cost",
+        "cost-malformed",
+        "recent-malformed",
+        "recent-foreign",
+        "tampered",
+    ],
+)
+async def test_sort_cost_invalid_cursor_returns_400(app, sort, cursor):
+    """Core cursor errors retain the API's 400 for both list sort modes."""
     _app_with_mock_db(app)
-
-    # A valid keyset cursor (wrong shape for cost sort)
-    keyset_cursor = encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), uuid4()))
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(f"/api/ingestion/events?sort=cost&cursor={keyset_cursor}")
+        resp = await client.get("/api/ingestion/events", params={"sort": sort, "cursor": cursor})
 
     assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid cursor"
+
+
+async def test_list_does_not_relabel_unrelated_value_errors_as_cursor_errors(app):
+    _app_with_mock_db(app)
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        side_effect=ValueError("unrelated query failure"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/ingestion/events")
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "VALIDATION_ERROR",
+        "message": "unrelated query failure",
+        "butler": None,
+        "details": None,
+    }
 
 
 # ---------------------------------------------------------------------------

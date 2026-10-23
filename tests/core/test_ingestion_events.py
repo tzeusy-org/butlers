@@ -331,12 +331,12 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
 async def test_ingestion_events_list_and_sessions() -> None:
     """list returns cursor-paginated result; next_cursor set correctly;
     channel filter passed to SQL; sessions fan-out/merge/cost-decode/rollup."""
-    from butlers.api.pagination import decode_cursor
     from butlers.core.ingestion_events import (
         ingestion_event_rollup,
         ingestion_event_sessions,
         ingestion_events_list,
     )
+    from butlers.pagination import decode_cursor
 
     # List: empty → items=[], next_cursor=None
     result = await ingestion_events_list(_FakePool(fetch_results=[]))
@@ -552,11 +552,11 @@ async def test_cost_cursor_and_cost_sort() -> None:
     import uuid as _uuid
     from datetime import UTC, datetime
 
-    from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
     from butlers.core.ingestion_events import (
         ingestion_event_set_cost_usd,
         ingestion_events_list,
     )
+    from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
 
     # sort=cost refuses a keyset cursor (wrong shape) and a negative offset
     keyset_cursor = encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4()))
@@ -643,7 +643,7 @@ async def test_ingestion_events_list_q_search_coverage() -> None:
     # the q predicate already in the WHERE clause.
     from datetime import UTC, datetime
 
-    from butlers.api.pagination import encode_cursor
+    from butlers.pagination import encode_cursor
 
     cursor = encode_cursor((datetime(2026, 5, 1, tzinfo=UTC), uuid.uuid4()))
 

@@ -43,6 +43,10 @@ second envelope or a second codec.
   names fan-out sources that failed, so a partial page never reads as the whole truth.
 - An endpoint that returns more than the page subclasses `Page` and adds sibling fields; it does
   not wrap the page in a second object.
+- The canonical API facade is `butlers.api.pagination`; its one shared codec implementation
+  lives in transport-neutral `butlers.pagination`, which core queries can use without importing
+  the API. The facade translates only its specific cursor error (`ValueError` in core) to HTTP
+  400 and preserves the public functions and `Page` envelope.
 - The cursor is `encode_cursor(values)` / `decode_cursor(cursor, shape)`: a versioned, URL-safe,
   checksummed token over the last row's keyset values (`datetime`, `UUID`, `str`, numbers).
   `decode_cursor` returns the same types it was given and raises `InvalidCursorError`, a 400, for

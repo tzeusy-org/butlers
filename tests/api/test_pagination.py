@@ -10,6 +10,9 @@ from uuid import UUID
 import pytest
 
 from butlers.api.pagination import InvalidCursorError, _checksum, decode_cursor, encode_cursor
+from butlers.pagination import InvalidCursorError as CoreInvalidCursorError
+from butlers.pagination import decode_cursor as core_decode_cursor
+from butlers.pagination import encode_cursor as core_encode_cursor
 
 pytestmark = pytest.mark.unit
 
@@ -34,6 +37,8 @@ def test_cursor_round_trips_values_with_their_types(values):
     token = encode_cursor(values)
 
     assert all(c.isalnum() or c in "-_." for c in token)
+    assert core_encode_cursor(values) == token
+    assert core_decode_cursor(token) == values
     assert decode_cursor(token) == values
     assert decode_cursor(token, tuple(type(v) for v in values)) == values
 
@@ -67,6 +72,10 @@ def test_cursor_rejects_tampering_with_a_400(bad):
 
     assert caught.value.status_code == 400
     assert isinstance(caught.value, ValueError)
+    with pytest.raises(CoreInvalidCursorError) as core_caught:
+        core_decode_cursor(bad)
+    assert isinstance(core_caught.value, ValueError)
+    assert not hasattr(core_caught.value, "status_code")
 
 
 def test_cursor_from_another_endpoint_fails_the_shape_check():
@@ -74,6 +83,10 @@ def test_cursor_from_another_endpoint_fails_the_shape_check():
         decode_cursor(_GOOD, (float, datetime, str))
     with pytest.raises(InvalidCursorError):
         decode_cursor(_GOOD, (datetime, str))
+    with pytest.raises(CoreInvalidCursorError):
+        core_decode_cursor(_GOOD, (float, datetime, str))
+    with pytest.raises(CoreInvalidCursorError):
+        core_decode_cursor(_GOOD, (datetime, str))
 
 
 # Route table: which envelope each paginated GET route returns. A new route must use

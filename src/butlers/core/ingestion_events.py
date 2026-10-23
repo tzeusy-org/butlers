@@ -43,13 +43,13 @@ from uuid import UUID
 
 import asyncpg
 
-from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,
     current_available,
     historical_available,
 )
 from butlers.core.pricing import PricingConfig, estimate_session_cost
+from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
 
 if TYPE_CHECKING:
     from butlers.api.db import DatabaseManager
