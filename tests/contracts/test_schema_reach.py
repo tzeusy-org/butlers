@@ -587,6 +587,30 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.budgets",
+    ): "sanctioned:RFC-0038-D1-D7-D13: central stored-approved replay reads its already-charged Switchboard budget under the same goal-first transaction; no second charge or owning-domain data access",
+    (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038-D1-D12-D13: central stored-approved replay locks and settles its original immutable Switchboard effect and original digest; no owning pending_actions SQL or dispatch authority inferred",
+    (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.goal_approval_cancel_work",
+    ): "sanctioned:RFC-0038-D1-D13-D14: central replay reads its own Switchboard Stop cancellation fence before committing any dispatch intent; no remote cancellation inferred",
+    (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.goal_park_associations",
+    ): "sanctioned:RFC-0038-D1-D13-D14: central replay binds its own immutable PARK association and attach-once dispatch intent before any future owning forward; no owning receipt or approval authentication inferred",
+    (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038-D1-D6-D13-D14: central replay locks its own Switchboard goal before revalidation, dispatch intent and exposure settlement, serializing with Stop",
+    (
+        "src/butlers/capability_broker/approved.py",
+        "switchboard.invocations",
+    ): "sanctioned:RFC-0038-D1-D6-D7-D13: central replay revalidates its own original Switchboard invocation grant, depth and exposure after token end; no token resurrection or session authentication inferred",
+    (
         "src/butlers/capability_broker/ledger.py",
         "switchboard.budgets",
     ): "sanctioned:RFC-0038-D1-D7: Switchboard broker charges its own goal budget in the authenticated central call transaction; no domain-schema access",
