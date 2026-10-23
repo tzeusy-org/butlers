@@ -411,9 +411,7 @@ class TestEphemeralMcpConfig:
         from butlers.modules.base import Module
 
         class MinimalModule(Module):
-            @property
-            def name(self) -> str:
-                return "minimal"
+            name = "minimal"
 
             @property
             def config_schema(self):

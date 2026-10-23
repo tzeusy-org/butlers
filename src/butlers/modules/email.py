@@ -119,9 +119,7 @@ class EmailModule(Module):
         # DB pool for OAuth status queries (public.google_accounts).
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "email"
+    name = "email"
 
     @property
     def config_schema(self) -> type[BaseModel]:

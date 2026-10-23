@@ -39,9 +39,7 @@ class _CalendarModule(Module):
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    @property
-    def name(self) -> str:
-        return "calendar"
+    name = "calendar"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -86,9 +84,7 @@ class _EmailModule(Module):
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    @property
-    def name(self) -> str:
-        return "email"
+    name = "email"
 
     @property
     def config_schema(self) -> type[BaseModel]:

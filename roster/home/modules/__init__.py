@@ -263,9 +263,7 @@ class HomeAssistantModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "home_assistant"
+    name = "home_assistant"
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -38,9 +38,7 @@ pytestmark = pytest.mark.unit
 
 
 class StubModuleA(Module):
-    @property
-    def name(self) -> str:
-        return "stub_a"
+    name = "stub_a"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -70,9 +68,7 @@ class StubModuleA(Module):
 
 
 class StubModuleB(Module):
-    @property
-    def name(self) -> str:
-        return "stub_b"
+    name = "stub_b"
 
     @property
     def config_schema(self) -> type[BaseModel]:

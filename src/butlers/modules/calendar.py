@@ -3225,9 +3225,7 @@ class CalendarModule(Module):
         # ``_primary_calendar_id`` for the default-target role.
         self._default_target_calendar_id: str | None = None
 
-    @property
-    def name(self) -> str:
-        return "calendar"
+    name = "calendar"
 
     @property
     def config_schema(self) -> type[BaseModel]:

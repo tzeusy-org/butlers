@@ -114,9 +114,7 @@ class WhatsAppModule(Module):
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()
 
-    @property
-    def name(self) -> str:
-        return "whatsapp"
+    name = "whatsapp"
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -39,9 +39,7 @@ class StrictModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "strict_mod"
+    name = "strict_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -80,9 +78,7 @@ class AllDefaultsModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "defaults_mod"
+    name = "defaults_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -114,9 +110,7 @@ class NoSchemaModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "no_schema_mod"
+    name = "no_schema_mod"
 
     @property
     def config_schema(self) -> type[BaseModel] | None:

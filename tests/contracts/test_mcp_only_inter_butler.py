@@ -350,9 +350,7 @@ class TestMcpOnlyInterButler:
 
         # Build a minimal synthetic module with an arbitrary name
         class _SyntheticModule(Module):
-            @property
-            def name(self) -> str:
-                return "test_synthetic_module_xyzzy"
+            name = "test_synthetic_module_xyzzy"
 
             @property
             def config_schema(self):

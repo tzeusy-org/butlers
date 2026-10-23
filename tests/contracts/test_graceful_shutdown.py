@@ -21,10 +21,10 @@ def _make_tracking_module(name: str, deps: list[str], shutdown_order: list):
     """Create a module that records its shutdown call order."""
     from butlers.modules.base import Module
 
+    _module_name = name
+
     class _TrackingModule(Module):
-        @property
-        def name(self) -> str:
-            return name
+        name = _module_name
 
         @property
         def config_schema(self) -> type[BaseModel]:
@@ -245,9 +245,7 @@ class TestConcreteModuleShutdown:
         from butlers.modules.base import Module
 
         class NoopShutdown(Module):
-            @property
-            def name(self) -> str:
-                return "noop_shutdown"
+            name = "noop_shutdown"
 
             @property
             def config_schema(self) -> type[BaseModel]:
@@ -308,9 +306,7 @@ class TestConcreteModuleShutdown:
         shutdown_order: list[str] = []
 
         class ModDepA(Module):
-            @property
-            def name(self) -> str:
-                return "dep_a"
+            name = "dep_a"
 
             @property
             def config_schema(self) -> type[BaseModel]:
@@ -333,9 +329,7 @@ class TestConcreteModuleShutdown:
                 shutdown_order.append("dep_a")
 
         class ModDepB(Module):
-            @property
-            def name(self) -> str:
-                return "dep_b"
+            name = "dep_b"
 
             @property
             def config_schema(self) -> type[BaseModel]:

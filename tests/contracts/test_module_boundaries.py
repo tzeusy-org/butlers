@@ -17,10 +17,10 @@ pytestmark = pytest.mark.contract
 def _make_minimal_module(name: str = "test_module"):
     from butlers.modules.base import Module
 
+    _module_name = name
+
     class _MinimalModule(Module):
-        @property
-        def name(self) -> str:
-            return name
+        name = _module_name
 
         @property
         def config_schema(self) -> type[BaseModel]:

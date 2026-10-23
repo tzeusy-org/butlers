@@ -120,9 +120,7 @@ class ChroniclerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "chronicler"
+    name = "chronicler"
 
     @property
     def config_schema(self) -> type[BaseModel]:
