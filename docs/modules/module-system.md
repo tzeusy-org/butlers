@@ -16,15 +16,17 @@ signatures; this page states only the invariants the code cannot say for itself.
 Source of truth:
 
 - `src/butlers/modules/base.py` -- the `Module` ABC, `ToolMeta`, and the `ToolGroupMixin` /
-  `group_enabled()` tool-group filter
+  `group_enabled()` tool-group filter, the `tool_registrar` and `guarded_tool` helpers
 - `src/butlers/modules/registry.py` -- `ModuleRegistry`, `default_registry()`, `_topological_sort()`
 - `src/butlers/lifecycle.py` -- the startup sequence that drives the hooks (numbered steps)
 
 ## The Contract
 
-Every module subclasses `Module` (`src/butlers/modules/base.py`) and implements all of its abstract
-members: the `name`, `config_schema` and `dependencies` properties, plus `register_tools`,
-`migration_revisions`, `on_startup` and `on_shutdown`. Read the signatures and docstrings there.
+Every module subclasses `Module` (`src/butlers/modules/base.py`) and implements its three abstract
+members: the `name` and `config_schema` properties and `register_tools`. Every other hook
+(`dependencies`, `migration_revisions`, `on_startup`, `on_shutdown`, `credentials_env`,
+`on_all_modules_ready`) has a default and is overridden only when needed. Read the signatures and
+docstrings there.
 The invariants:
 
 - **Modules only add tools.** A module never modifies core infrastructure (state store, scheduler,
@@ -34,7 +36,9 @@ The invariants:
 - **Config is validated, not trusted.** The daemon validates the raw `[modules.<name>]` table
   against `config_schema` and passes the validated object to the hooks. Configs that mix in
   `ToolGroupMixin` gain an optional `groups` list; `register_tools` should gate each tool family
-  with `group_enabled(config, "<group>")` so a butler can load only part of a module.
+  with the `@_tool("<group>")` decorator from `tool_registrar(mcp, config)` so a butler can load
+  only part of a module. Tools that need a credential and map provider errors use `guarded_tool`
+  rather than repeating the check and a broad `except` per tool.
 - **Every tool carries a description.** FastMCP takes it from the handler's docstring (or an
   explicit `description=`). Strict providers reject the whole request when any tool lacks one
   (GLM via OpenCode: `tools[N]: function.description is required`), so one bare handler takes a
