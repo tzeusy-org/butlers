@@ -67,9 +67,7 @@ class StubSpanModule(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_span"
+    name = "stub_span"
 
     @property
     def config_schema(self) -> type[BaseModel]:

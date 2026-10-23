@@ -301,15 +301,6 @@ class ButlerDaemon:
             or self._module_statuses[m.name].status == "active"
         ]
 
-    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Admit explicit declarations and reject unknown names before DB work."""
-        if self.config is None:
-            return modules
-        unknown = sorted(set(self.config.modules) - {mod.name for mod in modules})
-        if unknown:
-            raise ValueError(f"Unknown modules configured: {', '.join(unknown)}")
-        return [mod for mod in modules if mod.name in self.config.modules]
-
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
 
@@ -1308,7 +1299,7 @@ class ButlerDaemon:
             # 3. Fallback to module class property
             mod = loaded_modules.get(mod_name)
             if mod is not None:
-                env_list = getattr(mod, "credentials_env", [])
+                env_list = mod.credentials_env
                 if env_list:
                     creds[mod_name] = list(env_list)
         return creds
@@ -1678,12 +1669,10 @@ class ButlerDaemon:
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}
         for mod in self._modules:
-            on_ready = getattr(mod, "on_all_modules_ready", None)
-            if on_ready is not None:
-                try:
-                    on_ready(module_map)
-                except Exception as exc:
-                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+            try:
+                mod.on_all_modules_ready(module_map)
+            except Exception as exc:
+                logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
 
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.

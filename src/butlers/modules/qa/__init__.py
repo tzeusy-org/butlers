@@ -467,9 +467,7 @@ class QaModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "qa"
+    name = "qa"
 
     @property
     def config_schema(self) -> type[BaseModel]:

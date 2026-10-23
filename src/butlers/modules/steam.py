@@ -171,9 +171,7 @@ class SteamModule(Module):
         self._default_account: str | None = None
         self._max_batch_size: int = _FRIEND_ENRICH_BATCH
 
-    @property
-    def name(self) -> str:
-        return "steam"
+    name = "steam"
 
     @property
     def config_schema(self) -> type[BaseModel]:

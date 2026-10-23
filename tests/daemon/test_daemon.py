@@ -79,9 +79,7 @@ class StubModuleA(Module):
         self._startup_config: Any = None
         self._startup_db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "stub_a"
+    name = "stub_a"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -124,9 +122,7 @@ class StubModuleB(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_b"
+    name = "stub_b"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -159,9 +155,7 @@ class StubModuleFailStartup(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_fail"
+    name = "stub_fail"
 
     @property
     def config_schema(self) -> type[BaseModel] | None:
@@ -653,10 +647,15 @@ async def test_graph_core_group_registration(
     assert {"route.execute", "cancel_session"}.issubset(registered_tools)
 
 
-async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:
+async def test_module_lifecycle(butler_dir_with_modules: Path, tmp_path, monkeypatch) -> None:
     """Module tools registered, order is topological, on_startup called, migrations run."""
     registry = _make_registry(StubModuleA, StubModuleB)
     patches = _patch_infra()
+    module_root = tmp_path / "module_chains"
+    migrations = module_root / "stub_a" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "001_stub.py").write_text("# Synthetic module migration directory.\n")
+    monkeypatch.setattr("butlers.migrations.MODULES_DIR", module_root)
 
     with (
         patches["db_from_env"],
@@ -689,7 +688,7 @@ async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:
     module_names = [m.name for m in daemon._modules]
     assert module_names.index("stub_a") < module_names.index("stub_b")
 
-    # Migrations run for core and stub_a (stub_b returns None)
+    # Migrations run for core and stub_a's directory; stub_b has no chain.
     migration_chains = [
         c.kwargs.get("chain", c.args[1] if len(c.args) > 1 else None)
         for c in mock_migrations.call_args_list
@@ -703,9 +702,7 @@ async def test_schedule_sync_precedes_enabled_module_startup(tmp_path: Path) -> 
     call_order: list[str] = []
 
     class StartupOrderModule(StubModuleA):
-        @property
-        def name(self) -> str:
-            return "startup_order"
+        name = "startup_order"
 
         async def on_startup(
             self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

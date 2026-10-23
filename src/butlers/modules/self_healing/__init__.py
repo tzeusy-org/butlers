@@ -83,9 +83,7 @@ class SelfHealingModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "self_healing"
+    name = "self_healing"
 
     @property
     def config_schema(self) -> type[BaseModel]:

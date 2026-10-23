@@ -26,6 +26,7 @@ from butlers.migrations import (
     _discover_module_chains,
     _resolve_chain_dir,
     get_all_chains,
+    get_module_migration_chains,
     has_butler_chain,
     run_migrations,
 )
@@ -159,6 +160,26 @@ def test_discover_chains(tmp_path) -> None:
     for expected in ["approvals", "contacts", "memory"]:
         assert expected in _discover_module_chains()
 
+    # Real Health declarations include HA's mandatory approval dependency;
+    # its public module name resolves to the owning roster/home directory.
+    from butlers.config import load_config
+    from butlers.modules.registry import default_registry
+
+    root = Path(__file__).resolve().parents[2]
+    registry = default_registry()
+    for name in ("home", "health"):
+        config = load_config(root / "roster" / name)
+        modules = registry.load_from_config(config.modules)
+        chains = get_module_migration_chains(modules, name)
+        assert {"contacts", "approvals"}.issubset(config.modules)
+        if name == "home":
+            assert "home_assistant" not in chains  # own butler chain already runs
+        else:
+            assert chains["home_assistant"] == "home"
+        assert {"contacts", "approvals", "memory"}.issubset(chains.values())
+    brokers = registry.load_from_config({"insight_broker": {}, "owner_conditions_broker": {}})
+    assert get_module_migration_chains(brokers, "health") == {}
+
 
 # ---------------------------------------------------------------------------
 # _resolve_chain_dir
@@ -232,9 +253,7 @@ class StubModule(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_mod"
+    name = "stub_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -248,7 +267,7 @@ class StubModule(Module):
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:
-        return "stub_mod"
+        raise AssertionError("Startup and CLI must discover directories, not call this hook")
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
@@ -342,6 +361,12 @@ async def _run_daemon_with_migration_tracking(
     patches = _patch_infra()
     call_log: list[str] = []
     schema_log: list[str | None] = []
+    module_root = butler_dir / "module_chains"
+    migrations = module_root / "stub_mod" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "001_stub.py").write_text(
+        "# Directory presence, not a hook, selects this chain.\n"
+    )
 
     with (
         patches["db_from_env"],
@@ -357,6 +382,7 @@ async def _run_daemon_with_migration_tracking(
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["recover_route_inbox"],
+        patch("butlers.migrations.MODULES_DIR", module_root),
     ):
         mock_has_chain.return_value = has_chain
 
@@ -369,11 +395,36 @@ async def _run_daemon_with_migration_tracking(
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
 
+        daemon_calls, daemon_schemas = list(call_log), list(schema_log)
+        call_log.clear()
+        schema_log.clear()
+        from butlers.cli import _migrate_all
+
+        with (
+            patch("butlers.modules.registry.default_registry", return_value=registry),
+            patch("butlers.migrations.run_migrations", side_effect=track_migration),
+            patch("butlers.migrations.has_butler_chain", return_value=has_chain),
+            patch(
+                "butlers.db.db_params_from_env",
+                return_value={
+                    "user": "test",
+                    "password": "test",
+                    "host": "localhost",
+                    "port": 5432,
+                },
+            ),
+        ):
+            await _migrate_all({daemon.config.name: butler_dir}, dry_run=False)
+        assert call_log == daemon_calls
+        assert schema_log == daemon_schemas
+
     return call_log, schema_log
 
 
 async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -> None:
-    """Migration ordering: with chain runs core→butler→module; without chain skips butler.
+    """REQ-core-modules-010: directory selection agrees across CLI and daemon.
+
+    Migration ordering: with chain runs core→butler→module; without chain skips butler.
     All chains receive the butler's configured schema."""
     registry_with_mod = ModuleRegistry()
     registry_with_mod.register(StubModule)

@@ -62,9 +62,7 @@ class FinanceModule(Module):
         # Set by the daemon or tests; None disables progress reporting.
         self.notify_fn: Any = None
 
-    @property
-    def name(self) -> str:
-        return "finance"
+    name = "finance"
 
     @property
     def config_schema(self) -> type[BaseModel]:

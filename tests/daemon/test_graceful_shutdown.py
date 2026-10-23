@@ -42,9 +42,7 @@ class StubModuleOk(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_ok"
+    name = "stub_ok"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -76,9 +74,7 @@ class StubModuleFailing(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_failing"
+    name = "stub_failing"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -110,9 +106,7 @@ class StubModuleAfterFailing(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_after"
+    name = "stub_after"
 
     @property
     def config_schema(self) -> type[BaseModel]:

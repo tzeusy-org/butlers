@@ -92,14 +92,12 @@ class ModuleRegistry:
         """Register a module class.
 
         Raises ``ValueError`` if a module with the same name is already
-        registered.  The module name is obtained by instantiating the class
-        temporarily — this is intentional to avoid relying on class-level
-        attributes that could diverge from the instance property.
+        registered or its ``name`` is not a non-empty class-level string.
+        Registration and discovery never construct module instances.
         """
-        # We need the name without a full instantiation dance for concrete
-        # subclasses; use a temporary instance to read the property.
-        instance = module_cls()
-        name = instance.name
+        name = module_cls.name
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Module {module_cls.__name__} must declare a non-empty class name")
         if name in self._modules:
             raise ValueError(f"Module '{name}' is already registered")
         self._modules[name] = module_cls
@@ -131,13 +129,13 @@ class ModuleRegistry:
             graph contains a cycle.
         """
         # 1. Validate all requested modules are registered.
-        for name in modules_config:
+        for name in sorted(modules_config):
             if name not in self._modules:
                 raise ValueError(f"Unknown module: '{name}'")
 
         # 2. Instantiate each module.
         instances: dict[str, Module] = {}
-        for name in modules_config:
+        for name in sorted(modules_config):
             instances[name] = self._modules[name]()
 
         # 3. Validate all dependencies exist in the enabled set.
@@ -160,9 +158,8 @@ class ModuleRegistry:
         explicit config dict; modules absent from *modules_config* receive an
         empty ``{}`` dict (config validation downstream is non-fatal).
 
-        This is the preferred startup path as of butlers-949.  It ensures that
-        all modules are always present so that runtime enable/disable state can
-        be managed independently of the static ``butler.toml`` config.
+        This explicit utility is distinct from daemon admission: daemon startup
+        uses ``load_from_config`` so undeclared modules are never constructed.
 
         Parameters
         ----------

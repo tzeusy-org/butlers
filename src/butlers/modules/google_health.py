@@ -213,9 +213,7 @@ class GoogleHealthModule(Module):
         self._scopes_ok: bool = False
         self._entity_id: str | None = None
 
-    @property
-    def name(self) -> str:
-        return "google_health"
+    name = "google_health"
 
     @property
     def config_schema(self) -> type[BaseModel]:

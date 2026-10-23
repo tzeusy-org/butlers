@@ -94,9 +94,7 @@ class SwitchboardModule(Module):
         self._db: Any = None
         self._runtime_attention_task: asyncio.Task[None] | None = None
 
-    @property
-    def name(self) -> str:
-        return "switchboard"
+    name = "switchboard"
 
     @property
     def config_schema(self) -> type[BaseModel]:

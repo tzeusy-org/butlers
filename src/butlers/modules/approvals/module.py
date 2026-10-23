@@ -283,9 +283,7 @@ class ApprovalsModule(Module):
             rollout = await read_approval_delivery_rollout(connection)
         return rollout.worker_enabled
 
-    @property
-    def name(self) -> str:
-        return "approvals"
+    name = "approvals"
 
     @property
     def config_schema(self) -> type[BaseModel]:

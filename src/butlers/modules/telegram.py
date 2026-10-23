@@ -197,9 +197,7 @@ class TelegramModule(Module):
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
-    @property
-    def name(self) -> str:
-        return "telegram"
+    name = "telegram"
 
     @property
     def config_schema(self) -> type[BaseModel]:

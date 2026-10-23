@@ -54,9 +54,7 @@ class OwnerConditionsBrokerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "owner_conditions_broker"
+    name = "owner_conditions_broker"
 
     @property
     def config_schema(self) -> type[BaseModel]:
