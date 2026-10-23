@@ -1056,7 +1056,9 @@ async def test_registered_review_progress_and_schedule_are_one_transaction():
             self.node = dict(_node_row(node_id="node", mind_map_id="map"))
             self.schedules = {"old": "review-node-rep0"}
             self.depth, self.acquisitions, self.pending_count = 0, 0, 0
-            self.fail_insert = False
+            self.fail_insert, self.fail_update, self.inserts = False, False, 0
+            self.batch_fields = {}
+            self.batch_source, self.batch_mode = "db", "prompt"
 
         @asynccontextmanager
         async def acquire(self):
@@ -1065,20 +1067,54 @@ async def test_registered_review_progress_and_schedule_are_one_transaction():
 
         @asynccontextmanager
         async def transaction(self):
-            old = copy.deepcopy((self.node, self.schedules))
+            old = copy.deepcopy((self.node, self.schedules, self.batch_fields))
             self.depth += 1
             try:
                 yield
             except BaseException:
-                self.node, self.schedules = old
+                self.node, self.schedules, self.batch_fields = old
                 raise
             finally:
                 self.depth -= 1
+
+        def is_in_transaction(self):
+            return self.depth > 0
 
         async def fetchrow(self, sql, *args):
             if "education.mind_map_nodes" in sql:
                 assert self.depth > 0 and "FOR UPDATE" in sql
                 return self.node.copy()
+            if "SELECT id,source,dispatch_mode,job_name" in sql:
+                return next(
+                    (
+                        dict(
+                            id=k,
+                            source=self.batch_source,
+                            dispatch_mode=self.batch_mode,
+                            job_name="foreign_job" if self.batch_mode == "job" else None,
+                        )
+                        for k, v in self.schedules.items()
+                        if v == args[0]
+                    ),
+                    None,
+                )
+            if "SELECT id, cron, enabled, dispatch_mode" in " ".join(sql.split()):
+                return dict(
+                    id=args[0],
+                    cron="0 9 * * *",
+                    enabled=True,
+                    dispatch_mode="prompt",
+                    prompt="old batch",
+                    job_name=None,
+                    job_args=None,
+                    complexity="medium",
+                    timezone="UTC",
+                    start_at=None,
+                    end_at=None,
+                    until_at=None,
+                    display_title=None,
+                    calendar_event_id=None,
+                )
             if "SELECT id FROM scheduled_tasks WHERE name" in sql:
                 return next(({"id": k} for k, v in self.schedules.items() if v == args[0]), None)
             if "SELECT source FROM scheduled_tasks" in sql:
@@ -1097,6 +1133,11 @@ async def test_registered_review_progress_and_schedule_are_one_transaction():
             assert "INSERT INTO scheduled_tasks" in sql and self.depth > 0
             if self.fail_insert:
                 raise RuntimeError("controlled_schedule_insert_refusal")
+            self.inserts += 1
+            if args[0] in self.schedules.values():
+                import asyncpg
+
+                raise asyncpg.UniqueViolationError("controlled_duplicate_name")
             self.schedules["new"] = args[0]
             return uuid.UUID(int=123)
 
@@ -1104,6 +1145,18 @@ async def test_registered_review_progress_and_schedule_are_one_transaction():
             assert self.depth > 0
             if "UPDATE education.mind_map_nodes" in sql:
                 self.node.update(ease_factor=args[0], repetitions=args[1], next_review_at=args[2])
+                return "UPDATE 1"
+            if sql.startswith("UPDATE scheduled_tasks"):
+                import re
+
+                if self.fail_update:
+                    raise RuntimeError("controlled_batch_update_refusal")
+                self.batch_fields.update(
+                    {
+                        key: args[int(index) - 1]
+                        for key, index in re.findall(r"(\w+) = \$(\d+)", sql)
+                    }
+                )
                 return "UPDATE 1"
             assert sql.startswith("DELETE FROM scheduled_tasks")
             del self.schedules[args[0]]
@@ -1139,3 +1192,32 @@ async def test_registered_review_progress_and_schedule_are_one_transaction():
         assert result["repetitions"] == 1 and store.node["repetitions"] == 1
         assert store.schedules == {"new": expected}
         assert store.depth == 0 and store.acquisitions == 1
+
+    # The real registered producer must refresh the existing batch in place,
+    # preserving its ID rather than refusing the duplicate or creating another.
+    store.node = copy.deepcopy(before[0])
+    store.schedules = {"old": "review-node-rep0", "batch": "review-map-batch"}
+    store.batch_fields, store.pending_count, store.inserts = {}, 20, 0
+    store.fail_update = True
+    prior = copy.deepcopy((store.node, store.schedules, store.batch_fields))
+    with pytest.raises(RuntimeError, match="controlled_batch_update_refusal"):
+        await call("node", "map", 4)
+    assert (store.node, store.schedules, store.batch_fields) == prior
+    store.fail_update = False
+    result = await call("node", "map", 4)
+    assert store.schedules == {"batch": "review-map-batch"} and store.inserts == 0
+    assert store.node["repetitions"] == result["repetitions"] == 1
+    assert store.batch_fields["until_at"] == datetime.fromisoformat(
+        result["next_review_at"]
+    ) + timedelta(hours=24)
+    assert store.batch_fields["enabled"] is True
+    assert "mind map map" in store.batch_fields["prompt"]
+
+    for source, mode in (("toml", "prompt"), ("db", "job")):
+        store.node = copy.deepcopy(before[0])
+        store.schedules = {"old": "review-node-rep0", "batch": "review-map-batch"}
+        store.batch_source, store.batch_mode = source, mode
+        prior = copy.deepcopy((store.node, store.schedules, store.batch_fields))
+        with pytest.raises(ValueError, match="review_batch_schedule_conflict"):
+            await call("node", "map", 4)
+        assert (store.node, store.schedules, store.batch_fields) == prior

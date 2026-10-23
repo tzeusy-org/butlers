@@ -19,6 +19,7 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.core.scheduler import schedule_create as _sched_create
     from butlers.core.scheduler import schedule_delete as _sched_delete
+    from butlers.core.scheduler import schedule_update as _sched_update
     from butlers.tools.education import analytics as _analytics
     from butlers.tools.education import curriculum as _curriculum
     from butlers.tools.education import diagnostic as _diagnostic
@@ -45,11 +46,38 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     # into the keyword-only interface expected by education tool functions.
 
     def _make_schedule_create():
-        async def _bound(*, connection=None, **kwargs: Any) -> str:
+        async def _bound(*, connection=None, refresh_existing: bool = False, **kwargs: Any) -> str:
             pool = connection if connection is not None else module._get_pool()
             name = kwargs.pop("name")
             cron = kwargs.pop("cron")
             prompt = kwargs.pop("prompt", None)
+            if refresh_existing:
+                # Only the registered review producer requests this mode while
+                # holding its map/node transaction; ordinary creates stay strict.
+                if connection is None or not connection.is_in_transaction():
+                    raise ValueError("review_batch_transaction_required")
+                if not name.startswith("review-") or not name.endswith("-batch"):
+                    raise ValueError("review_batch_name_required")
+                row = await connection.fetchrow(
+                    "SELECT id,source,dispatch_mode,job_name FROM scheduled_tasks "
+                    "WHERE name=$1 FOR UPDATE",
+                    name,
+                )
+                if row is not None:
+                    if (
+                        row["source"] != "db"
+                        or row["dispatch_mode"] != "prompt"
+                        or row["job_name"] is not None
+                    ):
+                        raise ValueError("review_batch_schedule_conflict")
+                    await _sched_update(
+                        connection,
+                        row["id"],
+                        cron=cron,
+                        prompt=prompt,
+                        **(kwargs | {"enabled": True}),
+                    )
+                    return str(row["id"])
             task_id = await _sched_create(pool, name, cron, prompt, **kwargs)
             return str(task_id)
 

@@ -559,7 +559,9 @@ async def test_atomic_flow_and_populated_curriculum_on_migrated_runtime(pool, mo
     ) == dict(settled)
 
 
-async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_deletion(pool):
+async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_deletion(
+    pool, migrated_db_url
+):
     """Real owning role and actual registered callbacks; no canned insert receipt."""
     from types import SimpleNamespace
 
@@ -598,27 +600,52 @@ async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_
             node_id,
         )
     )
-    # Existing batch name causes the actual core scheduler INSERT to refuse,
-    # after the actual node UPDATE and deletion of all twenty prior schedules.
-    with pytest.raises(ValueError, match="already exists"):
-        await call(node_id, map_id, 4)
-    async with pool.acquire() as conn:
-        assert await conn.fetchval("SELECT current_user") == "butler_education_rw"
-        assert (
-            dict(
-                await conn.fetchrow(
-                    "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
-                    "FROM education.mind_map_nodes WHERE id=$1",
-                    node_id,
+    # Existing batches now refresh in place. A real owning-table trigger
+    # supplies a genuine SQL refusal AFTER progress and prior deletions, so the
+    # original rollback/readback invariant survives the intentional bug fix.
+    suffix = uuid.uuid4().hex
+    function = f"test_review_refusal_{suffix}"
+    trigger = f"test_review_refusal_{suffix}"
+    owner = await asyncpg.connect(migrated_db_url, timeout=5)
+    try:
+        await owner.execute(
+            f"CREATE FUNCTION education.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN IF OLD.name=TG_ARGV[0] THEN RAISE EXCEPTION "
+            "'controlled_review_batch_refusal' USING ERRCODE='23514'; END IF; RETURN NEW; END $$"
+        )
+        # batch_name is composed solely from the generated UUID of this test map.
+        await owner.execute(
+            f"CREATE TRIGGER {trigger} BEFORE UPDATE ON education.scheduled_tasks "
+            f"FOR EACH ROW EXECUTE FUNCTION education.{function}('{batch_name}')"
+        )
+        with pytest.raises(asyncpg.CheckViolationError, match="controlled_review_batch_refusal"):
+            await call(node_id, map_id, 4)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT current_user") == "butler_education_rw"
+            assert (
+                dict(
+                    await conn.fetchrow(
+                        "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
+                        "FROM education.mind_map_nodes WHERE id=$1",
+                        node_id,
+                    )
                 )
+                == before
             )
-            == before
-        )
-        names = await conn.fetch(
-            "SELECT name FROM scheduled_tasks WHERE name=ANY($1::text[])", [*old_names, batch_name]
-        )
-        assert {row["name"] for row in names} == {*old_names, batch_name}
-    await pool.execute("DELETE FROM scheduled_tasks WHERE name=$1", batch_name)
+            names = await conn.fetch(
+                "SELECT name FROM scheduled_tasks WHERE name=ANY($1::text[])",
+                [*old_names, batch_name],
+            )
+            assert {row["name"] for row in names} == {*old_names, batch_name}
+    finally:
+        try:
+            await owner.execute(f"DROP TRIGGER IF EXISTS {trigger} ON education.scheduled_tasks")
+            await owner.execute(f"DROP FUNCTION IF EXISTS education.{function}()")
+        finally:
+            await owner.close(timeout=5)
+    original_batch_id = await pool.fetchval(
+        "SELECT id FROM scheduled_tasks WHERE name=$1", batch_name
+    )
     result = await call(node_id, map_id, 4)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -637,14 +664,50 @@ async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_
             == 1
         )
 
+    assert (
+        await pool.fetchval("SELECT id FROM scheduled_tasks WHERE name=$1", batch_name)
+        == original_batch_id
+    )
+
     # Two actual registered requests for this node serialize on the owning rows;
     # neither may overwrite progress computed before the other commits.
     import asyncio
 
     await pool.execute("DELETE FROM scheduled_tasks WHERE name=$1", batch_name)
-    concurrent = await asyncio.wait_for(
-        asyncio.gather(call(node_id, map_id, 4), call(node_id, map_id, 4)), timeout=20
-    )
+    # Hold the real map row until BOTH registered calls are observed waiting
+    # inside their actual SELECT ... FOR UPDATE. This forces overlap; gather
+    # alone would also pass if the two calls happened to execute sequentially.
+    tasks = []
+    observer = await asyncpg.connect(migrated_db_url, timeout=5)
+    try:
+        async with pool.acquire() as blocker, blocker.transaction():
+            await blocker.fetchval(
+                "SELECT id FROM education.mind_maps WHERE id=$1 FOR UPDATE", map_id
+            )
+            tasks = [asyncio.create_task(call(node_id, map_id, 4)) for _ in range(2)]
+            async with asyncio.timeout(5):
+                # PostgreSQL lock state has no application event to await.
+                while True:  # noqa: ASYNC110
+                    waiting = await observer.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND wait_event_type='Lock' "
+                        "AND query LIKE '%JOIN education.mind_maps AS m%' "
+                        "AND query LIKE '%FOR UPDATE OF m, n%'"
+                    )
+                    if waiting == 2:
+                        break
+                    await asyncio.sleep(0.02)
+            assert all(not task.done() for task in tasks)
+        concurrent = await asyncio.wait_for(asyncio.gather(*tasks), timeout=20)
+    finally:
+        try:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+        finally:
+            await observer.close(timeout=5)
     assert sorted(row["repetitions"] for row in concurrent) == [2, 3]
     async with pool.acquire() as conn:
         assert (

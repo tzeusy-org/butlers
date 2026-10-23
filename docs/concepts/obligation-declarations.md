@@ -354,3 +354,15 @@ transaction boundary; it does not supply a verified creator grant or register
 new obligation admissions. Recording-store controls prove software ordering and
 rollback only. Real PostgreSQL locking, durable readback and source/goal delivery
 remain required.
+
+When the review cap selects an already-existing batch, the registered Education
+producer refreshes that same `db` prompt schedule through the ordinary core
+update operation on the owning progress connection. Its ID is retained, the
+next-run/24-hour window is recomputed, and it is enabled for the new review.
+A TOML-managed or job-mode name collision refuses without replacing its owner.
+Individual creates keep the ordinary strict duplicate-name behavior. This is
+local schedule persistence, not creator authentication or goal admission.
+The authored PostgreSQL successor induces a real batch-update SQL refusal and
+checks rollback independently; its concurrent requests wait behind a held map
+row until both actual lock waits are observed. No database execution or forced
+contention proof is earned by authoring or collecting that test.

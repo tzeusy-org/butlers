@@ -279,6 +279,7 @@ async def spaced_repetition_record_response(
                 until_at = next_review_at + timedelta(hours=24)
                 await schedule_create(
                     connection=conn,
+                    refresh_existing=True,
                     name=batch_name,
                     cron=cron,
                     dispatch_mode="prompt",
