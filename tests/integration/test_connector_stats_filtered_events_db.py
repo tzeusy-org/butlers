@@ -346,6 +346,8 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
     assert sum(r.messages_ingested for r in result.data) == 1
 
 
+# Relies on a PostgreSQL lock_timeout firing; it never fires in the faketime legs' shifted server.
+@pytest.mark.faketime_fragile
 async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
     pool: asyncpg.Pool,
 ) -> None:

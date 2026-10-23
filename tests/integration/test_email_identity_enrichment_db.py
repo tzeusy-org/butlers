@@ -84,8 +84,6 @@ def _get_rjobs() -> ModuleType:
 
 _ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
 
-_NOW = datetime(2026, 7, 1, tzinfo=UTC)
-
 
 @pytest.fixture
 async def identity_pool(provisioned_postgres_pool):
@@ -183,7 +181,8 @@ async def _insert_event(
         VALUES ($1, $2, 'email', $3, $4, $5, $6, 'ingested')
         """,
         uuid.uuid4(),
-        _NOW - timedelta(days=day_offset),
+        # The job's lookback window ends at the wall clock, so events must too.
+        datetime.now(UTC) - timedelta(days=day_offset),
         address,
         display_name,
         thread_id,
