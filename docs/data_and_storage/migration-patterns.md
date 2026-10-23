@@ -421,8 +421,19 @@ their separate authority contract or equate the trusted migration owner with run
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
   'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.
-- The `test_core_chain_serializes_global_runtime_attention_*` tests contend on a global
-  cross-process lock and fail spuriously beside another run on the same Postgres.
+- Diagnose cross-process migration failures from the actual child exception. A
+  `pg_proc_proname_args_nsp_index` violation in `core_272` is a shared-function
+  first-create race, even when observed by a runtime-attention concurrency test.
+  Earlier transaction locks are released by intervening autocommit revisions.
+  `core_272` therefore acquires its own fixed, `pg_catalog`-qualified transaction
+  advisory lock on the migration connection for both upgrade and downgrade,
+  retaining it through function DDL, ACL changes and the outer commit or rollback.
+  Lock waits are bounded to five seconds, preserving any shorter existing
+  `lock_timeout` and restoring it after successful statements. SQL errors retain
+  their original class and the outer rollback clears the local timeout. The
+  dedicated real-Postgres concurrency owner observes actual waiting backends,
+  repeats first-create contention, removes only the serializer as a negative
+  control, and checks lifecycle ordering, rollback, bounded refusal and cleanup.
 - CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
   module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
   (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
