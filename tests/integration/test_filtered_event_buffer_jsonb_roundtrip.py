@@ -808,7 +808,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         from types import SimpleNamespace
 
         from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
-        from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+        from butlers.core.known_contact_state import CLASSIFICATION_KEY
         from butlers.core_tools._base import ToolContext
         from butlers.core_tools._switchboard import register_switchboard_tools
 

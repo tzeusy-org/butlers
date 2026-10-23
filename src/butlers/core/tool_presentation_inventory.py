@@ -10806,7 +10806,7 @@ STORE_WRITERS = MappingProxyType(
         "public.audit_log": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.api.routers.audit.append",
+                "butlers.core.audit.append",
                 "butlers.core.runtime_config.RuntimeConfigAccessor.seed_if_empty",
             ),
             unknown_writers=True,
@@ -10866,12 +10866,12 @@ STORE_WRITERS = MappingProxyType(
         "public.dashboard_conversations": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.api.conversations.conversation_clear_provider_session",
+                "butlers.core.conversation_sessions.conversation_clear_provider_session",
                 "butlers.api.conversations.conversation_create",
                 "butlers.api.conversations.conversation_get_or_create_by_thread",
                 "butlers.api.conversations.conversation_message_count_increment",
                 "butlers.api.conversations.conversation_reply_create",
-                "butlers.api.conversations.conversation_set_provider_session",
+                "butlers.core.conversation_sessions.conversation_set_provider_session",
                 "butlers.api.conversations.conversation_set_routed_butler",
                 "butlers.api.conversations.conversation_unarchive_if_needed",
                 "butlers.api.conversations.conversation_update",
