@@ -326,7 +326,7 @@ class LiveListenerConnector:
         logger.info("live-listener: stopping connector")
 
         # Cancel pipeline tasks
-        for mic, task in self._pipeline_tasks.items():
+        for task in self._pipeline_tasks.values():
             task.cancel()
         for mic, task in self._pipeline_tasks.items():
             try:
@@ -488,8 +488,7 @@ class LiveListenerConnector:
             mic_state.last_error = None
             logger.info("live-listener: mic=%s pipeline running", mic)
             # Keep running until cancelled
-            while True:
-                await asyncio.sleep(1.0)
+            await asyncio.Event().wait()
 
         mic_state.connected = False
 

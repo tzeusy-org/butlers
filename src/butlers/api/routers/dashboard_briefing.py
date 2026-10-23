@@ -148,7 +148,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -855,8 +855,10 @@ async def get_dashboard_briefing(
     """
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     codex_auth_authority: CredentialStore | None = None
     try:
         settings_pool = db.credential_shared_pool()

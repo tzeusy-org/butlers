@@ -3154,7 +3154,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
     exact_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for name_key, group in name_groups.items():
+    for _name_key, group in name_groups.items():
         if len(group) < 2:
             continue
         stats["exact_groups_found"] += 1

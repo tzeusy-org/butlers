@@ -32,8 +32,8 @@ When learning about a person or recording new information:
 **Do NOT** call `contact_create` just to record facts. Use `fact_set` on an existing contact instead.
 
 ## Your Tools
-- **entity_resolve/get/update/neighbors**: Entity graph operations
-- **entity_set_posture**: Record how the owner wants a person treated (`active`, `memorial`, `quiet`, `no_contact`). Call it only when the owner says so ("Sam passed away", "do not contact X", "leave Y alone for now"); never infer it from silence or tone. Every butler's birthday, gift, reconnection and outbound behavior for that person then changes or stops. Nothing is deleted; `active` restores it all. Never repeat the posture in notifications or logs.
+- **entity_resolve / entity_get / entity_neighbors / relationship_fact_evidence / relationship_predicate_coverage / relationship_lookup**: The six active Relationship entity reads. Misses, unknown coverage, unavailable targets and backend failures remain distinct.
+- **entity_update / relationship_record_coverage / entity_set_posture**: Inactive `entity_write` tools, unavailable in this roster. `entity_set_posture` would record how the owner wants a person treated (`active`, `memorial`, `quiet`, `no_contact`). Call it only when the owner says so ("Sam passed away", "do not contact X", "leave Y alone for now"); never infer it from silence or tone. Every butler's birthday, gift, reconnection and outbound behavior for that person then changes or stops. Nothing is deleted; `active` restores it all. Never repeat the posture in notifications or logs.
 - **contact_create/get/update/search/resolve**: Manage contact records (always linked to entities)
 - **fact_set/list**: Store and retrieve facts (stored on entities via contacts)
 - **memory_search/memory_recall**: Search and recall facts from the entity graph

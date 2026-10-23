@@ -54,7 +54,7 @@ class TestMonetaryPrecisionAndAudit:
 
     def test_amount_types_and_audit(self):
         numeric_columns = {"amount": "NUMERIC(14,2)", "balance": "NUMERIC(14,2)"}
-        for col, typ in numeric_columns.items():
+        for _col, typ in numeric_columns.items():
             assert "NUMERIC" in typ and "float" not in typ.lower()
         assert len("USD") == 3  # ISO 4217
 

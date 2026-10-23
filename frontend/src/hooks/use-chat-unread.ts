@@ -109,9 +109,15 @@ export function __reloadChatUnreadWatermarkFromStorageForTests(): void {
 }
 
 export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): boolean {
-  const { data } = useConversations(butlerName, undefined, {
+  return useChatUnreadState(butlerName, panelOpen).hasUnread;
+}
+
+/** Keep source availability alongside confirmed unread data for the widget. */
+export function useChatUnreadState(butlerName: string, panelOpen: boolean) {
+  const query = useConversations(butlerName, undefined, {
     refetchInterval: POLL_INTERVAL_MS,
   });
+  const { data, isError } = query;
   const conversations: ConversationSummary[] = useMemo(() => data?.data ?? [], [data]);
 
   const watermark = useSyncExternalStore(subscribeWatermark, getWatermarkSnapshot);
@@ -122,7 +128,8 @@ export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): bool
   // advance every known conversation's watermark to its current
   // `latest_assistant_reply_at` (the owner is caught up).
   useEffect(() => {
-    if (conversations.length === 0) return;
+    // Cached replies survive a failed poll, but failure is not a new read.
+    if (isError || conversations.length === 0) return;
     const next: Watermark = { ...watermark };
     let changed = false;
     for (const conv of conversations) {
@@ -136,14 +143,14 @@ export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): bool
       }
     }
     if (changed) setWatermarkSnapshot(next);
-  }, [conversations, panelOpen, watermark]);
+  }, [conversations, panelOpen, watermark, isError]);
 
   // Derived badge state: while open, always caught up. While closed, badge
   // if any conversation's `latest_assistant_reply_at` is later than the
   // watermark frozen at (or established after) the last time the panel was
   // open. A conversation not yet baselined this session (effect hasn't run
   // for it yet) never badges on this render.
-  return useMemo(() => {
+  const hasUnread = useMemo(() => {
     if (panelOpen) return false;
     return conversations.some((conv) => {
       if (!(conv.id in watermark)) return false;
@@ -155,4 +162,6 @@ export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): bool
       return new Date(latest).getTime() > new Date(seen).getTime();
     });
   }, [panelOpen, conversations, watermark]);
+
+  return { ...query, hasUnread };
 }

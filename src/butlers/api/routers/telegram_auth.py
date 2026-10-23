@@ -137,13 +137,13 @@ def _get_pool(db: DatabaseManager):
     """Resolve the shared or first available pool."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         butler_names = list(db.butler_names)
         if not butler_names:
             raise HTTPException(
                 status_code=503,
                 detail="No database pool available.",
-            )
+            ) from exc
         return db.pool(butler_names[0])
 
 
@@ -238,13 +238,13 @@ async def send_code(
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
-    except ImportError:
+    except ImportError as exc:
         raise HTTPException(
             status_code=503,
             detail=(
                 "Telethon is not installed on the server. Install with: uv pip install telethon"
             ),
-        )
+        ) from exc
 
     pool = _get_pool(db)
     store = CredentialStore(pool)
@@ -262,7 +262,7 @@ async def send_code(
         raise HTTPException(
             status_code=400,
             detail=f"Failed to send code: {exc}",
-        )
+        ) from exc
     finally:
         await client.disconnect()
 
@@ -296,8 +296,8 @@ async def verify_code(
         from telethon import TelegramClient
         from telethon.errors import SessionPasswordNeededError
         from telethon.sessions import StringSession
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Telethon is not installed.")
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Telethon is not installed.") from exc
 
     pool = _get_pool(db)
     store = CredentialStore(pool)
@@ -410,7 +410,7 @@ async def verify_code(
         raise HTTPException(
             status_code=400,
             detail=f"Sign-in failed: {exc}",
-        )
+        ) from exc
     finally:
         try:
             await client.disconnect()

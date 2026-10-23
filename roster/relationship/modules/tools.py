@@ -1147,7 +1147,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity_id,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -1163,7 +1163,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             metadata=metadata,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
         """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
 
@@ -1204,7 +1204,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
-    # Facts triple-store tools (group: entity — central writer)
+    # Facts triple-store tools (unconditional central writer)
     # =================================================================
 
     # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
@@ -1411,7 +1411,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _predicate_coverage(module._get_pool(), entity_id, predicates)
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def relationship_record_coverage(
         entity_id: uuid.UUID,
         predicate: str,

@@ -147,6 +147,7 @@ class ToolMeta:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -269,6 +270,7 @@ class Module(abc.ABC):
             asyncpg connection pool scoped to the switchboard schema, or
             ``None`` when the audit pool could not be created.
         """
+        return None
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Return sensitivity and optional presentation metadata for tools.

@@ -34,6 +34,8 @@ from butlers.api.fleet_events_bridge import run_fleet_events_listener
 from butlers.fleet_events import publish_fleet_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
+_THIS_FILE = Path(__file__).resolve()
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -137,7 +139,7 @@ async def _run_external_producer(producer: str, shared_db_url: str) -> int:
 
     environment = dict(os.environ)
     environment["BUTLERS_FLEET_EVENTS_TEST_DATABASE_URL"] = shared_db_url
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = _THIS_FILE.parents[2]
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

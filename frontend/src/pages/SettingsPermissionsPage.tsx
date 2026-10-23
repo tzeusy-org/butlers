@@ -11,7 +11,7 @@
  * Design language: Dispatch. No card chrome, no word-badges — state is a
  * {dot, glyph, colour} only. Display weight 500 (never 700). Numerals are
  * tabular. Mirrors SettingsConsolePage / SettingsModelsPage and the shared
- * atoms in components/butler-detail/atoms.tsx.
+ * atoms in components/ui/atoms.tsx.
  *
  * CSS: .attention-row[data-tone="red"] from frontend/src/index.css — the only
  * state-color-on-background pattern, reserved here for the data-wipe danger zone.

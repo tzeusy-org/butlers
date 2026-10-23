@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
@@ -31,6 +32,34 @@ pytest_plugins = ("tests.switchboard.goal_ledger_fixtures",)
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+# Roles scripts/init-db.sql creates. Roles are cluster-level and outlive per-test databases, so
+# the isolation test names exactly these instead of a LIKE pattern that also matches strays
+# (a leaked `connector_probe` failed it by shard order, bu-28av8x.12).
+BOOTSTRAP_RUNTIME_ROLES = frozenset(
+    {
+        *(
+            f"butler_{butler}_rw"
+            for butler in (
+                "chronicler",
+                "concierge",
+                "education",
+                "finance",
+                "general",
+                "health",
+                "home",
+                "lifestyle",
+                "messenger",
+                "qa",
+                "relationship",
+                "switchboard",
+                "travel",
+            )
+        ),
+        "connector_writer",
+    }
+)
+# Created only when the calendar module is enabled; checked if present.
+OPTIONAL_BOOTSTRAP_ROLES = frozenset({"butler_calendar_rw"})
 
 
 def bootstrap_again(container, url):
@@ -41,10 +70,15 @@ def bootstrap_again(container, url):
 
 
 async def populate(url):
+    # The ordinary full-backup contract includes live catalog definitions too;
+    # it must not succeed merely because their FORCE-RLS tables were empty.
+    from tests.integration.test_catalog_publication import publish_all
     from tests.switchboard.goal_admission_fixtures import limits
     from tests.switchboard.goal_ledger_fixtures import configure
 
     async with pools(url) as (owner, runtime):
+        await owner.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        await publish_all(url)
         await configure(owner, limits())
         result = await admit(runtime)
         # A joined reply populates goal_inbox, so every ledger table has a row.
@@ -83,6 +117,15 @@ def snapshot(url):
                 .all()
                 for t in TABLES
             }
+            for suffix in ("installations", "control", "members", "history", "current"):
+                qualified = "public.capability_catalog_" + suffix
+                rows[qualified] = (
+                    conn.execute(
+                        text(f"SELECT to_jsonb(t) FROM {qualified} t ORDER BY to_jsonb(t)::text")
+                    )
+                    .scalars()
+                    .all()
+                )
             posture = conn.execute(
                 text("""
                 SELECT c.relname,pg_get_userbyid(c.relowner),c.relrowsecurity,c.relforcerowsecurity,
@@ -120,10 +163,12 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
             }
             roles = conn.execute(
                 text(
-                    "SELECT rolname,rolsuper,rolbypassrls FROM pg_roles WHERE rolname LIKE 'butler_%_rw' OR rolname LIKE 'connector_%'"
-                )
+                    "SELECT rolname,rolsuper,rolbypassrls FROM pg_roles WHERE rolname = ANY(:names)"
+                ),
+                {"names": sorted(BOOTSTRAP_RUNTIME_ROLES | OPTIONAL_BOOTSTRAP_ROLES)},
             ).all()
-            assert roles
+            found = {row[0] for row in roles}
+            assert BOOTSTRAP_RUNTIME_ROLES <= found, sorted(BOOTSTRAP_RUNTIME_ROLES - found)
             original_rows = snapshot(ledger_url)[0]
             # Resolve names as the owner: denied runtimes cannot traverse the
             # schema, but the OID overload still checks their actual table ACL.
@@ -172,7 +217,14 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
                     if role != "butler_switchboard_rw":
                         for table in TABLES:
                             row = original_rows[table][0].copy()
-                            row["goal_id" if table == "budgets" else "id"] = str(uuid4())
+                            identity = (
+                                "goal_id"
+                                if table == "budgets"
+                                else "attempt_id"
+                                if table == "admission_attempt_bindings"
+                                else "id"
+                            )
+                            row[identity] = str(uuid4())
                             columns = ",".join(c for c in row if c != "parent_depth")
                             with pytest.raises(DBAPIError) as denied:
                                 conn.exec_driver_sql(
@@ -283,7 +335,9 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
                 assert await runtime.fetchval("SELECT count(*) FROM switchboard.goals") == len(
                     before[0]["goals"]
                 )
-                with pytest.raises(Exception):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Goal authority and source association are immutable"
+                ):
                     await runtime.execute("UPDATE switchboard.goals SET ceiling='[]'")
 
         asyncio.run(restored_read())

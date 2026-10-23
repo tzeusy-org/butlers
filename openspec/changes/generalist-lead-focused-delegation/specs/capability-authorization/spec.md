@@ -33,7 +33,8 @@ Scope: v1-mandatory
 
 ### Requirement: Every model-reachable capability declares authorization metadata
 Every LLM-presentable tool SHALL declare its owner domain, effect class, output
-trust, output sensitivity, resource parameters, safety arguments, approval
+trust, output sensitivity, resource parameters (each marked selection-bound or
+not; `REQ-capability-authorization-018`), safety arguments, approval
 policy (including its approval mode, `default` or `always_per_event`;
 `REQ-capability-authorization-017`), idempotency mode and owner-authority flag.
 Every tool whose call can
@@ -137,7 +138,10 @@ The broker SHALL list to an invocation only capabilities within its grant and
 SHALL check every call against the grant's capabilities, resource scope,
 park-only flags, approval policy and remaining budget before dispatch, in a
 transaction that also requires the goal to be running and, for a lead, its
-epoch to be current. Knowing a capability's name SHALL NOT make it callable.
+epoch to be current. For a selection-bound resource parameter, the same
+transaction SHALL also require that the owner selection record the scope derives
+from is still active (`REQ-capability-authorization-018`). Knowing a
+capability's name SHALL NOT make it callable.
 
 ID: REQ-capability-authorization-004
 Source: RFC 0038, D7
@@ -367,8 +371,9 @@ Scope: v1-mandatory
 
 ### Requirement: Owner decisions and private custody are unreachable from goals
 Tools that approve, reject, edit or dispatch parked actions, create or promote
-standing rules, or return private-custody content SHALL NOT be LLM-presentable
-or grantable to any invocation.
+standing rules, create, change or revoke owner selection records
+(`REQ-capability-authorization-018`), or return private-custody content SHALL
+NOT be LLM-presentable or grantable to any invocation.
 
 ID: REQ-capability-authorization-014
 Source: RFC 0038, D4; RFC 0021; RFC 0037
@@ -377,6 +382,10 @@ Scope: v1-mandatory
 #### Scenario: A lead looks for the approval tool
 - **WHEN** a lead searches its catalog for a tool that approves parked actions
 - **THEN** no such tool is listed or callable, and the parked effect stays pending until the owner decides through an owner channel
+
+#### Scenario: A lead looks for a tool that selects sources
+- **WHEN** a lead searches its catalog for a tool that selects sources for a subject or creates, changes or revokes an owner selection record
+- **THEN** no such tool is listed or callable, and only the owner's action on the owner surface can write or revoke a selection
 
 ### Requirement: Transact capabilities are disabled
 The broker SHALL NOT grant or list a `transact` capability to any goal or
@@ -517,6 +526,100 @@ Scope: v1-mandatory
 #### Scenario: Calendar invitation answers declare the mode
 - **WHEN** the catalog describes `calendar_respond`
 - **THEN** it declares `always_per_event`, so every invitation answer needs the owner's per-event approval and no standing rule applies, as today
+
+### Requirement: Owner selection records bind selection-bound resource scopes
+A capability's catalog entry MAY declare some of its resource parameters
+selection-bound. The control plane SHALL hold owner selection records. Each
+record SHALL carry an id; its subject (the owning domain and a subject
+reference); the capability it covers; an exact, bounded set of resource
+identifiers; the authenticated owner action that wrote it (actor, owner
+surface, request id and time); and its state, `active` or `revoked`, with the
+revoke time and actor. A record SHALL be immutable except for a one-way revoke.
+Only an authenticated owner action on the owner surface, through a
+control-plane endpoint, SHALL write or revoke a record. Goals, invocations,
+standing rules, approvals of parked effects, service-plane relays, domains and
+connectors SHALL NOT write or revoke one. Two submits of one owner action with
+the same request id SHALL resolve to one record. Only the broker and the owner
+surface SHALL read records, and only the broker SHALL turn a record into a
+resource scope.
+
+A selection SHALL reach a goal only through an owner-origin admission from the
+owner-surface action that wrote or referenced it, and admission SHALL record
+the selection's id from server-held context. Third-party, obligation, staffer
+and caused admissions SHALL NOT carry a selection. A selection id or resource
+list in message text, model output, tool arguments, an ingest envelope, a
+standing-rule slot or a caused admission's payload SHALL be ignored.
+
+When the broker mints a grant that includes a capability with selection-bound
+parameters, the grant's resource scope for those parameters SHALL be exactly
+the identifiers of the active selection record, for that capability, that the
+goal's admission references. With no such record the scope SHALL be empty, and
+the capability SHALL be neither listed nor callable. A child's scope SHALL be
+the intersection of its request and the lead's selection-bound scope
+(`REQ-capability-authorization-005`). On every call, in the per-call
+transaction (`REQ-capability-authorization-004`), the broker SHALL also require
+that the record is still active; a call after a revoke commits SHALL be refused
+and recorded. Reads already returned are not recalled.
+
+A selection is not an effect: no approval, "Approve all" tap or standing rule
+SHALL create, extend or substitute for one. Selection-bound calls keep their
+effect class, so a selection-bound read stays a read: it is allowed under
+exposure, its output trust and sensitivity apply unchanged, and a later
+standing-rule send to someone other than the owner still needs to name any
+sensitive category the invocation read (bu-o3638f = A). A capability with no
+selection-bound parameters is unaffected.
+
+ID: REQ-capability-authorization-018
+Source: RFC 0038, D4, D5, D7 and D9; bu-p5umi2.4 = A (OQ1: a control-plane selection record written only from the owner dashboard); bu-qlx055 = A (decision sets); bu-o3638f = A (standing-rule slots and sensitive categories)
+Scope: v1-mandatory
+
+#### Scenario: The owner selects two of three sources
+- **WHEN** the owner selects sources A and C for a subject on the owner surface, and the owner goal admitted from that action calls the selection-bound capability for C
+- **THEN** the grant's resource scope for that capability is exactly A and C, and the call proceeds
+- **AND** a call for B, a known identifier the owner did not select, is refused and recorded without contacting the domain
+
+#### Scenario: No selection keeps the capability unavailable
+- **WHEN** a goal's admission references no active selection record for a capability with selection-bound parameters
+- **THEN** the capability is not listed to any of the goal's invocations, and a call naming it is refused and recorded
+- **AND** an owner checklist's Finance and Travel sources therefore stay unavailable, as the adopted owner-checklist default requires
+
+#### Scenario: Forged selection references are ignored
+- **WHEN** a selection id or a list of resource identifiers appears in an owner message, model output, tool arguments, an ingest envelope, a standing-rule slot or a caused admission's payload
+- **THEN** admission and the broker ignore it, and a grant's selection-bound scope derives only from a record the admission references from server-held context
+
+#### Scenario: Non-owner and caused admissions carry no selection
+- **WHEN** a third-party, obligation, staffer or caused goal needs a capability with selection-bound parameters
+- **THEN** its admission carries no selection, and the capability is neither listed nor callable to it
+
+#### Scenario: The owner revokes a selection mid-goal
+- **WHEN** the owner revokes an active selection on the owner surface while a goal that references it is running
+- **THEN** the next call naming any of its identifiers is refused in the per-call transaction and recorded
+- **AND** reads already returned are not recalled, and Stop and lead-epoch rules are unchanged
+
+#### Scenario: A revoke races a call
+- **WHEN** a revoke of a selection and a call within its scope commit concurrently
+- **THEN** the call either commits before the revoke and proceeds, or is refused after it, and no call is forwarded against a revoked record
+
+#### Scenario: A child only narrows a selection-bound scope
+- **WHEN** a lead whose selection-bound scope is A and C delegates a child, requesting C alone, or B and C
+- **THEN** the request for C alone gives the child exactly C, and the request naming B is refused, so no child can add a resource
+
+#### Scenario: Approve all and standing rules cannot select sources
+- **WHEN** the owner taps "Approve all" on a decision set, or a standing rule matches a goal's effect
+- **THEN** neither creates, extends or substitutes for a selection record, and the selection-bound scope is unchanged
+
+#### Scenario: A selection-bound read keeps the sensitive-category rule
+- **WHEN** an exposed owner goal reads a selected source whose output is in a sensitive category, and then sends to someone other than the owner under a standing rule that does not name that category
+- **THEN** the read is allowed with its declared output trust and sensitivity
+- **AND** the standing rule does not fire, and the send parks for per-event owner approval
+
+#### Scenario: The owner submits the same selection twice
+- **WHEN** the owner surface submits one selection action twice with the same request id
+- **THEN** one selection record exists, and both submits resolve to it
+
+#### Scenario: A capability without selection-bound parameters is unaffected
+- **WHEN** a goal calls a capability whose catalog entry declares no selection-bound parameter
+- **THEN** its grant and resource scope behave as they would with no selection records at all
 
 ## Source References
 

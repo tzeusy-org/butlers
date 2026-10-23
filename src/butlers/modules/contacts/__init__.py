@@ -61,11 +61,15 @@ _DEFAULT_ACCOUNT_ID = "default"
 
 
 class ContactsSyncConfig(BaseModel):
-    """Scheduler defaults for incremental and forced full contact sync."""
+    """Scheduler defaults for incremental and forced full contact sync.
+
+    ``enabled`` defaults to False: Relationship is the only butler that syncs contacts (it owns
+    entities), so a butler must opt in explicitly. Sync takes no cross-process lock.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
+    enabled: bool = False
     run_on_startup: bool = True
     interval_minutes: int = Field(default=15, ge=1)
     full_sync_interval_days: int = Field(default=6, ge=1)
@@ -921,7 +925,7 @@ class ContactsModule(Module):
         }
 
         creds: dict[str, str] = {}
-        for ci_type, label in _TELEGRAM_CI_TYPES.items():
+        for ci_type, _label in _TELEGRAM_CI_TYPES.items():
             value = await resolve_owner_entity_info(pool, ci_type)
             if value:
                 creds[ci_type] = value

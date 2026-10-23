@@ -162,7 +162,7 @@ def test_malformed_or_incomplete_metadata_cannot_pass():
         lambda value: value["workflow_runs"][0].update(event="push"),
     ):
 
-        def malformed(endpoint):
+        def malformed(endpoint, *, mutate=mutate):
             result = fetch(endpoint)
             mutate(result)
             return result
@@ -317,7 +317,7 @@ def test_gh_transport_refuses_partial_duplicate_or_failed_payloads(monkeypatch):
         SimpleNamespace(returncode=0, stdout=b" " * (4 * 1024 * 1024 + 1)),
     ):
 
-        def execute(command, **kwargs):
+        def execute(command, *, result=result, **kwargs):
             assert command == ["gh", "api", "repos/owner/repo/actions/runs"]
             assert kwargs == {"capture_output": True, "timeout": 20}
             return result

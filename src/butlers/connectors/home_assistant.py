@@ -92,6 +92,7 @@ from butlers.connectors.home_assistant_wellness import (
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 
 if TYPE_CHECKING:
     pass
@@ -614,7 +615,7 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1437,6 +1438,7 @@ class HAConnector:
             mcp_client=self._mcp_client,
             metrics=self._base_metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
         logger.info(

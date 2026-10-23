@@ -421,8 +421,19 @@ their separate authority contract or equate the trusted migration owner with run
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
   'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.
-- The `test_core_chain_serializes_global_runtime_attention_*` tests contend on a global
-  cross-process lock and fail spuriously beside another run on the same Postgres.
+- Diagnose cross-process migration failures from the actual child exception. A
+  `pg_proc_proname_args_nsp_index` violation in `core_272` is a shared-function
+  first-create race, even when observed by a runtime-attention concurrency test.
+  Earlier transaction locks are released by intervening autocommit revisions.
+  `core_272` therefore acquires its own fixed, `pg_catalog`-qualified transaction
+  advisory lock on the migration connection for both upgrade and downgrade,
+  retaining it through function DDL, ACL changes and the outer commit or rollback.
+  Lock waits are bounded to five seconds, preserving any shorter existing
+  `lock_timeout` and restoring it after successful statements. SQL errors retain
+  their original class and the outer rollback clears the local timeout. The
+  dedicated real-Postgres concurrency owner observes actual waiting backends,
+  repeats first-create contention, removes only the serializer as a negative
+  control, and checks lifecycle ordering, rollback, bounded refusal and cleanup.
 - CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
   module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
   (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
@@ -432,6 +443,58 @@ their separate authority contract or equate the trusted migration owner with run
 - Two open PRs taking the same `core_NNN`: merge the first, then rebase the second, `git mv` it to
   the next number, repoint `down_revision`, update chain-head literals in tests, and push with
   `--force-with-lease`. Renumber before review so the reviewed head is final.
+
+### SQL and database traps
+
+Moved verbatim from `AGENTS.md` (Database and migrations).
+
+- `tests/contracts/test_schema_reach.py` fences foreign-butler SQL literals across `src/` and
+  `roster/`. Its single reasoned allowlist must shrink when reads disappear; stale entries fail.
+  Unresolved dynamic relation slots require explicit justification, and the Chronicler router
+  retains its stricter zero-foreign-relation rule.
+
+- Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
+  them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
+  so migration tests must replay bootstrap and write under real `SET ROLE` identities.
+- In partitioned-index migrations a blocking `pg_advisory_lock()` waiter can hold a snapshot that
+  `CREATE INDEX CONCURRENTLY` waits on. Poll `pg_try_advisory_lock()` in autocommit with the waits
+  outside PostgreSQL (see `core_231`).
+- Core-chain migrations must tolerate core-only databases: guard cross-schema
+  `ALTER/UPDATE/GRANT` with `to_regclass(...)` or `information_schema` checks.
+- At runtime under `SET ROLE`, `to_regclass('other_schema.tbl')` raises
+  `InsufficientPrivilegeError` instead of returning NULL. Probe reachability first with
+  `SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') FROM pg_namespace WHERE nspname='<s>'), false)`
+  (a subquery: Postgres does not guarantee `AND` short-circuits).
+- `src/butlers/db.py` parses `sslmode` from `DATABASE_URL` / `POSTGRES_SSLMODE` for both daemon and
+  API pools. With it unset, a STARTTLS `unexpected connection_lost()` retries once with
+  `ssl="disable"`.
+- asyncpg type traps: bind `datetime.date`/`datetime` objects, never ISO strings, even with a `::date`
+  cast (the codec encodes before the cast runs); pass explicit bound values rather than
+  `$2 ± interval '1 day'`, which asyncpg can infer as `interval`.
+- `ON CONFLICT (cols) DO UPDATE` against a partial unique index must repeat the index's `WHERE`
+  predicate.
+- Core revisions replay per schema against shared `public.*` data; see migration-patterns for the
+  cumulative-CHECK rule.
+- The asyncpg JSONB codec encodes write parameters: pass dicts/lists straight to `$N::jsonb`.
+  `json.dumps(...)` double-encodes into a JSONB string, and under
+  `COALESCE(col, '{}'::jsonb) || $N::jsonb` that corrupts the row into an array. Reads need no
+  `json.loads` either.
+- Never add a second advisory lock inside `dispatch_outcomes` producers: the `ON CONFLICT DO NOTHING`
+  insert already waits on the conflicting transaction.
+- Converge a stored-function literal by re-running its installer (the `finalize_interface`
+  pattern), never by backfilling rows.
+- Never string-match `"does not exist"` to detect a missing table: a missing column matches too.
+  Catch `asyncpg.exceptions.UndefinedTableError` for the silent path and log everything else.
+- JSONB `||` is right-biased: for creation-wins merges write `new || existing`, not the reverse.
+- Any raised exception aborts the whole Postgres transaction, so "catch and continue" inside one
+  needs a savepoint (a nested `connection.transaction()` in asyncpg). Absorb one error class only
+  (e.g. `InsufficientPrivilegeError` from a best-effort call beside the primary write), and prove the
+  commit by reading back from a separate pool acquisition. Do not wrap a gated call that is the
+  transaction's purpose (`_routing.py` durable dashboard acceptance).
+- A savepoint does not make DDL durable: a partition created inside a transaction is dropped by its
+  rollback. Call ensure-partition functions on the pool, outside the transaction (see
+  `roster/switchboard/tools/ingestion/ingest.py`), and test by forcing the rollback then checking
+  from a separate acquisition.
 
 ## Related Pages
 

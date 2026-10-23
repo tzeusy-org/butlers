@@ -290,7 +290,11 @@ def collect(root: Path, homes: dict[str, str] | None = None) -> dict[str, list[F
             spec_renames = renames.get(spec, {})
             spec_removals = removals.get(spec, set())
 
-            def landed(requirement: str) -> list[str] | None:
+            def landed(
+                requirement: str,
+                baseline: dict[str, list[str]] = baseline,
+                spec_renames: dict[str, str] = spec_renames,
+            ) -> list[str] | None:
                 """The baseline body for ``requirement``, or None if it is gone."""
                 return baseline.get(resolve_name(requirement, spec_renames))
 

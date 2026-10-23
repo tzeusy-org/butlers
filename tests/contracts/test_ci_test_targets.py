@@ -469,27 +469,42 @@ def _exercise_browser_installer(root: Path) -> None:
     Only wall-clock literals are scaled in this routine control. Healthy
     boundaries include a deliberate 200 ms startup delay within a two-second
     allowance; stall pairs witness handler readiness before TERM/KILL checks.
-    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
-    actual apt/Chromium execution belongs to the hosted frontend-e2e job.
+    The ignored one-shot receipt exercises unchanged 110/120 browser and 150/160
+    OS-dependency deadlines; actual apt/Chromium execution belongs to the hosted
+    frontend-e2e job. OS dependencies (``install-deps``, apt under sudo) run as
+    their own phase before the browser download so slow apt cannot consume the
+    browser deadline.
     """
     source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
     assert "TERM_MS = 110_000" in source
     assert "KILL_MS = 120_000" in source
+    assert "DEPS_TERM_MS = 150_000" in source
+    assert "DEPS_KILL_MS = 160_000" in source
     assert "BACKOFF_MS = 10_000" in source
-    assert "TOTAL_MS = 380_000" in source
+    assert "TOTAL_MS = 720_000" in source
     scaled = (
         source.replace("110_000", "2_000")
         .replace("120_000", "2_500")
+        .replace("150_000", "2_000")
+        .replace("160_000", "2_500")
         .replace("10_000", "10")
-        .replace("380_000", "8_000")
+        .replace("720_000", "12_000")
     )
     for mode, expected_calls, expected_probes, expected_exit in [
-        ("cold", 1, 1, 0),
-        ("warm", 1, 1, 0),
-        ("fail-once", 2, 1, 0),
-        ("invalid-cache", 2, 2, 0),
-        ("exhaust", 3, 0, 1),
-        ("stall", 3, 0, 1),
+        ("cold", 2, 1, 0),
+        ("warm", 2, 1, 0),
+        ("fail-once", 3, 1, 0),
+        ("invalid-cache", 3, 2, 0),
+        ("exhaust", 4, 0, 1),
+        ("stall", 4, 0, 1),
+        ("deps-exhaust", 2, 0, 1),
+        ("deps-stall", 2, 0, 1),
+        ("deps-cleanup-denied", 1, 0, 1),
+        ("deps-cancel", 1, 0, 1),
+        ("deps-eof", 1, 0, -9),
+        ("deps-setup-failure", 1, 0, 1),
+        ("deps-crash", 1, 0, 1),
+        ("deps-unproven-zero", 0, 0, 1),
     ]:
         directory = root / mode
         scripts = directory / "scripts"
@@ -497,6 +512,60 @@ def _exercise_browser_installer(root: Path) -> None:
         scripts.mkdir(parents=True)
         cli.parent.mkdir(parents=True)
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
+        shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
+        supervisor = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+        if mode == "deps-cleanup-denied":
+            # Real lifecycle, with only the OS signalling boundary denied. The
+            # still-running dependency pair must never race another attempt.
+            supervisor = supervisor.replace(
+                "os.killpg(group, signal.SIGKILL)",
+                "(_ for _ in ()).throw(PermissionError('synthetic EPERM'))",
+            )
+        # Observe the real OS boundary, including zombie leaders. No group may
+        # be signalled after its leader was reaped and its identity released.
+        instrumentation = r"""
+from pathlib import Path
+_original_killpg = os.killpg
+def _reserved_killpg(group, sig):
+    stat = Path(f'/proc/{group}/stat')
+    assert stat.exists(), 'owned group identity released before signal'
+    assert int(stat.read_text().split()[4]) == group, 'reserved leader lost its group'
+    with Path(os.environ['M3_INSTALL_LEDGER']).with_name('reserved-signals').open('a') as receipt:
+        receipt.write(str(group)+'\n')
+    return _original_killpg(group, sig)
+os.killpg = _reserved_killpg
+
+def _await_fixture():
+    deadline = time.monotonic() + 5
+    while not Path(os.environ['M3_INSTALL_LEDGER']).with_name('stall-ready').exists():
+        assert time.monotonic() < deadline, 'fault injection never reached live dependency'
+        time.sleep(0.01)
+"""
+        if mode in {"deps-setup-failure", "deps-crash"}:
+            instrumentation += r"""
+_original_selector = selectors.DefaultSelector
+def _fault_selector():
+    value = _original_selector()
+    def register(*_args):
+        _await_fixture()
+        if os.environ['M3_INSTALL_MODE'] == 'deps-crash':
+            os._exit(1)
+        raise RuntimeError('synthetic selector setup failure')
+    value.register = register
+    return value
+selectors.DefaultSelector = _fault_selector
+"""
+        elif mode == "deps-unproven-zero":
+            supervisor = supervisor.replace(
+                "def main() -> int:", "def main() -> int:\n    os._exit(0)"
+            )
+        supervisor = supervisor.replace(
+            "CLEANUP_SECONDS = 2", instrumentation + "\nCLEANUP_SECONDS = 2"
+        )
+        (scripts / "install-playwright-deps.py").write_text(supervisor)
+        sudo = directory / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = -n ] && shift\n[ "$1" = -- ] && shift\nexec "$@"\n')
+        sudo.chmod(0o755)
         (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
         ledger = directory / "ledger.json"
         ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
@@ -512,7 +581,19 @@ if Path(sys.argv[0]).name == "node":
     p.write_text(json.dumps(data))
     sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
 data["calls"].append(sys.argv[1:])
-if mode == "stall":
+deps = sys.argv[1] == "install-deps"
+if deps:
+    for prior_pid in data["pids"]:
+        prior = Path(f"/proc/{prior_pid}/stat")
+        if prior.exists() and prior.read_text().split()[2] != "Z":
+            data.setdefault("overlap", []).append(prior_pid)
+if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof"}):
+    if mode in {"deps-cleanup-denied", "deps-crash"}:
+        # Surviving processes must not keep the harness capture pipes open.
+        sink = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(sink, 1)
+        os.dup2(sink, 2)
+        os.close(sink)
     signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
     child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
     child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
@@ -522,10 +603,14 @@ if mode == "stall":
     child.stdout.close()
     data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
     p.write_text(json.dumps(data))
+    (p.parent / "stall-ready").touch()
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
-if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
+browser_calls = [call for call in data["calls"] if call[0] == "install"]
+if mode == ("deps-exhaust" if deps else "exhaust") or (
+    mode == "fail-once" and not deps and len(browser_calls) == 1
+):
     sys.exit(1)
 """
         cli.write_text(f"#!{sys.executable}\n" + program)
@@ -540,36 +625,68 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
         )
         env["PATH"] = str(directory) + os.pathsep + os.environ["PATH"]
         try:
-            result = subprocess.run(
-                [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=15,
-            )
+            command = [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")]
+            if mode in {"deps-cancel", "deps-eof"}:
+                process = subprocess.Popen(
+                    command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                deadline = time.monotonic() + 5
+                while not (directory / "stall-ready").exists():
+                    assert time.monotonic() < deadline, "dependency cancellation never became ready"
+                    time.sleep(0.02)
+                if mode == "deps-eof":
+                    process.kill()
+                else:
+                    process.terminate()
+                stdout, stderr = process.communicate(timeout=10)
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            else:
+                result = subprocess.run(
+                    command, env=env, text=True, capture_output=True, timeout=20
+                )
             data = json.loads(ledger.read_text())
             assert result.returncode == expected_exit, (mode, data, result.stderr)
             assert len(data["calls"]) == expected_calls, (mode, data)
+            assert not data.get("overlap"), (mode, data)
             assert data["probes"] == expected_probes, (mode, data)
             assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
-            for index, args in enumerate(data["calls"]):
-                assert args == ["install", "--with-deps", "chromium"] + (
-                    ["--force"] if index else []
-                )
+            deps_calls = [args for args in data["calls"] if args[0] == "install-deps"]
+            browser_calls = [args for args in data["calls"] if args[0] == "install"]
+            if deps_calls and mode not in {"deps-crash", "deps-cleanup-denied"}:
+                assert (directory / "reserved-signals").exists(), "group ownership never checked"
+            assert data["calls"] == deps_calls + browser_calls, (mode, data)  # deps first
+            assert all(args == ["install-deps", "chromium"] for args in deps_calls), data
+            for index, args in enumerate(browser_calls):
+                assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
-            if mode == "stall":
-                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
-                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+            if mode in {
+                "deps-cleanup-denied",
+                "deps-crash",
+                "deps-unproven-zero",
+                "deps-setup-failure",
+            }:
+                assert "cleanup could not be confirmed" in result.stderr
+            if mode in {"stall", "deps-stall"}:
+                ready_pids = [pid for pair in data["ready"] for pid in pair.get("pids", [])]
+                stalled_calls = 3 if mode == "stall" else 2
+                assert ready_pids == data["pids"] and len(ready_pids) == 2 * stalled_calls, data
                 for pid in ready_pids:
                     assert (directory / f"term-{pid}").exists(), (
                         f"ready stall member {pid} never witnessed TERM before KILL"
                     )
             for pid in data["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
-                assert not stat.exists() or stat.read_text().split()[2] == "Z", (
-                    f"ordinary installer descendant{pid} survived watchdog"
-                )
+                if mode in {"deps-cleanup-denied", "deps-crash"}:
+                    assert stat.exists() and stat.read_text().split()[2] != "Z", (
+                        "denied cleanup control never reached a surviving dependency"
+                    )
+                elif mode.startswith("deps-"):
+                    assert not stat.exists(), f"dependency descendant {pid} was not reaped"
+                else:
+                    assert not stat.exists() or stat.read_text().split()[2] == "Z", (
+                        f"ordinary installer descendant {pid} survived watchdog"
+                    )
         finally:
             for pid in json.loads(ledger.read_text())["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
@@ -1131,7 +1248,9 @@ else:
                 diagnostic.setattr(
                     vitest,
                     "run_process",
-                    lambda command, **kwargs: subprocess.CompletedProcess(command, 0, raw, b""),
+                    lambda command, *, raw=raw, **kwargs: subprocess.CompletedProcess(
+                        command, 0, raw, b""
+                    ),
                 )
                 assert vitest.runtime_observation(buildroot) is None
         with monkeypatch.context() as diagnostic:
@@ -1615,6 +1734,20 @@ else:
                 f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
                 "and full setup/recovery headroom"
             )
+    browser_budget = next(
+        row
+        for row in register["jobs"]
+        if row["workflow"] == ".github/workflows/ci.yml" and row["job"] == "frontend-e2e"
+    )
+    installer_source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
+    installer_budget_ms = int(
+        re.search(r"const TOTAL_MS = ([\d_]+)", installer_source)[1].replace("_", "")
+    )
+    assert browser_budget["review_browser_hard_retry_interval_s"] * 1000 == installer_budget_ms
+    assert (
+        browser_budget["installed_timeout_minutes"] == jobs["frontend-e2e"]["timeout-minutes"] == 20
+    )
+    assert "provisional" in browser_budget["state"] and "source-derived" in browser_budget["state"]
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]

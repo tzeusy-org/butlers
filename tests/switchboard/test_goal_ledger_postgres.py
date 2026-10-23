@@ -17,6 +17,7 @@ from butlers.core.goal_admission import (
     Obligation,
     SourceRef,
 )
+from tests.polling import poll_until
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     admit,
@@ -32,6 +33,17 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 async def test_admission_retry_is_atomic(ledger):
     owner, runtime = ledger
     source, attempt = SourceRef("message", "one-envelope"), uuid4()
+    # Deterministic losing-attempt sequence; concurrency alone did not force
+    # this ordering and could miss an unbound returned retry.
+    canonical = await admit(runtime, source=source)
+    assert await admit(runtime, source=source, attempt=attempt) == canonical
+    assert (
+        await owner.fetchval(
+            "SELECT decision_id FROM switchboard.admission_attempt_bindings WHERE attempt_id=$1",
+            attempt,
+        )
+        == canonical.decision_id
+    )
     a, b = await asyncio.gather(
         admit(runtime, source=source, attempt=attempt), admit(runtime, source=source)
     )
@@ -51,6 +63,67 @@ async def test_admission_retry_is_atomic(ledger):
     accepted = await admit(runtime, source=denied_source)
     assert accepted.result == "admitted" and accepted.goal_id != a.goal_id
     assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 2
+
+
+@pytest.mark.parametrize("same_source", [True, False])
+async def test_attempt_and_source_contention_preserves_canonical_binding(ledger, same_source):
+    from butlers.core.goal_ledger import GoalLedger
+
+    owner, runtime = ledger
+    source = SourceRef("message", "contended-source")
+    canonical = await admit(runtime, source=source)
+    attempts = [uuid4(), uuid4()]
+    sources = [source, source if same_source else SourceRef("message", "other-source")]
+    if not same_source:
+        attempts[1] = attempts[0]
+    key = "source:" + source.key if same_source else "attempt:" + str(attempts[0])
+    tasks = []
+    try:
+        async with owner.acquire() as holder, holder.transaction():
+            await GoalLedger(holder).lock_keys([key])
+            pid = await holder.fetchval("SELECT pg_backend_pid()")
+            tasks = [
+                asyncio.create_task(admit(runtime, source=s, attempt=a))
+                for s, a in zip(sources, attempts, strict=True)
+            ]
+
+            # Observe both real SQL waiters, not merely scheduled Python tasks.
+            async def both_admissions_wait_on_lock():
+                return (
+                    await owner.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND wait_event='advisory' AND $1=ANY(pg_blocking_pids(pid))",
+                        pid,
+                    )
+                    >= 2
+                )
+
+            async with asyncio.timeout(5):
+                await poll_until(both_admissions_wait_on_lock, interval_s=0.02)
+        outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+        if same_source:
+            assert outcomes == [canonical, canonical]
+        else:
+            assert sum(isinstance(value, AdmissionUnavailable) for value in outcomes) == 1
+            winner = next(value for value in outcomes if not isinstance(value, BaseException))
+            binding = await owner.fetchrow(
+                "SELECT source_key,decision_id FROM switchboard.admission_attempt_bindings "
+                "WHERE attempt_id=$1",
+                attempts[0],
+            )
+            assert binding["decision_id"] == winner.decision_id
+            with pytest.raises(AdmissionUnavailable):
+                await admit(
+                    runtime, source=SourceRef("message", "third-source"), attempt=attempts[0]
+                )
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == (
+            1 if same_source or canonical in outcomes else 2
+        )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
 
 
 async def test_feed_quota_cannot_consume_owner_lane(ledger):
@@ -324,14 +397,53 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         await service.admit_submission(SourceRef("message", "unknown"), uuid4())
     ).reason == "source_evidence_unavailable"
 
+    async def committed_state():
+        # Separate owner acquisitions see committed rows, not a runtime's
+        # aborted transaction. The five legitimate refusals above stay bound.
+        return {
+            "goals": await owner.fetch("SELECT * FROM switchboard.goals ORDER BY id"),
+            "budgets": await owner.fetch("SELECT * FROM switchboard.budgets ORDER BY goal_id"),
+            "decisions": await owner.fetch(
+                "SELECT * FROM switchboard.admission_decisions ORDER BY id"
+            ),
+            "bindings": await owner.fetch(
+                "SELECT * FROM switchboard.admission_attempt_bindings ORDER BY attempt_id"
+            ),
+        }
+
+    before_failures = await committed_state()
+    assert len(before_failures["decisions"]) == len(before_failures["bindings"]) == 5
+
+    async def assert_rolled_back(source, attempt):
+        assert await committed_state() == before_failures
+        assert (
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.admission_attempt_bindings WHERE attempt_id=$1", attempt
+            )
+            is None
+        )
+        assert (
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.admission_decisions WHERE attempt_id=$1", attempt
+            )
+            is None
+        )
+        assert (
+            await owner.fetchrow("SELECT * FROM switchboard.goals WHERE source_key=$1", source.key)
+            is None
+        )
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
+
     class Broken(Sources):
         async def load(self, connection, source):
             await connection.execute("SELECT definitely_missing_goal_admission_function()")
 
+    broken_source, broken_attempt = SourceRef("message", "broken"), uuid4()
     with pytest.raises(AdmissionUnavailable):
         await GoalAdmission(runtime, Broken(), Catalogs()).admit_submission(
-            SourceRef("message", "broken"), uuid4()
+            broken_source, broken_attempt
         )
+    await assert_rolled_back(broken_source, broken_attempt)
     started = asyncio.Event()
 
     class Cancelled(Sources):
@@ -339,19 +451,24 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
             started.set()
             await asyncio.Event().wait()
 
+    cancelled_source, cancelled_attempt = SourceRef("message", "cancelled"), uuid4()
     task = asyncio.create_task(
         GoalAdmission(runtime, Cancelled(), Catalogs()).admit_submission(
-            SourceRef("message", "cancelled"), uuid4()
+            cancelled_source, cancelled_attempt
         )
     )
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    await assert_rolled_back(cancelled_source, cancelled_attempt)
     assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
     assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
+    privileged_source, privileged_attempt = SourceRef("message", "privileged"), uuid4()
     with pytest.raises(AdmissionUnavailable):
-        await admit(owner)  # No privileged migration-login fallback.
+        await admit(owner, source=privileged_source, attempt=privileged_attempt)
+        # No privileged migration-login fallback.
+    await assert_rolled_back(privileged_source, privileged_attempt)
     # A persistence failure after goal+budget INSERT must roll both back.
     await owner.execute("""
         CREATE FUNCTION switchboard.test_refuse_decision() RETURNS trigger LANGUAGE plpgsql AS
@@ -359,14 +476,47 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         CREATE TRIGGER test_refuse_decision BEFORE INSERT ON switchboard.admission_decisions
         FOR EACH ROW EXECUTE FUNCTION switchboard.test_refuse_decision()
     """)
+    decision_source, decision_attempt = SourceRef("message", "decision-failure"), uuid4()
     try:
         with pytest.raises(AdmissionUnavailable):
-            await admit(runtime)
+            await admit(runtime, source=decision_source, attempt=decision_attempt)
+        await assert_rolled_back(decision_source, decision_attempt)
         assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
         assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
     finally:
         await owner.execute(
             "DROP TRIGGER test_refuse_decision ON switchboard.admission_decisions; DROP FUNCTION switchboard.test_refuse_decision()"
+        )
+    assert await committed_state() == before_failures
+    # A failure at the new final binding INSERT must roll back the actual
+    # earlier goal, budget and decision, not leave an apparently returned ID.
+    await owner.execute("""
+        CREATE FUNCTION switchboard.test_refuse_binding() RETURNS trigger LANGUAGE plpgsql AS
+        $$ BEGIN RAISE EXCEPTION 'injected attempt binding failure'; END $$;
+        CREATE TRIGGER test_refuse_binding BEFORE INSERT ON switchboard.admission_attempt_bindings
+        FOR EACH ROW EXECUTE FUNCTION switchboard.test_refuse_binding()
+    """)
+    binding_source, binding_attempt = SourceRef("message", "binding-failure"), uuid4()
+    try:
+        with pytest.raises(AdmissionUnavailable):
+            await admit(runtime, source=binding_source, attempt=binding_attempt)
+        await assert_rolled_back(binding_source, binding_attempt)
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
+        assert (
+            await owner.fetch("SELECT * FROM switchboard.admission_decisions ORDER BY id")
+            == before_failures["decisions"]
+        )
+        assert (
+            await owner.fetch(
+                "SELECT * FROM switchboard.admission_attempt_bindings ORDER BY attempt_id"
+            )
+            == before_failures["bindings"]
+        )
+    finally:
+        await owner.execute(
+            "DROP TRIGGER test_refuse_binding ON switchboard.admission_attempt_bindings; "
+            "DROP FUNCTION switchboard.test_refuse_binding()"
         )
     # Inject a lost commit acknowledgement around a REAL committed transaction.
     # A retry must discover the durable association, never claim the first call succeeded.
@@ -397,6 +547,15 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         await GoalAdmission(CommitUncertain(), Sources(), Catalogs()).admit_submission(
             uncertain_source, uuid4()
         )
+    # The failed acknowledgement committed its original attempt too. An alias
+    # retry with another lost acknowledgement must not become retargetable.
+    alias = uuid4()
+    with pytest.raises(AdmissionUnavailable):
+        await GoalAdmission(CommitUncertain(), Sources(), Catalogs()).admit_submission(
+            uncertain_source, alias
+        )
+    with pytest.raises(AdmissionUnavailable):
+        await admit(runtime, source=SourceRef("message", "retarget-alias"), attempt=alias)
     recovered = await admit(runtime, source=uncertain_source)
     assert recovered.result == "admitted"
     assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 1
@@ -417,6 +576,22 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     await owner.execute("UPDATE switchboard.invocations SET status='running' WHERE id=$1", lead)
     async with owner.acquire() as conn:
         cases = [
+            (
+                "INSERT INTO switchboard.admission_attempt_bindings "
+                "(attempt_id,source_key,decision_id) VALUES ($1,'wrong-source',$2)",
+                uuid4(),
+                a.decision_id,
+            ),
+            (
+                "UPDATE switchboard.admission_attempt_bindings SET decision_id=$1 "
+                "WHERE decision_id=$2",
+                b.decision_id,
+                a.decision_id,
+            ),
+            (
+                "DELETE FROM switchboard.admission_attempt_bindings WHERE decision_id=$1",
+                a.decision_id,
+            ),
             (
                 "INSERT INTO switchboard.invocations (id,goal_id,parent_invocation_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,exposed,max_turns,max_tokens) VALUES ($1,$2,$3,1,'child',0,'launching','[]','digest',true,1,1)",
                 uuid4(),

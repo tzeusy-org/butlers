@@ -67,11 +67,13 @@ def _row(data: dict) -> _Row:
 def _make_fact_row(
     *,
     mtype: str = "weight",
-    value: Any = {"kg": 75.5},
+    value: Any = None,
     notes: str | None = None,
     valid_at: datetime | None = None,
 ) -> _Row:
-    """Build an asyncpg-like fact row for a measurement."""
+    """Build an asyncpg-like fact row for a measurement (default value: 75.5 kg)."""
+    if value is None:
+        value = {"kg": 75.5}
     return _row(
         {
             "id": uuid.uuid4(),

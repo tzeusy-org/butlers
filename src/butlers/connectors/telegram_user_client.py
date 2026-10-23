@@ -77,6 +77,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.telegram_spans import telethon_forward_origin
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -96,6 +97,7 @@ from butlers.ingestion_bearer_scrub import (
     scrub_envelope,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -1199,13 +1201,21 @@ class TelegramUserClientConnector:
         header_lines.append("---")
 
         text_parts: list[str] = []
+        # Forwarded messages inside the batch, as (line index, text start, text end, origin).
+        forwarded_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
         for msg in new_messages_sorted:
             sender_id = self._extract_sender_identity(msg)
             display_name = seen_sender_ids[sender_id]
             text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
             is_owner = owner_sender_id is not None and sender_id == owner_sender_id
             owner_tag = " (owner)" if is_owner else ""
-            text_parts.append(f"[{display_name}{owner_tag}]: {text}")
+            line = f"[{display_name}{owner_tag}]: {text}"
+            origin = telethon_forward_origin(msg)
+            if origin is not None:
+                # A media-only forward has no text: the whole line stands for it.
+                text_start = len(line) - len(text) if text else 0
+                forwarded_lines.append((len(text_parts), text_start, len(line), origin))
+            text_parts.append(line)
 
         footer_lines: list[str] = [
             "---",
@@ -1215,6 +1225,9 @@ class TelegramUserClientConnector:
             footer_lines.append(f"Flush window: {oldest_ts} → {newest_ts}")
 
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
+        untrusted_spans = forwarded_line_spans(
+            normalized_text, header_lines, text_parts, forwarded_lines
+        )
 
         # Build conversation_history: all context messages, sorted ascending by ID.
         # Collect display names for all context senders (superset of new-message senders).
@@ -1289,6 +1302,7 @@ class TelegramUserClientConnector:
             "payload": {
                 "raw": {"conversation_history": conversation_history},
                 "normalized_text": normalized_text,
+                **({"untrusted_spans": untrusted_spans} if untrusted_spans else {}),
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
@@ -2042,6 +2056,7 @@ class TelegramUserClientConnector:
             )
 
         # Build ingest.v1 envelope
+        forward = telethon_forward_origin(message)
         envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
             "source": {
@@ -2071,6 +2086,11 @@ class TelegramUserClientConnector:
                 "interaction_eligible": interaction_eligible,
             },
         }
+        if forward is not None:
+            # A forwarded message is someone else's text in full (RFC 0038 D5).
+            envelope["payload"]["untrusted_spans"] = [
+                whole_text_span("forwarded", normalized_text, **forward)
+            ]
 
         return scrub_envelope(envelope)[0]
 

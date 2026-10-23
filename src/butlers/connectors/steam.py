@@ -62,6 +62,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
 
 if TYPE_CHECKING:
@@ -878,7 +879,7 @@ class SteamAccountPoller:
         """Signal shutdown and wait for all polling tasks to finish."""
         self._state.shutdown_event.set()
 
-        for data_type, task in list(self._state.tasks.items()):
+        for _data_type, task in list(self._state.tasks.items()):
             task.cancel()
             try:
                 await task
@@ -1756,6 +1757,7 @@ class SteamConnector:
             mcp_client=self._mcp_client,
             metrics=self._metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._heartbeat.start()
 

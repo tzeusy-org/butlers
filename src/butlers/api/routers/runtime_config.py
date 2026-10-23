@@ -275,8 +275,8 @@ async def get_runtime_config(
     """Read the effective runtime config for a butler from the DB."""
     try:
         pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found") from exc
 
     row = await pool.fetchrow("SELECT * FROM runtime_config LIMIT 1")
     if row is None:
@@ -310,8 +310,8 @@ async def patch_runtime_config(
     """Partially update the runtime config for a butler."""
     try:
         pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found") from exc
 
     updates: dict[str, Any] = {}
     async with pool.acquire() as connection, connection.transaction():

@@ -11,6 +11,7 @@ See docs/switchboard/thread_affinity_routing.md for spec reference.
 from __future__ import annotations
 
 import time
+from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -358,7 +359,7 @@ class TestAffinityResult:
 
     def test_frozen_result(self) -> None:
         r = AffinityResult(outcome=AffinityOutcome.HIT, target_butler="finance")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             r.target_butler = "other"  # type: ignore[misc]
 
 
@@ -384,7 +385,7 @@ class TestThreadAffinitySettings:
 
     def test_frozen(self) -> None:
         s = ThreadAffinitySettings.defaults()
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             s.enabled = False  # type: ignore[misc]
 
 

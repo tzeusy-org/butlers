@@ -91,6 +91,7 @@ from butlers.credential_store import (
 )
 from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,16 @@ class WhatsAppUserClientConnectorConfig:
 # ---------------------------------------------------------------------------
 # Message type normalization
 # ---------------------------------------------------------------------------
+
+
+def _is_forwarded(event: dict[str, Any]) -> bool:
+    """Whether the bridge marked the message as forwarded (``content.is_forwarded``).
+
+    WhatsApp does not name a forward's original author, so the span carries no origin. A quoted
+    reply arrives only as ``quoted_message_id`` without the quoted text, so nothing in
+    ``normalized_text`` is quoted content.
+    """
+    return (event.get("content") or {}).get("is_forwarded") is True
 
 
 def normalize_message_text(event: dict[str, Any]) -> str:
@@ -1451,7 +1462,7 @@ class WhatsAppUserClientConnector:
             *(self._flush_chat_buffer(jid) for jid in chat_jids),
             return_exceptions=True,
         )
-        for jid, result in zip(chat_jids, results):
+        for jid, result in zip(chat_jids, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",
@@ -1929,15 +1940,23 @@ class WhatsAppUserClientConnector:
         # Build message lines
         sender_projection = self._project_batch_senders(buffered_events)
         text_parts: list[str] = []
+        # Forwarded messages inside the batch, as (line index, text start, text end, origin).
+        forwarded_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
         for event in buffered_events:
             message_id = str(event.get("message_id") or event.get("id"))
             _, sender_label = sender_projection[message_id]
             msg_text = normalize_message_text(event)
-            text_parts.append(f"[{sender_label}]: {msg_text}")
+            line = f"[{sender_label}]: {msg_text}"
+            if _is_forwarded(event):
+                forwarded_lines.append((len(text_parts), len(line) - len(msg_text), len(line), {}))
+            text_parts.append(line)
 
         footer_lines = ["---", f"Messages: {len(buffered_events)} new"]
 
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
+        untrusted_spans = forwarded_line_spans(
+            normalized_text, header_lines, text_parts, forwarded_lines
+        )
 
         flush_ts = datetime.now(UTC).isoformat()
 
@@ -1999,6 +2018,7 @@ class WhatsAppUserClientConnector:
             "payload": {
                 "raw": raw_payload,
                 "normalized_text": normalized_text,
+                **({"untrusted_spans": untrusted_spans} if untrusted_spans else {}),
             },
             "control": {
                 "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
@@ -2090,6 +2110,12 @@ class WhatsAppUserClientConnector:
             "payload": {
                 "raw": event,
                 "normalized_text": normalized_text,
+                # A forwarded message is someone else's text in full (RFC 0038 D5).
+                **(
+                    {"untrusted_spans": [whole_text_span("forwarded", normalized_text)]}
+                    if _is_forwarded(event)
+                    else {}
+                ),
             },
             "control": {
                 "idempotency_key": idempotency_key,

@@ -216,13 +216,24 @@ class _DelayedStartedServer:
     def __init__(self, config: Any) -> None:
         self.config = config
         self.started = False
-        self.should_exit = False
+        self._exit_requested = asyncio.Event()
+
+    @property
+    def should_exit(self) -> bool:
+        return self._exit_requested.is_set()
+
+    @should_exit.setter
+    def should_exit(self, value: bool) -> None:
+        # The daemon stops uvicorn by assigning ``should_exit``; serve() wakes on it.
+        if value:
+            self._exit_requested.set()
+        else:
+            self._exit_requested.clear()
 
     async def serve(self, sockets: list[Any] | None = None) -> None:
         await asyncio.sleep(0.05)
         self.started = True
-        while not self.should_exit:
-            await asyncio.sleep(0.01)
+        await self._exit_requested.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -1303,7 +1314,16 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
+def _domain_config_directories() -> list[Path]:
+    roster = Path(__file__).resolve().parents[2] / "roster"
+    return [
+        path.parent
+        for path in sorted(roster.glob("*/butler.toml"))
+        if path.parent.name != "switchboard"
+    ]
+
+
+async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> None:
     """Client None pre-start; successful connect sets client; shutdown clears it; connect failure non-fatal."""
     # Before start: client is always None
     assert ButlerDaemon(butler_dir).switchboard_client is None
@@ -1361,6 +1381,40 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         await daemon2.start()
     assert daemon2.switchboard_client is None
     assert daemon2._started_at is not None
+    await daemon2.shutdown()
+
+    # Actual roster configs feed notify, fact admission/recovery and the
+    # spawner's source endpoint. Exercise heartbeat reconnect with those same
+    # loaded configs, rather than only testing the URL helper in isolation.
+    from butlers.config import load_config
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    domain_configs = await asyncio.to_thread(_domain_config_directories)
+    assert domain_configs
+    for directory in domain_configs:
+        domain = ButlerDaemon(directory)
+        domain.config = await asyncio.to_thread(load_config, directory)
+        expected = "http://butlers-control:41100/mcp"
+        assert domain.config.switchboard_url == expected
+        connected = asyncio.Event()
+        reconnected_client = AsyncMock()
+        reconnected_client.__aenter__.side_effect = lambda connected=connected: connected.set()
+        with (
+            patch(
+                "butlers.switchboard_wiring.MCPClient", return_value=reconnected_client
+            ) as constructor,
+            patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        ):
+            heartbeat = asyncio.create_task(domain._switchboard_heartbeat_loop())
+            try:
+                await asyncio.wait_for(connected.wait(), timeout=1)
+            finally:
+                heartbeat.cancel()
+                await heartbeat
+            constructor.assert_called_once_with(expected, name=f"butler-{domain.config.name}")
+            assert domain.switchboard_client is reconnected_client
+            await domain._disconnect_switchboard()
+            assert domain.switchboard_client is None
 
 
 async def test_switchboard_heartbeat_uses_ping_for_liveness_probe(butler_dir: Path) -> None:
@@ -2270,7 +2324,7 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
 
     mock_sync.assert_awaited_once()
     schedules_arg = mock_sync.call_args[0][1]
-    job_names = [s.get("job_name") for s in schedules_arg]
+    job_names = [s.job_name for s in schedules_arg]
     assert "daily_briefing_contribution" not in job_names
     assert "some_other_job" in job_names
 

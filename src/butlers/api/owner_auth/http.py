@@ -16,8 +16,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
-from butlers.api.owner_auth.context import in_http_request, verified_http_principal
 from butlers.api.owner_auth.service import AuthError
+from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
 PREFIX = "/api/auth/owner"
 CEREMONY_ROUTES = {

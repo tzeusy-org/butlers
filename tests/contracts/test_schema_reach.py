@@ -639,6 +639,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.media_refs",
     ): "burn-down: existing switchboard.media_refs coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/control.py",
+        "switchboard.butler_secrets",
+    ): "sanctioned:RFC-0038: KEY_ABSENT_STAGE startup refuses when Switchboard's own secret store holds GOAL private-key metadata (secret_key names only, never values); public.butler_secrets is checked beside it",
+    (
         "src/butlers/core/condition_ledger.py",
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -694,6 +698,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/fleet_conditions.py",
         "switchboard.butler_registry_control_plane",
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_attempt_bindings",
+    ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
     (
         "src/butlers/core/goal_ledger.py",
         "switchboard.admission_decisions",

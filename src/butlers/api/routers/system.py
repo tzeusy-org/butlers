@@ -557,8 +557,10 @@ async def get_deployment_facts(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     from butlers.core.deployments import get_current_deployment, list_recent_deployments
 
@@ -567,7 +569,7 @@ async def get_deployment_facts(
         recent_rows = await list_recent_deployments(pool)
     except Exception as exc:
         logger.warning("Failed to query deployments ledger: %s", exc)
-        raise HTTPException(status_code=503, detail="Deployments ledger query failed")
+        raise HTTPException(status_code=503, detail="Deployments ledger query failed") from exc
 
     commits_behind_main: int | None = None
     if current_row is not None:
@@ -763,14 +765,16 @@ async def get_database_facts(
         # Use the switchboard pool (it has pg catalog read access from the
         # shared database; all butlers share one PostgreSQL database).
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     try:
         total_bytes: int = await pool.fetchval("SELECT pg_database_size(current_database())") or 0
     except Exception as exc:
         logger.warning("Failed to query database size: %s", exc)
-        raise HTTPException(status_code=503, detail="Database catalog query failed")
+        raise HTTPException(status_code=503, detail="Database catalog query failed") from exc
 
     # Per-schema breakdown: only butler-owned schemas (exclude public, pg_*,
     # information_schema). Table count via information_schema.
@@ -805,7 +809,7 @@ async def get_database_facts(
         ]
     except Exception as exc:
         logger.warning("Failed to query schema sizes: %s", exc)
-        raise HTTPException(status_code=503, detail="Schema size query failed")
+        raise HTTPException(status_code=503, detail="Schema size query failed") from exc
 
     # Top 10 tables by total relation size across all non-system schemas
     try:
@@ -836,7 +840,7 @@ async def get_database_facts(
         ]
     except Exception as exc:
         logger.warning("Failed to query table sizes: %s", exc)
-        raise HTTPException(status_code=503, detail="Table size query failed")
+        raise HTTPException(status_code=503, detail="Table size query failed") from exc
 
     return ApiResponse(
         data=DatabaseFacts(
@@ -975,7 +979,7 @@ async def _assert_owner_contact(pool) -> None:
         raise HTTPException(
             status_code=403,
             detail={"code": "owner_required", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     roles = row["roles"] if row is not None and row["roles"] else []
     if "owner" not in roles:
@@ -1008,8 +1012,10 @@ async def get_egress_catalog(
     """
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # Owner-contact assertion (non-negotiable privacy contract)
     await _assert_owner_contact(sw_pool)
@@ -1035,7 +1041,7 @@ async def get_egress_catalog(
             )
         except Exception as exc:
             logger.warning("Egress catalog query failed: %s", exc)
-            raise HTTPException(status_code=503, detail="Egress catalog query failed")
+            raise HTTPException(status_code=503, detail="Egress catalog query failed") from exc
 
         # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
         # No second query needed -- we already have min(created_at) per operation above.
@@ -1142,8 +1148,10 @@ async def get_butlers_heartbeat(
     """
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # A failed receiver probe never advances the cutover timestamp. Flag-off
     # deployments still report their legacy routing projection.
@@ -1161,7 +1169,7 @@ async def get_butlers_heartbeat(
         registry_rows = await sw_pool.fetch(registry_query)
     except Exception as exc:
         logger.warning("Failed to query butler_registry: %s", exc)
-        raise HTTPException(status_code=503, detail="Butler registry query failed")
+        raise HTTPException(status_code=503, detail="Butler registry query failed") from exc
 
     # Build registry map
     registry: dict[str, datetime | None] = {
@@ -1272,8 +1280,10 @@ async def get_insight_delivery_state(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     _zero_state = InsightDeliveryState(queued=0, delivered=0, failed=0, last_delivery_at=None)
 
@@ -1439,8 +1449,10 @@ async def get_conditions(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     try:
         total, rows = await list_conditions(

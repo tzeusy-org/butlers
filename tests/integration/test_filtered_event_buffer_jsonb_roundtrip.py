@@ -191,8 +191,8 @@ async def test_record_and_flush_round_trips_full_payload_as_object(
         ("null", "777000", None, None, {}),
         *[
             (f"hint-{name}-{kind}", sender, preview, expected, hints)
-            for name, sender, preview, expected, payload in label_controls
-            for kind, hints in (("object", payload), ("legacy", json.dumps(payload)))
+            for name, sender, preview, expected, control in label_controls
+            for kind, hints in (("object", control), ("legacy", json.dumps(control)))
         ],
     ]:
         current_buffer.record(
@@ -246,8 +246,8 @@ async def test_record_and_flush_round_trips_full_payload_as_object(
         ("historic-malformed", "777000", "482913", "not-json"),
         *[
             (f"historic-hint-{name}-{kind}", sender, preview, hints)
-            for name, sender, preview, _, payload in label_controls
-            for kind, hints in (("object", payload), ("legacy", json.dumps(payload)))
+            for name, sender, preview, _, control in label_controls
+            for kind, hints in (("object", control), ("legacy", json.dumps(control)))
         ],
     ]:
         await pool.execute(
@@ -808,7 +808,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         from types import SimpleNamespace
 
         from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
-        from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+        from butlers.core.known_contact_state import CLASSIFICATION_KEY
         from butlers.core_tools._base import ToolContext
         from butlers.core_tools._switchboard import register_switchboard_tools
 

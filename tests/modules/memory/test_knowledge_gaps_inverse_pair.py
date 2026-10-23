@@ -42,6 +42,7 @@ from tests.modules.memory.test_knowledge_gaps import (  # noqa: F401
 from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
     memory_migrated_db,
 )
+from tests.polling import poll_until
 
 pytestmark = [
     pytest.mark.integration,
@@ -215,12 +216,15 @@ async def _internal_edge(pool, left, right, predicate, *, sender=None, **kwargs)
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):
-        while not await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
-            " AND locktype = 'advisory' AND NOT granted)",
-            pid,
-        ):
-            await asyncio.sleep(0.01)
+
+        async def _condition_met() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
+                " AND locktype = 'advisory' AND NOT granted)",
+                pid,
+            )
+
+        await poll_until(_condition_met, interval_s=0.01)
 
 
 @pytest.mark.parametrize("first", ["capture", "writer"])

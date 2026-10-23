@@ -4,7 +4,7 @@
 The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for the dossier renderer. The resources join `qa_findings`, `healing_attempts`, and `qa_investigation_events` into a per-case shape; they do not replace `/api/qa/investigations` (which retains its existing semantics).
 
 ID: REQ-qa-dashboard-001
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: GET /api/qa/cases
@@ -38,7 +38,7 @@ Scope: v1-mandatory
 The QA summary SHALL expose an evidence-qualified, time-windowed incident funnel that distinguishes observations, admitted investigations, proposals, published PRs, merges, deployment and verified recovery; it SHALL not label merge time as repair time.
 
 ID: REQ-qa-dashboard-002
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Summary KPI block
@@ -79,7 +79,7 @@ Scope: v1-mandatory
 The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA staffer's work as a per-case dossier in the Dispatch design language. The page narrates what the staff caught and what it fixed; it is not a pipeline dashboard.
 
 ID: REQ-qa-dashboard-003
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Overview page layout
@@ -167,7 +167,7 @@ Scope: v1-mandatory
 The dashboard SHALL have a drill-down page at `/qa/investigations/:attemptId` that renders the same case dossier as `/qa?case=:attemptId`. The two routes mount the same `CaseDossier` component with no UX divergence.
 
 ID: REQ-qa-dashboard-004
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Investigation detail layout matches Case Dossier
@@ -184,7 +184,7 @@ Scope: v1-mandatory
 The QA dashboard SHALL render any single case (either as the right-pane on `/qa?case=` or as the full body of `/qa/investigations/:attemptId`) using a shared Case Dossier component composed of a header, a two-column diagnosis/PR body, and a full-width patrol journal.
 
 ID: REQ-qa-dashboard-005
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Dossier header

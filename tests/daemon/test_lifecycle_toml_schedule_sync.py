@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers import lifecycle
-from butlers.config import ButlerType, ScheduleConfig
+from butlers.config import ButlerType, ScheduleSpec
 
 pytestmark = pytest.mark.unit
 
@@ -22,8 +22,8 @@ def _daemon() -> SimpleNamespace:
         type=ButlerType.BUTLER,
         config_dir=Path("/nonexistent"),
         schedules=[
-            ScheduleConfig(name="infra", cron="15 4 * * *", prompt="x", timezone="Etc/UTC"),
-            ScheduleConfig(name="owner-local", cron="0 23 * * *", prompt="y"),
+            ScheduleSpec(name="infra", cron="15 4 * * *", prompt="x", timezone="Etc/UTC"),
+            ScheduleSpec(name="owner-local", cron="0 23 * * *", prompt="y"),
         ],
     )
     return SimpleNamespace(config=config, config_dir=Path("/nonexistent"))
@@ -48,9 +48,9 @@ async def test_a_pinned_schedule_reaches_sync_with_its_zone_and_the_quiet_policy
 ) -> None:
     sync = await _sync_with(monkeypatch, shared_pool=object())
 
-    schedules = {s["name"]: s for s in sync.await_args.args[1]}
-    assert schedules["infra"]["timezone"] == "Etc/UTC"
-    assert schedules["owner-local"]["timezone"] is None
+    schedules = {s.name: s for s in sync.await_args.args[1]}
+    assert schedules["infra"].timezone == "Etc/UTC"
+    assert schedules["owner-local"].timezone is None
     assert sync.await_args.kwargs["quiet_policy"] == _POLICY
 
 

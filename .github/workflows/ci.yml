@@ -187,6 +187,9 @@ jobs:
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
+      - name: Install lint tools
+        run: make install-lint-tools
+
       - name: Lint
         id: lint
         if: ${{ !cancelled() }}
@@ -216,8 +219,19 @@ jobs:
         run: |
           # Fetch-point admission: reruns see actual current metadata, while
           # the commit range below remains bound to this event's source head.
-          python3 scripts/fetch_pr_metadata.py \
-            --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP"
+          # 97s retry budget; nominal 100s TERM + 3s KILL command envelope.
+          # The step shell stays outside the helper's supervised process group.
+          if timeout --signal=TERM --kill-after=3s 100s \
+            python3 scripts/fetch_pr_metadata.py \
+              --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP" 2>/dev/null; then
+            :
+          else
+            status=$?
+            rm -f -- "$RUNNER_TEMP/pr_title.txt" "$RUNNER_TEMP/pr_body.txt" \
+              "$RUNNER_TEMP/pr_metadata_receipt.json" 2>/dev/null || true
+            echo 'pr_metadata: unavailable_or_invalid'
+            exit "$status"
+          fi
 
       - name: Fetch review comments (best-effort)
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
@@ -494,13 +508,11 @@ jobs:
         run: npm run build
 
 
-      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
+      - name: Preserve bounded Node tooling
         if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: |
-          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
-          npm run lint:owner-time
-          npm run lint:visual-role-css
+          node --test --test-timeout=300000 route-a-api-receipt.test.mjs
 
       - name: Bind the single frontend build to this exact checkout and attempt
         if: needs.route.outputs.frontend == 'true'
@@ -1180,7 +1192,8 @@ jobs:
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
-    timeout-minutes: 14
+    # Provisional: ceil((2*228s before envelope + 720s installer reserve)/60).
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     needs: [route, guards]
     # Required through the `check` verdict (owner decision bu-w72da2 = A):

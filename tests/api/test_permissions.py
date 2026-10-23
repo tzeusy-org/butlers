@@ -30,6 +30,12 @@ from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
+
+def _provide(value):
+    """Dependency override returning ``value`` as bound now, not at request time."""
+    return lambda: value
+
+
 _ENFORCED_SORTED = sorted(ENFORCED_PERMISSIONS)
 
 
@@ -479,7 +485,7 @@ async def test_put_permission_credential_reason_no_state_change(app):
     for reason in credential_reasons:
         pool = _make_pool()
         db = _make_db(pool)
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[_get_db_manager] = _provide(db)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.put(

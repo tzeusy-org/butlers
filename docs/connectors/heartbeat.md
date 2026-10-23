@@ -29,7 +29,9 @@ also lists the accepted `connector_type` values (`VALID_CONNECTOR_TYPES`). Every
 - Counters are monotonically increasing since process start. The Switchboard computes deltas
   against the previous snapshot, so a connector must never reset them mid-process.
 - `checkpoint` is an opaque provider cursor; `capabilities` (for example `backfill: true`) drives
-  which dashboard controls render.
+  which dashboard controls render. `capabilities.channel_kind = "feed"` registers a device or
+  telemetry feed (`REQ-connector-base-spec-003`). Switchboard drops any other value, and an absent
+  kind is a message channel; see [Untrusted Spans and Channel Kind](overview.md#untrusted-spans-and-channel-kind).
 - `sent_at` plus the `server_time` in the acknowledgment allow clock-drift detection.
 
 ## Frequency and Staleness

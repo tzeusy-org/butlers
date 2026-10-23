@@ -628,8 +628,10 @@ def test_reconciliation_requires_complete_node_identity(
         timed[timer_label]["nodes"],
         key=lambda node: (timed[timer_label]["node_files"][node] != timer_file, node),
     )
-    for node, durations in zip(timer_nodes, ((0.001, 0.001, 0.001), (0.001, 0.3, 0.7))):
-        for phase, seconds in zip(("setup", "call", "teardown"), durations):
+    for node, durations in zip(
+        timer_nodes, ((0.001, 0.001, 0.001), (0.001, 0.3, 0.7)), strict=False
+    ):
+        for phase, seconds in zip(("setup", "call", "teardown"), durations, strict=False):
             timed[timer_label]["nodes"][node][phase]["duration_s"] = seconds
     timed[timer_label]["file_durations_s"] = {
         name: math.fsum(

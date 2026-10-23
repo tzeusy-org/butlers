@@ -97,7 +97,7 @@ make test-plan BASE=origin/main
 uv run --no-sync pytest path/to/test_file.py::test_name -q --tb=short -n 0
 
 # Hygiene for changed Python paths.
-uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
+uv run ruff check src/ tests/ roster/ scripts/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
 ```
 

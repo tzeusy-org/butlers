@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+_THIS_FILE = Path(__file__).resolve()
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
@@ -122,9 +124,7 @@ async def _setup_health_schema(pool) -> None:
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",
     ):
-        migration_path = (
-            Path(__file__).resolve().parents[3] / "alembic/versions/core" / migration_name
-        )
+        migration_path = _THIS_FILE.parents[3] / "alembic/versions/core" / migration_name
         spec = importlib.util.spec_from_file_location(migration_path.stem, migration_path)
         assert spec is not None and spec.loader is not None
         migration = importlib.util.module_from_spec(spec)
@@ -1672,7 +1672,7 @@ async def test_correlation_environment_no_reader_skipped(provisioned_postgres_po
 
 
 def _load_migration(name: str, root: str):
-    path = Path(__file__).resolve().parents[3] / root / name
+    path = _THIS_FILE.parents[3] / root / name
     spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
