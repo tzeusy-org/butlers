@@ -169,7 +169,7 @@ def test_expected_switchboard_identity_follows_the_canonical_switchboard_destina
 def test_identity_verifier_rejects_untrusted_or_not_ready_facts():
     expected = ExpectedDaemon("health", 41103, "butlers-up")
     with pytest.raises(ValueError, match="backend host"):
-        ExpectedDaemon("health", 41103, "http://caller-selected.example").url
+        _ = ExpectedDaemon("health", 41103, "http://caller-selected.example").url
     for change, category in [
         ({"butler_name": "finance"}, "invalid_identity"),
         ({"boot_epoch": 6}, "invalid_identity"),
@@ -556,7 +556,7 @@ async def test_receiver_probe_refuses_bounded_network_failures():
         pool.fetchrow.return_value = {"boot_epoch": 7, "probe_sequence": 5}
         pool.fetchval.side_effect = [uuid.UUID(payload["boot_instance_id"]), True]
 
-        async def respond(_request: httpx.Request) -> httpx.Response:
+        async def respond(_request: httpx.Request, *, mode=mode, payload=payload) -> httpx.Response:
             if mode == "timeout":
                 await asyncio.sleep(0.02)
                 return httpx.Response(200, json=payload)

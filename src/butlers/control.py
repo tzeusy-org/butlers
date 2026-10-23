@@ -262,10 +262,10 @@ class SessionRefusalListener:
                 break
         try:
             self._closing.result()
-        except BaseException:
+        except BaseException as cleanup_error:
             if original_cancel is not None:
                 original_cancel.add_note("control session cleanup incomplete")
-                raise original_cancel
+                raise original_cancel from cleanup_error
             raise
         if original_cancel is not None:
             raise original_cancel

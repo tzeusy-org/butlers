@@ -29,6 +29,7 @@ import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -42,6 +43,8 @@ from butlers.testing.schema_standins import (
     PENDING_ACTIONS,
 )
 
+_THIS_FILE = Path(__file__).resolve()
+
 
 def _apply_evidence_schema():
     """Load ``roster/relationship/tests/evidence_schema.py`` by path.
@@ -51,15 +54,8 @@ def _apply_evidence_schema():
     would drift from the migration the moment either side changes.
     """
     import importlib.util
-    from pathlib import Path
 
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
+    schema_path = _THIS_FILE.parents[2] / "roster" / "relationship" / "tests" / "evidence_schema.py"
     spec = importlib.util.spec_from_file_location("_rel034_evidence_schema", schema_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -351,12 +347,9 @@ class TestEmailIdentityEnrichmentJobRealDb:
 class TestBackfillScriptRealDb:
     async def test_links_existing_entity_via_real_central_writer(self, identity_pool) -> None:
         import importlib.util
-        from pathlib import Path
 
         script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
+            _THIS_FILE.parent.parent.parent / "scripts" / "backfill_email_identity_facts.py"
         )
         spec = importlib.util.spec_from_file_location(
             "backfill_email_identity_facts_db", script_path
@@ -389,12 +382,9 @@ class TestBackfillScriptRealDb:
 
     async def test_dry_run_leaves_no_fact_behind(self, identity_pool) -> None:
         import importlib.util
-        from pathlib import Path
 
         script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
+            _THIS_FILE.parent.parent.parent / "scripts" / "backfill_email_identity_facts.py"
         )
         spec = importlib.util.spec_from_file_location(
             "backfill_email_identity_facts_db_dryrun", script_path

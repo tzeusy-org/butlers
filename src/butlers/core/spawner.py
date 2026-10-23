@@ -1213,7 +1213,7 @@ class Spawner:
         self._accepting = False
         logger.info("Spawner stopped accepting new triggers")
 
-    async def drain(self, timeout: float = 30.0) -> None:
+    async def drain(self, timeout: float = 30.0) -> None:  # noqa: ASYNC109 - RFC 0001 contract tests pin it
         """Wait for in-flight runtime sessions to complete, up to *timeout* seconds.
 
         If sessions are still running after the timeout, they are cancelled.

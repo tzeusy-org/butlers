@@ -165,12 +165,12 @@ class BoundPool:
 async def observed_lock_wait(owner, connection):
     pid = connection.get_server_pid()
     async with asyncio.timeout(2):
-        while not await owner.fetchval(
+        while not await owner.fetchval(  # noqa: ASYNC110 -- bounded real server lock observation
             "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 "
             "AND state='active' AND wait_event_type='Lock')",
             pid,
         ):
-            await asyncio.sleep(0.01)  # noqa: ASYNC110 -- observe a real server lock wait
+            await asyncio.sleep(0.01)
 
 
 @pytest.mark.parametrize("first", ["stop", "replay"])

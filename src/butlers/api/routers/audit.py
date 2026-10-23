@@ -343,11 +343,11 @@ async def list_audit_log(
     count_sql = f"SELECT count(*) FROM public.audit_log{where_clause}"
     try:
         total = await pool.fetchval(count_sql, *args) or 0
-    except UndefinedTableError:
+    except UndefinedTableError as exc:
         raise HTTPException(
             status_code=503,
             detail="Audit log is not available — migration core_092 may not have run",
-        )
+        ) from exc
 
     # Paged data query — order by ts DESC, slice with LIMIT/OFFSET directly
     # against the canonical table (no cross-source merge).
@@ -361,11 +361,11 @@ async def list_audit_log(
 
     try:
         rows = await pool.fetch(data_sql, *args, limit, offset)
-    except UndefinedTableError:
+    except UndefinedTableError as exc:
         raise HTTPException(
             status_code=503,
             detail="Audit log is not available — migration core_092 may not have run",
-        )
+        ) from exc
 
     page = [AuditLogEntry.from_record(row) for row in rows]
 
@@ -400,11 +400,11 @@ async def get_audit_log_entry(
             "WHERE id = $1",
             entry_id,
         )
-    except UndefinedTableError:
+    except UndefinedTableError as exc:
         raise HTTPException(
             status_code=503,
             detail="Audit log is not available — migration core_092 may not have run",
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail="Audit log entry not found")

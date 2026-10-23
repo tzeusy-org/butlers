@@ -302,6 +302,10 @@ def upgrade() -> None:
           EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',s,t);
           EXECUTE format('REVOKE ALL ON %I.%I FROM PUBLIC',s,t);
           IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname=r) THEN
+            -- Bootstrap default privileges predate these tables. GRANT alone
+            -- retains their DELETE/TRIGGER/receipt-UPDATE authority; replace
+            -- that initial ACL with the same narrow matrix bootstrap restores.
+            EXECUTE format('REVOKE ALL ON %I.%I FROM %I',s,t,r);
             EXECUTE format('GRANT SELECT,INSERT ON %I.%I TO %I',s,t,r);
             IF t='approval_goal_effects' THEN
               EXECUTE format('GRANT UPDATE ON %I.%I TO %I',s,t,r);

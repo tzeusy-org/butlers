@@ -59,7 +59,32 @@ def _fixture(root, monkeypatch):
             " if value=='PRIVATE_PARAM_CANARY':\n"
             "  command=[sys.executable,'-m','pytest','tests/nestedproof.py','--collect-only','-q','-n','0']\n"
             "  assert subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0\n"
-            " exec(compile('import time; time.sleep(0.2)','PRIVATE_FRAME_PATH_CANARY','exec'))\n"
+            " if os.environ.get('WATCHDOG_CONTROL')=='frames':\n"
+            "  from pathlib import Path\n"
+            "  from ci_watchdog_diagnostics import atomic\n"
+            "  plugin=request.config.pluginmanager.get_plugin('watchdog-observer')\n"
+            "  assert plugin is not None\n"
+            "  directory=Path(os.environ['CI_WATCHDOG_CONFIG']).parent\n"
+            "  try:\n"
+            "   descriptor=os.open(directory/'positive-frame-owner',"
+            "os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)\n"
+            "  except FileExistsError:\n"
+            "   pass\n"
+            "  else:\n"
+            "   os.close(descriptor)\n"
+            "   frame_file='tests/'+Path(__file__).name\n"
+            "   frame_deadline=time.monotonic()+10\n"
+            "   atomic(directory/'stack-request.json',{'sequence':1})\n"
+            "   exec(compile(\n"
+            "    'import threading\\n'\n"
+            '    \'while not any(frame["file"]==frame_file for frame in plugin.state["frames"]):\\n\'\n'
+            "    ' remaining=frame_deadline-time.monotonic()\\n'\n"
+            "    ' assert remaining>0, \"approved frame observation unavailable\"\\n'\n"
+            "    ' threading.Event().wait(min(0.01,remaining))\\n',\n"
+            "    'PRIVATE_FRAME_PATH_CANARY','exec'),\n"
+            "    dict(plugin=plugin,frame_file=frame_file,frame_deadline=frame_deadline,time=time))\n"
+            " else:\n"
+            "  exec(compile('import time; time.sleep(0.2)','PRIVATE_FRAME_PATH_CANARY','exec'))\n"
             " assert value in ('PRIVATE_PARAM_CANARY','SECOND_PARAM_CANARY')\n"
             "@pytest.mark.integration\n"
             "def test_integration(): pass\n"
@@ -132,7 +157,10 @@ def test_watchdog_diagnostics_preserve_full_observed_identity_and_privacy(tmp_pa
     diagnostic.write_inventory(output / "inventory", data, assignment)
     plain = _run(tmp_path, output, plugin=False)
     assert plain.wait(timeout=45) == 0
-    observed = _run(tmp_path, output)
+    # Enqueuing a call does not order the asynchronous sample before its frame
+    # returns. One real item holds its approved frame until the existing writer
+    # acknowledges a requested sample, inside the unchanged 45-second bound.
+    observed = _run(tmp_path, output, control="frames")
     assert observed.wait(timeout=45) == 0
     checkpoint = diagnostic.checkpoint(output, 0, elapsed_ms=1000)
     report = diagnostic.read_checkpoint(checkpoint, bound)

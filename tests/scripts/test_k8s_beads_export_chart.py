@@ -113,7 +113,10 @@ def test_enabled_keeps_dolt_credential_and_host_paths_out_of_runtime_pods(env: s
 @pytest.mark.parametrize("missing", [1, 2])
 def test_enabled_requires_every_site_value(missing: int) -> None:
     site = [
-        arg for i, pair in enumerate(zip(_SITE[::2], _SITE[1::2])) if i != missing for arg in pair
+        arg
+        for i, pair in enumerate(zip(_SITE[::2], _SITE[1::2], strict=False))
+        if i != missing
+        for arg in pair
     ]
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev", *site)

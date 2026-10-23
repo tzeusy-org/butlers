@@ -15,6 +15,11 @@ from .conftest import make_mock_mcp_manager
 pytestmark = pytest.mark.unit
 
 
+def _provide(value):
+    """Dependency override returning ``value`` as bound now, not at request time."""
+    return lambda: value
+
+
 async def test_list_and_summary_models_omit_unobserved_schedule_count(app):
     configs = [ButlerConnectionInfo("general", 41101)]
     db = MagicMock()
@@ -27,7 +32,7 @@ async def test_list_and_summary_models_omit_unobserved_schedule_count(app):
     ) as client:
         for online, status in [(True, "ok"), (False, "down")]:
             manager = make_mock_mcp_manager(online=online)
-            app.dependency_overrides[get_mcp_manager] = lambda: manager
+            app.dependency_overrides[get_mcp_manager] = _provide(manager)
             response = await client.get("/api/butlers")
             assert response.status_code == 200
             payload = response.json()

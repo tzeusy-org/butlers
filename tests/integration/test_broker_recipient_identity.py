@@ -69,10 +69,10 @@ async def test_runtime_identity_read_is_live_unique_and_locks_the_selected_owner
                     task = asyncio.create_task(retire())
                     # Observe PostgreSQL's actual lock edge, not task-start/gather.
                     async with asyncio.timeout(2):
-                        while not await owner.fetchval(
+                        while not await owner.fetchval(  # noqa: ASYNC110 -- bounded actual PostgreSQL lock observation
                             "SELECT $1=ANY(pg_blocking_pids($2))", reader_pid, writer_pid
                         ):
-                            await asyncio.sleep(0.01)  # noqa: ASYNC110 - external DB lock observation
+                            await asyncio.sleep(0.01)
                     assert not task.done()
                 assert await asyncio.wait_for(task, 3) == "UPDATE 1"
                 # A new actual transaction observes retirement, never cached owner.

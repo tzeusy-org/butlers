@@ -492,11 +492,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(_SWITCHBOARD_BUTLER)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Connector registry database is not available",
-        )
+        ) from exc
 
 
 def _build_connector_auth_blocks(
@@ -1468,14 +1468,14 @@ async def get_connector_detail(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector detail lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if row is None:
         raise HTTPException(
@@ -1518,14 +1518,14 @@ async def get_connector_stats(
                         db,
                         connection=connection,
                     )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector stats registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -1566,14 +1566,14 @@ async def update_connector_settings(
             endpoint_identity,
             body.settings,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector settings update failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if row is None:
         raise HTTPException(
@@ -1641,14 +1641,16 @@ async def pause_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to pause connector %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if row is None:
                 raise HTTPException(
@@ -1740,14 +1742,16 @@ async def run_now_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to fetch connector state for run-now %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if current_row is None:
                 raise HTTPException(
@@ -1778,14 +1782,16 @@ async def run_now_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to clear pause for connector %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
         # Emit the audit entry AFTER the state change has committed (outside the
         # transaction block, matching the disconnect/rotate-token/archive audit
@@ -1945,7 +1951,7 @@ async def _set_archived(
                         connector_type,
                         endpoint_identity,
                     )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to %s connector %s/%s",
                     "archive" if archive else "unarchive",
@@ -1953,7 +1959,9 @@ async def _set_archived(
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if row is None:
                 raise HTTPException(
@@ -2055,14 +2063,14 @@ async def disconnect_connector(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "disconnect: failed to fetch connector %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2102,14 +2110,14 @@ async def disconnect_connector(
             origin_butler=_SWITCHBOARD_BUTLER,
             approval_push_runtime=_build_dashboard_approval_push_runtime(db),
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "disconnect: failed to insert pending_action for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Approvals subsystem is not available")
+        raise HTTPException(status_code=503, detail="Approvals subsystem is not available") from exc
 
     # Emit audit entry for the disconnect submission
     try:
@@ -2187,14 +2195,14 @@ async def rotate_connector_token(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "rotate-token: failed to fetch connector %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2221,7 +2229,7 @@ async def rotate_connector_token(
             result="error",
             error="safe replayable command unavailable",
         )
-    except Exception:
+    except Exception as exc:
         logger.error(
             "rotate-token: failed to append unreplayable-command audit for %s/%s",
             connector_type,
@@ -2231,7 +2239,7 @@ async def rotate_connector_token(
         raise HTTPException(
             status_code=503,
             detail="Token rotation is unavailable because its refusal audit could not be recorded",
-        )
+        ) from exc
 
     logger.warning(
         "rotate-token: rejected unreplayable request for connector %s/%s",
@@ -2529,14 +2537,14 @@ async def list_connector_events(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-events: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2581,14 +2589,14 @@ async def list_connector_events(
             endpoint_identity,
             limit,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-events: failed to query events for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Event query failed")
+        raise HTTPException(status_code=503, detail="Event query failed") from exc
 
     events = [
         ConnectorEventSummary(
@@ -2654,14 +2662,14 @@ async def list_connector_incidents(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-incidents: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2706,14 +2714,14 @@ async def list_connector_incidents(
             incident_statuses,
             limit,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-incidents: failed to query incidents for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Incident query failed")
+        raise HTTPException(status_code=503, detail="Incident query failed") from exc
 
     incidents = [
         ConnectorIncidentSummary(
@@ -2774,14 +2782,14 @@ async def list_connector_routing_rules(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-routing-rules: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2815,14 +2823,14 @@ async def list_connector_routing_rules(
             """,
             connector_scope,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-routing-rules: failed to query rules for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Routing rules query failed")
+        raise HTTPException(status_code=503, detail="Routing rules query failed") from exc
 
     rules = []
     for r in rows:

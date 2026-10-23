@@ -109,11 +109,11 @@ async def list_butler_logs(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     # Validate level parameter
     if level is not None:
@@ -156,12 +156,12 @@ async def list_butler_logs(
 
     try:
         rows = await pool.fetch(sql, *args)
-    except Exception:
+    except Exception as exc:
         logger.warning("Failed to query butler_logs for butler %s", name, exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to query logs for butler '{name}'",
-        )
+        ) from exc
 
     lines: list[LogLine] = []
     for row in rows:

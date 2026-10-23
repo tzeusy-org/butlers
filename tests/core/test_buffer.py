@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,6 +33,15 @@ from butlers.core.buffer import (
 from butlers.switchboard_wiring import build_buffer_pipeline_inputs
 
 pytestmark = pytest.mark.unit
+
+
+def _write_switchboard_config(sw_dir: Path) -> Path:
+    sw_dir.mkdir(exist_ok=True)
+    (sw_dir / "butler.toml").write_text(
+        '[butler]\nname = "switchboard"\nport = 41100\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
+    )
+    return sw_dir
 
 
 # ---------------------------------------------------------------------------
@@ -561,12 +571,7 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
     }
 
     # Switchboard gets DurableBuffer
-    sw_dir = Path(tmp_path / "sw")
-    sw_dir.mkdir(exist_ok=True)
-    (sw_dir / "butler.toml").write_text(
-        '[butler]\nname = "switchboard"\nport = 41100\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
-    )
+    sw_dir = await asyncio.to_thread(_write_switchboard_config, Path(tmp_path / "sw"))
     # This mocked lifecycle installs the real process-local source issuer.
     # Preserve the object already owned by another test, including on failure;
     # replacing it with None would also discard a preexisting live registry.

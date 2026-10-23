@@ -1780,7 +1780,7 @@ def test_private_executor_secret_is_absent_from_every_normal_runtime_service() -
     """The secret mount belongs only to the deterministic executor service."""
     compose = _compose(_BASE_COMPOSE_FILE)
 
-    for name, service in compose["services"].items():
+    for _name, service in compose["services"].items():
         assert "restore_drill_executor_password" not in repr(service.get("secrets", []))
         assert _CA_CONFIG_SOURCE not in repr(service.get("configs", []))
         assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(service)

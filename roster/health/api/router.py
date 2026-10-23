@@ -95,11 +95,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Health butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +430,7 @@ async def create_measurement(
             measured_at=body.measured_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _measurement_response(result)
 
 
@@ -462,7 +462,7 @@ async def update_measurement(
     try:
         result = await measurement_update(pool, measurement_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _measurement_response(result)
 
 
@@ -482,7 +482,7 @@ async def delete_measurement(
     try:
         await measurement_delete(pool, measurement_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +714,7 @@ async def log_medication_dose(
             notes=body.notes,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     cache.invalidate_all()
     return _dose_response(result, medication_id)
 
@@ -802,7 +802,7 @@ async def get_medication_adherence(
             end_date=effective_end,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     doses = result.get("doses") or []
     total = len(doses)
@@ -927,7 +927,7 @@ async def update_medication(
     try:
         result = await medication_update(pool, medication_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _medication_response(result)
 
 
@@ -947,7 +947,7 @@ async def delete_medication(
     try:
         await medication_delete(pool, medication_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1089,7 +1089,7 @@ async def update_condition(
     try:
         result = await condition_update(pool, condition_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _condition_response(result)
 
 
@@ -1109,7 +1109,7 @@ async def delete_condition(
     try:
         await condition_delete(pool, condition_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1260,7 +1260,7 @@ async def create_symptom(
             occurred_at=body.occurred_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _symptom_response(result)
 
 
@@ -1289,7 +1289,7 @@ async def update_symptom(
     try:
         result = await symptom_update(pool, symptom_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _symptom_response(result)
 
 
@@ -1309,7 +1309,7 @@ async def delete_symptom(
     try:
         await symptom_delete(pool, symptom_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1491,7 +1491,7 @@ async def create_meal(
             notes=body.notes,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _meal_response(result)
 
 
@@ -1520,7 +1520,7 @@ async def update_meal(
     try:
         result = await meal_update(pool, meal_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _meal_response(result)
 
 
@@ -1540,7 +1540,7 @@ async def delete_meal(
     try:
         await meal_delete(pool, meal_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1686,7 +1686,7 @@ async def create_research(
             condition_id=body.condition_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)
 
 
@@ -1715,7 +1715,7 @@ async def update_research(
     try:
         result = await research_update(pool, research_id, **updates)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)
 
 
@@ -1735,7 +1735,7 @@ async def delete_research(
     try:
         await research_delete(pool, research_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2215,7 +2215,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -2669,8 +2669,10 @@ async def get_health_briefing(
     """
     try:
         sw_pool = db.pool(SWITCHBOARD_DB)
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     health_pool = _pool(db)
 
     # Owner-only gate (HTTP 403 for non-owner) — before any cache read or write.

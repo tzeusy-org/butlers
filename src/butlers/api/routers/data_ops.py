@@ -613,8 +613,10 @@ async def download_export(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     zip_bytes = await _build_export_zip(pool, scope, db=db)
     encrypted = _encrypt_export(zip_bytes)
@@ -671,8 +673,10 @@ async def wipe_data(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # --- Phase 2: record the wipe in audit_log BEFORE destruction ---
     await audit.append(pool, "owner", "data.wipe", note="Wipe initiated")

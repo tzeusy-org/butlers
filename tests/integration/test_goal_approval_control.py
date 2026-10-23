@@ -125,6 +125,27 @@ async def snapshot(observer, action):
 async def test_real_park_aliases_current_lookup_history_and_off_delivery(stores):
     owner, observer, runtime = stores
     service, call = OwningGoalApprovals(runtime, "home"), request()
+    # The fresh migration must replace bootstrap's broad default table ACLs,
+    # before any later bootstrap replay has an opportunity to repair them.
+    assert (
+        await runtime.fetchval(
+            """
+        SELECT count(*)=2 AND bool_and(
+          has_table_privilege(current_user,c.oid,'SELECT')
+          AND has_table_privilege(current_user,c.oid,'INSERT')
+          AND NOT has_table_privilege(current_user,c.oid,'DELETE')
+          AND NOT has_table_privilege(current_user,c.oid,'TRIGGER')
+          AND NOT has_table_privilege(current_user,c.oid,'TRUNCATE')
+          AND NOT has_table_privilege(current_user,c.oid,'REFERENCES')
+          AND has_table_privilege(current_user,c.oid,'UPDATE')=
+              (c.relname='approval_goal_effects'))
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=current_schema()
+          AND c.relname IN ('approval_goal_effects','approval_goal_receipts')
+        """
+        )
+        is True
+    )
     assert await service.lookup(identity(call)) is None
     assert await snapshot(observer, call.action_id) == (None, None, [])
     admission, parked = await service.park(call)
@@ -252,12 +273,12 @@ async def test_real_commit_loss_readback_and_receipt_failure_rollback(stores):
 
 async def _wait_for_lock(observer, application):
     async with asyncio.timeout(2):
-        while not await observer.fetchval(
+        while not await observer.fetchval(  # noqa: ASYNC110 -- bounded actual PostgreSQL wait observation
             "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE application_name=$1 "
             "AND wait_event_type='Lock')",
             application,
         ):
-            await asyncio.sleep(0.01)  # noqa: ASYNC110 - actual PostgreSQL wait observation
+            await asyncio.sleep(0.01)
 
 
 @pytest.mark.parametrize("first", ["park", "cancel"])

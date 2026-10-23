@@ -50,7 +50,15 @@ async def pool(migrated_db_url: str):
     db_pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=8, init=register_jsonb_codec
     )
-    await db_pool.execute("TRUNCATE approval_events, pending_actions, approval_rules CASCADE")
+    # This module owns the legacy fixture database. TRUNCATE on rules would
+    # follow pending_actions' FK into immutable goal evidence, even when empty.
+    await db_pool.execute("TRUNCATE approval_events")
+    await db_pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+    await db_pool.execute(
+        "DELETE FROM approval_rules r WHERE NOT EXISTS ("
+        "SELECT 1 FROM pending_actions p "
+        "WHERE p.approval_rule_id = r.id OR p.id = r.created_from)"
+    )
     yield db_pool
     await db_pool.close()
 

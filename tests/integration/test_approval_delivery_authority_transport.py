@@ -850,6 +850,6 @@ asyncio.run(main())
                 )
                 is False
             )
-        assert list(sockets.iterdir()) == []
+        assert await asyncio.to_thread(lambda: list(sockets.iterdir())) == []
         assert module._approval_recovery_call is None and not module._approval_recovery_verifiers
         assert await source.verify(payload, proof) == {"allowed": False}

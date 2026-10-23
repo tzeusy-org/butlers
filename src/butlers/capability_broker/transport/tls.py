@@ -169,7 +169,7 @@ class PurposeStream(httpcore.AsyncNetworkStream):
         finally:
             self.backend.streams.discard(self)
 
-    async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+    async def start_tls(self, ssl_context, server_hostname=None, timeout=None):  # noqa: ASYNC109 -- httpcore stream ABI; owned absolute deadline below
         try:
             if self.peer or self.unusable or server_hostname != self.backend.hostname:
                 raise ProtocolError("tls_transition")
@@ -188,7 +188,7 @@ class PurposeStream(httpcore.AsyncNetworkStream):
             self.abort()
             raise
 
-    async def write(self, buffer, timeout=None):
+    async def write(self, buffer, timeout=None):  # noqa: ASYNC109 -- httpcore stream ABI; owned absolute deadline below
         try:
             if self.unusable or self.peer is None:
                 raise ProtocolError("unverified_write")
@@ -206,7 +206,7 @@ class PurposeStream(httpcore.AsyncNetworkStream):
             self.abort()
             raise
 
-    async def read(self, max_bytes, timeout=None):
+    async def read(self, max_bytes, timeout=None):  # noqa: ASYNC109 -- httpcore stream ABI; owned absolute deadline below
         try:
             if self.unusable or self.peer is None or self.gate is None:
                 raise ProtocolError("unverified_read")
@@ -253,7 +253,7 @@ class PurposeBackend(httpcore.AsyncNetworkBackend):
             raise TimeoutError("transport_deadline")
         return remaining
 
-    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):  # noqa: ASYNC109 -- httpcore backend ABI; owned absolute deadline below
         if (
             host != self.hostname
             or port != self.port

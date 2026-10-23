@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -878,6 +879,11 @@ async def discover_butlers(
     return discovered
 
 
+def _roster_config_dirs(butlers_dir: Path) -> list[Path]:
+    """Sorted roster directories that hold a ``butler.toml`` (blocking filesystem scan)."""
+    return [d for d in sorted(butlers_dir.iterdir()) if (d / "butler.toml").is_file()]
+
+
 async def seed_missing_roster_butlers(pool: asyncpg.Pool, butlers_dir: Path) -> int:
     """Insert only absent Git-roster identities before L2 boot registration.
 
@@ -888,9 +894,7 @@ async def seed_missing_roster_butlers(pool: asyncpg.Pool, butlers_dir: Path) -> 
     from butlers.config import load_config
 
     inserted = 0
-    for config_dir in sorted(Path(butlers_dir).iterdir()):
-        if not (config_dir / "butler.toml").is_file():
-            continue
+    for config_dir in await asyncio.to_thread(_roster_config_dirs, Path(butlers_dir)):
         config = load_config(config_dir)
         modules = sorted(config.modules)
         capabilities = sorted(set(modules) | {"trigger"})

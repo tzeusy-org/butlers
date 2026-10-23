@@ -55,6 +55,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -704,17 +705,19 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
                 )
 
                 async with asyncio.timeout(5):
-                    while (
-                        await pool.fetchval(
-                            """
-                            SELECT count(*)
-                            FROM pg_locks
-                            WHERE locktype = 'advisory' AND NOT granted
-                            """
-                        )
-                        < 2
-                    ):
-                        await asyncio.sleep(0.01)
+
+                    async def _condition_met() -> bool:
+                        return (
+                            await pool.fetchval(
+                                """
+                                SELECT count(*)
+                                FROM pg_locks
+                                WHERE locktype = 'advisory' AND NOT granted
+                                """
+                            )
+                        ) >= 2
+
+                    await poll_until(_condition_met, interval_s=0.01)
 
                 assert not call_a.done()
                 assert not call_b.done()

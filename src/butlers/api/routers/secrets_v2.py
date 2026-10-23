@@ -2334,14 +2334,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row)
+        for row, provider in zip(rows, providers_by_row, strict=False)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row):
+    for row, provider in zip(rows, providers_by_row, strict=False):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])
@@ -7394,7 +7394,7 @@ async def reauthorize_cli_credential(
         try:
             await session.start()
             # Wait briefly for the device code to appear in stdout.
-            await session.wait(timeout=10.0)
+            await session.wait(timeout_s=10.0)
         except Exception as exc:  # noqa: BLE001
             if provider_def.name == "codex":
                 # Device-code subprocess errors can contain provider auth

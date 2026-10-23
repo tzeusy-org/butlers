@@ -50,7 +50,9 @@ async def pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
-    await db_pool.execute("TRUNCATE approval_events, pending_actions CASCADE")
+    # Legacy isolation must not CASCADE TRUNCATE immutable goal evidence.
+    await db_pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+    await db_pool.execute("TRUNCATE approval_events CASCADE")
     yield db_pool
     await db_pool.close()
 

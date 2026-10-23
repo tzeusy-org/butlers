@@ -153,6 +153,7 @@ class PrivateServer:
         self.handshakes = set()
         self.http_bytes = 0
         self.slot_count = 0
+        self._resource_changed = asyncio.Event()
         self.server_state = ServerState()
         self._lifetime_task = None
         self._cleanup_deadline = None
@@ -175,6 +176,7 @@ class PrivateServer:
                     self.released = True
                     owner.slots.release()
                     owner.slot_count -= 1
+                    owner._resource_changed.set()
 
             def connection_made(self, transport):
                 try:
@@ -244,6 +246,7 @@ class PrivateServer:
                     owner.protocols.discard(self)
                     super().connection_lost(exc)
                 self.release()
+                owner._resource_changed.set()
 
         return PrivateProtocol()
 
@@ -272,6 +275,7 @@ class PrivateServer:
                 else:
                     self.slots.release()
                     self.slot_count -= 1
+                    self._resource_changed.set()
 
     async def _accept(self):
         loop = asyncio.get_running_loop()
@@ -333,7 +337,11 @@ class PrivateServer:
                             raise TimeoutError("private_request_cleanup_incomplete")
                     async with asyncio.timeout_at(deadline - 1):
                         while self.protocols or self.slot_count:
-                            await asyncio.sleep(0)
+                            # Predicate and clear run without yielding, so a
+                            # native release callback cannot be lost between
+                            # observing actual resources and awaiting change.
+                            self._resource_changed.clear()
+                            await self._resource_changed.wait()
                 except BaseException as exc:
                     failure = exc
                 finally:

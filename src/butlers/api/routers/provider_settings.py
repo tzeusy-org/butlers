@@ -136,11 +136,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 def _probe_url_for_provider(provider_type: str, config: dict[str, Any]) -> str | None:
@@ -216,14 +216,14 @@ async def create_provider(
             body.config,
             body.enabled,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Provider '{body.provider_type}' already exists",
-        )
+        ) from exc
     except Exception as exc:
         logger.error("Failed to create provider config: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to create provider config")
+        raise HTTPException(status_code=500, detail="Failed to create provider config") from exc
 
     if row is None:
         raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -275,7 +275,7 @@ async def update_provider(
         row = await pool.fetchrow(sql, *params)
     except Exception as exc:
         logger.error("Failed to update provider config '%s': %s", provider_type, exc)
-        raise HTTPException(status_code=500, detail="Failed to update provider config")
+        raise HTTPException(status_code=500, detail="Failed to update provider config") from exc
 
     if row is None:
         raise HTTPException(

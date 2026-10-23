@@ -397,12 +397,12 @@ async def wait_for_lock(owner, label, blocker_pid):
 
 async def wait_for_lease_expiry(owner, effect_id):
     async with asyncio.timeout(2):
-        while not await owner.fetchval(
+        while not await owner.fetchval(  # noqa: ASYNC110 -- bounded database-clock observation
             "SELECT lease_expires_at<=clock_timestamp() "
             "FROM switchboard.goal_approval_cancel_work WHERE effect_id=$1",
             effect_id,
         ):
-            await asyncio.sleep(0.01)  # noqa: ASYNC110 - bounded database-clock observation
+            await asyncio.sleep(0.01)
 
 
 async def gate_ddl(owner, sql):
@@ -477,7 +477,7 @@ async def test_real_Stop_reserve_both_contended_orders(ledger, ledger_url):
                 cap = capability()
                 broker, domain, goal, invocation, token = await running(owner, calls, cap)
 
-                async def owning_park(reservation, arguments, assertion):
+                async def owning_park(reservation, arguments, assertion, *, domain=domain):
                     domain.calls.append(reservation)
                     return ParkReceipt("controlled-row")
 

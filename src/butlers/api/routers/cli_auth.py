@@ -259,7 +259,7 @@ async def start_auth(
     await session.start()
 
     # Wait briefly for the device code to appear in stdout
-    await session.wait(timeout=10.0)
+    await session.wait(timeout_s=10.0)
 
     return CLIAuthStartResponse(
         session_id=session.id,
@@ -348,9 +348,9 @@ async def save_api_key(
             provider_def.token_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             provider_def.token_path.chmod(0o600)
             logger.info("CLI auth: wrote API key to %s", provider_def.token_path)
-        except OSError:
+        except OSError as exc:
             logger.exception("CLI auth: failed to write auth file for %s", provider_def.name)
-            raise HTTPException(status_code=500, detail="Failed to write auth file.")
+            raise HTTPException(status_code=500, detail="Failed to write auth file.") from exc
 
     # Also persist to DB for K8s restarts
     store = _make_credential_store(db_manager)

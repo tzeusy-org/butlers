@@ -929,7 +929,7 @@ class ContactsModule(Module):
         }
 
         creds: dict[str, str] = {}
-        for ci_type, label in _TELEGRAM_CI_TYPES.items():
+        for ci_type, _label in _TELEGRAM_CI_TYPES.items():
             value = await resolve_owner_entity_info(pool, ci_type)
             if value:
                 creds[ci_type] = value

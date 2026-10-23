@@ -99,11 +99,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Home butler database is not available",
-        )
+        ) from exc
 
 
 async def _ha_source_available(pool) -> bool:
@@ -604,19 +604,19 @@ async def get_energy(
     if start is not None:
         try:
             start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="Invalid 'start' datetime format. Expected ISO 8601.",
-            )
+            ) from exc
     if end is not None:
         try:
             end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="Invalid 'end' datetime format. Expected ISO 8601.",
-            )
+            ) from exc
 
     if not await _ha_source_available(pool):
         raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
@@ -929,7 +929,7 @@ async def list_maintenance(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     items = [_row_to_maintenance_item(r) for r in rows]
@@ -975,12 +975,12 @@ async def create_maintenance_item(
             raise HTTPException(
                 status_code=409,
                 detail=f"Maintenance item with name '{body.name}' already exists",
-            )
+            ) from exc
         if "does not exist" in err_str or "relation" in err_str:
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -1036,7 +1036,7 @@ async def complete_maintenance_item(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -1085,7 +1085,7 @@ async def delete_maintenance_item(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if result is None:
@@ -1254,7 +1254,7 @@ async def update_thresholds(
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to persist threshold: {store_key}",
-            )
+            ) from exc
 
     # Merge into current and return
     current.update(update_map)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,6 +29,8 @@ from butlers.modules.spotify import (
     _RECOMMENDATIONS_UNAVAILABLE_ERROR,
     SpotifyModule,
 )
+
+_THIS_FILE = Path(__file__).resolve()
 
 # ---------------------------------------------------------------------------
 # Auto-override: these tests are pure unit tests — no Docker required.
@@ -364,11 +367,10 @@ class TestScenario1ValidCredentials:
 
     async def test_butler_toml_includes_spotify_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.spotify]."""
-        from pathlib import Path
 
         from butlers.config import load_config
 
-        roster_dir = Path(__file__).resolve().parents[3] / "roster" / "lifestyle"
+        roster_dir = _THIS_FILE.parents[3] / "roster" / "lifestyle"
         cfg = load_config(roster_dir)
         assert "spotify" in cfg.modules, (
             "spotify module is missing from [modules] section in roster/lifestyle/butler.toml"

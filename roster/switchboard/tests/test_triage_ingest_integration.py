@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
@@ -436,7 +437,7 @@ class TestIngestAcceptedResponseTriageFields:
             status="accepted",
             duplicate=False,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             resp.triage_decision = "something"  # type: ignore[misc]
 
 

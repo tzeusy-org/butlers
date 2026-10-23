@@ -166,21 +166,27 @@ async def test_real_broker_admission_consumes_independent_SQL_owner_evidence():
         identity_rows = Rows()
         invocation_rows = connection.fetch
 
-        async def fetch(sql, *args):
+        async def fetch(
+            sql,
+            *args,
+            connection=connection,
+            identity_rows=identity_rows,
+            invocation_rows=invocation_rows,
+        ):
             if "public.entities" in sql:
                 assert connection.in_transaction
                 return await identity_rows.fetch(sql, *args)
             return await invocation_rows(sql, *args)
 
         connection.fetch = fetch
-        connection.is_in_transaction = lambda: connection.in_transaction
+        connection.is_in_transaction = lambda connection=connection: connection.in_transaction
         broker.authorities = RecipientAuthorities(authority)
         args = (
             {"recipient": "unknown@example.invalid", "channel": "email"} if explicit_unknown else {}
         )
         connection.fetchrow_original = connection.fetchrow
 
-        async def fetchrow(sql, *args):
+        async def fetchrow(sql, *args, connection=connection):
             if "public.resolve_owner_triple" in sql:
                 assert connection.in_transaction
                 return None

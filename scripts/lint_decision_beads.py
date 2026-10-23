@@ -388,7 +388,7 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
 
     try:
         data: Any = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         records: list[Any] = []
         for line in text.splitlines():
             line = line.strip()
@@ -399,7 +399,9 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise BdUnavailableError(f"failed to read or parse {path}: {exc}") from exc
         if not records:
-            raise BdUnavailableError(f"failed to read or parse {path}: no JSON records found")
+            raise BdUnavailableError(
+                f"failed to read or parse {path}: no JSON records found"
+            ) from exc
         data = records
 
     if isinstance(data, dict):
