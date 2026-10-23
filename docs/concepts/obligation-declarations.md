@@ -518,3 +518,44 @@ committed readback controls remain separate from software collaborators; newly
 authored PG controls are not runtime evidence until executed. Publication also
 requires composing core-274 after the actual delivered core-275 prerequisite;
 no unmerged migration or fleet authority is imported here.
+
+The real cron/deadline source consumer now builds the closed obligation payload
+beside its claim. It copies the capability set, material revision and immutable
+creation exposure/invocation from the fenced owning definition; Git sources
+carry no creator invocation and are not created exposed. The stored source kind,
+identity, occurrence digest and source key must agree with that definition.
+The payload and claim token are internal values and must not enter traces or
+public/model request schemas. They are not verified `Evidence`, a D7 creator
+assertion, a catalog publication or an admission receipt.
+
+`GitScheduleRuntime.read_committed_submission` is the owning-side readback seam
+for a future authenticated handoff. It takes a fresh owning transaction and
+rechecks the registered source material, current revision, complete payload and
+exact claim token. A nested caller transaction, changed row/revision, cancelled
+claim, forged payload or unconfirmed release refuses. Its source locks cover
+only that local read; they are not a cross-store fence around a later request.
+The current scheduler still dispatches a legacy CAS winner even if a subsequent
+source read would refuse. Such a historical payload must not become a current
+handoff merely because that dispatch succeeded. No control endpoint or admission
+call is installed by this readback API, and runtime creator/feed/cause adapters
+still require their real authenticated producers.
+
+
+The two registered Switchboard Insight delivery jobs now declare their
+`switchboard__notify` communication ceiling without changing either cron, job
+arguments, selection, delivery, or feedback behavior. The startup source
+factory checks the actual handler identity used by the background dispatcher;
+a familiar job name, an unknown replacement callback, or `dispatch_mode=job`
+alone never establishes model-job coverage. A recognized declared model job
+uses the owning `model_job` source family and the existing nominal cron CAS,
+with a distinct occurrence for each persisted nominal slot. The default OFF
+path still makes no source-repository calls.
+
+Model-job source payloads conservatively start exposed because the current
+Insight candidate records do not supply verified transitive lineage. The local
+registration and communication ceiling establish neither recipient authority
+nor a verified fleet catalog. This is durable dark staging of the real job
+entrypoints, not a switch of Insight synthesis into the goal runner: selected
+candidate input binding, genuine D7 source/cause transport, and the separately
+owned runner remain required before that cutover. The deterministic delivery
+pipeline and its existing model fallback continue unchanged in dark mode.

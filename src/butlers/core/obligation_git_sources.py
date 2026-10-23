@@ -38,6 +38,16 @@ if TYPE_CHECKING:
     from butlers.core.obligation_sources import DefinitionRevision
 
 
+def _registered_model_job_handler(owner_domain: str, job_name: str | None):
+    # Read the exact registry used by background.dispatch_scheduled_task. A
+    # copied job name or a replacement callback is not the traced D18 closure.
+    from butlers.background import _deterministic_jobs_for_butler
+    from butlers.scheduled_jobs import classify_schedule_job
+
+    handler = _deterministic_jobs_for_butler(owner_domain).get(job_name)
+    return handler if classify_schedule_job(handler) == "model_backed" else None
+
+
 @dataclass(frozen=True)
 class LoadedGitSources:
     owner_domain: str
@@ -119,6 +129,11 @@ def capture_loaded_git_sources(
                 normalized_schedule=row,
                 declaration=projection.declaration.declaration,
                 context_material=context if registry.classification_complete else None,
+                job_handler=(
+                    _registered_model_job_handler(config.name, spec.job_name)
+                    if row["dispatch_mode"] == "job"
+                    else None
+                ),
             )
         )
     return LoadedGitSources(
@@ -167,7 +182,7 @@ async def reconcile_loaded_git_sources(
             raise SourceConflict("duplicate_git_schedule")
         identities = await connection.fetch(
             "SELECT id FROM obligation_definitions WHERE origin='git' "
-            "AND family IN ('schedule','deadline') AND state<>'deleted' ORDER BY id"
+            "AND family IN ('schedule','deadline','model_job') AND state<>'deleted' ORDER BY id"
         )
         source_ids = {row["id"] for row in rows} | {row["id"] for row in identities}
         # All command locks precede ALL source locks, including removals.
@@ -252,8 +267,18 @@ class GitScheduleRuntime:
     bindings: tuple[tuple[DefinitionRevision, GitScheduleDefinition], ...]
 
     def supports(self, row) -> bool:
-        return row["dispatch_mode"] == "prompt" and any(
-            definition.source_id == row["id"] for definition, _ in self.bindings
+        return any(
+            definition.source_id == row["id"]
+            and (
+                row["dispatch_mode"] == "prompt"
+                or (
+                    row["dispatch_mode"] == "job"
+                    and material.job_handler is not None
+                    and _registered_model_job_handler(self.owner_domain, row["job_name"])
+                    is material.job_handler
+                )
+            )
+            for definition, material in self.bindings
         )
 
     async def _locked(self, repository, selected, *, command=None):
@@ -262,6 +287,11 @@ class GitScheduleRuntime:
         if binding is None or repository.owner_domain != self.owner_domain:
             raise SourceConflict("schedule_source_unregistered")
         expected, material = binding
+        if material.job_handler is not None and (
+            _registered_model_job_handler(self.owner_domain, material.schedule["job_name"])
+            is not material.job_handler
+        ):
+            raise SourceConflict("model_job_registration_changed")
         # Match full reconciliation: inventory -> command -> source -> row.
         # Recheck the relation on every transaction, including temp shadows.
         await repository.lock_git_inventory()
@@ -294,6 +324,35 @@ class GitScheduleRuntime:
         if not await repository.claim(definition.source_id, occurrence, token):
             raise SourceConflict("occurrence_already_claimed")
         return await prepare_dark_submission(repository, definition.source_id, occurrence, token)
+
+    async def read_committed_submission(self, pool, submitted: DarkSubmission) -> DarkSubmission:
+        """Reread the exact claim and registered material in a fresh owning TX.
+
+        A previously returned object or command is not a current receipt. This
+        source-side read validates its full tuple against the actual row,
+        current revision and claim, and returns only after transaction/pool
+        release. It never authenticates a transport caller, loads a fleet
+        catalog, or submits admission. Runtime creator and feed/cause adapters
+        remain separate; this registered Git runtime cannot stand in for them.
+        """
+        if type(submitted) is not DarkSubmission:
+            raise SourceConflict("source_submission_required")
+
+        async def read(repository):
+            definition, _ = await self._locked(repository, {"id": submitted.definition.source_id})
+            current = await prepare_dark_submission(
+                repository,
+                definition.source_id,
+                submitted.occurrence_id,
+                submitted.claim_token,
+            )
+            if current != submitted:
+                raise SourceConflict("source_submission_changed")
+            return current
+
+        # Do not let a nested savepoint promote a caller's uncommitted write
+        # into the independent committed readback promised by this API.
+        return await run_source_transaction(pool, self.owner_domain, read, require_fresh=True)
 
     async def claim_cron(
         self, pool, selected, *, next_run_at, disable: bool

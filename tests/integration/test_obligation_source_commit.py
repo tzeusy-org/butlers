@@ -79,6 +79,7 @@ async def owning_sources(postgres_container):
         {"core": "health"},
     )
     await run_migrations(db_url, chain="core", schema="general")
+    await run_migrations(db_url, chain="core", schema="switchboard")
     parsed = urlparse(db_url)
 
     # Replay the production bootstrap after migrations, not a hand-written ACL.
@@ -95,7 +96,7 @@ async def owning_sources(postgres_container):
     await asyncio.to_thread(bootstrap_again)
     databases = {}
     try:
-        for owner in ("health", "general"):
+        for owner in ("health", "general", "switchboard"):
             db = Database(
                 db_name=parsed.path.lstrip("/"),
                 schema=owner,
@@ -110,7 +111,11 @@ async def owning_sources(postgres_container):
             )
             await db.connect()
             databases[owner] = db
-        yield SimpleNamespace(pool=databases["health"].pool, peer=databases["general"].pool)
+        yield SimpleNamespace(
+            pool=databases["health"].pool,
+            peer=databases["general"].pool,
+            switchboard=databases["switchboard"].pool,
+        )
     finally:
         for db in databases.values():
             await db.close()
@@ -929,6 +934,8 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
         release.set()
         first, second = await asyncio.wait_for(asyncio.gather(*actors), 10)
         assert first.submission is not None and second is None
+        assert first.submission.obligation.created_exposed is False
+        assert first.submission.obligation.digest == first.submission.definition.revision
     finally:
         release.set()
         for actor in actors:
@@ -937,6 +944,12 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
         await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 10)
         monkeypatch.setattr(GitScheduleRuntime, "_capture", capture)
     async with pool.acquire() as observer:
+        actual = await observer.fetchrow(
+            "SELECT source_key,claim_token FROM obligation_occurrences WHERE id=$1",
+            first.submission.occurrence_id,
+        )
+        assert actual["source_key"] == first.submission.source.key
+        assert actual["claim_token"] == first.submission.claim_token
         assert (
             await observer.fetchval(
                 "SELECT next_run_at FROM health.scheduled_tasks WHERE id=$1", source
@@ -1014,6 +1027,7 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
         run_at=datetime.now(UTC),
     )
     assert submission is not None
+    assert await runtime.read_committed_submission(pool, submission) == submission
     async with pool.acquire() as observer:
         assert await observer.fetchval(
             "SELECT fired_thresholds FROM health.scheduled_tasks WHERE id=$1", deadline["id"]
@@ -1022,6 +1036,80 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
             await observer.fetchval(
                 "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1 AND state='claimed'",
                 deadline["id"],
+            )
+            == 1
+        )
+    # Fresh readback cannot promote an earlier successful claim after a real
+    # owning cancellation committed. This is SQL proof only when executed.
+    async with pool.acquire() as actor, actor.transaction():
+        await ObligationSourceRepository(actor, "health").cancel_occurrence(
+            deadline["id"], submission.occurrence_id
+        )
+    with pytest.raises(SourceConflict, match="source_not_current"):
+        await runtime.read_committed_submission(pool, submission)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_actual_insight_model_job_commits_source_and_closed_payload(owning_sources):
+    """Authored owning-role PG/readback, NOTRUN until an actual hosted carrier."""
+    from datetime import UTC, datetime, timedelta
+    from pathlib import Path
+
+    from butlers.config import load_config
+    from butlers.core.obligation_git_sources import (
+        capture_loaded_git_sources,
+        start_schedule_sources,
+    )
+    from butlers.core.runtime_config import RuntimeConfig
+    from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
+
+    pool = owning_sources.switchboard
+    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "switchboard")
+    snapshot = capture_loaded_git_sources(
+        config, RuntimeConfig("switchboard"), await _complete_core_catalog("switchboard")
+    )
+    runtime = await start_schedule_sources(pool, snapshot, mode="dark")
+    async with pool.acquire() as observer:
+        assert await observer.fetchval("SELECT current_user") == "butler_switchboard_rw"
+        row = await observer.fetchrow(
+            "SELECT * FROM switchboard.scheduled_tasks WHERE name='insight-delivery-cycle'"
+        )
+        nominal = datetime.now(UTC) - timedelta(minutes=1)
+        await observer.execute(
+            "UPDATE switchboard.scheduled_tasks SET next_run_at=$2 WHERE id=$1", row["id"], nominal
+        )
+        selected = await observer.fetchrow(
+            "SELECT * FROM switchboard.scheduled_tasks WHERE id=$1", row["id"]
+        )
+    claim = await runtime.claim_cron(
+        pool, selected, next_run_at=nominal + timedelta(days=1), disable=False
+    )
+    payload = claim.submission
+    assert payload.definition.family == "model_job" and payload.obligation.created_exposed is True
+    assert {g.capability for g in payload.obligation.capabilities} == {"switchboard__notify"}
+    assert await runtime.read_committed_submission(pool, payload) == payload
+    assert (
+        await runtime.claim_cron(
+            pool, selected, next_run_at=nominal + timedelta(days=1), disable=False
+        )
+        is None
+    )
+    async with pool.acquire() as observer:
+        occurrence = await observer.fetchrow(
+            "SELECT source_key,claim_token,state FROM switchboard.obligation_occurrences WHERE id=$1",
+            payload.occurrence_id,
+        )
+        assert dict(occurrence) == {
+            "source_key": payload.source.key,
+            "claim_token": payload.claim_token,
+            "state": "claimed",
+        }
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM switchboard.obligation_source_outbox "
+                "WHERE source_id=$1 AND kind='occurrence_captured'",
+                payload.definition.source_id,
             )
             == 1
         )

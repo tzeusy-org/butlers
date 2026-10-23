@@ -88,6 +88,12 @@ cron = "15,45 6-11 * * *"
 timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
+# D18 owner-facing synthesis is a model-backed obligation at the switch.
+# Candidate selection/bookkeeping remain service-plane work. The goal's
+# communication ceiling does not establish recipient or candidate authority.
+[butler.schedule.obligation]
+version = 1
+capabilities = [{ capability = "switchboard__notify" }]
 
 # Hourly urgent insight sub-cycle (bu-o8233, JARVIS pursuit move 8 slice 4) —
 # priority>=90 candidates must not wait for the next daily hold-until-active
@@ -100,6 +106,12 @@ name = "insight-urgent-subcycle"
 cron = "30 * * * *"
 dispatch_mode = "job"
 job_name = "insight_urgent_subcycle"
+# D18 owner-facing synthesis is a model-backed obligation at the switch.
+# Candidate selection/bookkeeping remain service-plane work. The goal's
+# communication ceiling does not establish recipient or candidate authority.
+[butler.schedule.obligation]
+version = 1
+capabilities = [{ capability = "switchboard__notify" }]
 
 # Commitment escalation tick (bu-n1evl, RFC 0026 §6-§9) — advances the L0-L3
 # escalation clock for commitment-class owner_conditions, shortens the grace of

@@ -812,7 +812,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "eligibility_sweep",
       "dispatch_mode": "job",
@@ -822,27 +822,27 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "insight-delivery-cycle",
       "dispatch_mode": "job",
       "job_name": "insight_delivery_cycle",
-      "declaration_status": "missing_model_job_declaration",
-      "classification": "model_obligation_pending_adapter_allocation"
+      "declaration_status": "valid",
+      "classification": "model_obligation_dark_source_pending_authenticated_handoff"
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "insight-urgent-subcycle",
       "dispatch_mode": "job",
       "job_name": "insight_urgent_subcycle",
-      "declaration_status": "missing_model_job_declaration",
-      "classification": "model_obligation_pending_adapter_allocation"
+      "declaration_status": "valid",
+      "classification": "model_obligation_dark_source_pending_authenticated_handoff"
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "commitment-escalation",
       "dispatch_mode": "job",
@@ -852,7 +852,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "spend-rule-savings",
       "dispatch_mode": "job",
@@ -862,7 +862,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "rule-promotion-trigger",
       "dispatch_mode": "job",
@@ -872,7 +872,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "dropped-known-watch",
       "dispatch_mode": "job",
@@ -882,7 +882,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "decision-review-digest",
       "dispatch_mode": "job",
@@ -892,7 +892,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "decision-escalation-check",
       "dispatch_mode": "job",
@@ -902,7 +902,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "decision-routing",
       "dispatch_mode": "job",
@@ -912,7 +912,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "domain-event-reconciliation-sweep",
       "dispatch_mode": "job",
@@ -922,7 +922,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "c31378ea157e57a0d94fa1447214fc02ab1d2cac811b12ef4dc1060a21a0996a",
+      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
       "butler": "switchboard",
       "name": "fleet-case-lapse-sweep",
       "dispatch_mode": "job",

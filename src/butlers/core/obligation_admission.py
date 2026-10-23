@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from butlers.core.goal_admission import SourceRef
+from butlers.core.goal_admission import Obligation, SourceRef
 from butlers.core.obligation_sources import (
     DefinitionRevision,
     ObligationSourceRepository,
@@ -31,6 +31,8 @@ async def run_source_transaction[T](
     pool,
     owner_domain: str,
     command: Callable[[ObligationSourceRepository], Awaitable[T]],
+    *,
+    require_fresh: bool = False,
 ) -> T:
     """Return ONLY after commit and pool release; never retry a callback blindly.
 
@@ -40,8 +42,11 @@ async def run_source_transaction[T](
     No exception content enters this closed error message.
     """
     try:
-        async with pool.acquire() as connection, connection.transaction():
-            result = await command(ObligationSourceRepository(connection, owner_domain))
+        async with pool.acquire() as connection:
+            if require_fresh and connection.is_in_transaction():
+                raise SourceConflict("fresh_source_transaction_required")
+            async with connection.transaction():
+                result = await command(ObligationSourceRepository(connection, owner_domain))
         return result
     except SourceConflict:
         raise
@@ -51,11 +56,18 @@ async def run_source_transaction[T](
 
 @dataclass(frozen=True)
 class DarkSubmission:
-    """Staged identity only, NOT verified Evidence or a committed receipt."""
+    """Owning staged payload, NOT verified Evidence or a committed receipt.
+
+    The source consumer returns it only after its transaction commits. The
+    creation fields are copies of the immutable owning definition, not proof
+    of a D7 invocation. No public/model route accepts this object as authority.
+    """
 
     occurrence_id: UUID
     source: SourceRef
     definition: DefinitionRevision
+    claim_token: UUID
+    obligation: Obligation
 
 
 async def prepare_dark_submission(
@@ -71,12 +83,48 @@ async def prepare_dark_submission(
     budget/changes today's dispatch. Caller must not publish before commit.
     """
     definition, occurrence = await repository.fence(source_id, occurrence_id)
-    if occurrence["state"] != "claimed" or occurrence["claim_token"] != token:
+    if (
+        type(token) is not UUID
+        or occurrence["state"] != "claimed"
+        or occurrence["claim_token"] != token
+    ):
         raise SourceConflict("claim_not_current")
+    try:
+        source = SourceRef(
+            occurrence["source_kind"], occurrence["source_ref"], occurrence["occurrence"]
+        )
+    except (ValueError, TypeError):
+        raise SourceConflict("occurrence_binding_invalid") from None
+    if (
+        occurrence["source_key"] != source.key
+        or source.kind
+        not in ({"domain", "feed"} if definition.family == "subscription" else {"occurrence"})
+        or (source.kind in {"domain", "feed"} and not re.fullmatch(r"[0-9a-f]{64}", source.id))
+        or (
+            source.kind == "occurrence"
+            and (
+                source.id != f"{definition.owner_domain}:{definition.family}:{source_id}"
+                or type(source.occurrence) is not str
+                or not re.fullmatch(r"[0-9a-f]{64}", source.occurrence)
+            )
+        )
+    ):
+        raise SourceConflict("occurrence_binding_invalid")
+    creator = definition.creator
     return DarkSubmission(
         occurrence_id,
-        SourceRef(occurrence["source_kind"], occurrence["source_ref"], occurrence["occurrence"]),
+        source,
         definition,
+        token,
+        Obligation(
+            owner_domain=definition.owner_domain,
+            digest=definition.revision,
+            capabilities=definition.declaration.capabilities,
+            creator_invocation=creator.invocation_id if creator else None,
+            # Insight/model-job inputs lack a verified transitive lineage
+            # stamp. Their static Git origin must not certify unexposed input.
+            created_exposed=creator.exposed if creator else definition.family == "model_job",
+        ),
     )
 
 

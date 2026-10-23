@@ -182,12 +182,16 @@ async def runtime_fixture(tmp_path, *, deadline=False, target=None):
 
     class ReleasePool(RecordingPool):
         fail_release = False
+        after_release = None
 
         @asynccontextmanager
         async def acquire(self):
             yield self.connection
             if self.fail_release:
                 raise OSError("closed release fault after software commit")
+            if self.after_release is not None:
+                callback, self.after_release = self.after_release, None
+                callback()
 
     pool = ReleasePool()
     pool.connection = OccurrenceConnection()
@@ -495,3 +499,234 @@ async def test_actual_startup_registers_after_sync_and_final_catalog(tmp_path, m
         daemon.config = config
         with pytest.raises(Observed):
             await daemon.start()
+
+
+@pytest.mark.parametrize("deadline", [False, True], ids=["cron", "deadline"])
+async def test_committed_source_payload_is_read_back_from_registered_owning_material(
+    tmp_path, deadline
+):
+    from butlers.core.goal_admission import Obligation
+
+    pool, runtime, source = await runtime_fixture(tmp_path, deadline=deadline)
+    selected = copy.deepcopy(pool.connection.rows[source])
+    if deadline:
+        threshold = selected["alert_thresholds"][0]
+        submission = await runtime.record_deadline(
+            pool,
+            selected,
+            threshold=threshold,
+            status="alerted",
+            fired=[threshold],
+            run_at=datetime.now(UTC),
+        )
+    else:
+        claim = await runtime.claim_cron(
+            pool,
+            selected,
+            next_run_at=selected["next_run_at"] + timedelta(days=1),
+            disable=False,
+        )
+        submission = claim.submission
+    # This is the real source consumer's returned payload after software commit,
+    # not Evidence, a catalog publication, or an authenticated control receipt.
+    assert pool.connection.depth == 0
+    assert submission.obligation == Obligation(
+        "health",
+        submission.definition.revision,
+        submission.definition.declaration.capabilities,
+        created_exposed=False,
+    )
+    assert (
+        submission.claim_token
+        == pool.connection.occurrences[submission.occurrence_id]["claim_token"]
+    )
+    readback = await runtime.read_committed_submission(pool, submission)
+    assert readback == submission and pool.connection.depth == 0
+    assert (
+        submission.source.key == pool.connection.occurrences[submission.occurrence_id]["source_key"]
+    )
+
+
+async def test_source_payload_readback_refuses_forgery_stale_claim_and_unconfirmed_release(
+    tmp_path,
+):
+    from dataclasses import replace
+
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_sources import SourceConflict
+
+    pool, runtime, source = await runtime_fixture(tmp_path)
+    selected = copy.deepcopy(pool.connection.rows[source])
+    claim = await runtime.claim_cron(
+        pool, selected, next_run_at=selected["next_run_at"] + timedelta(days=1), disable=False
+    )
+    submission = claim.submission
+    # A consumer must reread the owning state, not trust an otherwise valid
+    # packet or promote a historical command result to current authority.
+    for forged in (
+        replace(submission, claim_token=uuid4()),
+        replace(submission, obligation=replace(submission.obligation, created_exposed=True)),
+        replace(submission, source=replace(submission.source, occurrence="0" * 64)),
+    ):
+        with pytest.raises(SourceConflict):
+            await runtime.read_committed_submission(pool, forged)
+    row = pool.connection.occurrences[submission.occurrence_id]
+    baseline = copy.deepcopy(row)
+    for fields in (
+        {"state": "cancelled"},
+        {"claim_token": uuid4()},
+        {"source_ref": "another:source"},
+        {"source_key": "0" * 64},
+    ):
+        row.update(fields)
+        with pytest.raises(SourceConflict):
+            await runtime.read_committed_submission(pool, submission)
+        pool.connection.occurrences[submission.occurrence_id] = copy.deepcopy(baseline)
+        row = pool.connection.occurrences[submission.occurrence_id]
+    pool.connection.rows[source]["prompt"] = "changed actual owning prompt"
+    with pytest.raises(SourceConflict, match="schedule_material_changed"):
+        await runtime.read_committed_submission(pool, submission)
+    pool.connection.rows[source]["prompt"] = selected["prompt"]
+    pool.connection.role = "butler_other_rw"
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await runtime.read_committed_submission(pool, submission)
+    pool.connection.role = "butler_health_rw"
+    async with pool.connection.transaction():
+        with pytest.raises(SourceConflict, match="fresh_source_transaction_required"):
+            await runtime.read_committed_submission(pool, submission)
+    pool.fail_release = True
+    with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+        await runtime.read_committed_submission(pool, submission)
+    assert pool.connection.depth == 0
+
+
+async def test_actual_source_consumer_preserves_dispatch_when_later_readback_refuses(tmp_path):
+    from butlers.core.obligation_sources import SourceConflict
+    from butlers.core.scheduler import tick
+
+    pool, runtime, source = await runtime_fixture(tmp_path)
+    selected = copy.deepcopy(pool.connection.rows[source])
+    pool.fetch = pool.connection.fetch
+    pool.fetchval = pool.connection.fetchval
+    pool.fetchrow = pool.connection.fetchrow
+    pool.execute = pool.connection.execute
+    captured = []
+
+    async def legacy_dispatch(**kwargs):
+        assert pool.connection.depth == 0
+        assert kwargs["prompt"] == selected["prompt"]
+        assert kwargs["trigger_source"] == "schedule:fixture"
+        return {"status": "ok"}
+
+    dispatch = AsyncMock(side_effect=legacy_dispatch)
+
+    def invalidate_committed_claim():
+        occurrence = next(iter(pool.connection.occurrences.values()))
+        captured.append(copy.deepcopy(occurrence))
+        occurrence["state"] = "cancelled"
+
+    pool.after_release = invalidate_committed_claim
+    assert await tick(pool, dispatch, source_runtime=runtime) == 1
+    assert dispatch.await_count == 1
+    # A later state change cannot retroactively suppress the committed legacy
+    # CAS. It *does* prevent using its former payload as a current handoff.
+    from butlers.core.goal_admission import Obligation, SourceRef
+    from butlers.core.obligation_admission import DarkSubmission
+
+    definition = runtime.bindings[0][0]
+    row = captured[0]
+    submitted = DarkSubmission(
+        row["id"],
+        SourceRef(row["source_kind"], row["source_ref"], row["occurrence"]),
+        definition,
+        row["claim_token"],
+        Obligation(
+            "health",
+            definition.revision,
+            definition.declaration.capabilities,
+            created_exposed=False,
+        ),
+    )
+    with pytest.raises(SourceConflict, match="source_not_current"):
+        await runtime.read_committed_submission(pool, submitted)
+    assert pool.connection.rows[source]["next_run_at"] != selected["next_run_at"]
+    assert len(pool.connection.occurrences) == 1 and pool.connection.depth == 0
+
+
+@pytest.mark.parametrize("job_name", ["insight_delivery_cycle", "insight_urgent_subcycle"])
+async def test_actual_insight_job_registration_stages_nominal_model_obligation(
+    job_name, monkeypatch
+):
+    """Real roster/handler/typed source/CAS; collaborators do not prove PG authority."""
+    from pathlib import Path
+
+    from butlers.background import _deterministic_jobs_for_butler
+    from butlers.config import load_config
+    from butlers.core.obligation_git_sources import (
+        capture_loaded_git_sources,
+        start_schedule_sources,
+    )
+    from butlers.core.runtime_config import RuntimeConfig
+    from butlers.core.scheduler import tick
+    from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
+
+    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "switchboard")
+    snapshot = capture_loaded_git_sources(
+        config, RuntimeConfig("switchboard"), await _complete_core_catalog("switchboard")
+    )
+    material = next(item for item in snapshot.definitions if item.schedule["job_name"] == job_name)
+    assert material.available, material.unavailable_reason
+    assert material.job_handler is _deterministic_jobs_for_butler("switchboard")[job_name]
+    assert {g.capability for g in material.declaration.capabilities} == {"switchboard__notify"}
+
+    class SwitchboardConnection(OccurrenceConnection):
+        def __init__(self):
+            super().__init__()
+            self.role = "butler_switchboard_rw"
+
+        async def fetchrow(self, sql, *args):
+            if "current_schema()" in sql:
+                return {"schema": "switchboard", "role": self.role, "shadowed": self.shadow}
+            return await super().fetchrow(sql, *args)
+
+    pool = RecordingPool()
+    pool.connection = SwitchboardConnection()
+    runtime = await start_schedule_sources(pool, snapshot, mode="dark")
+    source = next(key for key, row in pool.connection.rows.items() if row["job_name"] == job_name)
+    row = pool.connection.rows[source]
+    nominal = datetime.now(UTC) - timedelta(minutes=1)
+    row.update(next_run_at=nominal, fired_thresholds=[], deadline_status="pending", depends_on=[])
+    pool.fetch = pool.connection.fetch
+    pool.fetchval = pool.connection.fetchval
+    pool.fetchrow = pool.connection.fetchrow
+    pool.execute = pool.connection.execute
+    dispatch = AsyncMock(return_value={"status": "unchanged legacy delivery"})
+    assert await tick(pool, dispatch, source_runtime=runtime) == 1
+    dispatch.assert_awaited_once_with(
+        job_name=job_name, job_args=None, trigger_source="schedule:" + row["name"]
+    )
+    assert pool.connection.depth == 0 and len(pool.connection.occurrences) == 1
+    occurrence = next(iter(pool.connection.occurrences.values()))
+    from butlers.core.obligation_admission import prepare_dark_submission, run_source_transaction
+
+    async def read(repository):
+        return await prepare_dark_submission(
+            repository, source, occurrence["id"], occurrence["claim_token"]
+        )
+
+    payload = await run_source_transaction(pool, "switchboard", read, require_fresh=True)
+    assert payload.definition.family == "model_job"
+    assert payload.obligation.created_exposed is True  # candidate lineage is not a trusted stamp
+    assert payload.source == payload.definition.source.occurrence("cron:" + nominal.isoformat())
+    assert await runtime.read_committed_submission(pool, payload) == payload
+    assert await tick(pool, dispatch, source_runtime=runtime) == 0
+    assert dispatch.await_count == 1
+
+    # A copied registry name never blesses a different callback. Preserve the
+    # existing job dispatcher but refuse stale source consumption independently.
+    from butlers.core.obligation_sources import SourceConflict
+
+    monkeypatch.setitem(_deterministic_jobs_for_butler("switchboard"), job_name, AsyncMock())
+    assert not runtime.supports(row)
+    with pytest.raises(SourceConflict, match="model_job_registration_changed"):
+        await runtime.read_committed_submission(pool, payload)

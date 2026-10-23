@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -115,7 +115,11 @@ def _row_material(value: dict) -> str:
             or row["job_args"] is not None
         ):
             raise DeclarationError("invalid_schedule_dispatch")
-    elif row["prompt"] is not None or not row["job_name"] or type(row["job_args"]) is not dict:
+    elif (
+        row["prompt"] is not None
+        or not row["job_name"]
+        or (row["job_args"] is not None and type(row["job_args"]) is not dict)
+    ):
         raise DeclarationError("invalid_schedule_dispatch")
     for key in ("max_token_budget", "lead_time_days"):
         if row[key] is not None and (type(row[key]) is not int or row[key] < 0):
@@ -168,6 +172,8 @@ class GitScheduleDefinition:
     row_json: str
     declaration: ObligationDeclaration | None
     context_json: str | None
+    # Actual registered Python identity, never a name/bool supplied over MCP.
+    job_handler: object = field(default=None, kw_only=True)
 
     def __post_init__(self):
         if (
@@ -182,6 +188,14 @@ class GitScheduleDefinition:
         try:
             if _row_material(json.loads(self.row_json)) != self.row_json:
                 raise DeclarationError("noncanonical_schedule_material")
+            if self.job_handler is not None:
+                from butlers.scheduled_jobs import classify_schedule_job
+
+                if (
+                    self.schedule["dispatch_mode"] != "job"
+                    or classify_schedule_job(self.job_handler) != "model_backed"
+                ):
+                    raise DeclarationError("unclassified_model_job")
             if self.context_json is not None:
                 context = json.loads(self.context_json)
                 if type(context) is not dict or not context or _json(context) != self.context_json:
@@ -205,7 +219,7 @@ class GitScheduleDefinition:
             return "context_unavailable"
         if self.declaration is None:
             return "declaration_unavailable"
-        if self.schedule["dispatch_mode"] != "prompt":
+        if self.schedule["dispatch_mode"] != "prompt" and self.job_handler is None:
             return "deterministic_job"
         if not self.schedule["enabled"]:
             return "source_disabled"
@@ -223,6 +237,15 @@ class GitScheduleDefinition:
                 "context": json.loads(self.context_json) if self.context_json else None,
                 "declaration": self.declaration.digest if self.declaration else None,
             }
+            | (
+                {
+                    "model_job_handler": self.job_handler.__module__
+                    + "."
+                    + self.job_handler.__qualname__
+                }
+                if self.job_handler is not None
+                else {}
+            )
         )
 
 
@@ -232,6 +255,7 @@ def compile_git_schedule_definition(
     normalized_schedule: dict,
     declaration: ObligationDeclaration | None,
     context_material: dict | None,
+    job_handler: object = None,
 ) -> GitScheduleDefinition:
     """Copy full normalized source inputs; the value itself authenticates nothing."""
     try:
@@ -240,6 +264,7 @@ def compile_git_schedule_definition(
             _row_material(normalized_schedule),
             declaration,
             _json(context_material) if context_material is not None else None,
+            job_handler=job_handler,
         )
     except (TypeError, ValueError, RecursionError):
         raise DeclarationError("invalid_schedule_material") from None
@@ -488,7 +513,13 @@ async def _stage_schedule_definition(
         )
         if not relation or not relation["scheduled_relation"]:
             raise SourceConflict("owning_schedule_relation_required")
-        family = "deadline" if definition.schedule["task_type"] == "deadline" else "schedule"
+        family = (
+            "model_job"
+            if definition.job_handler is not None
+            else "deadline"
+            if definition.schedule["task_type"] == "deadline"
+            else "schedule"
+        )
         state = "active" if definition.available else "disabled"
         if previous is not None:
             request, old_result = previous
