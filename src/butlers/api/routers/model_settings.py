@@ -23,11 +23,11 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, StrictStr, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator
 
 import butlers.api.routers.audit as audit
-from butlers.api.audit_emit import authenticated_principal
+from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
@@ -246,6 +246,26 @@ class ButlerModelOverrideUpsert(BaseModel):
     enabled: bool = True
     priority: int | None = None
     complexity_tier: str | None = None
+
+
+class ButlerModelOverrideReason(IgnoresCallerAssertedActor):
+    """One request-level reason, never caller-asserted audit attribution."""
+
+    reason: StrictStr = Field(min_length=1, max_length=2000)
+    # Presentation evidence only, explicitly labelled as client-reported in audit.
+    price_preview_unavailable: StrictBool = False
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A reason is required")
+        return value
+
+
+class ButlerModelOverridesWrite(ButlerModelOverrideReason):
+    overrides: list[ButlerModelOverrideUpsert]
 
 
 class ResolveModelResponse(BaseModel):
@@ -1671,7 +1691,8 @@ async def list_butler_model_overrides(
 )
 async def upsert_butler_model_overrides(
     name: str,
-    body: list[ButlerModelOverrideUpsert],
+    body: ButlerModelOverridesWrite,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Batch upsert model overrides for a butler.
@@ -1679,10 +1700,7 @@ async def upsert_butler_model_overrides(
     Each item is upserted by (butler_name, catalog_entry_id).
     Returns the full list of updated override rows.
     """
-    if not body:
-        raise HTTPException(status_code=422, detail="Request body must contain at least one item")
-
-    for item in body:
+    for item in body.overrides:
         if item.complexity_tier is not None:
             _validate_complexity_tier(item.complexity_tier)
 
@@ -1691,7 +1709,7 @@ async def upsert_butler_model_overrides(
     upserted_ids: list[UUID] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
-            for item in body:
+            for item in body.overrides:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.butler_model_overrides
@@ -1711,6 +1729,22 @@ async def upsert_butler_model_overrides(
                 )
                 if row is not None:
                     upserted_ids.append(row["id"])
+
+            await audit.append(
+                conn,
+                authenticated_principal(),
+                "model.override.upsert",
+                target=f"butler:{name}",
+                note=body.reason,
+                metadata={
+                    "catalog_entry_ids": [str(item.catalog_entry_id) for item in body.overrides],
+                    "client_price_preview_unavailable": body.price_preview_unavailable,
+                },
+                result="success",
+            )
+
+    # Only a committed owning receipt suppresses the middleware's secondary row.
+    request.state.model_override_audit_committed = True
 
     if not upserted_ids:
         return ApiResponse[list[ButlerModelOverride]](data=[])
@@ -1741,21 +1775,34 @@ async def upsert_butler_model_overrides(
 async def delete_butler_model_override(
     name: str,
     override_id: UUID,
+    body: ButlerModelOverrideReason,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
-    result = await pool.execute(
-        "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
-        override_id,
-        name,
-    )
-    deleted = int(result.split()[-1]) if result else 0
-    if deleted == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Override not found: {override_id} for butler '{name}'",
+    async with pool.acquire() as conn, conn.transaction():
+        result = await conn.execute(
+            "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
+            override_id,
+            name,
         )
+        deleted = int(result.split()[-1]) if result else 0
+        if deleted == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Override not found: {override_id} for butler '{name}'",
+            )
+        await audit.append(
+            conn,
+            authenticated_principal(),
+            "model.override.delete",
+            target=f"butler:{name}/model-override:{override_id}",
+            note=body.reason,
+            metadata={"client_price_preview_unavailable": body.price_preview_unavailable},
+            result="success",
+        )
+    request.state.model_override_audit_committed = True
     return ApiResponse[dict](data={"deleted": True, "id": str(override_id)})
 
 
