@@ -273,7 +273,8 @@ CONNECTOR_REGISTRY = TableStandin(
 # adds pending-action blast_radius/reversibility and their CHECKs, 007 adds the
 # suggestion source-action link, 012 adds the 'abandoned' status and
 # 'action_abandoned' event type, 013 adds deduplication_key, 014 adds origin,
-# and 015 adds the safe approval-delivery terminal event vocabulary.
+# 015 adds the safe approval-delivery terminal event vocabulary, and 019
+# adds exact goal lineage, cancellation and deferred-delivery vocabulary.
 PENDING_ACTIONS = TableStandin(
     table="pending_actions",
     chains=("core", "approvals"),
@@ -299,11 +300,37 @@ PENDING_ACTIONS = TableStandin(
         ("reversibility", "TEXT"),
         ("deduplication_key", "TEXT"),
         ("origin", "TEXT"),
+        ("goal_id", "UUID"),
+        ("invocation_id", "UUID"),
+        ("goal_depth", "SMALLINT"),
+        ("goal_exposed", "BOOLEAN"),
+        ("goal_origin", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("goal_effect_id", "UUID"),
+        ("goal_capability", "TEXT"),
+        ("goal_args_digest", "TEXT"),
+        ("goal_approved_args_digest", "TEXT"),
     ),
     table_constraints=(
+        "CONSTRAINT pending_goal_lineage CHECK "
+        """((
+          (goal_origin='legacy' AND goal_id IS NULL AND invocation_id IS NULL
+           AND goal_depth IS NULL AND goal_exposed IS NULL AND goal_effect_id IS NULL
+           AND goal_capability IS NULL AND goal_args_digest IS NULL
+           AND goal_approved_args_digest IS NULL)
+          OR (goal_origin IN ('owner','obligation','third_party','staffer')
+           AND goal_id IS NOT NULL AND invocation_id IS NOT NULL
+           AND goal_depth IS NOT NULL AND goal_depth IN (0,1) AND goal_exposed IS NOT NULL
+           AND goal_effect_id IS NOT NULL AND id=goal_effect_id
+           AND goal_capability IS NOT NULL
+           AND goal_capability ~ '^[a-zA-Z0-9_.-]+__[a-zA-Z0-9_.-]+$'
+           AND split_part(goal_capability,'__',2)=tool_name
+           AND goal_args_digest IS NOT NULL AND goal_args_digest ~ '^[0-9a-f]{64}$'
+           AND (goal_approved_args_digest IS NULL
+                OR goal_approved_args_digest ~ '^[0-9a-f]{64}$'))
+        ) IS TRUE)""",
         (
             "CONSTRAINT pending_actions_status_check CHECK (status IN ("
-            "'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned'))"
+            "'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned', 'cancelled'))"
         ),
         (
             "CONSTRAINT pending_actions_blast_radius_check CHECK ("
@@ -331,6 +358,24 @@ PENDING_ACTIONS = TableStandin(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_actions_active_deduplication_key "
         "ON {table} (deduplication_key) WHERE deduplication_key IS NOT NULL "
         "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
+        "CREATE UNIQUE INDEX IF NOT EXISTS pending_goal_effect_identity "
+        "ON {table} (goal_id, goal_effect_id) WHERE goal_id IS NOT NULL",
+    ),
+    excluded_triggers=tuple(
+        TriggerExclusion(
+            name=name,
+            migration="approvals_019",
+            reason=(
+                "Goal lineage validation reads approval_goal_effects/receipts and "
+                "approval_delivery_rollout; only the real chain supplies those siblings"
+            ),
+        )
+        for name in (
+            "pending_goal_action_guard",
+            "pending_goal_action_final_guard",
+            "pending_goal_action_no_truncate",
+            "pending_goal_final",
+        )
     ),
 )
 
@@ -485,14 +530,15 @@ APPROVAL_EVENTS = TableStandin(
     ),
     table_constraints=(
         (
-            "CONSTRAINT approval_events_type_check CHECK (event_type IN ("
-            "'action_queued', 'action_auto_approved', 'action_approved', "
-            "'action_rejected', 'action_expired', 'action_abandoned', "
-            "'action_execution_succeeded', 'action_execution_failed', "
-            "'rule_created', 'rule_revoked', "
-            "'promotion_suggested', 'promotion_confirmed', 'promotion_dismissed', "
-            "'promotion_superseded', 'demotion_suggested', 'demotion_confirmed', "
-            "'demotion_dismissed', 'approval_delivery_terminal'))"
+            "CONSTRAINT approval_events_type_check CHECK ("
+            """
+          event_type IN ('action_queued','action_auto_approved','action_approved',
+          'action_rejected','action_expired','action_execution_succeeded',
+          'action_execution_failed','action_abandoned','action_cancelled',
+          'rule_created','rule_revoked','promotion_suggested','promotion_confirmed',
+          'promotion_dismissed','promotion_superseded','demotion_suggested',
+          'demotion_confirmed','demotion_dismissed','approval_delivery_terminal',
+          'approval_delivery_deferred'))"""
         ),
         (
             "CONSTRAINT approval_events_link_check CHECK ("

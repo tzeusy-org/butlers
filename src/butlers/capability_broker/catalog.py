@@ -1,13 +1,8 @@
-"""Strict value projection of an already verified final registration.
-
-This is not a current-fleet reader or an Authorities implementation. Its caller
-must authenticate the complete current M1 registration and bind its digest to
-the goal on the broker's locked connection. A local catalog or this projection
-cannot establish currentness, selection records, standing rules or receipts.
-"""
+"""Current published fleet authority and strict final-registration projection."""
 
 from collections.abc import Mapping
 
+from butlers.core.catalog_reader import PublishedCatalogProvider
 from butlers.core.tool_catalog import (
     ToolCatalog,
     declared_approval_mode,
@@ -15,8 +10,54 @@ from butlers.core.tool_catalog import (
 )
 from butlers.core.tool_presentation_inventory import STORE_WRITERS
 
-from .contracts import BrokerRefused, Capability, Reason
+from .contracts import BrokerRefused, Capability, PolicyEvidence, Principal, Reason
 from .domains import Catalog
+
+
+class PublishedAuthorities:
+    """Read actual M1 publications on the broker's locked connection.
+
+    The admitted goal pins the complete fleet's definition digest, not a local
+    registration generation or the fleet's process identities. Every listing
+    and call rereads the current complete fleet; no cached fallback is kept.
+
+    This supplies no owner selection, recipient, standing-rule or risk facts.
+    Only reads declaring no parties need none of those facts. All other policy
+    queries refuse until their actual authority producers are integrated.
+    """
+
+    async def catalog(self, connection, principal: Principal) -> Catalog:
+        try:
+            snapshot = await PublishedCatalogProvider().snapshot(connection)
+            capabilities = tuple(
+                capability
+                for registration in snapshot.registrations
+                for capability in project_catalog(
+                    registration.catalog, domain=registration.domain
+                ).capabilities
+            )
+            # BrokerLedger compares this exact digest with the locked goal.
+            return Catalog(snapshot.digest, capabilities)
+        except Exception:
+            # Database/decoder failures are content-blind refusals; they never
+            # select an older snapshot. Cancellation still propagates.
+            raise BrokerRefused(Reason.CATALOG) from None
+
+    async def selection(self, connection, principal, capability, grant) -> bool:
+        raise BrokerRefused(Reason.SELECTION)
+
+    async def policy(self, connection, principal, capability, args) -> PolicyEvidence:
+        parties = capability.recipient_params
+        if (
+            not connection.is_in_transaction()
+            or capability.effect_class != "read"
+            or parties.argument_names
+            or parties.undeterminable
+            or parties.default_owner_condition
+            or parties.undeterminable_condition
+        ):
+            raise BrokerRefused(Reason.POLICY)
+        return PolicyEvidence("none")
 
 
 def _mutable_json(value):

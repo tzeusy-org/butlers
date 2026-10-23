@@ -41,9 +41,11 @@ async def approvals_pool(migrated_db_url: str) -> asyncpg.Pool:
         max_size=3,
         init=register_jsonb_codec,
     )
+    # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+    await pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+    await pool.execute("DELETE FROM approval_rules")
     await pool.execute(
-        "TRUNCATE autonomy_suggestions, autonomy_approval_history, approval_events, "
-        "pending_actions, approval_rules CASCADE"
+        "TRUNCATE autonomy_suggestions, autonomy_approval_history, approval_events CASCADE"
     )
     yield pool
     await pool.close()

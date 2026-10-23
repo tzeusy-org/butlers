@@ -1,7 +1,8 @@
 """Ordered broker calls: durable admission, one forward, durable settlement.
 
-Still unwired: production catalog/selection/policy and owning-domain approval
-bridges are required constructor arguments, not permissive default adapters.
+Authorities and owning-domain approval bridges remain explicit constructor
+inputs. PublishedAuthorities reads the delivered current catalog and supports
+no-party reads; it does not fabricate missing selection or effect policy.
 """
 
 from __future__ import annotations

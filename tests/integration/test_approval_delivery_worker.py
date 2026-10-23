@@ -61,10 +61,12 @@ async def delivery_pool(migrated_db_url: str):
         max_size=8,
         init=register_jsonb_codec,
     )
+    # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+    await pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
     await pool.execute(
         "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
         "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_events, pending_actions CASCADE"
+        "approval_delivery_intents, approval_events CASCADE"
     )
     await pool.execute(
         "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "

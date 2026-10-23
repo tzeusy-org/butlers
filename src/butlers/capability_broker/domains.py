@@ -30,8 +30,9 @@ class Catalog:
 class Authorities(Protocol):
     """Local durable reads on the *same locked connection*, never network I/O.
 
-    The production catalog adapter is not yet supplied. Missing selection or
-    policy authority is an error, never an unbound scope or owner default.
+    PublishedAuthorities supplies the current complete-fleet catalog. Missing
+    selection or policy authority is an error, never an unbound scope or owner
+    default.
     """
 
     async def catalog(self, connection: asyncpg.Connection, principal: Principal) -> Catalog: ...

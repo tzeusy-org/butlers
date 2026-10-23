@@ -465,9 +465,14 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         # preparer; replay still runs through the owning gate and executor.
         ("src/butlers/modules/calendar_response.py", "prepare_and_park"),
         # RFC 0038 D13 exact goal calls use the same atomic pending/intent
-        # writer with immutable lineage. Verified ingress and approved replay
+        # writer with immutable lineage via OwningGoalApprovals.park.
+        # The actual owning transaction also joins this closed inventory.
+        # Verified ingress and approved replay
         # remain separate required producers, not a generic command exemption.
         ("src/butlers/modules/approvals/goal_calls.py", "park_goal_call"),
+        ("src/butlers/modules/approvals/goal_control.py", "park"),
+        ("src/butlers/modules/approvals/park.py", "park_pending_action"),
+        ("src/butlers/modules/approvals/park.py", "park_prepared_action"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):
@@ -481,7 +486,7 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
 
 
 def _direct_park_sources(path: Path, relative: str) -> set[tuple[str, str]]:
-    """Return direct ``park_pending_action`` call sites as (file, function)."""
+    """Return canonical pending/delivery writer and owning-delegation call sites."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     sources: set[tuple[str, str]] = set()
 
@@ -501,7 +506,17 @@ def _direct_park_sources(path: Path, relative: str) -> set[tuple[str, str]]:
 
         def visit_Call(self, node: ast.Call) -> None:
             name = node.func.id if isinstance(node.func, ast.Name) else None
-            if name == "park_pending_action":
+            owning_delegation = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "park"
+                and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Name)
+                and node.func.value.func.id == "OwningGoalApprovals"
+            )
+            if (
+                name in {"park_pending_action", "_admit", "_park_without_delivery"}
+                or owning_delegation
+            ):
                 owner = ".".join(self.functions) if self.functions else "<module>"
                 sources.add((relative, owner))
             self.generic_visit(node)

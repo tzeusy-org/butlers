@@ -27,12 +27,27 @@ broker-induced PARK, including a default-mode tool with no configured gate.
 A configured enabled gate supplies `approval_required`; explicit
 `always_per_event` additionally prevents standing-rule automatic approval.
 
-This projection does not authenticate a local value as the fleet's current
-registration. The genuine M1 current-reader/digest binding, actual owner
-selection and policy producers, and owning approval storage/receipt/replay
-producer remain required. Mode metadata and policy tests do not implement the
-owning always-per-event rule-creation, matching or promotion enforcement. They
-do not enable the private transport or activate the runtime.
+`PublishedAuthorities`, an explicit `Broker` constructor input, reads the
+delivered M1 `PublishedCatalogProvider` on the broker's existing goal-locked
+connection. Each listing and call verifies the complete enabled current fleet,
+its runtime role, live leases, membership, registration bodies and digests, then
+projects every final definition. The broker compares the resulting fleet
+definition digest with the locked goal's admission digest. A local per-domain
+generation digest is not substituted for that fleet pin. There is no cache,
+pool acquisition or network request under this reader. Retirement, incomplete
+publication or changed definitions refuse rather than reusing an older view.
+
+This adapter supports ordinary reads whose metadata declares no recipient or
+inherited-party condition. It supplies no standing rule, owner default or
+actuation risk. Calls requiring those policy facts and all selection-bound
+resource checks refuse until their actual owning producers are integrated.
+Listing an otherwise granted definition does not promise its policy-dependent
+call is currently executable. Selection and resource values remain distinct:
+published resource parameter names alone grant neither selection nor values.
+Owning approval storage/receipt/replay and authenticated ingress remain required.
+Mode metadata and policy tests do not implement owning always-per-event
+rule-creation, matching or promotion enforcement, enable private transport or
+activate the runtime.
 
 The daemon's dedicated private transport is default OFF. It is separate from the
 ordinary model-presentable MCP catalog. The central cancellation and replay

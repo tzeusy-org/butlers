@@ -417,6 +417,21 @@ async def test_real_bootstrap_roles_null_lineage_and_immutable_history(
             )
             == 1
         )
+        # Retained legacy fixtures use row deletion, never TRUNCATE CASCADE:
+        # the latter reaches immutable goal evidence even when tables are empty.
+        await connection.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+        assert await observer.fetchrow("SELECT id FROM pending_actions WHERE id=$1", legacy) is None
+        assert await snapshot(observer, call.action_id) == before
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM approval_events WHERE action_id=$1", legacy
+            )
+            == 1
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            async with owner.acquire() as cleanup_owner, cleanup_owner.transaction():
+                await cleanup_owner.execute("TRUNCATE pending_actions CASCADE")
+        assert await snapshot(observer, call.action_id) == before
         with pytest.raises(GoalApprovalsUnavailable, match="owning_goal_role_unavailable"):
             await OwningGoalApprovals(owner, "home").lookup(identity(call))
         await connection.execute("CREATE TEMP TABLE pending_actions(id uuid)")
