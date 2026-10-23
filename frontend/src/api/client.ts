@@ -3575,7 +3575,7 @@ export function getApprovalDetail(actionId: string, reviewSource?: string): Prom
 
 export function approveApproval(
   actionId: string,
-  request?: ApprovalApproveRequest,
+  request: ApprovalApproveRequest,
 ): Promise<ApiResponse<ApprovalAction>> {
   return apiFetch<ApiResponse<ApprovalAction>>(
     `/approvals/${encodeURIComponent(actionId)}/approve`,
