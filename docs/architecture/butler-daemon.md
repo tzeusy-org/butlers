@@ -74,7 +74,7 @@ Each healthy module's `on_startup(config, db)` runs in topological order after s
 
 ### Phase 12: Create Spawner and Runtime Wiring
 
-The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and module credentials. It then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
+The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and credential store for explicitly declared butler variables and selected runtime authentication. Module channel credentials remain daemon-owned: startup still validates them and modules resolve them, but their declarations do not add them to runtime child environments. Explicit `[butler.env]` declarations remain supported, subject to owner-auth and administrative-variable exclusions. The daemon then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
 
 ### Phase 13: Create FastMCP and Register Core Tools
 

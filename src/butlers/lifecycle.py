@@ -101,7 +101,6 @@ class StartupState:
     db_url: str = ""
     migration_schema: str | None = None
     credential_store: Any = None
-    active_module_creds: dict[str, list[str]] = field(default_factory=dict)
     started_modules: list[Any] = field(default_factory=list)
 
 
@@ -292,14 +291,6 @@ async def _startup_credential_store(daemon: Any, state: StartupState) -> None:
         )
         logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
     daemon._cascade_module_failures()
-
-    # Filter module_creds to exclude failed modules for spawner.
-    state.active_module_creds = {
-        k: v
-        for k, v in state.module_creds.items()
-        if k.split(".")[0] not in daemon._module_statuses
-        or daemon._module_statuses[k.split(".")[0]].status == "active"
-    }
 
 
 async def _startup_blob_storage(daemon: Any, state: StartupState) -> None:
@@ -538,7 +529,6 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
         config=daemon.config,
         config_dir=daemon.config_dir,
         pool=state.pool,
-        module_credentials_env=state.active_module_creds,
         runtime=runtime,
         audit_pool=audit_pool,
         credential_store=state.credential_store,
@@ -664,6 +654,12 @@ async def _startup_readiness(daemon: Any, state: StartupState) -> None:
         daemon._boot_registration_task = asyncio.create_task(
             daemon._retry_boot_registration(), name=f"boot-register-{daemon.config.name}"
         )
+    # Publish only the actual final wrapped registry after startup completed.
+    # The administrative D4 control defaults OFF; no ingress is enabled here.
+    from butlers.core.catalog_publication import start_catalog_publication
+
+    if registered:
+        await start_catalog_publication(daemon, state.pool)
     daemon._started_at = time.monotonic()
 
     failed_count = sum(1 for s in daemon._module_statuses.values() if s.status != "active")
@@ -745,6 +741,34 @@ async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
 
 
 async def run_shutdown(daemon: Any) -> None:
+    """Retain shutdown across caller cancellation when publication owns resources.
+
+    Retirement has its existing single five-second absolute bound. Subsequent
+    existing owners retain their own bounds; repeated cancellation never starts
+    another retirement or abandons their cleanup. Propagate cancellation after
+    the retained lifetime settles, even if retirement also fails.
+    """
+    task = getattr(daemon, "_catalog_shutdown_task", None)
+    if task is None:
+        if getattr(daemon, "_catalog_publication", None) is None:
+            await _run_shutdown(daemon)
+            return
+        task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
+        daemon._catalog_shutdown_task = task
+    interrupted = False
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                interrupted = True
+        task.result()
+    finally:
+        if interrupted:
+            raise asyncio.CancelledError
+
+
+async def _run_shutdown(daemon: Any) -> None:
     """Execute the graceful shutdown sequence.
 
     This is the implementation body of :meth:`ButlerDaemon.shutdown`.  It is
@@ -778,6 +802,25 @@ async def run_shutdown(daemon: Any) -> None:
         except asyncio.CancelledError:
             pass
         daemon._boot_registration_task = None
+
+    # Retire only this boot's registration before stopping its real registry.
+    from butlers.core.catalog_publication import close_catalog_publication
+
+    retirement_error = None
+    try:
+        await close_catalog_publication(daemon)
+    except BaseException as exc:
+        retirement_error = exc
+
+    try:
+        await _shutdown_resources(daemon)
+    finally:
+        if retirement_error is not None:
+            raise retirement_error
+
+
+async def _shutdown_resources(daemon: Any) -> None:
+    """Existing resource teardown, also reached after catalog close refusal."""
 
     # 1. Stop MCP server
     if daemon._server is not None:

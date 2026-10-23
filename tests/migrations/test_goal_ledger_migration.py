@@ -69,10 +69,15 @@ def bootstrap_again(container, url):
 
 
 async def populate(url):
+    # The ordinary full-backup contract includes live catalog definitions too;
+    # it must not succeed merely because their FORCE-RLS tables were empty.
+    from tests.integration.test_catalog_publication import publish_all
     from tests.switchboard.goal_admission_fixtures import limits
     from tests.switchboard.goal_ledger_fixtures import configure
 
     async with pools(url) as (owner, runtime):
+        await owner.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        await publish_all(url)
         await configure(owner, limits())
         result = await admit(runtime)
         # A joined reply populates goal_inbox, so every ledger table has a row.
@@ -111,6 +116,15 @@ def snapshot(url):
                 .all()
                 for t in TABLES
             }
+            for suffix in ("installations", "control", "members", "history", "current"):
+                qualified = "public.capability_catalog_" + suffix
+                rows[qualified] = (
+                    conn.execute(
+                        text(f"SELECT to_jsonb(t) FROM {qualified} t ORDER BY to_jsonb(t)::text")
+                    )
+                    .scalars()
+                    .all()
+                )
             posture = conn.execute(
                 text("""
                 SELECT c.relname,pg_get_userbyid(c.relowner),c.relrowsecurity,c.relforcerowsecurity,
@@ -202,7 +216,14 @@ def test_goal_ledger_bootstrap_runtime_isolation(ledger_url, postgres_container)
                     if role != "butler_switchboard_rw":
                         for table in TABLES:
                             row = original_rows[table][0].copy()
-                            row["goal_id" if table == "budgets" else "id"] = str(uuid4())
+                            identity = (
+                                "goal_id"
+                                if table == "budgets"
+                                else "attempt_id"
+                                if table == "admission_attempt_bindings"
+                                else "id"
+                            )
+                            row[identity] = str(uuid4())
                             columns = ",".join(c for c in row if c != "parent_depth")
                             with pytest.raises(DBAPIError) as denied:
                                 conn.exec_driver_sql(

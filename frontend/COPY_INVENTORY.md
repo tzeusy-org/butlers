@@ -543,6 +543,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
+- Retry
+- All-time notification statistics are stale. The latest refresh failed.
 - Butler
 - Channel
 - Status
@@ -554,6 +556,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next
 - Notifications
 - Monitor notification delivery across all butlers.
+- All-time notification statistics unavailable
+- The statistics request failed. Try again to load the counts.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
@@ -1670,11 +1674,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Model ID
 - Runtime
 - Extra Args
+- 0 && rate
+- Loading cost preview...
+- Cost preview unavailable. You can still save with a reason.
+- Catalog rates in USD per 1M tokens (base tier)
 - Override the model catalog settings for this butler.
 - Model
 - Complexity Override
 - Use catalog default
 - Override the complexity tier for this model on this butler only.
+- Choosing another catalog entry adds its override; the existing entry stays unchanged.
+- Reason
 - Cancel
 - No overrides configured. The butler uses the global model catalog.
 - Alias
@@ -1692,7 +1702,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Override specific catalog entries for this butler.
 - Add override
 - Remove Override?
+- Cost preview
 - Select a model...
+- Why is this override needed?
 - Model override saved
 - Failed: {}
 - Unknown error

@@ -194,6 +194,11 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         # is present even when the audit emit fails.
         response.headers["X-Trace-Id"] = trace_id
 
+        # The override owner wrote its one mandatory receipt in the mutation TX.
+        # Failed/uncommitted requests retain the existing error telemetry path.
+        if getattr(request.state, "model_override_audit_committed", False):
+            return response
+
         # Infer butler and collect path params for replay-ability.
         butler = _infer_butler(path)
         path_params = _collect_path_params(path)

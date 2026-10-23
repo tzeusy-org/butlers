@@ -222,7 +222,8 @@ import type {
   VerifyAllResult,
   ModelTestResult,
   ButlerModelOverride,
-  ButlerModelOverrideUpsert,
+  ButlerModelOverridesWrite,
+  ButlerModelOverrideReason,
   ResolveModelResponse,
   TokenLimitsRequest,
   TokenLimitsResponse,
@@ -5071,7 +5072,7 @@ export function listButlerModelOverrides(
 /** PUT /api/butlers/{name}/model-overrides — batch upsert overrides */
 export function upsertButlerModelOverrides(
   butlerName: string,
-  body: ButlerModelOverrideUpsert[],
+  body: ButlerModelOverridesWrite,
 ): Promise<ApiResponse<ButlerModelOverride[]>> {
   return apiFetch<ApiResponse<ButlerModelOverride[]>>(
     `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
@@ -5086,10 +5087,11 @@ export function upsertButlerModelOverrides(
 export function deleteButlerModelOverride(
   butlerName: string,
   overrideId: string,
+  body: ButlerModelOverrideReason,
 ): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
   return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
     `/butlers/${encodeURIComponent(butlerName)}/model-overrides/${encodeURIComponent(overrideId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", body: JSON.stringify(body) },
   );
 }
 
