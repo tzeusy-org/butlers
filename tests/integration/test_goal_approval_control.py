@@ -520,3 +520,194 @@ async def test_real_partial_runtime_acl_refuses_lookup_and_restores(stores, tabl
         await owner.execute(f"GRANT {privilege} ON home.{table} TO butler_home_rw")
     assert receipt == await service.lookup(identity(call))
     assert await snapshot(observer, call.action_id) == before
+
+
+async def _standing_rule_case(owner):
+    # A distinct exact content pin prevents this retained module-scoped DB's
+    # standing rules from matching another case. No database reset is needed.
+    from tests.modules.approvals.test_goal_control import registered_send_catalog
+
+    args = {"message": "controlled-" + uuid4().hex, "recipient": "pinned-target"}
+    call = request()
+    call = replace(
+        call,
+        tool_args=args,
+        goal_lineage=replace(
+            call.goal_lineage,
+            goal_args_digest=arguments_digest(args),
+        ),
+    )
+    rule = uuid4()
+    await owner.execute(
+        "INSERT INTO approval_rules(id,tool_name,arg_constraints,description,max_uses) "
+        "VALUES($1,'send',$2::jsonb,'controlled owner rule',1)",
+        rule,
+        {name: {"type": "exact", "value": value} for name, value in args.items()},
+    )
+    return call, rule, await registered_send_catalog(domain="home")
+
+
+async def test_real_standing_rule_commit_loss_duplicate_and_stop_readback(stores):
+    from butlers.core.goal_admission import Grant
+
+    owner, observer, runtime = stores
+    call, rule, catalog = await _standing_rule_case(owner)
+    # An actual commit followed by lost response; lookup, not retry arithmetic,
+    # must recover the stored decision and immutable historical aliases.
+    async with runtime.acquire() as connection:
+        with pytest.raises(ConnectionError, match="controlled_postcommit_response_loss"):
+            await OwningGoalApprovals(LostCommitReply(connection), "home", catalog=catalog).park(
+                call,
+                grant=Grant("home__send"),
+            )
+    service = OwningGoalApprovals(runtime, "home", catalog=catalog)
+    row, gate, receipts = await snapshot(observer, call.action_id)
+    assert row["status"] == "approved" and row["approval_rule_id"] == rule
+    assert row["goal_approved_args_digest"] == call.goal_lineage.goal_args_digest
+    assert gate["phase"] == "approved" and gate["state_version"] == 2
+    assert {r["outcome"] for r in receipts} == {"pending", "parked", "approved"}
+    assert (await service.lookup(identity(call)))["outcome"] == "approved"
+    duplicate, parked = await service.park(call, grant=Grant("home__send"))
+    assert duplicate.duplicate and parked["outcome"] == "parked"
+    assert await observer.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule) == 1
+    assert (
+        await observer.fetchval(
+            "SELECT count(*) FROM approval_events WHERE action_id=$1 "
+            "AND event_type='action_auto_approved' AND rule_id=$2",
+            call.action_id,
+            rule,
+        )
+        == 1
+    )
+    assert (await service.cancel(identity(call)))["outcome"] == "cancelled"
+    assert (await snapshot(observer, call.action_id))[0]["status"] == "cancelled"
+    assert await observer.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule) == 1
+    with pytest.raises(ValueError, match="goal_stop_fenced"):
+        await service.park(call, grant=Grant("home__send"))
+
+
+async def test_real_standing_rule_receipt_refusal_rolls_back_claim_then_stop_fences(stores):
+    from butlers.core.goal_admission import Grant
+
+    owner, observer, runtime = stores
+    call, rule, catalog = await _standing_rule_case(owner)
+    service = OwningGoalApprovals(runtime, "home", catalog=catalog)
+    await owner.execute("""
+        CREATE FUNCTION home.controlled_rule_receipt_refusal() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.outcome='approved' THEN
+            RAISE EXCEPTION 'controlled rule receipt refusal' USING ERRCODE='23514';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER controlled_rule_receipt_refusal BEFORE INSERT
+          ON home.approval_goal_receipts FOR EACH ROW
+          EXECUTE FUNCTION home.controlled_rule_receipt_refusal()
+    """)
+    try:
+        with pytest.raises(asyncpg.CheckViolationError, match="controlled rule receipt refusal"):
+            await service.park(call, grant=Grant("home__send"))
+        assert await snapshot(observer, call.action_id) == (None, None, [])
+        assert (
+            await observer.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule) == 0
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM approval_events WHERE action_id=$1",
+                call.action_id,
+            )
+            == 0
+        )
+    finally:
+        await owner.execute(
+            "DROP TRIGGER controlled_rule_receipt_refusal ON home.approval_goal_receipts; "
+            "DROP FUNCTION home.controlled_rule_receipt_refusal()"
+        )
+    assert (await service.cancel(identity(call)))["outcome"] == "fenced_absent"
+    with pytest.raises(ValueError, match="goal_stop_fenced"):
+        await service.park(call, grant=Grant("home__send"))
+    assert await observer.fetchval("SELECT use_count FROM approval_rules WHERE id=$1", rule) == 0
+
+
+@pytest.mark.parametrize("revoke", [False, True])
+async def test_real_standing_rule_contenders_observe_exhaustion_or_revoke(
+    stores, owning_url, revoke
+):
+    from butlers.core.goal_admission import Grant
+
+    owner, observer, runtime = stores
+    call, rule, catalog = await _standing_rule_case(owner)
+    other = request()
+    other = replace(
+        other,
+        tool_args=call.tool_args,
+        goal_lineage=replace(
+            other.goal_lineage,
+            goal_args_digest=call.goal_lineage.goal_args_digest,
+        ),
+    )
+    tasks = []
+    async with AsyncExitStack() as cleanup:
+        connections = []
+        applications = ["controlled_rule_race_" + uuid4().hex for _ in range(2)]
+        for application in applications:
+            connection = await asyncpg.connect(
+                owning_url,
+                server_settings={
+                    "search_path": "home,public",
+                    "application_name": application,
+                },
+                command_timeout=5,
+            )
+            cleanup.push_async_callback(_close_connection, connection)
+            await register_jsonb_codec(connection)
+            await connection.execute("SET ROLE butler_home_rw")
+            connections.append(connection)
+        try:
+            async with owner.acquire() as held, held.transaction():
+                await held.fetchrow("SELECT id FROM approval_rules WHERE id=$1 FOR UPDATE", rule)
+                for index, contender_call in enumerate((call, other)):
+                    contender = OwningGoalApprovals(connections[index], "home", catalog=catalog)
+                    tasks.append(
+                        asyncio.create_task(
+                            contender.park(
+                                contender_call,
+                                grant=Grant("home__send"),
+                            )
+                        )
+                    )
+                    # First waits on the rule; second waits on the same-schema
+                    # serializer. Both actual backends must be waiting, not just
+                    # Python tasks started, before the owner lock is released.
+                    await _wait_for_lock(observer, applications[index])
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity WHERE application_name=ANY($1::text[]) "
+                        "AND wait_event_type='Lock'",
+                        applications,
+                    )
+                    == 2
+                )
+                assert all(not task.done() for task in tasks)
+                if revoke:
+                    await held.execute("UPDATE approval_rules SET active=false WHERE id=$1", rule)
+            outcomes = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            assert len(outcomes) == 2
+            snapshots = [await snapshot(observer, c.action_id) for c in (call, other)]
+            assert sorted(s[0]["status"] for s in snapshots) == (
+                ["pending", "pending"] if revoke else ["approved", "pending"]
+            )
+            assert await observer.fetchval(
+                "SELECT use_count FROM approval_rules WHERE id=$1",
+                rule,
+            ) == (0 if revoke else 1)
+            for row, gate, receipts in snapshots:
+                assert gate["phase"] == row["status"] and not gate["stop_fenced"]
+                assert len(receipts) == (3 if row["status"] == "approved" else 2)
+                assert row["approval_rule_id"] == (rule if row["status"] == "approved" else None)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)

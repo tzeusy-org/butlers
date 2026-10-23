@@ -40,7 +40,7 @@ class GoalApprovalsUnavailable(ValueError):
 
 
 class OwningGoalApprovals:
-    def __init__(self, pool, domain: str, *, timeout: float = 5):
+    def __init__(self, pool, domain: str, *, timeout: float = 5, catalog=None):
         if (
             type(domain) is not str
             or not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", domain)
@@ -49,6 +49,7 @@ class OwningGoalApprovals:
         ):
             raise ValueError("finite_owning_goal_configuration_required")
         self.pool, self.domain, self.timeout = pool, domain, timeout
+        self.catalog = catalog
 
     async def _verify(self, conn):
         role = await conn.fetchrow(
@@ -247,12 +248,13 @@ class OwningGoalApprovals:
         )
         return value
 
-    async def park(self, request: ParkRequest) -> tuple[object, dict]:
+    async def park(self, request: ParkRequest, *, grant=None) -> tuple[object, dict]:
         """Commit the actual action/delivery/gate and two stable receipt aliases.
 
         This is an internal producer, not a verifier of caller-asserted lineage.
-        Standing-rule auto-approval is not supplied by this pending-only core;
-        activation must not claim the broader producer coverage from it.
+        Optional final registration and verified grant permit owning rule matching.
+        Missing trusted context remains pending-only; neither input authenticates
+        an ingress, starts an executor or proves an external effect.
         """
         _validate_request(request)
         lineage = request.goal_lineage
@@ -271,6 +273,7 @@ class OwningGoalApprovals:
             raise ValueError("goal_argument_mismatch")
         from dataclasses import replace
 
+        observation = None
         request = replace(request, tool_args=snapshot)
         async with self._transaction() as conn:
             try:
@@ -284,7 +287,47 @@ class OwningGoalApprovals:
                 gate = await self._gate(conn, identity, create=True, parked=True)
             if gate["stop_fenced"]:
                 raise ValueError("goal_stop_fenced")
-            if gate["dispatch_intent_id"] is not None or gate["phase"] not in {"absent", "pending"}:
+            if gate["dispatch_intent_id"] is not None:
+                raise ValueError("goal_park_no_longer_pending")
+            if not fresh and gate["phase"] == "approved":
+                from butlers.modules.approvals.park import (
+                    _existing_admission,
+                    _existing_pending_action,
+                )
+
+                row = await conn.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id=$1 FOR UPDATE", identity.action_id
+                )
+                action = PendingAction.from_row(row) if row is not None else None
+                if (
+                    action is None
+                    or action.status is not ActionStatus.APPROVED
+                    or action.approval_rule_id is None
+                    or replace(action.goal_lineage(), goal_approved_args_digest=None) != lineage
+                    or arguments_digest(action.tool_args) != identity.args_digest
+                ):
+                    raise ValueError("goal_duplicate_binding_mismatch")
+                duplicate = replace(request, goal_lineage=action.goal_lineage())
+                admission = await _existing_admission(
+                    conn,
+                    action_id=identity.action_id,
+                    deduplication_key=request.deduplication_key,
+                    request=duplicate,
+                )
+                if admission is None:
+                    admission = await _existing_pending_action(
+                        conn,
+                        action_id=identity.action_id,
+                        deduplication_key=request.deduplication_key,
+                        request=duplicate,
+                    )
+                if admission is None:
+                    raise GoalApprovalsUnavailable("goal_duplicate_missing")
+                value = await self._read_receipt(
+                    conn, dict(gate, state_version=1), identity, "parked"
+                )
+                return admission, value
+            if gate["phase"] not in {"absent", "pending"}:
                 raise ValueError("goal_park_no_longer_pending")
             rollout = await conn.fetchrow(
                 "SELECT admission_enabled,worker_enabled FROM approval_delivery_rollout "
@@ -300,9 +343,65 @@ class OwningGoalApprovals:
             if fresh:
                 await self._receipt(conn, gate, identity, "pending")
                 value = await self._receipt(conn, gate, identity, "parked")
+                observation = await self._approve_rule(conn, request, identity, grant)
             else:
                 value = await self._read_receipt(conn, gate, identity, "parked")
+        if observation is not None:
+            from butlers.modules.approvals.delivery_lifecycle import emit_lifecycle_success
+
+            emit_lifecycle_success(observation)
         return admission, value
+
+    async def _approve_rule(self, conn, request, identity, grant):
+        from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+        from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+        from butlers.modules.approvals.goal_rules import matching_goal_rule
+        from butlers.modules.approvals.rules import claim_rule_use
+
+        rule = await matching_goal_rule(conn, request, self.catalog, grant)
+        if rule is None:
+            return None
+        now = await conn.fetchval("SELECT clock_timestamp()")
+        if request.expires_at is not None and request.expires_at < now:
+            return None
+        if not await claim_rule_use(conn, rule.id, now=now):
+            return None
+        result = await transition_pending_action(
+            conn,
+            action_id=identity.action_id,
+            target_status=ActionStatus.APPROVED,
+            decided_by=f"rule:{rule.id}",
+            event_actor=f"rule:{rule.id}",
+            event_reason="goal standing rule matched",
+            now=now,
+            _already_in_transaction=True,
+        )
+        if not result.changed or result.action.status is not ActionStatus.APPROVED:
+            raise GoalApprovalsUnavailable("goal_rule_decision_not_committed")
+        await conn.execute(
+            "UPDATE pending_actions SET approval_rule_id=$2 WHERE id=$1",
+            identity.action_id,
+            rule.id,
+        )
+        gate = await conn.fetchrow(
+            "UPDATE approval_goal_effects SET phase=$2,approved_args_digest=$3,"
+            "state_version=state_version+1,updated_at=clock_timestamp() "
+            "WHERE effect_id=$1 RETURNING *",
+            identity.effect_id,
+            "approved",
+            result.action.goal_approved_args_digest,
+        )
+        await self._receipt(conn, gate, identity, "approved")
+        await record_approval_event(
+            conn,
+            ApprovalEventType.ACTION_AUTO_APPROVED,
+            actor=f"rule:{rule.id}",
+            action_id=identity.action_id,
+            rule_id=rule.id,
+            reason="goal standing rule matched",
+            occurred_at=now,
+        )
+        return result.success_observation
 
     async def lookup(self, identity: CancelIdentity) -> dict | None:
         """Return only current committed evidence. Absence never creates a gate."""

@@ -13,6 +13,8 @@ from typing import Any
 from uuid import UUID
 
 from butlers.core.capability_json import arguments_digest, canonical_bytes, parse_arguments
+from butlers.core.goal_admission import Grant
+from butlers.core.tool_catalog import ToolCatalog
 from butlers.modules.approvals.models import ActionStatus, GoalCallLineage, PendingAction
 from butlers.modules.approvals.park import ParkAdmission, ParkRequest
 
@@ -30,11 +32,15 @@ async def park_goal_call(
     agent_summary: str | None = None,
     session_id: UUID | None = None,
     deduplication_key: str | None = None,
+    owning_catalog: ToolCatalog | None = None,
+    grant: Grant | None = None,
 ) -> ParkAdmission:
     """Bind and snapshot the raw call before the first owning-store await.
 
     The caller MUST be trusted verified infrastructure, never a handler of
-    model-supplied lineage. No standing rule or owner decision is fabricated.
+    model-supplied lineage. Optional final registration and grant are supplied
+    by that same verified infrastructure, never decoded from caller policy
+    flags. They permit actual owning rule matching, not dispatch or D7 proof.
     """
     snapshot = parse_arguments(canonical_bytes(raw_args))
     if (
@@ -46,7 +52,9 @@ async def park_goal_call(
         raise ValueError("goal_call_binding_mismatch")
     from butlers.modules.approvals.goal_control import OwningGoalApprovals
 
-    admission, _receipt = await OwningGoalApprovals(owning_pool, origin_butler).park(
+    admission, _receipt = await OwningGoalApprovals(
+        owning_pool, origin_butler, catalog=owning_catalog
+    ).park(
         ParkRequest(
             action_id=action_id,
             tool_name=tool_name,
@@ -58,7 +66,8 @@ async def park_goal_call(
             origin_butler=origin_butler,
             deduplication_key=deduplication_key,
             goal_lineage=lineage,
-        )
+        ),
+        grant=grant,
     )
     return admission
 

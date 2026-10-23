@@ -299,3 +299,38 @@ it proves neither migrated PostgreSQL nor a deployed domain verifier or durable
 effect receipt. Actual M1 current-fleet delivery, owning selection/policy and A2
 receipt producers, the runner/profile, full nine-criterion runtime acceptance,
 current hosted/protected delivery and activation remain separate obligations.
+
+
+## Owning standing rules at PARK
+
+The internal `park_goal_call` producer can pass its final `ToolCatalog` and
+already verified `Grant` to `OwningGoalApprovals`. These are infrastructure
+inputs, not wire fields or a substitute for authenticated D7 ingress. Missing
+context retains the existing pending-only admission. No transport is enabled.
+
+After the existing finite schema/role checks, same-schema serializer and goal
+gate lock, the repository locks actual owning `approval_rules` rows and uses the
+existing deterministic matcher and conditional use claim. It commits the pending
+action's approved digest/rule, approved gate, immutable receipt and audit events
+in the same connection/transaction. A receipt failure rolls back the use claim
+as well. A lost commit reply can be resolved by current LOOKUP; an exact repeat
+PARK returns the historical parked alias without consuming another use. Stop
+cancels an undispatched approval and does not refund an already issued rule use.
+
+Park-only grants, `always_per_event`, third-party starts, child administration
+and exposed noncommunication effects cannot use this path for automatic
+approval. Safety arguments must be pinned. Exposed communication additionally
+requires either the actual native notify same-transaction owner-recipient
+binding or exact constraints fixing every declared and supplied argument.
+This implementation supports the exact-value branch of template pinning only;
+it does not infer owner-authored typed templates from strings or patterns.
+
+Software controls exercise real registration, rule matching and the owning
+repository with a transaction-capable SQL stand-in. New PostgreSQL controls
+cover committed response loss, rule/receipt rollback, Stop, and simultaneous
+exhaustion/revocation with observed backend waits and separate readback. Those
+new bodies are authored for hosted execution, not local PostgreSQL proof.
+Neither a rule approval nor its receipt is a dispatch/committed-effect witness.
+The actual verified ingress, current catalog/grant wiring, approved replay,
+owning dispatch witness, runner integration and remaining full-nine delivery
+requirements remain separate work.
