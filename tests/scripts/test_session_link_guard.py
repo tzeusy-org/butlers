@@ -617,7 +617,7 @@ def test_metadata_invalid_reads_never_retry_or_publish(
     for value in variants:
         calls = []
 
-        def run(command, **kwargs):
+        def run(command, *, calls=calls, value=value, **kwargs):
             calls.append(command)
             if isinstance(value, OSError):
                 raise value
@@ -658,7 +658,7 @@ def test_metadata_cleanup_failures_are_categorical_and_attempt_all_outputs(
             (directory / name).write_text("stale")
         removed, fetched = [], []
 
-        def unlink(path, *args, **kwargs):
+        def unlink(path, *args, removed=removed, phase=phase, **kwargs):
             removed.append(path.name)
             if phase == "before-read" and path.name == names[0]:
                 raise PermissionError("private-removal-error")
@@ -671,7 +671,7 @@ def test_metadata_cleanup_failures_are_categorical_and_attempt_all_outputs(
                 raise OSError("private-publication-error")
             return real_write(path, text, *args, **kwargs)
 
-        def fetch(number):
+        def fetch(number, *, fetched=fetched, phase=phase):
             fetched.append(number)
             if phase == "terminal-read":
                 raise subprocess.CalledProcessError(7, "gh api", stderr=b"private-terminal-error")

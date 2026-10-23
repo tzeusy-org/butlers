@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
@@ -334,7 +335,9 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
                 assert await runtime.fetchval("SELECT count(*) FROM switchboard.goals") == len(
                     before[0]["goals"]
                 )
-                with pytest.raises(Exception):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Goal authority and source association are immutable"
+                ):
                     await runtime.execute("UPDATE switchboard.goals SET ceiling='[]'")
 
         asyncio.run(restored_read())

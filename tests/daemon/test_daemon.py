@@ -1314,6 +1314,15 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _domain_config_directories() -> list[Path]:
+    roster = Path(__file__).resolve().parents[2] / "roster"
+    return [
+        path.parent
+        for path in sorted(roster.glob("*/butler.toml"))
+        if path.parent.name != "switchboard"
+    ]
+
+
 async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> None:
     """Client None pre-start; successful connect sets client; shutdown clears it; connect failure non-fatal."""
     # Before start: client is always None
@@ -1380,19 +1389,16 @@ async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> No
     from butlers.config import load_config
 
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
-    roster = Path(__file__).resolve().parents[2] / "roster"
-    domain_configs = [
-        p.parent for p in sorted(roster.glob("*/butler.toml")) if p.parent.name != "switchboard"
-    ]
+    domain_configs = await asyncio.to_thread(_domain_config_directories)
     assert domain_configs
     for directory in domain_configs:
         domain = ButlerDaemon(directory)
-        domain.config = load_config(directory)
+        domain.config = await asyncio.to_thread(load_config, directory)
         expected = "http://butlers-control:41100/mcp"
         assert domain.config.switchboard_url == expected
         connected = asyncio.Event()
         reconnected_client = AsyncMock()
-        reconnected_client.__aenter__.side_effect = lambda: connected.set()
+        reconnected_client.__aenter__.side_effect = lambda connected=connected: connected.set()
         with (
             patch(
                 "butlers.switchboard_wiring.MCPClient", return_value=reconnected_client
