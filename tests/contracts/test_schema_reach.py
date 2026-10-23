@@ -463,6 +463,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/switchboard/migrations/048_goal_approval_stop.py",
+        "<dynamic:switchboard.{table}>",
+    ): "dynamic-local:RFC-0038-D14: sw_048 owning migration uses only its fixed Switchboard Stop tables and goals/invocations/effects trigger targets; no caller-selected schema or relation",
+    (
+        "roster/switchboard/migrations/048_goal_approval_stop.py",
+        "<dynamic:{relation}>",
+    ): "dynamic-local:RFC-0038-D14: sw_048 constructs relation only as switchboard plus its closed three-table Stop tuple for local RLS/grants/policies; no foreign-schema allowance",
+    (
         "roster/switchboard/tests/test_correct_route.py",
         "<dynamic:{table}>",
     ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -578,6 +586,26 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/bootstrap_prerequisite.py",
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.budgets",
+    ): "sanctioned:RFC-0038-D1-D7: Switchboard broker charges its own goal budget in the authenticated central call transaction; no domain-schema access",
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038-D1-D7-D14: Switchboard broker reserves and settles its own immutable effect identity under goal-first Stop ordering; owning-domain effects remain behind MCP",
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.goal_park_associations",
+    ): "sanctioned:RFC-0038-D1-D13-D14: Switchboard broker persists its own PARK lineage and one-time approval locator; no owning-domain pending_actions SQL",
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038-D1-D7-D14: Switchboard broker locks its own goal for token/grant authorization, exposure, budget and Stop ordering",
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.invocations",
+    ): "sanctioned:RFC-0038-D1-D7-D14: Switchboard broker authenticates hashed invocation tokens, leases and lead epochs and records monotonic exposure in its own ledger",
     (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
@@ -722,6 +750,30 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/goal_ledger.py",
         "switchboard.invocations",
     ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038-D1-D14: Switchboard Stop joins its own effects to local cancellation claims and applies local ACK preconditions; owning-receipt authentication remains a separate consumer obligation",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.goal_approval_cancel_work",
+    ): "sanctioned:RFC-0038-D1-D14: Switchboard Stop owns local durable cancellation claims, lease generations and fenced ACK bookkeeping; remote cancellation is separate",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.goal_park_associations",
+    ): "sanctioned:RFC-0038-D1-D13-D14: Switchboard Stop reads its own PARK binding and dispatch witness when claiming or acknowledging local cancellation work",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.goal_stop_requests",
+    ): "sanctioned:RFC-0038-D1-D14: Switchboard Stop stores and replays its own immutable local Stop request receipt; no claim of owning-domain cancellation",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038-D1-D14: Switchboard Stop locks and stops its own goal in the token-revocation transaction under the verified ordinary Switchboard role",
+    (
+        "src/butlers/core/goal_stop.py",
+        "switchboard.invocations",
+    ): "sanctioned:RFC-0038-D1-D7-D14: Switchboard Stop locks its own invocation rows and revokes their tokens with the goal Stop transaction",
     (
         "src/butlers/core/ingestion_events.py",
         "<dynamic:{table}>",

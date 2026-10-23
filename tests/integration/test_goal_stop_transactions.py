@@ -752,10 +752,23 @@ async def test_real_bootstrap_roles_policy_and_immutable_attack_matrix(
         "VALUES($1,$2,'health',$1,false)"
     )
     insert_args = (reserved.effect_id, direct_goal)
+    stop_insert = (
+        "INSERT INTO switchboard.goal_stop_requests "
+        "(request_id,goal_id,provenance_digest,revoked_tokens,cancellation_work) "
+        "VALUES($1,$2,$3,0,0)"
+    )
+    stop_insert_args = (uuid4(), goal, "a" * 64)
     # This exact otherwise-valid requested-effect row is permitted for the
     # canonical runtime, then rolled back before testing foreign INSERT RLS.
     async with runtime.acquire() as connection, rollback_only(connection):
+        assert await connection.fetchval("SELECT current_user") == "butler_switchboard_rw"
+        effect = await connection.fetchrow(
+            "SELECT id,goal_id,status FROM switchboard.effects WHERE id=$1", reserved.effect_id
+        )
+        assert effect is not None
+        assert tuple(effect) == (reserved.effect_id, direct_goal, "requested")
         assert await connection.execute(insert, *insert_args) == "INSERT 0 1"
+        assert await connection.execute(stop_insert, *stop_insert_args) == "INSERT 0 1"
     baseline = await evidence_snapshot(owner)
     for sql, args in attacks:
         async with runtime.acquire() as connection:
@@ -789,9 +802,24 @@ async def test_real_bootstrap_roles_policy_and_immutable_attack_matrix(
                     assert await admin.fetchval("SELECT count(*) FROM switchboard." + table) == 0
                 with pytest.raises(AdmissionUnavailable):
                     await GoalStop(BoundPool(admin)).stop_goal(goal, uuid4(), "a" * 64)
-                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                assert await admin.fetchval("SELECT current_user") == role
+                assert (
+                    await admin.fetchval(
+                        "SELECT count(*) FROM switchboard.effects WHERE id=$1", reserved.effect_id
+                    )
+                    == 0
+                )
+                # The BEFORE INSERT trigger reads the protected effect first.
+                # Its invoker cannot see that row, so INTO STRICT raises P0002
+                # before this row reaches the INSERT WITH CHECK policy.
+                with pytest.raises(asyncpg.NoDataFoundError):
                     async with admin.transaction():
                         await admin.execute(insert, *insert_args)
+                # This valid local Stop receipt has no hidden-effect read in
+                # its BEFORE trigger, so it reaches the independent RLS check.
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    async with admin.transaction():
+                        await admin.execute(stop_insert, *stop_insert_args)
                 for sql, args in attacks:
                     try:
                         async with admin.transaction():
