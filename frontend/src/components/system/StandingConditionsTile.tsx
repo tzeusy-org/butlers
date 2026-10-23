@@ -205,8 +205,7 @@ function supersedingIdentityVersion(condition: ConditionEntry): number | null {
  * still standing. A deadline in the past on an already-resolved commitment is
  * history, not a warning, so only a still-standing commitment can be overdue.
  *
- * A standalone module-level function (same shape as DecisionsPage's
- * resolveExportAsOfIsWarn and ButlerActivityTab's window helper) so the
+ * A standalone module-level function, like ButlerActivityTab's window helper, so the
  * react-hooks/purity rule does not flag a direct Date.now() call inside a
  * component body. Reading the clock here rather than threading a `now` prop
  * down from the tile also keeps the freshness of the comparison local to the

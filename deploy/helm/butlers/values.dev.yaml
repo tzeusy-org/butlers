@@ -40,15 +40,9 @@ commonEnv:
   # export and /api/decisions do not depend on this flag.
   BUTLERS_DECISION_REVIEW_ENABLED: "1"
 
-# Tracker bridge enabled by owner ruling 2026-10-08 (bu-sng0tu). Host, CIDR and
-# image repository come from scripts/k8s/site-helm-args.sh.
-beadsExport:
+# Bridge retired; keep every runtime pod isolated from the engineering tracker.
+trackerEgress:
   enabled: true
-  denyTrackerEgress: true
-  schedule: "*/5 * * * *"
-  credentialBwsKeys:
-    user: BUTLERS_RUNTIME_BEADS_DOLT_USER
-    password: BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD
 
 # Current service traffic moves to its own process; session health refuses (503).
 butlersControl:

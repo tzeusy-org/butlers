@@ -67,7 +67,6 @@ export const test = base.extend<{ registryAvailable: boolean }>({
           case "/api/butlers": return reply({ data: [{ name: "education", status: "running" }] });
           case "/api/spend": return reply({ data: { total_cost_usd: 0 } });
           case "/api/approvals/metrics": return reply({ data: { total_pending: 0 } });
-          case "/api/decisions": return reply({ data: [], meta: { decisions_available: true } });
           case "/api/health": return reply({ status: "ok" });
           case "/api/education/mind-maps": {
             const status = url.searchParams.get("status");

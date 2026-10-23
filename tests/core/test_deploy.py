@@ -1068,9 +1068,7 @@ def test_key_absent_control_workload_and_session_network_contract():
             "--set",
             "database.host=db.invalid",
             "--set",
-            "beadsExport.enabled=false",
-            "--set",
-            "beadsExport.denyTrackerEgress=false",
+            "trackerEgress.enabled=false",
             *extra,
         ]
         return subprocess.run(command, capture_output=True, text=True)

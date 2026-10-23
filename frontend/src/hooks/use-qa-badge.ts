@@ -15,7 +15,6 @@ import {
   pendingApprovalMetricSourcesDegraded,
   useApprovalMetrics,
 } from './use-approvals'
-import { useDecisions } from './use-decisions'
 
 /** A sidebar badge with an explicit unavailable state. */
 export type AvailabilityBadgeState = (
@@ -80,26 +79,12 @@ export function useApprovalsPendingBadge(): AvailabilityBadgeState {
   return { kind: 'count', count: data?.data.total_pending ?? 0 }
 }
 
-/**
- * Decisions uses the same explicit availability shape as approvals so a
- * readable empty digest remains distinct from an unavailable one.
- */
-export type DecisionsBadgeState = AvailabilityBadgeState
-
-export function useDecisionsOpenBadge(): DecisionsBadgeState {
-  const { data, isError } = useDecisions()
-  if (isError || data?.meta?.decisions_available === false) return { kind: 'unavailable' }
-  return { kind: 'count', count: data?.data.length ?? 0 }
-}
-
-/** Badge registry — approval and decision badges carry explicit availability. */
+/** Badge registry — approval badges carry explicit availability. */
 export function useBadgeCounts(options?: { qaSourceDetails?: boolean }): Record<string, number | AvailabilityBadgeState> {
   const qaEscalations = useQaEscalationsBadge({ sourceDetails: options?.qaSourceDetails })
   const approvalsPending = useApprovalsPendingBadge()
-  const decisionsOpen = useDecisionsOpenBadge()
   return {
     'qa-escalations': qaEscalations,
     'approvals-pending': approvalsPending,
-    'decisions-open': decisionsOpen,
   }
 }

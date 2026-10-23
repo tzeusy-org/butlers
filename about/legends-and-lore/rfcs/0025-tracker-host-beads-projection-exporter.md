@@ -1,11 +1,21 @@
 # RFC 0025: Tracker-Host Beads Projection Exporter
 
-**Status:** Draft — Option A planning contract approved; implementation and
-activation remain owner-gated
+**Status:** Superseded by owner decision bu-g2zuv2 = A; staged retirement
+in progress, with retained backend contracts until their removal
 
 **Date:** 2026-08-13
 
 Governing doctrine: [development.md, Work Exists Only in Beads](../../heart-and-soul/development.md#work-exists-only-in-beads) and [security.md, Session Sandboxing](../../heart-and-soul/security.md#session-sandboxing) (sessions reach neither the tracker host nor tracker credentials; only a bounded projection is exposed).
+
+## Retirement transition (2026-10-21 owner decision)
+
+Owner decision bu-g2zuv2 = A supersedes product implementation/activation of
+this projection. The first removal slice (bu-99t5s3.6 steps 1-2) retires the
+Helm bridge and dashboard pages; effective runtime-to-tracker denial remains.
+The backend readers, jobs and intent history remain until later removal and a
+deployment-safe migration. The contract below records that retained boundary
+during transition, not authorization to install or re-enable the exporter.
+The final RFC/spec withdrawal follows in the accepted retirement work.
 
 ## Summary
 
