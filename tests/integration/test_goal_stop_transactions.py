@@ -803,18 +803,52 @@ async def test_real_bootstrap_roles_policy_and_immutable_attack_matrix(
                 with pytest.raises(AdmissionUnavailable):
                     await GoalStop(BoundPool(admin)).stop_goal(goal, uuid4(), "a" * 64)
                 assert await admin.fetchval("SELECT current_user") == role
-                assert (
-                    await admin.fetchval(
-                        "SELECT count(*) FROM switchboard.effects WHERE id=$1", reserved.effect_id
-                    )
-                    == 0
+                # Bootstrap grants connector_writer Switchboard table DML;
+                # Health has only the three explicit Stop-table grants above.
+                # Pin both the ACL layer and active RLS before testing denial.
+                ledger_table_access = role == "connector_writer"
+                privileges = await admin.fetchrow(
+                    "SELECT has_table_privilege(current_user,'switchboard.effects','SELECT'),"
+                    "has_table_privilege(current_user,'switchboard.goals','SELECT'),"
+                    "has_table_privilege(current_user,'switchboard.goals','UPDATE'),"
+                    "row_security_active('switchboard.effects'::regclass),"
+                    "row_security_active('switchboard.goals'::regclass)"
                 )
-                # The BEFORE INSERT trigger reads the protected effect first.
-                # Its invoker cannot see that row, so INTO STRICT raises P0002
-                # before this row reaches the INSERT WITH CHECK policy.
-                with pytest.raises(asyncpg.NoDataFoundError):
+                assert tuple(privileges) == (
+                    ledger_table_access,
+                    ledger_table_access,
+                    ledger_table_access,
+                    True,
+                    True,
+                )
+                if ledger_table_access:
+                    assert (
+                        await admin.fetchval(
+                            "SELECT count(*) FROM switchboard.effects WHERE id=$1",
+                            reserved.effect_id,
+                        )
+                        == 0
+                    )
+                else:
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied_read:
+                        async with admin.transaction():
+                            await admin.fetchval(
+                                "SELECT count(*) FROM switchboard.effects WHERE id=$1",
+                                reserved.effect_id,
+                            )
+                    assert denied_read.value.sqlstate == "42501"
+                # Health is denied by ledger table ACLs in the invoker trigger.
+                # Connector can read those tables, but RLS hides the effect,
+                # so its INTO STRICT raises P0002 before INSERT WITH CHECK.
+                park_error = (
+                    asyncpg.NoDataFoundError
+                    if ledger_table_access
+                    else asyncpg.InsufficientPrivilegeError
+                )
+                with pytest.raises(park_error) as denied_park:
                     async with admin.transaction():
                         await admin.execute(insert, *insert_args)
+                assert denied_park.value.sqlstate == ("P0002" if ledger_table_access else "42501")
                 # This valid local Stop receipt has no hidden-effect read in
                 # its BEFORE trigger, so it reaches the independent RLS check.
                 with pytest.raises(asyncpg.InsufficientPrivilegeError):
