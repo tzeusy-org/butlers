@@ -22,6 +22,7 @@ AUTHORIZATION_FIELDS = (
     "output_trust",
     "output_sensitivity",
     "resource_params",
+    "selection_bound",
     "safety_args",
     "approval_policy",
     "idempotency",
@@ -81,6 +82,7 @@ class ToolMetadata(Protocol):
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -128,6 +130,7 @@ class ToolPresentation:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -200,6 +203,7 @@ class ToolDescriptor:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -366,6 +370,15 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
     if not isinstance(descriptor.approval_policy, Mapping):
         problems.append("approval_policy")
     properties = descriptor.input_schema.get("properties", {})
+    selection = descriptor.selection_bound
+    resource_params = descriptor.resource_params
+    if (
+        not isinstance(selection, Mapping)
+        or not isinstance(resource_params, tuple)
+        or set(selection) != set(resource_params)
+        or any(not isinstance(flag, bool) for flag in selection.values())
+    ):
+        problems.append("selection_bound")
     for name in ("resource_params", "safety_args"):
         value = getattr(descriptor, name)
         if (
@@ -501,7 +514,8 @@ async def build_tool_catalog(
                 **{
                     field_name: (
                         _freeze(getattr(declared, field_name, None))
-                        if field_name in {"approval_policy", "resource_params", "safety_args"}
+                        if field_name
+                        in {"approval_policy", "resource_params", "selection_bound", "safety_args"}
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS

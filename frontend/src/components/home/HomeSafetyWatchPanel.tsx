@@ -9,7 +9,7 @@ import {
   useSaveHomeSafetyWatch,
 } from "@/hooks/use-home-safety-watch.ts";
 
-import { Panel } from "./atoms";
+import { Panel } from "@/components/ui/atoms";
 
 const ROLE_CHOICES: ReadonlyArray<{ value: HomeSafetyRole; name: string }> = [
   { value: "leak", name: "Water leak" },

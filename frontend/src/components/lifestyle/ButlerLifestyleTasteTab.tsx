@@ -22,7 +22,7 @@ import { Section, SectionContent, SectionHeader, SectionTitle } from "@/componen
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { KpiCell, ErrorLine, Panel } from "./atoms";
+import { KpiCell, ErrorLine, Panel } from "@/components/ui/atoms";
 import type { TasteSummary, TasteSummaryQueryName } from "@/api/types";
 import {
   useLifestyleTasteSummary,

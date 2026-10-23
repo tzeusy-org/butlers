@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useHomeAtmosphereCurrent, useUpdateHomeAtmosphereLocation } from "@/hooks/use-home";
 
-import { Panel } from "./atoms";
+import { Panel } from "@/components/ui/atoms";
 
 type CoordinateField = "latitude" | "longitude";
 
