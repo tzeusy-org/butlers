@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import io
 import json
@@ -37,6 +38,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -315,22 +317,68 @@ def source_paths(root: Path = REPO_ROOT) -> list[str]:
     return sorted(set(paths))
 
 
-def export_source(dest: Path, root: Path = REPO_ROOT) -> int:
-    """Copy regular source files into ``dest`` (0600); symlinks are never followed."""
-    copied = 0
-    for rel in source_paths(root):
-        src = root / rel
+def _open_source_file(root_fd: int, rel: str) -> int | None:
+    """Open one Git-listed file without following any source-path symlink.
+
+    Directory descriptors retain the traversal boundary even if a path is replaced while
+    exporting. The caller owns the returned file descriptor; no subsequent source path read
+    may replace it. Missing working-tree paths and final symlinks are excluded as before.
+    """
+    parts = PurePosixPath(rel).parts
+    with ExitStack() as directories:
+        parent_fd = root_fd
+        for part in parts[:-1]:
+            try:
+                directory_fd = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                raise ToolError(
+                    "source export: ancestor is not an accessible real directory"
+                ) from exc
+            directories.callback(os.close, directory_fd)
+            parent_fd = directory_fd
         try:
-            mode = src.lstat().st_mode
+            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
         except FileNotFoundError:
-            continue  # tracked but deleted in the working tree
-        if not stat.S_ISREG(mode):
-            continue  # symlinks and gitlinks are not followed
-        target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.copyfile(src, target, follow_symlinks=False)
-        target.chmod(0o600)
-        copied += 1
+            return None
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return None  # a final-component symlink, never followed
+            raise
+
+
+def export_source(dest: Path, root: Path = REPO_ROOT) -> int:
+    """Copy regular source files into private ``dest`` (0600), using confined source opens."""
+    copied = 0
+    paths = source_paths(root)
+    try:
+        with ExitStack() as checkout:
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            checkout.callback(os.close, root_fd)
+            for rel in paths:
+                source_fd = _open_source_file(root_fd, rel)
+                if source_fd is None:
+                    continue
+                try:
+                    if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+                        continue  # gitlinks/directories and special files are not source files
+                    target = dest / rel
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with (
+                        os.fdopen(source_fd, "rb", closefd=False) as source,
+                        os.fdopen(target_fd, "wb") as output,
+                    ):
+                        shutil.copyfileobj(source, output)
+                    copied += 1
+                finally:
+                    os.close(source_fd)
+    except OSError as exc:
+        # Raw filesystem errors can contain untrusted paths. Never print them.
+        raise ToolError("source export failed") from exc
     return copied
 
 

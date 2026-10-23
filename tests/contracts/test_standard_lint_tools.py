@@ -11,7 +11,11 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import re
+import shutil
+import stat
+import subprocess
 import tarfile
 from pathlib import Path
 from types import ModuleType
@@ -51,6 +55,170 @@ def _tar_gz(*members: tuple[tarfile.TarInfo, bytes | None]) -> bytes:
 
 def _file(name: str, data: bytes) -> tuple[tarfile.TarInfo, bytes]:
     return tarfile.TarInfo(name), data
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        "tracked",
+        "staged-add",
+        "untracked",
+        "index-removed",
+        "ignored",
+        "deleted",
+        "deleted-directory",
+        "gitlink",
+        "fifo",
+        "final-link-unstaged",
+        "final-link-staged",
+        "ancestor-link-unstaged",
+        "ancestor-link-staged",
+    ],
+)
+def test_source_export_confines_git_manifest_transitions(
+    lint_tools: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    transition: str,
+) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    path = root / "nested/config.txt"
+    path.parent.mkdir()
+    path.write_text("checkout dummy data\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / path.name).write_text("outside dummy data: never export\n")
+    if transition not in {"untracked", "ignored"}:
+        git("add", "nested/config.txt")
+        if transition != "staged-add":
+            git(
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            )
+    if transition == "ignored":
+        (root / ".git/info/exclude").write_text("nested/\n")
+    elif transition == "index-removed":
+        git("rm", "--cached", "nested/config.txt")
+    elif transition == "deleted":
+        path.unlink()
+    elif transition == "deleted-directory":
+        shutil.rmtree(path.parent)
+    elif transition == "gitlink":
+        git("rm", "--cached", "nested/config.txt")
+        git("update-index", "--add", "--cacheinfo", f"160000,{git('rev-parse', 'HEAD')},nested")
+    elif transition == "fifo":
+        path.unlink()
+        os.mkfifo(path)
+    elif transition.startswith("final-link"):
+        path.unlink()
+        path.symlink_to(outside / path.name)
+        if transition.endswith("-staged"):
+            git("add", "nested/config.txt")
+    elif transition.startswith("ancestor-link"):
+        shutil.rmtree(path.parent)
+        path.parent.symlink_to(outside, target_is_directory=True)
+        if transition.endswith("-staged"):
+            git("add", "-A")
+
+    manifest = lint_tools.source_paths(root)
+    if transition == "ignored":
+        assert manifest == []
+    elif transition in {"ancestor-link-staged", "gitlink"}:
+        assert manifest == ["nested"]
+    else:
+        assert "nested/config.txt" in manifest
+    dest = tmp_path / "export"
+    dest.mkdir()
+    if transition == "ancestor-link-unstaged":
+        with pytest.raises(lint_tools.ToolError, match="source export: ancestor"):
+            lint_tools.export_source(dest, root)
+        assert not (dest / "nested/config.txt").exists()
+        monkeypatch.setattr(
+            lint_tools, "secrets_scan", lambda: lint_tools.export_source(dest, root)
+        )
+        assert lint_tools.main(["secrets-scan"]) == 2
+        assert capsys.readouterr().err == (
+            "lint_tools secrets-scan: source export: ancestor is not an accessible real directory\n"
+        )
+    else:
+        included = transition in {"tracked", "staged-add", "untracked", "index-removed"}
+        assert lint_tools.export_source(dest, root) == int(included)
+        if included:
+            exported = dest / "nested/config.txt"
+            assert exported.read_text() == "checkout dummy data\n"
+            assert stat.S_IMODE(exported.stat().st_mode) == 0o600
+        else:
+            assert list(dest.rglob("*")) == []
+
+
+@pytest.mark.parametrize("component", ["ancestor", "final"])
+@pytest.mark.parametrize("timing", ["before-open", "after-open"])
+def test_source_export_confines_replacements_during_open(
+    lint_tools: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+    timing: str,
+) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    path = root / "nested/config.txt"
+    path.parent.mkdir()
+    path.write_text("original checkout dummy data\n")
+    subprocess.run(["git", "add", "nested/config.txt"], cwd=root, check=True, capture_output=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / path.name).write_text("outside dummy data: never export\n")
+    real_open = os.open
+    replaced = False
+
+    def replace() -> None:
+        nonlocal replaced
+        replaced = True
+        source = path.parent if component == "ancestor" else path
+        source.rename(root / "original")
+        source.symlink_to(outside if component == "ancestor" else outside / path.name)
+
+    def open_with_replacement(name: str | Path, flags: int, *args: object, **kwargs: object) -> int:
+        selected = "nested" if component == "ancestor" else "config.txt"
+        intercept = name == selected and "dir_fd" in kwargs and not replaced
+        if intercept and timing == "before-open":
+            replace()
+        fd = real_open(name, flags, *args, **kwargs)
+        if intercept and timing == "after-open":
+            replace()
+        return fd
+
+    monkeypatch.setattr(lint_tools.os, "open", open_with_replacement)
+    dest = tmp_path / "export"
+    dest.mkdir()
+    if component == "ancestor" and timing == "before-open":
+        with pytest.raises(lint_tools.ToolError, match="source export: ancestor"):
+            lint_tools.export_source(dest, root)
+        assert not (dest / "nested/config.txt").exists()
+    else:
+        included = timing == "after-open"
+        assert lint_tools.export_source(dest, root) == int(included)
+        if included:
+            assert (dest / "nested/config.txt").read_text() == "original checkout dummy data\n"
+        else:
+            assert list(dest.rglob("*")) == []
+    assert replaced, "the replacement must execute at the filesystem-open boundary"
 
 
 def test_missing_mismatched_or_changed_install_fails_closed(

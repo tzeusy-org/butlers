@@ -41,6 +41,33 @@ copied (regular files only; symlinks are not followed) into a private temporary 
 the repository. It does not scan Git history, other worktrees, or ignored files such as `.env`
 and caches, so a pass is not a history-clean claim.
 
+### Active source-export failure matrix (AC8)
+
+The source boundary is the checked-out directory, not the index's historical path types.
+Every source component must be opened relative to an already-open checkout directory without
+following symlinks. Copying uses the resulting file descriptor; a path check followed by a new
+path-based read is insufficient. Missing working-tree files and final symlinks remain excluded;
+an inaccessible or non-directory ancestor refuses the export categorically. No outside content
+or raw filesystem error may appear in diagnostics.
+
+| Failure or transition | Required outcome | Executing evidence |
+| --- | --- | --- |
+| Tracked, staged-added, non-ignored untracked, or index-removed but present regular file | Export current bytes with mode 0600 | Source-export manifest regression |
+| Ignored or working-tree-deleted file | Exclude it | Source-export manifest regression |
+| Deleted parent directory, Gitlink directory, or final FIFO | Exclude it without blocking or reading it | Source-export manifest regression |
+| Tracked file replaced by a final symlink, before or after staging | Exclude it without reading its target | Source-export manifest regression |
+| Tracked directory replaced by an outside-directory symlink, unstaged | Refuse export; never read the outside file | Source-export manifest regression |
+| Directory replacement staged, removing its former indexed children | Exclude the remaining final symlink | Source-export manifest regression |
+| Parent or final file replaced by a symlink immediately before its open | Refuse parent / exclude final file | Source-export replacement regression |
+| Parent or final path replaced after its descriptor is opened | Copy only the originally opened source bytes | Source-export replacement regression |
+
+The executing owners in `tests/contracts/test_standard_lint_tools.py` are
+`test_source_export_confines_git_manifest_transitions` (13 cases, including categorical exit 2
+and sanitized diagnostics) and `test_source_export_confines_replacements_during_open` (4 cases).
+All inputs, including outside-directory targets, are disposable nonsecret data under the test's
+temporary directory. The matrix remains active through independent review; focused passes prove
+these boundaries, while hosted CI remains the broader integration evidence.
+
 gitleaks runs with `--redact=100`, the reviewed `.gitleaks.toml`, no `.gitleaksignore`
 fingerprints, inline `gitleaks:allow` comments ignored, and every ambient `GITLEAKS_*` variable
 removed. Its stdout, stderr and report stay in the private directory and are deleted. The command
