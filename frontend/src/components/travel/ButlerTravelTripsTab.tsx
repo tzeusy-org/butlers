@@ -32,9 +32,9 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell, Panel } from "@/components/butler-detail/atoms";
-import { toneClass } from "@/components/butler-detail/atoms-utils";
-import type { Tone } from "@/components/butler-detail/atoms-utils";
+import { KpiCell, Panel } from "@/components/ui/atoms";
+import { toneClass } from "@/components/ui/atoms-utils";
+import type { Tone } from "@/components/ui/atoms-utils";
 import {
   useUpcomingTravel,
   useTravelTrips,
