@@ -119,14 +119,40 @@ async def _queue_replay(pool, row_id, *, bulk=False):
         }
 
 
+@asynccontextmanager
 async def _register_replay(pool, connector_type, endpoint):
-    await pool.execute(
-        "INSERT INTO switchboard.connector_registry(connector_type,endpoint_identity,replay_safe) "
-        "VALUES($1,$2,true) ON CONFLICT(connector_type,endpoint_identity) "
-        "DO UPDATE SET replay_safe=true",
+    """Borrow one registry key without leaking replay authority into other tests."""
+    previous = await pool.fetchrow(
+        "SELECT replay_safe FROM switchboard.connector_registry "
+        "WHERE connector_type=$1 AND endpoint_identity=$2",
         connector_type,
         endpoint,
     )
+    try:
+        await pool.execute(
+            "INSERT INTO switchboard.connector_registry(connector_type,endpoint_identity,replay_safe) "
+            "VALUES($1,$2,true) ON CONFLICT(connector_type,endpoint_identity) "
+            "DO UPDATE SET replay_safe=true",
+            connector_type,
+            endpoint,
+        )
+        yield
+    finally:
+        if previous is None:
+            await pool.execute(
+                "DELETE FROM switchboard.connector_registry "
+                "WHERE connector_type=$1 AND endpoint_identity=$2",
+                connector_type,
+                endpoint,
+            )
+        else:
+            await pool.execute(
+                "UPDATE switchboard.connector_registry SET replay_safe=$3 "
+                "WHERE connector_type=$1 AND endpoint_identity=$2",
+                connector_type,
+                endpoint,
+                previous["replay_safe"],
+            )
 
 
 @pytest.mark.pg_clock
@@ -583,113 +609,119 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
     # fails. The transaction rolls back and an explicit later drain resubmits
     # exactly the same event identity and exposure facts for ingest dedupe.
     # Email remains categorically unsafe even when its registry row says safe.
-    await _register_replay(pool, "gmail", "gmail:user:alice@example.com")
-    email_id = await pool.fetchval(
-        "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-clean'"
-    )
-    with pytest.raises(HTTPException) as denied:
-        await _queue_replay(pool, email_id)
-    assert denied.value.status_code == 409
-    assert (
-        await pool.fetchval("SELECT status FROM connectors.filtered_events WHERE id=$1", email_id)
-        == "replay_complete"
-    )
+    async with _register_replay(pool, "gmail", "gmail:user:alice@example.com"):
+        email_id = await pool.fetchval(
+            "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-clean'"
+        )
+        with pytest.raises(HTTPException) as denied:
+            await _queue_replay(pool, email_id)
+        assert denied.value.status_code == 409
+        assert (
+            await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id=$1", email_id
+            )
+            == "replay_complete"
+        )
 
     # The authorized scenarios use distinct legitimate Telegram rows.
     endpoint = "telegram:bot:jsonb-test"
-    await _register_replay(pool, "telegram_bot", endpoint)
-    buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
-    payload = _sample_payload()
-    payload["source"] = {
-        "channel": "telegram_bot",
-        "provider": "telegram",
-        "endpoint_identity": endpoint,
-    }
-    payload["sender"]["identity"] = "987"
-    payload["event"].pop("external_thread_id")
-    payload["event"]["external_conversation_id"] = "telegram:100"
-    payload["event"]["reply_target_ref"] = "100:9"
-    payload["control"]["policy_tier"] = "default"
-    payload["payload"]["untrusted_spans"] = [{"kind": "quoted", "start": 1, "end": 4}]
-    payload["event"]["in_reply_to_ref"] = "opaque-prior"
-    variants = [
-        ("uncertain", copy.deepcopy(payload)),
-        ("bad-kind", copy.deepcopy(payload)),
-        ("bad-entry", copy.deepcopy(payload)),
-        ("bad-container", copy.deepcopy(payload)),
-        ("known-kind", copy.deepcopy(payload)),
-    ]
-    variants[1][1]["payload"]["untrusted_spans"] = [{"kind": "unknown", "start": 0, "end": 1}]
-    variants[2][1]["payload"]["untrusted_spans"] = ["broken"]
-    variants[3][1]["payload"]["untrusted_spans"] = {"bad": 1}
-    variants[4][1]["payload"]["untrusted_spans"] = [{"kind": "embedded", "start": 100, "end": 200}]
-    row_ids = {}
-    for name, variant in variants:
-        variant["event"]["external_event_id"] = name
-        buf.record(
-            external_message_id=name,
-            source_channel="telegram_bot",
-            sender_identity="987",
-            subject_or_preview=None,
-            filter_reason="validation_error",
-            full_payload=variant,
+    async with _register_replay(pool, "telegram_bot", endpoint):
+        buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
+        payload = _sample_payload()
+        payload["source"] = {
+            "channel": "telegram_bot",
+            "provider": "telegram",
+            "endpoint_identity": endpoint,
+        }
+        payload["sender"]["identity"] = "987"
+        payload["event"].pop("external_thread_id")
+        payload["event"]["external_conversation_id"] = "telegram:100"
+        payload["event"]["reply_target_ref"] = "100:9"
+        payload["control"]["policy_tier"] = "default"
+        payload["payload"]["untrusted_spans"] = [{"kind": "quoted", "start": 1, "end": 4}]
+        payload["event"]["in_reply_to_ref"] = "opaque-prior"
+        variants = [
+            ("uncertain", copy.deepcopy(payload)),
+            ("bad-kind", copy.deepcopy(payload)),
+            ("bad-entry", copy.deepcopy(payload)),
+            ("bad-container", copy.deepcopy(payload)),
+            ("known-kind", copy.deepcopy(payload)),
+        ]
+        variants[1][1]["payload"]["untrusted_spans"] = [{"kind": "unknown", "start": 0, "end": 1}]
+        variants[2][1]["payload"]["untrusted_spans"] = ["broken"]
+        variants[3][1]["payload"]["untrusted_spans"] = {"bad": 1}
+        variants[4][1]["payload"]["untrusted_spans"] = [
+            {"kind": "embedded", "start": 100, "end": 200}
+        ]
+        row_ids = {}
+        for name, variant in variants:
+            variant["event"]["external_event_id"] = name
+            buf.record(
+                external_message_id=name,
+                source_channel="telegram_bot",
+                sender_identity="987",
+                subject_or_preview=None,
+                filter_reason="validation_error",
+                full_payload=variant,
+            )
+            await buf.flush(pool)
+            row_ids[name] = await pool.fetchval(
+                "SELECT id FROM connectors.filtered_events WHERE external_message_id=$1", name
+            )
+
+        accepted = []
+
+        async def validate(envelope):
+            parsed = parse_ingest_envelope(envelope)
+            accepted.append(copy.deepcopy(envelope))
+            return parsed
+
+        class FailedStatusConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            async def execute(self, *args):
+                raise RuntimeError("synthetic status persistence uncertainty")
+
+        class FailedStatusPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    yield FailedStatusConnection(connection)
+
+        await _queue_replay(pool, row_ids["uncertain"])
+        await drain_replay_pending(FailedStatusPool(), "telegram_bot", endpoint, validate)
+        assert len(accepted) == 1
+        assert (
+            await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id=$1", row_ids["uncertain"]
+            )
+            == "replay_pending"
         )
-        await buf.flush(pool)
-        row_ids[name] = await pool.fetchval(
-            "SELECT id FROM connectors.filtered_events WHERE external_message_id=$1", name
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
+        assert accepted[0] == accepted[1]
+        assert accepted[1]["event"]["in_reply_to_ref"] == "opaque-prior"
+        assert accepted[1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
+        for name, _ in variants[1:]:
+            await _queue_replay(pool, row_ids[name])
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
+        statuses = {
+            r["external_message_id"]: r["status"]
+            for r in await pool.fetch(
+                "SELECT external_message_id,status FROM connectors.filtered_events"
+            )
+        }
+        assert all(
+            statuses[n] == "replay_failed" for n in ("bad-kind", "bad-entry", "bad-container")
         )
-
-    accepted = []
-
-    async def validate(envelope):
-        parsed = parse_ingest_envelope(envelope)
-        accepted.append(copy.deepcopy(envelope))
-        return parsed
-
-    class FailedStatusConnection:
-        def __init__(self, connection):
-            self.connection = connection
-
-        def __getattr__(self, name):
-            return getattr(self.connection, name)
-
-        async def execute(self, *args):
-            raise RuntimeError("synthetic status persistence uncertainty")
-
-    class FailedStatusPool:
-        @asynccontextmanager
-        async def acquire(self):
-            async with pool.acquire() as connection:
-                yield FailedStatusConnection(connection)
-
-    await _queue_replay(pool, row_ids["uncertain"])
-    await drain_replay_pending(FailedStatusPool(), "telegram_bot", endpoint, validate)
-    assert len(accepted) == 1
-    assert (
-        await pool.fetchval(
-            "SELECT status FROM connectors.filtered_events WHERE id=$1", row_ids["uncertain"]
-        )
-        == "replay_pending"
-    )
-    await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
-    assert accepted[0] == accepted[1]
-    assert accepted[1]["event"]["in_reply_to_ref"] == "opaque-prior"
-    assert accepted[1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
-    for name, _ in variants[1:]:
-        await _queue_replay(pool, row_ids[name])
-    await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
-    statuses = {
-        r["external_message_id"]: r["status"]
-        for r in await pool.fetch(
-            "SELECT external_message_id,status FROM connectors.filtered_events"
-        )
-    }
-    assert all(statuses[n] == "replay_failed" for n in ("bad-kind", "bad-entry", "bad-container"))
-    assert statuses["known-kind"] == "replay_complete"
-    assert accepted[-1]["payload"]["untrusted_spans"] == [
-        {"kind": "embedded", "start": 100, "end": 200}
-    ]
-    assert parse_ingest_envelope(accepted[-1]).payload.untrusted_spans[0].start == 0
+        assert statuses["known-kind"] == "replay_complete"
+        assert accepted[-1]["payload"]["untrusted_spans"] == [
+            {"kind": "embedded", "start": 100, "end": 200}
+        ]
+        assert parse_ingest_envelope(accepted[-1]).payload.untrusted_spans[0].start == 0
 
 
 async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: asyncpg.Pool) -> None:
@@ -793,17 +825,17 @@ async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: async
         ),
         str,
     )
-    await _register_replay(pool, "telegram_bot", endpoint)
-    await _queue_replay(pool, row_id, bulk=True)
+    async with _register_replay(pool, "telegram_bot", endpoint):
+        await _queue_replay(pool, row_id, bulk=True)
 
-    async def validating_submit(envelope):
-        parse_ingest_envelope(envelope)
-        submitted.append(envelope)
+        async def validating_submit(envelope):
+            parse_ingest_envelope(envelope)
+            submitted.append(envelope)
 
-    await drain_replay_pending(pool, "telegram_bot", endpoint, validating_submit)
-    assert len(submitted) == 2
-    assert submitted[-1]["event"]["in_reply_to_ref"] == "legacy-opaque-ref"
-    assert submitted[-1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validating_submit)
+        assert len(submitted) == 2
+        assert submitted[-1]["event"]["in_reply_to_ref"] == "legacy-opaque-ref"
+        assert submitted[-1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
 
 
 async def test_buggy_write_path_would_have_corrupted_full_payload_into_a_string(
@@ -1289,113 +1321,124 @@ async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) 
         cursor_pool=MagicMock(),
     )
     endpoint = connector._config.endpoint_identity
-    await _register_replay(pool, "telegram_bot", endpoint)
-    for stage in ("policy", "submission"):
-        update_id = 301 if stage == "policy" else 302
-        update = {
-            "update_id": update_id,
-            "message": {
-                "message_id": update_id,
-                "chat": {"id": 100},
-                "from": {"id": 987},
-                "text": "owner introduction; quoted third-party text",
-                "entities": [{"type": "blockquote", "offset": 20, "length": 22}],
-                "reply_to_message": {"message_id": 5},
-            },
-        }
-        original = await connector._normalize_to_ingest_v1(update)
-        with (
-            patch.object(
-                connector._ingestion_policy,
-                "evaluate",
-                return_value=PolicyDecision(
-                    action="block" if stage == "policy" else "pass_through",
-                    matched_rule_type="chat_id",
+    connector_type = connector._config.provider
+    async with _register_replay(pool, connector_type, endpoint):
+        for stage in ("policy", "submission"):
+            update_id = 301 if stage == "policy" else 302
+            update = {
+                "update_id": update_id,
+                "message": {
+                    "message_id": update_id,
+                    "chat": {"id": 100},
+                    "from": {"id": 987},
+                    "text": "owner introduction; quoted third-party text",
+                    "entities": [{"type": "blockquote", "offset": 20, "length": 22}],
+                    "reply_to_message": {"message_id": 5},
+                },
+            }
+            original = await connector._normalize_to_ingest_v1(update)
+            with (
+                patch.object(
+                    connector._ingestion_policy,
+                    "evaluate",
+                    return_value=PolicyDecision(
+                        action="block" if stage == "policy" else "pass_through",
+                        matched_rule_type="chat_id",
+                    ),
                 ),
-            ),
-            patch.object(
-                connector._global_ingestion_policy,
-                "evaluate",
-                return_value=PolicyDecision(action="pass_through"),
-            ),
-            patch.object(
-                connector,
-                "_submit_to_ingest",
-                AsyncMock(side_effect=ValueError("synthetic failure")),
-            ),
-        ):
-            await connector._process_update(update)
-        await connector._filtered_event_buffer.flush(pool)
-        row = await pool.fetchrow(
-            "SELECT * FROM connectors.filtered_events WHERE external_message_id=$1", str(update_id)
-        )
-        stored = row["full_payload"]
-        assert isinstance(stored, dict)
-        assert row["status"] == ("filtered" if stage == "policy" else "error")
-        assert stored["event"]["in_reply_to_ref"] == "100:5"
-        assert stored["sender"]["identity"] == "987"
-        if stage == "policy":
-            assert stored["payload"]["raw"] == {}
-            assert "normalized_text" not in stored["payload"]
-            assert update["message"]["text"] not in str(stored)
-        else:
-            assert stored["payload"]["normalized_text"] == original["payload"]["normalized_text"]
-            assert stored["payload"]["untrusted_spans"] == original["payload"]["untrusted_spans"]
-        await _queue_replay(pool, row["id"])
-        entered, release = asyncio.Event(), asyncio.Event()
-        delivered, competing = [], []
-
-        async def submit(envelope, delivered=delivered, entered=entered, release=release):
-            parse_ingest_envelope(envelope)
-            delivered.append(copy.deepcopy(envelope))
-            entered.set()
-            await asyncio.wait_for(release.wait(), 5)
-            raise ValueError("synthetic failed submit")
-
-        async def other_submit(envelope, competing=competing):
-            competing.append(envelope)
-
-        first = asyncio.create_task(drain_replay_pending(pool, "telegram_bot", endpoint, submit))
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            await asyncio.wait_for(
-                drain_replay_pending(pool, "telegram_bot", endpoint, other_submit), 5
+                patch.object(
+                    connector._global_ingestion_policy,
+                    "evaluate",
+                    return_value=PolicyDecision(action="pass_through"),
+                ),
+                patch.object(
+                    connector,
+                    "_submit_to_ingest",
+                    AsyncMock(side_effect=ValueError("synthetic failure")),
+                ),
+            ):
+                await connector._process_update(update)
+            await connector._filtered_event_buffer.flush(pool)
+            row = await pool.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id=$1",
+                str(update_id),
             )
-            assert competing == []  # the first real connection still holds the row lock
-        finally:
-            release.set()
-            await asyncio.wait_for(first, 5)
-        assert (
-            await pool.fetchval(
-                "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+            stored = row["full_payload"]
+            assert isinstance(stored, dict)
+            assert row["status"] == ("filtered" if stage == "policy" else "error")
+            assert stored["event"]["in_reply_to_ref"] == "100:5"
+            assert stored["sender"]["identity"] == "987"
+            if stage == "policy":
+                assert stored["payload"]["raw"] == {}
+                assert "normalized_text" not in stored["payload"]
+                assert update["message"]["text"] not in str(stored)
+            else:
+                assert (
+                    stored["payload"]["normalized_text"] == original["payload"]["normalized_text"]
+                )
+                assert (
+                    stored["payload"]["untrusted_spans"] == original["payload"]["untrusted_spans"]
+                )
+            await _queue_replay(pool, row["id"])
+            entered, release = asyncio.Event(), asyncio.Event()
+            delivered, competing = [], []
+
+            async def submit(envelope, delivered=delivered, entered=entered, release=release):
+                parse_ingest_envelope(envelope)
+                delivered.append(copy.deepcopy(envelope))
+                entered.set()
+                await asyncio.wait_for(release.wait(), 5)
+                raise ValueError("synthetic failed submit")
+
+            async def other_submit(envelope, competing=competing):
+                competing.append(envelope)
+
+            first = asyncio.create_task(
+                drain_replay_pending(pool, connector_type, endpoint, submit)
             )
-            == "replay_failed"
-        )
-        await drain_replay_pending(pool, "telegram_bot", endpoint, other_submit)
-        assert competing == []  # no automatic retry of replay_failed
-        await _queue_replay(pool, row["id"], bulk=True)
-
-        async def retry_submit(envelope, delivered=delivered):
-            parse_ingest_envelope(envelope)
-            delivered.append(copy.deepcopy(envelope))
-
-        await drain_replay_pending(pool, "telegram_bot", endpoint, retry_submit)
-        assert delivered[0] == delivered[1]
-        assert delivered[1]["event"]["external_event_id"] == original["event"]["external_event_id"]
-        assert delivered[1]["event"]["in_reply_to_ref"] == "100:5"
-        assert delivered[1]["event"]["reply_target_ref"] != "100:5"
-        assert "drop_context" not in delivered[1]
-        if stage == "submission":
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                await asyncio.wait_for(
+                    drain_replay_pending(pool, connector_type, endpoint, other_submit), 5
+                )
+                assert competing == []  # the first real connection still holds the row lock
+            finally:
+                release.set()
+                await asyncio.wait_for(first, 5)
             assert (
-                delivered[1]["payload"]["untrusted_spans"] == original["payload"]["untrusted_spans"]
+                await pool.fetchval(
+                    "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+                )
+                == "replay_failed"
             )
-        else:
-            assert delivered[1]["payload"]["untrusted_spans"] == [
-                {"kind": "quoted", "start": 0, "end": len("[no text]")}
-            ]
-        assert (
-            await pool.fetchval(
-                "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+            await drain_replay_pending(pool, connector_type, endpoint, other_submit)
+            assert competing == []  # no automatic retry of replay_failed
+            await _queue_replay(pool, row["id"], bulk=True)
+
+            async def retry_submit(envelope, delivered=delivered):
+                parse_ingest_envelope(envelope)
+                delivered.append(copy.deepcopy(envelope))
+
+            await drain_replay_pending(pool, connector_type, endpoint, retry_submit)
+            assert delivered[0] == delivered[1]
+            assert (
+                delivered[1]["event"]["external_event_id"] == original["event"]["external_event_id"]
             )
-            == "replay_complete"
-        )
+            assert delivered[1]["event"]["in_reply_to_ref"] == "100:5"
+            assert delivered[1]["event"]["reply_target_ref"] != "100:5"
+            assert "drop_context" not in delivered[1]
+            if stage == "submission":
+                assert (
+                    delivered[1]["payload"]["untrusted_spans"]
+                    == original["payload"]["untrusted_spans"]
+                )
+            else:
+                assert delivered[1]["payload"]["untrusted_spans"] == [
+                    {"kind": "quoted", "start": 0, "end": len("[no text]")}
+                ]
+            assert (
+                await pool.fetchval(
+                    "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+                )
+                == "replay_complete"
+            )
