@@ -6,6 +6,7 @@ REQ-connector-base-spec-003, REQ-connector-base-spec-004.
 
 import asyncio
 import hashlib
+import importlib
 import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -214,14 +215,22 @@ async def test_accepted_ingest_source_preserves_trust_and_fences(accepted):
             await owner.execute(
                 "DELETE FROM public.dashboard_conversations WHERE id=$1", conversation
             )
-        # Ambiguous or merged owner entities cannot confer authority.
+        # Ambiguous channel facts or merged owner entities cannot confer authority.
         other = await owner.fetchval(
-            "INSERT INTO public.entities(canonical_name,roles) VALUES('closed ambiguous',ARRAY['owner']) RETURNING id"
+            "INSERT INTO public.entities(canonical_name,roles) VALUES('closed ambiguous',ARRAY[]::text[]) RETURNING id"
         )
         try:
+            # The singleton owner remains intact. A conflicting live typed
+            # channel fact makes the real ambiguity-safe definer reject both.
+            await owner.execute(
+                "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+                "VALUES($1,'has-handle','telegram:987','literal','test')",
+                other,
+            )
             ambiguous, _ = await admit_source(runtime, await accept(ingest))
             assert (await goal(owner, ambiguous))["origin"] == "third_party"
         finally:
+            await owner.execute("DELETE FROM relationship.entity_facts WHERE subject=$1", other)
             await owner.execute("DELETE FROM public.entities WHERE id=$1", other)
         await owner.execute(
             "UPDATE public.entities SET metadata=jsonb_build_object('deleted_at','test') WHERE id=$1",
@@ -445,7 +454,7 @@ def beat(kind, *, connector="telegram_bot", endpoint="telegram:drift:closed"):
 
 async def test_channel_kind_drift_is_detected_under_concurrent_heartbeats(accepted, caplog):
     owner, _, pool = accepted
-    from butlers.tools.switchboard.connector import heartbeat as module
+    module = importlib.import_module("butlers.tools.switchboard.connector.heartbeat")
 
     endpoint = "telegram:drift:closed"
     tasks = []
