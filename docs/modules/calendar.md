@@ -19,7 +19,7 @@ Key capabilities:
 - **Attendee data** -- retain provider attendee/RSVP details on events and attendee fields on event create/update. Standalone attendee add/remove tools are retired.
 - **Approval integration** -- overlap overrides and high-impact actions (e.g., cancelling events with external attendees) route through the approvals module.
 
-Source: `src/butlers/modules/calendar.py`.
+Source: `src/butlers/modules/calendar/` (the public module class is in `__init__.py`).
 
 ## Configuration
 
@@ -53,7 +53,7 @@ When `calendar_id` is not explicitly configured, the module auto-discovers or cr
 
 ## Tools Provided
 
-Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar.py`); read
+Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar/__init__.py`); read
 it for the current names and signatures. The families:
 
 - **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`) -- read and
@@ -109,6 +109,30 @@ The module does not own dedicated Alembic migrations (`migration_revisions()` re
 
 None. The calendar module is a leaf module. When the approvals module is co-loaded, the daemon wires an approval enqueuer callback via `set_approval_enqueuer()`.
 
+## Package ownership
+
+`butlers.modules.calendar` remains the real import surface. Its `__init__.py` defines the
+single `CalendarModule` and directly exports the existing types and helpers from their
+owners. Plain behavior mixins operate on that same module instance; static tool registrars
+run synchronously inside `register_tools` and preserve typed callable signatures and order.
+
+- `models.py`, `constants.py`, `errors.py`, and `time_helpers.py`: validated values and primitives.
+- `provider.py`, `google.py`, `google_mapping.py`, and `oauth.py`: the provider contract,
+  Google transport/conversion and token lifecycle.
+- `event_tools.py`, `butler_events.py`, `tools.py`, and `response_tools.py`: registered callables.
+- `mutations.py`, `recurrence.py`, and `conflicts.py`: existing permission, audit, action-log,
+  recurrence and availability behavior.
+- `projection.py`, `internal_projection.py`, `sync.py`, and `sync_queue.py`: the single live
+  projection and sync engine, including durable force-sync commands and internal sources.
+- `reminders.py`: native reminder operations, due dispatch and reminder tool registration.
+
+The external `calendar_response.py` and `calendar_response_fence.py` retain their existing
+single implementations. This mechanical split does not change response ownership, retire
+the fence, add a response-only registration group or introduce a shared mutation runner.
+The later authorized sync-engine cutover must remove the single implementation in these
+owners, without keeping a second engine. Every Calendar package Python file is limited to
+2,000 physical lines and `CalendarModule.register_tools` to 300 lines.
+
 ## Implementation Notes
 
 - Existing `calendar.write` effect checks refuse a missing permission pool, failed read or malformed row with a typed transient `PermissionUnavailable` before provider writes and workspace mutation preparation. A readable missing row remains default-allow; explicit revocations and approvals still apply. Every fresh or deferred execution rechecks state without a new retry loop. The staged bu-30sah4 fix protects effects first; bu-svqpzo.3 owns the remaining shared callers and final fail-closed policy including spawn.
@@ -160,7 +184,7 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `/butler-events`, `projection_freshness` and `request_id`. Every calendar MCP write tool,
   including the provider update/delete and recurrence-scope tools, stays registered for
   butlers and chat except the separately retired standalone attendee add/remove tools.
-- `src/butlers/modules/calendar.py::_normalize_recurrence()` rejects any rule containing `\n` or
+- `src/butlers/modules/calendar/models.py::_normalize_recurrence()` rejects any rule containing `\n` or
   `\r` (iCalendar injection) and
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
   `CalendarEventUpdate` normalise `recurrence_rule` before any provider call.
@@ -175,7 +199,7 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `approved` for the same tool. With approvals unavailable it returns `approval_unavailable` and
   never writes.
 - Malformed provider payloads raise `ValueError`; `CalendarAuthError` is reserved for auth and
-  transport failures. `src/butlers/modules/calendar.py::_GoogleProvider` validates credentials
+  transport failures. `src/butlers/modules/calendar/google.py::_GoogleProvider` validates credentials
   before creating its owned `httpx.AsyncClient`, so a credential error cannot leak a client.
 - Read tools (`calendar_list_events`, `calendar_get_event`) go through the active
   `CalendarProvider`, and a per-call `calendar_id` override never mutates the configured default.
@@ -188,7 +212,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
   `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
   delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
-  `calendar_toggle_butler_event(..., _approval_bypass=True)` (`src/butlers/modules/calendar.py`).
+  `calendar_toggle_butler_event(..., _approval_bypass=True)`
+  (`src/butlers/modules/calendar/butler_events.py`).
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single
   `calendar_force_sync(queue=true)`, answering `202`. The module persists and serialises the command
