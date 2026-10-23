@@ -2112,6 +2112,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/chat/FloatingChatWidget.tsx`
 
 - Talk to Butlers
+- Saved conversation details may be out of date.
+- Saved updates may be out of date.
 - Conversation history
 - History
 - New conversation
@@ -2120,6 +2122,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Close chat
 - Close
 - conversation history
+- conversation updates
 - Talk to Butlers (new reply)
 
 ## `frontend/src/components/chat/MessageInput.tsx`
