@@ -10073,8 +10073,6 @@ STORE_WRITERS = MappingProxyType(
         "calendar_action_log": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.api.routers.calendar_workspace.undo_calendar_mutation",
-                "butlers.api.routers.calendar_workspace.undo_calendar_mutation._release_claim",
                 "butlers.modules.calendar.CalendarModule._claim_next_force_sync_command",
                 "butlers.modules.calendar.CalendarModule._finalize_force_sync_command",
                 "butlers.modules.calendar.CalendarModule._insert_pending_force_sync_command",

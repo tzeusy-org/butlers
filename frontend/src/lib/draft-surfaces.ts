@@ -18,7 +18,6 @@ export const DRAFT_FIELDS = {
     "chronicles.correction": ["title", "privacy", "note"],
     "butler-state.set": ["key", "value"],
     "butler-state.edit": ["key", "value"],
-    "calendar.user-event": ["sourceKey", "title", "startAtLocal", "endAtLocal", "timezone", "description", "location", "entityIds"],
     "calendar.butler-event": ["butlerName", "eventKind", "title", "startAtLocal", "endAtLocal", "timezone", "recurrenceFrequency", "cron", "hasUntilAt", "untilAtLocal"],
 } as const;
 export type DraftSurface = keyof typeof DRAFT_FIELDS;

@@ -1,14 +1,12 @@
 /**
  * Audit-log view for the calendar workspace Activity tab: paged rows, per-row
- * status, session links and (until the undo surface is removed) the Undo
- * affordance.
+ * status and session links.
  */
 
 import { format } from "date-fns";
 import { Link } from "react-router";
 
 import type { CalendarAuditEntry } from "@/api/types.ts";
-import { CALENDAR_UNDOABLE_ACTION_TYPES } from "@/api/types.ts";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Mono } from "@/components/ui/Mono";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -67,33 +65,13 @@ interface CalendarActivityPanelProps {
   offset: number;
   limit: number;
   onPageChange: (offset: number) => void;
-  /**
-   * Reverse an applied, undoable audit row (durable undo via
-   * POST /calendar/workspace/undo/{action_id}). The parent owns the mutation,
-   * toast, and status-code→message mapping.
-   */
-  onUndo: (entry: CalendarAuditEntry) => void;
-  /** action_id of the row whose undo is currently in flight, if any. */
-  undoingId: string | null;
-  /** action_ids already reversed this session (their Undo button is spent). */
-  undoneIds: ReadonlySet<string>;
 }
 
-/** An audit row is reversible when it is applied and has a known inverse. */
-function isUndoableAuditEntry(entry: CalendarAuditEntry): boolean {
-  return (
-    entry.action_status === "applied" &&
-    CALENDAR_UNDOABLE_ACTION_TYPES.has(entry.action_type)
-  );
-}
 export function CalendarActivityPanel({
   auditQuery,
   offset,
   limit,
   onPageChange,
-  onUndo,
-  undoingId,
-  undoneIds,
 }: CalendarActivityPanelProps) {
   const entries = auditQuery.data?.data?.entries ?? [];
   const total = auditQuery.data?.data?.total ?? 0;
@@ -194,9 +172,6 @@ export function CalendarActivityPanel({
               typeof entry.payload_summary?.title === "string"
                 ? entry.payload_summary.title
                 : null;
-            const undoable = isUndoableAuditEntry(entry);
-            const undone = undoneIds.has(entry.id);
-            const undoing = undoingId === entry.id;
 
             return (
               <Row
@@ -219,26 +194,6 @@ export function CalendarActivityPanel({
                           session ›
                         </Link>
                       </Tip>
-                    ) : null}
-                    {undoable ? (
-                      undone ? (
-                        <span
-                          className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
-                          data-testid="calendar-audit-undone"
-                        >
-                          undone
-                        </span>
-                      ) : (
-                        <PillButton
-                          data-testid="calendar-audit-undo"
-                          data-action-id={entry.id}
-                          disabled={undoingId !== null}
-                          onClick={() => onUndo(entry)}
-                          title="Reverse this calendar change"
-                        >
-                          {undoing ? "Undoing…" : "Undo"}
-                        </PillButton>
-                      )
                     ) : null}
                   </div>
                 }

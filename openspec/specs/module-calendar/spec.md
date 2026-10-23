@@ -761,6 +761,12 @@ undo endpoint SHALL pass the nullable `all_day` truth through the inverse
 `calendar_update_event` or `calendar_create_event` payload without an extra
 provider read.
 
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The dashboard undo
+endpoint (`POST /api/calendar/workspace/undo/{action_id}`) no longer exists. The
+module's pre-state capture and the calendar MCP tools are unchanged: the captured
+pre-image stays in `action_result` as audit evidence and for any future inverse
+caller, but no dashboard route consumes it.
+
 #### Scenario: All-day pre-state round-trips through undo
 
 - **WHEN** an applied user-lane update or delete has a captured pre-state with

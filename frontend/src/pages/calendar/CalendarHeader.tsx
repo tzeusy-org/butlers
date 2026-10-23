@@ -1,6 +1,6 @@
 /**
  * Masthead for the calendar workspace: eyebrow, period headline, event count
- * and the page-level actions (sync, search, agenda, sources, create).
+ * and the page-level actions (sync, search, agenda, sources, create butler event).
  */
 
 import { format } from "date-fns";
@@ -24,14 +24,10 @@ interface CalendarHeaderProps {
   sync: CalendarSync;
   hiddenSourceCount: number;
   butlerPending: boolean;
-  userEventPending: boolean;
-  canCreateUserEvents: boolean;
   onSearch: () => void;
   onAgenda: () => void;
-  onPortability: () => void;
   onSources: () => void;
   onCreateButlerEvent: () => void;
-  onCreateUserEvent: () => void;
 }
 
 export function CalendarHeader({
@@ -45,14 +41,10 @@ export function CalendarHeader({
   sync,
   hiddenSourceCount,
   butlerPending,
-  userEventPending,
-  canCreateUserEvents,
   onSearch,
   onAgenda,
-  onPortability,
   onSources,
   onCreateButlerEvent,
-  onCreateUserEvent,
 }: CalendarHeaderProps) {
   return (
     <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 pb-5">
@@ -80,9 +72,6 @@ export function CalendarHeader({
         <PillButton onClick={onAgenda} aria-label="Open printable agenda">
           Agenda
         </PillButton>
-        <PillButton onClick={onPortability} aria-label="Export or import calendar">
-          Export / Import
-        </PillButton>
         <PillButton onClick={onSources} aria-label="Configure sources">
           Sources
           {hiddenSourceCount > 0 ? (
@@ -95,15 +84,7 @@ export function CalendarHeader({
           <CommitButton onClick={onCreateButlerEvent} disabled={butlerPending}>
             Create butler event
           </CommitButton>
-        ) : (
-          <CommitButton
-            onClick={onCreateUserEvent}
-            disabled={!canCreateUserEvents || userEventPending}
-            aria-label="Create user event"
-          >
-            Create event
-          </CommitButton>
-        )}
+        ) : null}
       </div>
     </header>
   );

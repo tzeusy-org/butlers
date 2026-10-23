@@ -1,6 +1,6 @@
 /** Agenda list: entries grouped by workspace-timezone day. */
 
-import type { UnifiedCalendarEntry, CalendarWorkspaceView } from "@/api/types.ts";
+import type { UnifiedCalendarEntry } from "@/api/types.ts";
 import { LinkedPeopleAvatars } from "@/components/calendar/LinkedPeopleAvatars";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
@@ -14,20 +14,14 @@ import { isCancelledEntry } from "@/pages/calendar/workspace-model";
 
 interface AgendaListProps {
   entries: UnifiedCalendarEntry[];
-  view: CalendarWorkspaceView;
   defaultTimezone: string;
-  pending: boolean;
   onOpenDetail: (entry: UnifiedCalendarEntry) => void;
-  onDelete: (entry: UnifiedCalendarEntry) => void;
 }
 
 export function AgendaList({
   entries,
-  view,
   defaultTimezone,
-  pending,
   onOpenDetail,
-  onDelete,
 }: AgendaListProps) {
   if (entries.length === 0) {
     return (
@@ -87,11 +81,6 @@ export function AgendaList({
             </div>
             <div role="list">
               {group.items.map((entry) => {
-                const canMutate =
-                  view === "user" &&
-                  entry.source_type === "provider_event" &&
-                  !!entry.provider_event_id &&
-                  entry.editable;
                 return (
                   <Row
                     key={entry.entry_id}
@@ -113,18 +102,8 @@ export function AgendaList({
                       <div className="flex items-center gap-1.5">
                         <PillButton
                           onClick={() => onOpenDetail(entry)}
-                          disabled={pending}
                         >
                           Detail
-                        </PillButton>
-                        <PillButton
-                          onClick={() => onDelete(entry)}
-                          disabled={
-                            !canMutate || pending
-                          }
-                          className="hover:border-[var(--red)] hover:text-[var(--red-text)]"
-                        >
-                          Delete
                         </PillButton>
                       </div>
                     }
