@@ -5298,6 +5298,16 @@ export interface ButlerModelOverrideUpsert {
   complexity_tier?: ComplexityTier | null;
 }
 
+/** Required request-level explanation for a consequential override mutation. */
+export interface ButlerModelOverrideReason {
+  reason: string;
+  price_preview_unavailable?: boolean;
+}
+
+export interface ButlerModelOverridesWrite extends ButlerModelOverrideReason {
+  overrides: ButlerModelOverrideUpsert[];
+}
+
 /** Response from the model test endpoint. */
 export interface ModelTestResult {
   success: boolean;
