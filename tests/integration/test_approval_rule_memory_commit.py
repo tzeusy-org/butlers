@@ -240,7 +240,7 @@ async def test_rule_memory_requires_real_owning_commit(database, monkeypatch, bo
         base_url="http://test",
         headers={"X-API-Key": _KEY},
     ) as client:
-        view = await client.get(f"/api/approvals/actions/{action_id}")
+        view = await client.get(f"/api/approvals/{action_id}")
         assert view.status_code == 200
         displayed_call = view.json()["data"]["call_preview"]["displayed_call"]
         payload = {"create_rule": True, "displayed_call": displayed_call, "actor": "untrusted"}
