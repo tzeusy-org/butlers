@@ -323,6 +323,15 @@ See [the operational procedure](../docs/operations/stale-branch-hygiene.md).
 
 `fetch_pr_metadata.py` is the mandatory guard producer for validated current
 fixed-PR title/body. It writes runner-temp inputs and digests privately, removes
-stale inputs on failure and emits only categorical diagnostics. The scanner's
+stale title/body/digest-receipt outputs before reading and on completed failure,
+and emits only categorical diagnostics. Subprocess failures receive at most three
+30-second attempts with 2/5-second backoffs under one 97-second monotonic budget;
+a successful response is validated once, and invalid JSON/identity or local I/O
+errors never retry or use cached metadata. The workflow independently uses GNU
+`timeout` (TERM at 100 seconds, KILL after 3 more) and its surviving step shell
+attempts cleanup of all three outputs on nonzero exit. This nominal 103-second envelope
+is not measured CI latency or a cleanup guarantee under runner/kernel loss;
+incomplete execution remains UNKNOWN/non-pass. The GNU-dependent group control
+fails closed on unsupported timeout implementations. The scanner's
 `--redact-findings` CLI mode retains detection and omits matched text; its private
 formatter and JSON interfaces remain available for existing consumers.
