@@ -11,6 +11,7 @@ the CI result for these checks. It runs, in order:
 | step | command | fails on |
 | --- | --- | --- |
 | Ruff | `uv run ruff check src/ tests/ roster/ scripts/` | rules E, F, I, UP, B, ASYNC |
+| Package layers | `uv run --no-sync lint-imports` | the import contracts in `pyproject.toml` |
 | Secret scan | `make secrets-scan` | any gitleaks finding not covered by a reviewed allowance |
 | Workflow lint | `make lint-workflows` | any actionlint finding in `.github/workflows/*.yml` / `*.yaml` |
 | Detector self-test | `make lint-tools-self-test` | either tool missing a planted fault |
