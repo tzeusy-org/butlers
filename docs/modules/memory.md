@@ -129,7 +129,7 @@ Delivery remains dashboard-only and at least once: a crash after the independent
 message post but before the delivery marker commits can repeat the notice. Normal committed
 delivery and fact replay do not post it again.
 
-`memory_open_gaps` and `GET /api/memory/gaps` (keyset pagination, `meta.sources_degraded`) list
+`memory_open_gaps` and `GET /api/memory/gaps` (a keyset `Page` with top-level `sources_degraded`) list
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel

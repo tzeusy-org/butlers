@@ -22,13 +22,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.pagination import encode_cursor
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -212,9 +213,10 @@ class TestFactsDrillNarrativePagination:
         narrative = [_narrative_fact_row()]
         app, mock_pool = _facts_app(identity, narrative)
 
-        # An opaque-but-valid cursor encodes (created_at, id). Build one via the
-        # router's own encoder to avoid coupling to the wire format.
-        cursor = _encode_cursor(datetime(2026, 3, 1, tzinfo=UTC), uuid4())
+        # An opaque-but-valid cursor encodes (created_at, id).
+        cursor = encode_cursor(
+            (datetime(2026, 3, 1, tzinfo=UTC), uuid4()), scope="relationship-facts"
+        )
         resp = await _get(
             app,
             f"/api/relationship/entities/{ENTITY_ID}/facts?store=all&limit=20&cursor={cursor}",
@@ -226,12 +228,3 @@ class TestFactsDrillNarrativePagination:
         assert "narrative" not in stores, "cursored pages must not re-append narrative rows"
         # Only the identity store was queried — the narrative fetch was skipped.
         assert mock_pool.fetch.await_count == 1
-
-
-def _encode_cursor(created_at: datetime, fact_id: UUID) -> str:
-    """Encode a facts cursor using the router's own encoder."""
-    app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_encode_facts_cursor"):
-            return router_module._encode_facts_cursor(created_at, fact_id)
-    raise RuntimeError("facts cursor encoder not found on the relationship router")

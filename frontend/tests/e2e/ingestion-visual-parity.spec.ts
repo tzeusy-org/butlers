@@ -387,10 +387,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: FIXTURE_EVENTS,
-        meta: { next_cursor: null, has_more: false },
-      }),
+      body: JSON.stringify({ items: FIXTURE_EVENTS, next_cursor: null, limit: 50 }),
     });
   });
 }

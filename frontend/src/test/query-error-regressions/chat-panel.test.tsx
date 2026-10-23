@@ -38,6 +38,11 @@ function json(data: unknown, status = 200) {
     { status, headers: { "Content-Type": "application/json" } });
 }
 
+function messageSearchPage(items: MessageSearchResult[]) {
+  return new Response(JSON.stringify({ items, next_cursor: null, limit: 20 }),
+    { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 let base: () => Response | Promise<Response>;
 let search: () => Response | Promise<Response>;
 let messageSearch: () => Response | Promise<Response>;
@@ -54,7 +59,7 @@ beforeEach(() => {
   transportViolations = [];
   base = () => json([]);
   search = () => json([]);
-  messageSearch = () => json([]);
+  messageSearch = () => messageSearchPage([]);
   history = (id) => json([message(id)]);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), location.href);
@@ -216,7 +221,7 @@ describe("ChatPanel source-specific discovery and search recovery", () => {
     await settled(client, messageSearchKeys.search("needle"), "error");
     for (const [label, path, recover] of [
       ["conversation search results", SEARCH, () => { search = () => json([conversation("found", "Found conversation")]); }],
-      ["message search results", MESSAGE_SEARCH, () => { messageSearch = () => json([]); }],
+      ["message search results", MESSAGE_SEARCH, () => { messageSearch = () => messageSearchPage([]); }],
     ] as const) {
       const before = [...reads];
       recover();
@@ -242,7 +247,7 @@ describe("ChatPanel source-specific discovery and search recovery", () => {
       { message_id: "foreign-message", conversation_id: "foreign", role: "assistant", created_at: timestamp,
         butler_name: "finance", session_id: "foreign-session", snippet: "Cross-butler needle", highlight_ranges: [], deep_link: "/sessions/foreign-session" },
     ];
-    messageSearch = () => json(hits);
+    messageSearch = () => messageSearchPage(hits);
     const { client } = mount();
     await settled(client, conversationKeys.list("switchboard"), "error");
     await activateSearch(client);

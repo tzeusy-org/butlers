@@ -15,7 +15,6 @@ cross-connector matrix.
 
 from __future__ import annotations
 
-import base64
 import datetime
 import importlib.util
 import json
@@ -36,11 +35,10 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
-    CursorPaginatedResponse,
-    CursorPaginationMeta,
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.prometheus import async_query
@@ -565,29 +563,7 @@ _FLEET_CASE_EVIDENCE_LIMIT = 500
 _FLEET_CASE_LINKS_LIMIT = 500
 
 
-def _encode_fleet_case_cursor(updated_at: datetime.datetime, row_id: str) -> str:
-    """Encode a ``(updated_at, id)`` keyset position into an opaque cursor."""
-    payload = {"ua": updated_at.isoformat(), "id": str(row_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def _decode_fleet_case_cursor(cursor: str) -> tuple[datetime.datetime, str]:
-    """Decode an opaque cursor string back to ``(updated_at, id)``.
-
-    Raises:
-        ValueError: If the cursor is malformed or cannot be decoded.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        updated_at = datetime.datetime.fromisoformat(payload["ua"])
-        row_id: str = payload["id"]
-        return updated_at, row_id
-    except (KeyError, ValueError, TypeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
-@router.get("/cases", response_model=CursorPaginatedResponse[FleetCaseSummary])
+@router.get("/cases", response_model=Page[FleetCaseSummary])
 async def list_fleet_cases(
     state: str | None = Query(
         None,
@@ -609,7 +585,7 @@ async def list_fleet_cases(
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[FleetCaseSummary]:
+) -> Page[FleetCaseSummary]:
     """List fleet cases from ``public.fleet_cases`` (RFC 0032), newest-updated first.
 
     Read-only SELECT — every butler role has SELECT on ``fleet_cases`` (see
@@ -649,12 +625,11 @@ async def list_fleet_cases(
                 ),
             )
 
-    cursor_pos: tuple[datetime.datetime, str] | None = None
-    if cursor is not None:
-        try:
-            cursor_pos = _decode_fleet_case_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+    cursor_pos = (
+        decode_cursor(cursor, (datetime.datetime, str), scope="fleet-cases")
+        if cursor is not None
+        else None
+    )
 
     pool = _pool(db)
 
@@ -689,9 +664,7 @@ async def list_fleet_cases(
         )
     except Exception:
         logger.warning("fleet_cases not available; returning empty page", exc_info=True)
-        return CursorPaginatedResponse[FleetCaseSummary](
-            data=[], meta=CursorPaginationMeta(next_cursor=None, has_more=False)
-        )
+        return Page[FleetCaseSummary](items=[], limit=limit)
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
@@ -713,12 +686,9 @@ async def list_fleet_cases(
     next_cursor = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = _encode_fleet_case_cursor(last["updated_at"], str(last["id"]))
+        next_cursor = encode_cursor((last["updated_at"], str(last["id"])), scope="fleet-cases")
 
-    return CursorPaginatedResponse[FleetCaseSummary](
-        data=data,
-        meta=CursorPaginationMeta(next_cursor=next_cursor, has_more=has_more),
-    )
+    return Page[FleetCaseSummary](items=data, next_cursor=next_cursor, limit=limit)
 
 
 @router.get("/cases/{case_id}", response_model=ApiResponse[FleetCaseDetail])

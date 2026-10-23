@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
+from butlers.api.pagination import encode_cursor
 from butlers.api.routers.ingestion_events import _get_db_manager, _get_rollup_db_manager
 from butlers.core.pricing import PricingConfig
 
@@ -245,12 +246,8 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
         resp = await client.get("/api/ingestion/events")
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body and "meta" in body
-    meta = body["meta"]
-    # Cursor pagination: next_cursor + has_more; no total field.
-    assert "next_cursor" in meta
-    assert "has_more" in meta
-    assert "total" not in meta
+    # Page envelope: items + next_cursor + limit; no total, offset or has_more.
+    assert set(body) == {"items", "next_cursor", "limit", "sources_degraded"}
 
     _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
     async with httpx.AsyncClient(
@@ -1017,7 +1014,7 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["tokens_in"] == 100
     assert item["tokens_out"] == 50
     assert item["session_count"] == 1
@@ -1055,7 +1052,7 @@ async def test_list_events_explains_unavailable_replay_policy(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["replay_safe"] is False
     assert item["replay_block_reason"] == "Replay safety could not be confirmed"
 
@@ -1101,7 +1098,7 @@ async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unkn
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["cost_usd"] is None
     assert item["unpriced_session_count"] == 1
     assert item["no_usage_session_count"] == 1
@@ -1129,7 +1126,7 @@ async def test_list_events_enrichment_fails_open_on_session_fan_out_error(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["session_count"] == 0
     assert item["sessions"] == []
     assert item["tokens_in"] is None
@@ -1150,7 +1147,7 @@ async def test_list_events_empty_page_skips_enrichment_calls(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    assert resp.json()["data"] == []
+    assert resp.json()["items"] == []
     mock_db.fan_out_with_status.assert_not_awaited()
 
 
@@ -1469,24 +1466,130 @@ async def test_sort_cost_forwarded_to_core(app):
     assert call_kwargs.get("sort") == "cost"
 
 
-async def test_sort_cost_invalid_cursor_returns_422(app):
-    """GET /api/ingestion/events?sort=cost with a keyset cursor returns 422."""
+@pytest.mark.parametrize(
+    ("sort", "cursor"),
+    [
+        (
+            "cost",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.cost"
+            ),
+        ),
+        ("cost", encode_cursor((-10,), scope="ingestion-events.cost")),
+        ("cost", "not-a-cursor"),
+        ("recent", "not-a-cursor"),
+        ("recent", encode_cursor((10,), scope="ingestion-events.recent")),
+        (
+            "recent",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.recent"
+            )
+            + "x",
+        ),
+    ],
+    ids=[
+        "cost-foreign",
+        "negative-cost",
+        "cost-malformed",
+        "recent-malformed",
+        "recent-foreign",
+        "tampered",
+    ],
+)
+async def test_sort_cost_invalid_cursor_returns_400(app, sort, cursor):
+    """Core cursor errors retain the API's 400 for both list sort modes."""
     _app_with_mock_db(app)
-
-    # A valid keyset cursor (wrong type for cost sort)
-    import base64
-    import json
-
-    keyset_cursor = base64.urlsafe_b64encode(
-        json.dumps({"ra": "2026-01-01T00:00:00+00:00", "id": str(uuid4())}).encode()
-    ).decode()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(f"/api/ingestion/events?sort=cost&cursor={keyset_cursor}")
+        resp = await client.get("/api/ingestion/events", params={"sort": sort, "cursor": cursor})
 
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid cursor"
+
+
+@pytest.mark.parametrize(
+    ("sort", "cursor", "accepted"),
+    [
+        ("recent", encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent"), True),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="memory-gaps"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="calendar-workspace"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="relationship-facts"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="timeline"), False),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "!!!!.", 1
+            ),
+            False,
+        ),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "    .", 1
+            ),
+            False,
+        ),
+        ("cost", encode_cursor((True,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((False,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((0,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((40,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((100,), scope="ingestion-events.cost"), True),
+    ],
+    ids=[
+        "native-keyset",
+        "foreign-memory",
+        "foreign-calendar",
+        "foreign-facts",
+        "foreign-timeline",
+        "punctuation",
+        "whitespace",
+        "bool-true",
+        "bool-false",
+        "offset-zero",
+        "offset-forty",
+        "offset-hundred",
+    ],
+)
+async def test_list_cursor_receiver_spelling_and_scalar_controls(app, sort, cursor, accepted):
+    db = _app_with_mock_db(app)
+    pool = db.credential_shared_pool.return_value
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # A caller-supplied scope never selects the receiver's expected scope.
+        response = await client.get(
+            "/api/ingestion/events",
+            params={"sort": sort, "cursor": cursor, "scope": "memory-gaps", "limit": 2},
+        )
+    assert response.status_code == (200 if accepted else 400)
+    if accepted:
+        assert response.json()["items"] == []
+        assert response.json()["limit"] == 2
+        pool.fetch.assert_awaited_once()
+    else:
+        assert response.json()["detail"] == "Invalid cursor"
+        pool.fetch.assert_not_awaited()
+
+
+async def test_list_does_not_relabel_unrelated_value_errors_as_cursor_errors(app):
+    _app_with_mock_db(app)
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        side_effect=ValueError("unrelated query failure"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/ingestion/events")
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "VALIDATION_ERROR",
+        "message": "unrelated query failure",
+        "butler": None,
+        "details": None,
+    }
 
 
 # ---------------------------------------------------------------------------
