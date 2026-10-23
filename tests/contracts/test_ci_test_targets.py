@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -952,7 +953,8 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
 
     Local dispatch forbids host apt. Do not silently replace this boundary with
     the fixture reader above. The existing hosted owner node must execute it.
-    This does not claim an actual `_apt` identity read or signed transport.
+    Hosted sudo probes read only this owned scratch as actual `_apt`; signed
+    package transport and real install remain separate.
     """
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
@@ -961,6 +963,16 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
         "actual APT-reader control requires the named Ubuntu24 environment"
     )
     assert Path("/usr/bin/apt-config").is_file() and Path("/usr/bin/apt-get").is_file()
+    with tempfile.TemporaryDirectory(prefix="butlers-apt-reader-", dir="/tmp") as scratch:
+        _exercise_ubuntu_apt_fixture(Path(scratch))
+    root.mkdir()
+    (root / "executed").write_text("actual reader/source/fragment/_apt controls completed\n")
+
+
+def _exercise_ubuntu_apt_fixture(root: Path) -> None:
+    # The scratch is directly under /tmp so `_apt` can traverse to nonsecret
+    # mirror data without opening pytest's private parent directories.
+    root.chmod(0o711)
     apt, platform, _ = _installer_apt_fixture(root)
     source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
     copied = root / "supervisor.py"
@@ -978,7 +990,7 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
     fragments.mkdir()
     main = root / "empty.conf"
     main.write_text("")
-    for name in ("state", "state/lists", "state/lists/partial", "cache", "cache/archives"):
+    for name in ("state", "state/lists", "state/lists/partial", "cache", "cache/archives", "log"):
         (root / name).mkdir(exist_ok=True)
     status = root / "state/status"
     status.write_text("")
@@ -988,7 +1000,7 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
     ordinary = (
         f'Dir::Etc::parts "{fragments}";\nDir::Etc::main "{main}";\n'
         f'Dir::State "{root / "state"}";\nDir::State::status "{status}";\n'
-        f'Dir::Cache "{root / "cache"}";\n'
+        f'Dir::Cache "{root / "cache"}";\nDir::Log "{root / "log"}";\n'
     )
     baseline = root / "baseline.conf"
     baseline.write_text(
@@ -1020,6 +1032,11 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
 
     assert admit().returncode == 0, "actual reader rejected positive private configuration"
     recovered = {**environment, "APT_CONFIG": str(recovery)}
+    actual_configuration = namespace["apt_configuration"](recovered)
+    assert not any(
+        b"::pre-invoke" in line.lower() or b"::post-invoke" in line.lower()
+        for line in actual_configuration
+    ), "controlled parser must not inherit host hooks"
     # --print-uris enumerates source targets INSTEAD of fetching/installing.
     # All potentially written state/cache paths are disposable fixture paths.
     parsed = subprocess.run(
@@ -1042,11 +1059,45 @@ def _exercise_ubuntu_apt_reader(root: Path) -> None:
     assert admit().returncode == 0, "negative control poisoned positive companion"
     assert {p: p.read_bytes() for p in original_sources} == original_sources
     assert status.read_bytes() == b"", "reader proof changed fixture dpkg state"
-    # Actual sandbox-identity access remains separate: these are only mode
-    # assertions and must not be reported as an `_apt` execution receipt.
-    assert (overlay / "mirrors.txt").stat().st_mode & 0o777 == 0o644
-    assert (overlay / "private").stat().st_mode & 0o777 == 0o700
-    print("actual Ubuntu24 APT config/source reader and later/binary negatives executed")
+    sudo = shutil.which("sudo")
+    assert sudo is not None, "actual _apt reader proof unavailable: sudo absent"
+    mirror = overlay / "mirrors.txt"
+    private_config = overlay / "private/apt.conf"
+    probe = (
+        "import os,pwd,sys\nfrom pathlib import Path\n"
+        "assert os.geteuid()==pwd.getpwnam('_apt').pw_uid\n"
+        "assert Path(sys.argv[1]).read_bytes().splitlines()[0].startswith(b'https://archive.ubuntu.com/ubuntu/')\n"
+        "try: Path(sys.argv[2]).read_bytes()\n"
+        "except PermissionError: pass\n"
+        "else: raise AssertionError('private copied config readable by _apt')\n"
+    )
+
+    def sandbox_read() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sudo,
+                "-n",
+                "-u",
+                "_apt",
+                "--",
+                "/usr/bin/python3",
+                "-c",
+                probe,
+                str(mirror),
+                str(private_config),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert sandbox_read().returncode == 0, "actual _apt scratch read/private refusal unavailable"
+    mirror.chmod(0o600)
+    assert sandbox_read().returncode != 0, "actual _apt read negative was not enforced"
+    mirror.chmod(0o644)
+    assert sandbox_read().returncode == 0, "actual _apt positive companion did not recover"
+    print("actual Ubuntu24 APT reader/source, later/binary negatives and _apt read executed")
 
 
 def test_vitest_concurrent_failure_terminates_both_owned_groups(tmp_path: Path) -> None:

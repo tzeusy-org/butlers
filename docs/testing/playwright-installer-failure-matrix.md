@@ -21,7 +21,7 @@ last signal. This matrix is the acceptance checklist for the correction.
 | Ordinary failure or cancellation | Clean failure retains default route; direct signal/EOF and parent/total cancellation never retry | Deps-exhaust, deps-supervisor-cancel/eof, deps-total-expiry plus original cancellation/EOF controls |
 | Recovery preparation rejected or cancelled | No late install launch; partial/private overlay removed only after confirmed cleanup | Deps-recovery-rejected and deps-prep-cancel with owned overlay-path observation |
 | Private sources and effective configuration | Exact noble/deb822/endpoints/trust allowlist; private copied sources, unchanged third-party bytes/state; later/binary overrides refuse | Existing owning node executes input-policy and synthetic-reader controls; actual Ubuntu24 reader/sandbox validation remains unperformed locally |
-| Controlled Ubuntu24 config/source reader | Real reader admits private sources/state, refuses later normal-fragment and binary overrides; actual source parser enumerates private targets without fetching | CI-only branch of the same owning node; wired, not executed locally. No host configuration writes or package installation |
+| Controlled Ubuntu24 config/source reader | Real reader admits private sources/state, refuses later normal-fragment and binary overrides; actual source parser enumerates private targets without fetching; actual `_apt` reads only owned scratch and cannot read private configuration | CI-only branch of the same owning node; wired, not executed locally. No host configuration writes or package installation |
 | Actual root-owned apt behavior | Hosted runner proves real sudo/apt execution and cleanup | Pending fresh exact-head hosted frontend-e2e; synthetic controls do not establish this |
 
 The current tests exercise real groups with synthetic install/browser commands
@@ -62,7 +62,9 @@ is run. In Ubuntu24 GitHub Actions the same existing node additionally runs the
 actual reader against private source/config/state/cache fixtures, checks real
 later-fragment/binary override refusal and enumerates targets with actual
 `apt-get --print-uris update` (no fetching/installing). Its exact hosted receipt
-is still required; wiring is not a pass. Mode checks are not an actual `_apt`
-identity read: sandbox mirror readability remains a separately named gap, as
-do signed OS dependency installation, locked Chromium launch and e2e execution.
-Those require actual terminal exact-head hosted proof. Synthetic success alone cannot close those rows or establish p95.
+is still required; wiring is not a pass. The same CI-only control requires
+noninteractive sudo to read only owned scratch as actual `_apt`, with a denied
+600-mode mirror negative and restored positive companion; private copied
+configuration must remain unreadable. Missing sudo/identity access fails by
+name. No local sudo is invoked. Real signed OS dependency installation, locked
+Chromium launch and e2e execution remain separate terminal hosted proof. Synthetic success alone cannot close those rows or establish p95.
