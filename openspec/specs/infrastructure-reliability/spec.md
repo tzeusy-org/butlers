@@ -222,3 +222,39 @@ used as liveness proof.
 - **THEN** its liveness is derived as `stale` or `offline` from the heartbeat
   timestamp
 - **AND** the stored healthy state does not make it live
+
+
+### Requirement: Outside heartbeat reflects a finite database and fleet observation
+
+ID: REQ-infrastructure-reliability-002
+Source: bu-dhloi1.23; existing Dashboard external-deadman producer
+Scope: v1-mandatory
+
+A configured external-deadman tick SHALL send its success heartbeat only after
+an actual committed database write and independent readback plus a complete,
+current receiver-fleet check for the server-configured daemons. Missing,
+malformed, stale or adverse state SHALL withhold the heartbeat immediately;
+an explicit owner pause retains the fleet controller's intentional exclusion.
+No separate outside failure protocol or grace-success is implied.
+
+The producer SHALL use a stable tick identity and durably claim it before
+HTTP so retries and restarts cannot duplicate a tick receipt. A lost reply or
+cancelled send SHALL remain uncertain and SHALL NOT be resent for that tick.
+The finite operation SHALL propagate shutdown cancellation, release owned
+resources and never send arbitrary status/body data. Diagnostics SHALL use
+closed causes and SHALL NOT include the configured target or raw errors.
+
+Unconfigured remains an honest absence under REQ-infrastructure-reliability-001.
+Helm SHALL support optional existing Secret references without storing endpoint
+values; disabled configuration SHALL produce no external-deadman environment
+binding. No outside account, installation, secret creation or rollout is implied.
+
+#### Scenario: Database or receiver failure holds the heartbeat
+- **WHEN** acquisition, commit, independent readback or the complete current
+  fleet observation fails or times out
+- **THEN** no successful heartbeat is sent and no successful ping is claimed
+
+#### Scenario: Retry after an uncertain send
+- **WHEN** a tick claim committed and HTTP was cancelled or its reply was lost
+- **THEN** repeating that tick performs no second HTTP send
+- **AND** the claim itself is not reported as a successful ping
