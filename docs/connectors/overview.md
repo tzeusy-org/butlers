@@ -92,8 +92,13 @@ Canonical dedupe key guidance per provider:
 ## Untrusted Spans and Channel Kind
 
 RFC 0038 D5 starts an owner goal exposed when the owner's message carries someone else's text.
-Connectors mark that text; goal admission (not built yet) reads the marks. Nothing on the current
-routing path reads them. Helpers live in `butlers.ingestion_spans`.
+Connectors mark that text. The dark accepted-source adapter reads canonical retained input under
+`ClosedGoalProfile.HARNESS`, verifies the sender independently, and returns frozen ordered segments.
+Marked ranges and attribution labels serialize as structural JSON data, including attachment-only
+markers; delimiter-looking text cannot escape them. Verified owner origin stays owner while starting
+exposed. Unknown or unreadable evidence refuses admission; known bad ranges cover the whole text.
+Current routing, schedules and dashboard do not call this adapter. Helpers live in
+`butlers.ingestion_spans`.
 
 - `payload.untrusted_spans`: `{kind, start, end, origin_identity?, origin_display_name?}` records,
   with `kind` one of `forwarded`, `quoted` or `embedded`. `[start, end)` are Python `str` indices
@@ -109,8 +114,28 @@ routing path reads them. Helpers live in `butlers.ingestion_spans`.
   sends it as `capabilities.channel_kind`. Switchboard keeps it on the `connector_registry` row and
   drops an unrecognised value, and admission resolves it with `registered_channel_kind(pool,
   connector_type, endpoint_identity)`. An unregistered or undeclared connector is a message
-  channel. `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed
-  path.
+  channel after a successful registry read; a failed read refuses rather than downgrading a feed.
+  `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed path.
+
+The closed harness sends registered feeds to a trusted deterministic receiver that owns its domain
+store. Unmatched feeds retain a terminal record-only disposition across attempts and kind drift, without a
+goal or runner. Only a matching Git-owned subscription
+(domain, event type, exact/default capabilities and declaration digest) yields an obligation.
+This seam introduces no live subscription engine. A canonical accepted request always uses the same
+`SourceRef("message", request_id)` for dedupe, including feed/message disposition changes.
+
+Opaque reply locators resolve against stored transport, endpoint, conversation and recipient
+provenance, independently of the current reply destination. Known inbound content without a trusted
+stamp is exposed. Stored bot effects use actual producing-goal exposure. Live owner prompts join
+through one immutable inbox row with goal-before-effect locks and expiry/state rechecks after waits;
+Stop, terminal or expired prompts become new owner intent without caused-goal linkage. Unknown or
+foreign locators do not infer continuity. A join only increases exposure and preserves origin,
+ceiling, admitted exposure, causes and budget.
+
+Deploy receiver/schema before marker/reference producers (`extra="forbid"`), and complete buffered
+and filtered replay propagation before enabling a consumer. The current trusted harness remains
+closed: no live activation, model launch or signing-key mount. Rollback disables consumption before
+removing readers or propagation.
 
 | Connector | What it marks |
 | --- | --- |

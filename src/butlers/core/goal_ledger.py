@@ -67,7 +67,8 @@ class GoalLedger:
         if not row:
             row = await self.connection.fetchrow(
                 "SELECT * FROM switchboard.admission_decisions WHERE source_key=$1 "
-                "AND result IN ('admitted','joined')",
+                "AND (result IN ('admitted','joined') OR "
+                "(result='refused' AND reason='recorded_without_goal'))",
                 source_key,
             )
         if row:

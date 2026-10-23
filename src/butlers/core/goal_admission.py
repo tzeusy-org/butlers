@@ -240,12 +240,17 @@ class Evidence:
     reply_delivery: str | None = None
     owner_entity: UUID | None = None
     owner_channel: str | None = None
+    record_only: bool = False
 
     def __post_init__(self):
         if (
             self.kind not in {"message", "occurrence", "feed", "domain", "staffer"}
             or (self.kind != "message" and self.owner)
-            or any(type(v) is not bool for v in (self.owner, self.forwarded, self.outside_content))
+            or (self.record_only and (self.kind != "feed" or self.obligation is not None))
+            or any(
+                type(v) is not bool
+                for v in (self.owner, self.forwarded, self.outside_content, self.record_only)
+            )
             or (
                 self.untainted_owner_stamp is not None
                 and type(self.untainted_owner_stamp) is not bool
@@ -382,11 +387,22 @@ class GoalAdmission:
                 try:
                     facts = await self.evidence.load(connection, source)
                     if (
-                        facts.kind != source.kind
+                        (
+                            facts.kind != source.kind
+                            # Accepted ingress keeps one source key across registry drift.
+                            # Feed is its verified disposition, not a new transport identity.
+                            and not (source.kind == "message" and facts.kind == "feed")
+                        )
                         or not facts.source_partition
                         or len(facts.source_partition) > 256
                     ):
                         raise EvidenceRefused("source_context_invalid")
+                    if facts.record_only:
+                        # A successfully recorded feed with no subscription has
+                        # a durable no-goal disposition, even after registry drift.
+                        return await ledger.decide(
+                            source, attempt_id, "refused", "recorded_without_goal"
+                        )
                     catalog = await self.catalog.load(connection)
                     plan = derive_admission(facts, catalog)
                 except EvidenceRefused:
@@ -470,6 +486,10 @@ class GoalAdmission:
                 and facts.owner_channel
             )
             ledger.reply_effect = binding["id"] if matches else None
+            if matches:
+                # Read actual producing-goal exposure under the goal lock, also
+                # when an expired/terminal prompt becomes new owner intent.
+                exposed |= goal["exposed"]
             if (
                 matches
                 and binding["prompt_accepts_input"]

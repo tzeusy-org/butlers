@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.core.goal_admission import EvidenceRefused
 from butlers.ingestion_spans import effective_channel_kind
 from butlers.tools.switchboard.connector.heartbeat import (
     parse_connector_heartbeat,
@@ -82,11 +83,12 @@ async def test_admission_resolves_the_kind_from_the_registry_row(stored, expecte
     assert pool.fetchval.await_args.args[1:] == ("home_assistant", "home_assistant:house")
 
 
-async def test_unreadable_registry_is_an_undeclared_message_channel() -> None:
+async def test_unreadable_registry_refuses_admission() -> None:
     pool = MagicMock()
     pool.fetchval = AsyncMock(side_effect=OSError("registry down"))
 
-    assert await registered_channel_kind(pool, "steam", "steam:1") == "message"
+    with pytest.raises(EvidenceRefused, match="channel_registry_unavailable"):
+        await registered_channel_kind(pool, "steam", "steam:1")
 
 
 def _heartbeat_kinds(module: str) -> list[str | None]:

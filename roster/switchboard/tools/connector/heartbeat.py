@@ -25,6 +25,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+from butlers.core.goal_admission import EvidenceRefused
 from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
 from butlers.ingestion_spans import (
     CHANNEL_KIND_CAPABILITY,
@@ -253,7 +254,10 @@ def parse_connector_heartbeat(payload: Mapping[str, Any]) -> ConnectorHeartbeatV
     if (
         isinstance(capabilities, dict)
         and CHANNEL_KIND_CAPABILITY in capabilities
-        and capabilities[CHANNEL_KIND_CAPABILITY] not in CHANNEL_KINDS
+        and (
+            not isinstance(capabilities[CHANNEL_KIND_CAPABILITY], str)
+            or capabilities[CHANNEL_KIND_CAPABILITY] not in CHANNEL_KINDS
+        )
     ):
         # An unrecognised channel kind is not registered at all, which is a message channel
         # (REQ-connector-base-spec-003); liveness is unaffected.
@@ -275,8 +279,8 @@ async def registered_channel_kind(
     """The channel kind a connector registered (REQ-connector-base-spec-003).
 
     Goal admission resolves the kind here, from the Switchboard-owned registry row, never from an
-    ingest envelope. An unregistered connector, a row without a declared kind, or an unreadable
-    registry is a message channel, the spec's default for an undeclared channel.
+    ingest envelope. Successful missing, undeclared or malformed metadata defaults to message.
+    An unavailable registry refuses admission instead of downgrading a feed.
     """
     try:
         capabilities = await pool.fetchval(
@@ -288,14 +292,8 @@ async def registered_channel_kind(
             connector_type,
             endpoint_identity,
         )
-    except Exception:  # noqa: BLE001 -- an unreadable registry is an undeclared channel
-        logger.warning(
-            "Channel kind unavailable for %s/%s; treating it as a message channel",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        return CHANNEL_KIND_MESSAGE
+    except Exception:
+        raise EvidenceRefused("channel_registry_unavailable") from None
     if isinstance(capabilities, str):
         try:
             capabilities = json.loads(capabilities)
@@ -571,28 +569,37 @@ async def heartbeat(
     # primary transaction commits before any best-effort log/partition work.
     classification_ack = None
     try:
-        if connector_type == "gmail":
-            async with pool.acquire() as connection:
-                async with connection.transaction():
-                    await connection.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        f"connector-classification:{connector_type}:{endpoint_identity}",
+        async with pool.acquire() as connection, connection.transaction():
+            # Serialize even absent rows. Gmail's existing endpoint advisory lock
+            # remains first, before its registry row lock/classification checks.
+            await connection.fetchval(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"connector-classification:{connector_type}:{endpoint_identity}",
+            )
+            previous = await _get_previous_snapshot(
+                connection, connector_type, endpoint_identity, for_update=True
+            )
+            if connector_type == "gmail":
+                capabilities, classification_ack, admitted = _classification_admission(
+                    envelope, previous
+                )
+                if not admitted:
+                    return HeartbeatAcceptedResponse(
+                        server_time=received_at.isoformat(), classification_ack=classification_ack
                     )
-                    previous = await _get_previous_snapshot(
-                        connection, connector_type, endpoint_identity, for_update=True
-                    )
-                    capabilities, classification_ack, admitted = _classification_admission(
-                        envelope, previous
-                    )
-                    if not admitted:
-                        return HeartbeatAcceptedResponse(
-                            server_time=received_at.isoformat(),
-                            classification_ack=classification_ack,
-                        )
-                    await _persist_registry(connection, envelope, received_at, capabilities)
-        else:
-            previous = await _get_previous_snapshot(pool, connector_type, endpoint_identity)
-            await _persist_registry(pool, envelope, received_at, capabilities)
+            await _persist_registry(connection, envelope, received_at, capabilities)
+            prior_capabilities = previous.get("capabilities") if previous else None
+            if isinstance(prior_capabilities, str):
+                try:
+                    prior_capabilities = json.loads(prior_capabilities)
+                except ValueError:
+                    prior_capabilities = None
+            drifted = previous is not None and effective_channel_kind(
+                prior_capabilities if isinstance(prior_capabilities, Mapping) else None
+            ) != effective_channel_kind(capabilities)
+        # Never emit a drift verdict before the owning transaction commits.
+        if drifted:
+            logger.warning("Connector channel kind changed outcome=drift")
     except Exception as exc:
         # New classification diagnostics never include input or DB error tails.
         if connector_type == "gmail":
