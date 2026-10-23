@@ -233,6 +233,68 @@ async def deadline_create(
     return task_id
 
 
+def _deadline_update_fields(
+    *,
+    name=None,
+    prompt=None,
+    target_date=None,
+    lead_time_days=None,
+    alert_thresholds=None,
+    depends_on=None,
+    deadline_status=None,
+    enabled=None,
+) -> dict[str, Any]:
+    """Normalize ordinary deadline semantics before historical reconciliation."""
+    fields: dict[str, Any] = {}
+
+    if name is not None:
+        if not name.strip():
+            raise ValueError("name must be non-empty")
+        fields["name"] = name.strip()
+
+    if prompt is not None:
+        if not prompt.strip():
+            raise ValueError("prompt must be non-empty")
+        fields["prompt"] = prompt.strip()
+
+    if target_date is not None:
+        today = datetime.now(UTC).date()
+        if target_date <= today:
+            raise ValueError("target_date must be in the future")
+        fields["target_date"] = target_date
+        # Reset fired thresholds on date change
+        fields["fired_thresholds"] = []
+        # Reset status unless caller provides explicit status
+        if deadline_status is None:
+            fields["deadline_status"] = "pending"
+
+    if lead_time_days is not None:
+        fields["lead_time_days"] = lead_time_days
+
+    if alert_thresholds is not None:
+        fields["alert_thresholds"] = _jsonb_encode(alert_thresholds)
+
+    if depends_on is not None:
+        fields["depends_on"] = _jsonb_encode(depends_on)
+
+    _VALID_STATUSES = {"pending", "alerted", "escalated", "completed", "expired"}
+    if deadline_status is not None:
+        if deadline_status not in _VALID_STATUSES:
+            raise ValueError(
+                f"Invalid deadline_status {deadline_status!r}; "
+                f"must be one of {sorted(_VALID_STATUSES)}"
+            )
+        fields["deadline_status"] = deadline_status
+        # Auto-disable task on terminal status transitions
+        if deadline_status in ("completed", "expired") and enabled is None:
+            fields["enabled"] = False
+
+    if enabled is not None:
+        fields["enabled"] = enabled
+
+    return fields
+
+
 async def deadline_update(
     pool: asyncpg.Pool,
     task_id: uuid.UUID | str,
@@ -245,6 +307,9 @@ async def deadline_update(
     depends_on: list[str] | None = None,
     deadline_status: str | None = None,
     enabled: bool | None = None,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
+    obligation_expected_revision: str | None = None,
 ) -> None:
     """Update fields on a deadline task.
 
@@ -266,6 +331,62 @@ async def deadline_update(
     Raises:
         ValueError: If the task is not found or is not a deadline task.
     """
+    if obligation_definition is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            revise_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if (
+            type(obligation_definition) is not RuntimeScheduleDefinition
+            or obligation_definition.schedule["task_type"] != "deadline"
+        ):
+            raise SourceConflict("deadline_source_required")
+        if not isinstance(obligation_command_id, uuid.UUID) or not isinstance(
+            obligation_expected_revision, str
+        ):
+            raise SourceConflict("source_command_required")
+        task_id = uuid.UUID(task_id) if isinstance(task_id, str) else task_id
+        arguments = dict(
+            name=name,
+            prompt=prompt,
+            target_date=target_date,
+            lead_time_days=lead_time_days,
+            alert_thresholds=alert_thresholds,
+            depends_on=depends_on,
+            deadline_status=deadline_status,
+            enabled=enabled,
+        )
+        submitted = _deadline_update_fields(**arguments)
+        # Progress resets are deterministic consequences of a target-date change;
+        # explicit status transitions must also bind the selected source intent.
+        submitted.pop("fired_thresholds", None)
+        if deadline_status is None:
+            submitted.pop("deadline_status", None)
+
+        async def update_source(repository):
+            async def mutate(connection):
+                await deadline_update(connection, task_id, **arguments)
+
+            return await revise_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                source_id=task_id,
+                expected_revision=obligation_expected_revision,
+                definition=obligation_definition,
+                submitted_fields=submitted,
+                mutate_row=mutate,
+            )
+
+        await run_source_transaction(pool, obligation_definition.owner_domain, update_source)
+        return
+    if obligation_command_id is not None or obligation_expected_revision is not None:
+        from butlers.core.obligation_sources import SourceConflict
+
+        raise SourceConflict("source_definition_required")
+
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)
@@ -281,83 +402,21 @@ async def deadline_update(
     if existing.get("task_type") != "deadline":
         raise ValueError(f"Task {task_id} is not a deadline task")
 
-    set_clauses: list[str] = []
-    params: list[Any] = [task_id]
-    idx = 2
-
-    if name is not None:
-        if not name.strip():
-            raise ValueError("name must be non-empty")
-        set_clauses.append(f"name = ${idx}")
-        params.append(name.strip())
-        idx += 1
-
-    if prompt is not None:
-        if not prompt.strip():
-            raise ValueError("prompt must be non-empty")
-        set_clauses.append(f"prompt = ${idx}")
-        params.append(prompt.strip())
-        idx += 1
-
-    if target_date is not None:
-        today = datetime.now(UTC).date()
-        if target_date <= today:
-            raise ValueError("target_date must be in the future")
-        set_clauses.append(f"target_date = ${idx}")
-        params.append(target_date)
-        idx += 1
-        # Reset fired thresholds on date change
-        set_clauses.append(f"fired_thresholds = ${idx}")
-        params.append([])
-        idx += 1
-        # Reset status unless caller provides explicit status
-        if deadline_status is None:
-            set_clauses.append(f"deadline_status = ${idx}")
-            params.append("pending")
-            idx += 1
-
-    if lead_time_days is not None:
-        set_clauses.append(f"lead_time_days = ${idx}")
-        params.append(lead_time_days)
-        idx += 1
-
-    if alert_thresholds is not None:
-        set_clauses.append(f"alert_thresholds = ${idx}")
-        params.append(_jsonb_encode(alert_thresholds))
-        idx += 1
-
-    if depends_on is not None:
-        set_clauses.append(f"depends_on = ${idx}")
-        params.append(_jsonb_encode(depends_on))
-        idx += 1
-
-    _VALID_STATUSES = {"pending", "alerted", "escalated", "completed", "expired"}
-    if deadline_status is not None:
-        if deadline_status not in _VALID_STATUSES:
-            raise ValueError(
-                f"Invalid deadline_status {deadline_status!r}; "
-                f"must be one of {sorted(_VALID_STATUSES)}"
-            )
-        set_clauses.append(f"deadline_status = ${idx}")
-        params.append(deadline_status)
-        idx += 1
-        # Auto-disable task on terminal status transitions
-        if deadline_status in ("completed", "expired") and enabled is None:
-            set_clauses.append(f"enabled = ${idx}")
-            params.append(False)
-            idx += 1
-
-    if enabled is not None:
-        set_clauses.append(f"enabled = ${idx}")
-        params.append(enabled)
-        idx += 1
-
-    if not set_clauses:
-        return  # nothing to update
-
-    set_clauses.append("updated_at = now()")
-    sql = f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1"
-    await pool.execute(sql, *params)
+    fields = _deadline_update_fields(
+        name=name,
+        prompt=prompt,
+        target_date=target_date,
+        lead_time_days=lead_time_days,
+        alert_thresholds=alert_thresholds,
+        depends_on=depends_on,
+        deadline_status=deadline_status,
+        enabled=enabled,
+    )
+    if not fields:
+        return
+    clauses = [f"{key} = ${index}" for index, key in enumerate(fields, 2)]
+    sql = f"UPDATE scheduled_tasks SET {', '.join(clauses)}, updated_at = now() WHERE id = $1"
+    await pool.execute(sql, task_id, *fields.values())
     logger.info("Updated deadline task: %s", task_id)
 
 
@@ -410,6 +469,10 @@ async def deadline_list(
 async def deadline_delete(
     pool: asyncpg.Pool,
     task_id: uuid.UUID | str,
+    *,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
+    obligation_expected_revision: str | None = None,
 ) -> None:
     """Delete a deadline task.
 
@@ -422,6 +485,29 @@ async def deadline_delete(
     Raises:
         ValueError: If not found, not a deadline, or is TOML-sourced.
     """
+    if obligation_definition is not None:
+        from butlers.core import scheduler
+        from butlers.core.obligation_schedule_sources import RuntimeScheduleDefinition
+        from butlers.core.obligation_sources import SourceConflict
+
+        if (
+            type(obligation_definition) is not RuntimeScheduleDefinition
+            or obligation_definition.schedule["task_type"] != "deadline"
+        ):
+            raise SourceConflict("deadline_source_required")
+        await scheduler.schedule_delete(
+            pool,
+            uuid.UUID(task_id) if isinstance(task_id, str) else task_id,
+            obligation_definition=obligation_definition,
+            obligation_command_id=obligation_command_id,
+            obligation_expected_revision=obligation_expected_revision,
+        )
+        return
+    if obligation_command_id is not None or obligation_expected_revision is not None:
+        from butlers.core.obligation_sources import SourceConflict
+
+        raise SourceConflict("source_definition_required")
+
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)

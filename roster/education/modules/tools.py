@@ -45,8 +45,8 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     # into the keyword-only interface expected by education tool functions.
 
     def _make_schedule_create():
-        async def _bound(**kwargs: Any) -> str:
-            pool = module._get_pool()
+        async def _bound(*, connection=None, **kwargs: Any) -> str:
+            pool = connection if connection is not None else module._get_pool()
             name = kwargs.pop("name")
             cron = kwargs.pop("cron")
             prompt = kwargs.pop("prompt", None)
@@ -56,8 +56,8 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
         return _bound
 
     def _make_schedule_delete():
-        async def _bound(name: str) -> None:
-            pool = module._get_pool()
+        async def _bound(name: str, *, connection=None) -> None:
+            pool = connection if connection is not None else module._get_pool()
             row = await pool.fetchrow("SELECT id FROM scheduled_tasks WHERE name = $1", name)
             if row is not None:
                 await _sched_delete(pool, row["id"])

@@ -680,3 +680,149 @@ async def test_migrated_schedule_revision_race_cancel_and_role_shadow_refusals(o
                 definition=value,
             ),
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_runtime_deadline_and_toggle_commit_and_historical_replay(owning_sources):
+    """Authored owning-role proof; a software snapshot is not D7 admission."""
+    from datetime import date
+    from uuid import uuid4
+
+    from butlers.core import scheduler
+    from butlers.core.obligation_admission import run_source_transaction
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+    from butlers.core.obligation_sources import SourceConflict
+    from butlers.core.temporal.deadlines_db import deadline_delete, deadline_update
+
+    pool = owning_sources.pool
+    creator = RuntimeCreationSnapshot(uuid4(), (Grant("health__read"),), True)
+
+    def runtime(values, **kwargs):
+        return compile_runtime_schedule_definition(
+            owner_domain="health",
+            normalized_schedule=values,
+            declaration=ObligationDeclaration((Grant("health__read"),)),
+            context_material={"fixture_only": "not an authenticated invocation"},
+            creator=creator,
+            **kwargs,
+        )
+
+    async def source(task):
+        return await run_source_transaction(pool, "health", lambda r: r.read(task))
+
+    selected = runtime(
+        _git_schedule_material(
+            name=f"deadline-{uuid4()}",
+            cron="0 0 * * *",
+            task_type="deadline",
+            target_date=date(2099, 1, 1),
+            lead_time_days=7,
+            alert_thresholds=[{"days_before": 3, "severity": "info"}],
+        ).schedule
+    )
+    task = await scheduler.schedule_create(
+        pool,
+        name=selected.schedule["name"],
+        task_type="deadline",
+        prompt=selected.schedule["prompt"],
+        target_date=date(2099, 1, 1),
+        lead_time_days=7,
+        alert_thresholds=selected.schedule["alert_thresholds"],
+        obligation_definition=selected,
+        obligation_command_id=uuid4(),
+    )
+    first = await source(task)
+    occurrence = await run_source_transaction(
+        pool, "health", lambda r: r.capture(task, first.revision, slot="threshold-slot")
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET fired_thresholds=$2,deadline_status='alerted' WHERE id=$1",
+        task,
+        [{"days_before": 3, "severity": "info"}],
+    )
+    updated = runtime(selected.schedule | {"target_date": date(2099, 2, 1)})
+    arguments = dict(
+        target_date=date(2099, 2, 1),
+        obligation_definition=updated,
+        obligation_command_id=uuid4(),
+        obligation_expected_revision=first.revision,
+    )
+    await deadline_update(pool, task, **arguments)
+    second = await source(task)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT current_user") == "butler_health_rw"
+        row = await conn.fetchrow(
+            "SELECT target_date,fired_thresholds,deadline_status FROM scheduled_tasks WHERE id=$1",
+            task,
+        )
+        assert dict(row) == {
+            "target_date": date(2099, 2, 1),
+            "fired_thresholds": [],
+            "deadline_status": "pending",
+        }
+        assert (
+            await conn.fetchval("SELECT state FROM obligation_occurrences WHERE id=$1", occurrence)
+            == "cancelled"
+        )
+    assert second.generation == first.generation + 1
+    # Historical replay may not clear later actual progress.
+    await pool.execute("UPDATE scheduled_tasks SET deadline_status='alerted' WHERE id=$1", task)
+    await deadline_update(pool, task, **arguments)
+    assert (
+        await pool.fetchval("SELECT deadline_status FROM scheduled_tasks WHERE id=$1", task)
+        == "alerted"
+    )
+    with pytest.raises(SourceConflict):
+        await deadline_update(pool, task, **(arguments | {"target_date": date(2099, 3, 1)}))
+    completed = runtime(updated.schedule | {"enabled": False}, deadline_status="completed")
+    await deadline_update(
+        pool,
+        task,
+        deadline_status="completed",
+        obligation_definition=completed,
+        obligation_command_id=uuid4(),
+        obligation_expected_revision=second.revision,
+    )
+    terminal = await source(task)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT enabled,deadline_status FROM scheduled_tasks WHERE id=$1", task
+        )
+        assert dict(row) == {"enabled": False, "deadline_status": "completed"}
+        assert terminal.state == "disabled"
+    await deadline_delete(
+        pool,
+        task,
+        obligation_definition=completed,
+        obligation_command_id=uuid4(),
+        obligation_expected_revision=terminal.revision,
+    )
+    assert await pool.fetchval("SELECT count(*) FROM scheduled_tasks WHERE id=$1", task) == 0
+    assert (await source(task)).state == "deleted"
+
+    cron = runtime(_git_schedule_material(name=f"toggle-{uuid4()}").schedule)
+    task = await scheduler.schedule_create(
+        pool,
+        name=cron.schedule["name"],
+        cron=cron.schedule["cron"],
+        prompt=cron.schedule["prompt"],
+        obligation_definition=cron,
+        obligation_command_id=uuid4(),
+    )
+    first = await source(task)
+    disabled = runtime(cron.schedule | {"enabled": False})
+    arguments = dict(
+        enabled=False,
+        obligation_definition=disabled,
+        obligation_command_id=uuid4(),
+        obligation_expected_revision=first.revision,
+    )
+    result = await scheduler.schedule_toggle(pool, task, **arguments)
+    assert result["observed_enabled"] is False
+    assert (await source(task)).state == "disabled"
+    assert await pool.fetchval("SELECT next_run_at FROM scheduled_tasks WHERE id=$1", task) is None
+    await pool.execute("UPDATE scheduled_tasks SET enabled=true WHERE id=$1", task)
+    replay = await scheduler.schedule_toggle(pool, task, **arguments)
+    assert replay["status"] == "reconciled" and "observed_enabled" not in replay
+    assert await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id=$1", task) is True

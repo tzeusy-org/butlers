@@ -324,3 +324,33 @@ a second source lock or promise a global fence; a future source consumer must
 revalidate actual current row material. Nothing in this path enables admissions
 or replaces current dispatch. Real source+row PostgreSQL concurrency/rollback/
 readback evidence and the full original M6 obligations remain required.
+
+### Deadline transitions, toggles and generated review transactions
+
+The internal deadline update adapter runs the ordinary deadline validator and
+row mutator under the same command/source/row transaction. Target-date changes
+retain the existing fired-threshold reset and pending-status reset. Explicit
+status transitions bind their selected status in the revision material;
+terminal transitions retain automatic disable. Dependency edits are checked
+against the resulting row, and historical commands validate their submitted
+values before returning without replaying against a newer row. Deadline delete
+uses the existing row/source tombstone path. These are internal persistence
+inputs, not an authenticated public creator interface.
+
+The source-aware toggle uses the same row mutation and ordinary refusal rules
+as today's interactive toggle. A new command returns its actual in-transaction
+row observation after source commit; a historical command instead returns a
+`reconciled` source revision and requested state. It deliberately omits live-row
+and next-run observations, because a historical revision proves neither.
+The public OFF toggle retains its existing response and transaction behavior.
+
+Education's registered spaced-repetition handler now locks the reviewed node
+and keeps progress, prior-review deletion and individual/batch schedule creation
+on one acquired connection and transaction. Its production callback factories
+pass that owned connection to the actual core scheduler. Any count, deletion or
+creation failure propagates and rolls the progress transaction back. Best-effort
+terminal-map cleanup remains separate. This fixes the existing local producer
+transaction boundary; it does not supply a verified creator grant or register
+new obligation admissions. Recording-store controls prove software ordering and
+rollback only. Real PostgreSQL locking, durable readback and source/goal delivery
+remain required.

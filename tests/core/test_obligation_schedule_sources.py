@@ -612,6 +612,11 @@ class RuntimeConnection(RecordingConnection):
             return "UPDATE 1"
         return await super().execute(sql, *args)
 
+    async def fetchval(self, sql, *args):
+        assert "UPDATE scheduled_tasks" in sql
+        await self.execute(" ".join(sql.split()), *args)
+        return self.rows[args[0]]["next_run_at"]
+
     async def fetchrow(self, sql, *args):
         if sql.lstrip().startswith("INSERT") and "scheduled_tasks" in sql and "'db'" in sql:
             from butlers.core.obligation_schedule_sources import SCHEDULE_FIELDS
@@ -1063,3 +1068,176 @@ async def test_runtime_delete_tombstones_real_row_and_reconciles_only_original_d
     )
     assert task_id not in pool.connection.rows and body["state"] == "deleted"
     assert pool.connection.depth == 0
+
+
+async def test_deadline_revision_reset_terminal_and_delete_share_owning_transaction():
+    """Actual deadline mutators retain progress rules while cancelling old work."""
+    from datetime import date
+
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+    from butlers.core.temporal.deadlines_db import deadline_delete, deadline_update
+
+    selected = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=schedule(
+            name="deadline-revision",
+            cron="0 0 * * *",
+            task_type="deadline",
+            target_date=date(2099, 1, 1),
+            lead_time_days=7,
+            alert_thresholds=[{"days_before": 3, "severity": "info"}],
+        ),
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"fixture_only": "no invocation authority"},
+        creator=RuntimeCreationSnapshot(UUID(int=980), (Grant("health__read"),), True),
+    )
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    row = selected.schedule
+    task = await scheduler.schedule_create(
+        pool,
+        name=row["name"],
+        task_type="deadline",
+        prompt=row["prompt"],
+        target_date=row["target_date"],
+        lead_time_days=7,
+        alert_thresholds=row["alert_thresholds"],
+        obligation_definition=selected,
+        obligation_command_id=UUID(int=981),
+    )
+    revision = pool.connection.definitions[task]["revision"]
+    pool.connection.occurrences[UUID(int=987)] = {
+        "id": UUID(int=987),
+        "source_id": task,
+        "revision": revision,
+        "source_key": "f" * 64,
+        "source_kind": "occurrence",
+        "source_ref": str(task),
+        "occurrence": "deadline-threshold",
+        "state": "pending",
+        "claim_token": None,
+        "created_at": datetime(2026, 10, 1, tzinfo=UTC),
+    }
+    pool.connection.rows[task]["fired_thresholds"] = [{"days_before": 3}]
+    pool.connection.rows[task]["deadline_status"] = "alerted"
+    changed = replace(
+        selected,
+        row_json=selected.row_json.replace("2099-01-01", "2099-02-01"),
+        dependencies=(str(UUID(int=982)),),
+    )
+    kwargs = dict(
+        target_date=date(2099, 2, 1),
+        depends_on=list(changed.dependencies),
+        obligation_definition=changed,
+        obligation_command_id=UUID(int=983),
+        obligation_expected_revision=revision,
+    )
+    await deadline_update(pool, task, **kwargs)
+    actual = pool.connection.rows[task]
+    assert actual["target_date"] == date(2099, 2, 1)
+    assert actual["fired_thresholds"] == [] and actual["deadline_status"] == "pending"
+    assert actual["depends_on"] == list(changed.dependencies)
+    assert pool.connection.definitions[task]["generation"] == 2
+    assert pool.connection.occurrences[UUID(int=987)]["state"] == "cancelled"
+    before = copy.deepcopy((pool.connection.rows, pool.connection.definitions))
+    await deadline_update(pool, task, **kwargs)
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    with pytest.raises(SourceConflict):
+        await deadline_update(pool, task, **(kwargs | {"depends_on": []}))
+    with pytest.raises(ValueError):
+        await deadline_update(pool, task, **(kwargs | {"deadline_status": "invented"}))
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    # A mismatched requested prompt executes the ordinary update, then the same
+    # owning transaction rolls back both row and source state on readback.
+    with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+        await deadline_update(
+            pool,
+            task,
+            **(
+                kwargs
+                | {
+                    "prompt": "different request",
+                    "obligation_command_id": UUID(int=984),
+                    "obligation_expected_revision": pool.connection.definitions[task]["revision"],
+                }
+            ),
+        )
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    completed = replace(
+        changed,
+        row_json=changed.row_json.replace('"enabled":true', '"enabled":false'),
+        deadline_status="completed",
+    )
+    terminal_kwargs = dict(
+        deadline_status="completed",
+        obligation_definition=completed,
+        obligation_command_id=UUID(int=986),
+        obligation_expected_revision=pool.connection.definitions[task]["revision"],
+    )
+    await deadline_update(pool, task, **terminal_kwargs)
+    assert pool.connection.rows[task]["deadline_status"] == "completed"
+    assert pool.connection.rows[task]["enabled"] is False
+    assert pool.connection.definitions[task]["state"] == "disabled"
+    with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+        await deadline_update(pool, task, **(terminal_kwargs | {"deadline_status": "expired"}))
+    changed = completed
+    deletion = dict(
+        obligation_definition=changed,
+        obligation_command_id=UUID(int=985),
+        obligation_expected_revision=pool.connection.definitions[task]["revision"],
+    )
+    await deadline_delete(pool, task, **deletion)
+    assert task not in pool.connection.rows
+    assert pool.connection.definitions[task]["state"] == "deleted"
+    await deadline_delete(pool, task, **deletion)
+    assert pool.connection.depth == 0
+
+
+async def test_runtime_toggle_binds_enabled_and_reconciles_without_replaying_newer_row():
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+
+    selected = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=schedule(),
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"fixture_only": "not caller authority"},
+        creator=RuntimeCreationSnapshot(UUID(int=990), (Grant("health__read"),), True),
+    )
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    task = await scheduler.schedule_create(
+        pool,
+        "fixture",
+        "0 9 * * *",
+        "fixture prompt",
+        obligation_definition=selected,
+        obligation_command_id=UUID(int=991),
+    )
+    disabled = replace(
+        selected, row_json=selected.row_json.replace('"enabled":true', '"enabled":false')
+    )
+    kwargs = dict(
+        enabled=False,
+        obligation_definition=disabled,
+        obligation_command_id=UUID(int=992),
+        obligation_expected_revision=pool.connection.definitions[task]["revision"],
+    )
+    receipt = await scheduler.schedule_toggle(pool, task, **kwargs)
+    assert receipt["observed_enabled"] is False and receipt["changed"] is True
+    assert pool.connection.rows[task]["enabled"] is False
+    assert pool.connection.rows[task]["next_run_at"] is None
+    assert pool.connection.definitions[task]["state"] == "disabled"
+    assert pool.connection.definitions[task]["generation"] == 2
+    # Reconciliation returns a source-command observation, not a fabricated
+    # current-row observation or a repeated mutation against newer row state.
+    pool.connection.rows[task]["enabled"] = True
+    before = copy.deepcopy((pool.connection.rows, pool.connection.definitions))
+    reconciled = await scheduler.schedule_toggle(pool, task, **kwargs)
+    assert reconciled["status"] == "reconciled"
+    assert reconciled["source_revision"] == receipt["source_revision"]
+    assert "observed_enabled" not in reconciled
+    with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+        await scheduler.schedule_toggle(pool, task, **(kwargs | {"enabled": True}))
+    assert (pool.connection.rows, pool.connection.definitions) == before

@@ -248,6 +248,7 @@ class RuntimeScheduleDefinition(GitScheduleDefinition):
 
     creator: RuntimeCreationSnapshot
     dependencies: tuple[str, ...] = ()
+    deadline_status: str | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -266,12 +267,21 @@ class RuntimeScheduleDefinition(GitScheduleDefinition):
                     raise ValueError
             except ValueError:
                 raise DeclarationError("invalid_deadline_dependencies") from None
+        if self.deadline_status is not None and (
+            self.schedule["task_type"] != "deadline"
+            or self.deadline_status
+            not in {"pending", "alerted", "escalated", "completed", "expired"}
+        ):
+            raise DeclarationError("invalid_deadline_status")
         if self.schedule["task_type"] != "deadline" and self.dependencies:
             raise DeclarationError("invalid_deadline_dependencies")
 
     @property
     def material_digest(self) -> str:
-        return digest({"schedule": super().material_digest, "depends_on": self.dependencies})
+        material = {"schedule": super().material_digest, "depends_on": self.dependencies}
+        if self.deadline_status is not None:
+            material["deadline_status"] = self.deadline_status
+        return digest(material)
 
 
 def compile_runtime_schedule_definition(
@@ -282,6 +292,7 @@ def compile_runtime_schedule_definition(
     context_material: dict | None,
     creator: RuntimeCreationSnapshot,
     depends_on: tuple[str, ...] = (),
+    deadline_status: str | None = None,
 ) -> RuntimeScheduleDefinition:
     """Freeze actual selected material, rejecting rather than clipping widening."""
     return RuntimeScheduleDefinition(
@@ -291,6 +302,7 @@ def compile_runtime_schedule_definition(
         _json(context_material) if context_material is not None else None,
         creator,
         depends_on,
+        deadline_status,
     )
 
 
@@ -446,6 +458,12 @@ async def _stage_schedule_definition(
             )
         if _row_material({key: row[key] for key in SCHEDULE_FIELDS}) != definition.row_json:
             raise SourceConflict("schedule_material_write_mismatch")
+        if runtime and definition.deadline_status is not None:
+            progress = await connection.fetchrow(
+                f"SELECT deadline_status FROM {table} WHERE id=$1", source_id
+            )
+            if progress is None or progress["deadline_status"] != definition.deadline_status:
+                raise SourceConflict("schedule_material_write_mismatch")
         value = DefinitionRevision(
             repository.owner_domain,
             family,
@@ -525,12 +543,22 @@ async def revise_runtime_schedule_definition(
     if definition.owner_domain != repository.owner_domain:
         raise SourceConflict("source_owner_mismatch")
     connection = repository.connection
+    selected_fields = {k: v for k, v in submitted_fields.items() if k in SCHEDULE_FIELDS}
+    if set(submitted_fields) - set(SCHEDULE_FIELDS) - {"depends_on", "deadline_status"}:
+        raise SourceConflict("schedule_material_mismatch")
+    if (
+        "depends_on" in submitted_fields
+        and tuple(submitted_fields["depends_on"] or ()) != definition.dependencies
+        or "deadline_status" in submitted_fields
+        and submitted_fields["deadline_status"] != definition.deadline_status
+    ):
+        raise SourceConflict("schedule_material_mismatch")
     async with connection.transaction():
         previous = await repository.read_command(command_id)
         if previous is not None:
             # Validate the actual normalized request, not just its prepared
             # definition. Do not rerun a mutation against a newer live row.
-            if _row_material(definition.schedule | submitted_fields) != definition.row_json:
+            if _row_material(definition.schedule | selected_fields) != definition.row_json:
                 raise SourceConflict("schedule_material_mismatch")
         if previous is None:
             await repository.lock_source(source_id)
@@ -551,20 +579,25 @@ async def revise_runtime_schedule_definition(
             )
             if row is None or row["source"] != "db":
                 raise SourceConflict("runtime_schedule_required")
-            if (
-                old.family == "deadline"
-                and tuple(row["depends_on"] or ()) != definition.dependencies
-            ):
-                raise SourceConflict("schedule_material_mismatch")
             await mutate_row(connection)
             row = await connection.fetchrow(
-                f"SELECT id,source,{','.join(SCHEDULE_FIELDS)} FROM "
+                f"SELECT id,source,depends_on,deadline_status,{','.join(SCHEDULE_FIELDS)} FROM "
                 f'"{repository.owner_domain}".scheduled_tasks WHERE id=$1 FOR UPDATE',
                 source_id,
             )
             if (
                 row is None
                 or _row_material({key: row[key] for key in SCHEDULE_FIELDS}) != definition.row_json
+                or (
+                    old.family == "deadline"
+                    and (
+                        tuple(row["depends_on"] or ()) != definition.dependencies
+                        or (
+                            definition.deadline_status is not None
+                            and row["deadline_status"] != definition.deadline_status
+                        )
+                    )
+                )
             ):
                 raise SourceConflict("schedule_material_mismatch")
         return await _stage_schedule_definition(

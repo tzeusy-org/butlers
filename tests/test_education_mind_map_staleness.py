@@ -557,3 +557,103 @@ async def test_atomic_flow_and_populated_curriculum_on_migrated_runtime(pool, mo
     assert dict(
         await pool.fetchrow("SELECT value,version FROM state WHERE key=$1", f"flow:{map_id}")
     ) == dict(settled)
+
+
+async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_deletion(pool):
+    """Real owning role and actual registered callbacks; no canned insert receipt."""
+    from types import SimpleNamespace
+
+    from butlers.core.scheduler import schedule_create
+    from roster.education.modules import EducationModule, EducationModuleConfig
+
+    class Registry:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return register
+
+    registry, module = Registry(), EducationModule()
+    await module.register_tools(
+        registry, EducationModuleConfig(), SimpleNamespace(pool=pool), "education"
+    )
+    call = registry.tools["spaced_repetition_record_response"]
+    map_id = await _create_map(pool, title="Atomic review")
+    await _add_node(pool, map_id, age_days=0)
+    node_id = str(
+        await pool.fetchval("SELECT id FROM education.mind_map_nodes WHERE mind_map_id=$1", map_id)
+    )
+    old_names = [f"review-{node_id}-rep{index}" for index in range(20)]
+    batch_name = f"review-{map_id}-batch"
+    for name in [*old_names, batch_name]:
+        await schedule_create(pool, name, "0 9 * * *", "Isolated review fixture")
+    before = dict(
+        await pool.fetchrow(
+            "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
+            "FROM education.mind_map_nodes WHERE id=$1",
+            node_id,
+        )
+    )
+    # Existing batch name causes the actual core scheduler INSERT to refuse,
+    # after the actual node UPDATE and deletion of all twenty prior schedules.
+    with pytest.raises(ValueError, match="already exists"):
+        await call(node_id, map_id, 4)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT current_user") == "butler_education_rw"
+        assert (
+            dict(
+                await conn.fetchrow(
+                    "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
+                    "FROM education.mind_map_nodes WHERE id=$1",
+                    node_id,
+                )
+            )
+            == before
+        )
+        names = await conn.fetch(
+            "SELECT name FROM scheduled_tasks WHERE name=ANY($1::text[])", [*old_names, batch_name]
+        )
+        assert {row["name"] for row in names} == {*old_names, batch_name}
+    await pool.execute("DELETE FROM scheduled_tasks WHERE name=$1", batch_name)
+    result = await call(node_id, map_id, 4)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT repetitions,next_review_at FROM education.mind_map_nodes WHERE id=$1", node_id
+        )
+        assert row["repetitions"] == result["repetitions"] == 1
+        assert row["next_review_at"].isoformat() == result["next_review_at"]
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM scheduled_tasks WHERE name=ANY($1::text[])", old_names
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval("SELECT count(*) FROM scheduled_tasks WHERE name=$1", batch_name)
+            == 1
+        )
+
+    # Two actual registered requests for this node serialize on the owning rows;
+    # neither may overwrite progress computed before the other commits.
+    import asyncio
+
+    await pool.execute("DELETE FROM scheduled_tasks WHERE name=$1", batch_name)
+    concurrent = await asyncio.wait_for(
+        asyncio.gather(call(node_id, map_id, 4), call(node_id, map_id, 4)), timeout=20
+    )
+    assert sorted(row["repetitions"] for row in concurrent) == [2, 3]
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT repetitions FROM education.mind_map_nodes WHERE id=$1", node_id
+            )
+            == 3
+        )
+        names = await conn.fetch(
+            "SELECT name FROM scheduled_tasks WHERE name LIKE $1", f"review-{node_id}-rep%"
+        )
+        assert [row["name"] for row in names] == [f"review-{node_id}-rep3"]

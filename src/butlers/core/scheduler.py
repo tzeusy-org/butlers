@@ -3211,6 +3211,9 @@ async def schedule_toggle(
     enabled: bool,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
+    obligation_expected_revision: str | None = None,
 ) -> dict[str, Any]:
     """Set one runtime schedule to the requested enabled state.
 
@@ -3228,87 +3231,159 @@ async def schedule_toggle(
             "enabled must be a boolean",
         )
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                """
-                SELECT id, name, cron, timezone, source, enabled, next_run_at
-                FROM scheduled_tasks
-                WHERE id = $1
-                FOR UPDATE
-                """,
-                task_id,
+    if obligation_definition is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            revise_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if type(obligation_definition) is not RuntimeScheduleDefinition:
+            raise SourceConflict("creator_snapshot_required")
+        if not isinstance(obligation_command_id, uuid.UUID) or not isinstance(
+            obligation_expected_revision, str
+        ):
+            raise SourceConflict("source_command_required")
+
+        async def toggle_source(repository):
+            observed = None
+
+            async def mutate(connection):
+                nonlocal observed
+                observed = await _schedule_toggle_connection(
+                    connection,
+                    task_id,
+                    enabled=enabled,
+                    stagger_key=stagger_key,
+                    max_stagger_seconds=max_stagger_seconds,
+                )
+                if observed["status"] == "error":
+                    raise SourceConflict(observed["code"])
+
+            staged = await revise_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                source_id=task_id,
+                expected_revision=obligation_expected_revision,
+                definition=obligation_definition,
+                submitted_fields={"enabled": enabled},
+                mutate_row=mutate,
             )
-            if row is None:
-                return _schedule_toggle_error(
-                    task_id,
-                    "SCHEDULE_NOT_FOUND",
-                    f"Schedule {task_id} not found",
-                )
+            if observed is None:
+                # The historical source receipt cannot establish today's row
+                # or historical next_run_at; do not invent either observation.
+                return {
+                    "id": str(task_id),
+                    "status": "reconciled",
+                    "requested_enabled": enabled,
+                    "source_revision": staged.definition.revision,
+                }
+            return observed | {"source_revision": staged.definition.revision}
 
-            source = str(row["source"])
-            if source == "toml":
-                return _schedule_toggle_error(
-                    task_id,
-                    "SCHEDULE_TOML_MANAGED",
-                    "TOML-managed schedules can only be changed in butler.toml",
-                    source=source,
-                )
-            if source != "db":
-                return _schedule_toggle_error(
-                    task_id,
-                    "SCHEDULE_MANAGED",
-                    f"Schedule source {source!r} is managed by its owning subsystem",
-                    source=source,
-                )
+        return await run_source_transaction(pool, obligation_definition.owner_domain, toggle_source)
+    if obligation_command_id is not None or obligation_expected_revision is not None:
+        from butlers.core.obligation_sources import SourceConflict
 
-            current_enabled = bool(row["enabled"])
-            requested_enabled = enabled
-            if current_enabled == requested_enabled:
-                observed_next_run_at = row["next_run_at"]
-                changed = False
-            else:
-                observed_next_run_at = (
-                    _next_run(
-                        row["cron"],
-                        timezone=row["timezone"],
-                        stagger_key=stagger_key,
-                        max_stagger_seconds=max_stagger_seconds,
-                    )
-                    if requested_enabled
-                    else None
-                )
-                observed_next_run_at = await conn.fetchval(
-                    """
-                    UPDATE scheduled_tasks
-                    SET enabled = $2, next_run_at = $3, updated_at = now()
-                    WHERE id = $1
-                    RETURNING next_run_at
-                    """,
-                    task_id,
-                    requested_enabled,
-                    observed_next_run_at,
-                )
-                changed = True
+        raise SourceConflict("source_definition_required")
+    async with pool.acquire() as conn, conn.transaction():
+        return await _schedule_toggle_connection(
+            conn,
+            task_id,
+            enabled=enabled,
+            stagger_key=stagger_key,
+            max_stagger_seconds=max_stagger_seconds,
+        )
 
-            return {
-                "id": str(task_id),
-                "name": row["name"],
-                "source": source,
-                "status": "updated" if changed else "unchanged",
-                "outcome": "applied" if changed else "already_requested",
-                "requested_enabled": requested_enabled,
-                "observed_enabled": requested_enabled,
-                "changed": changed,
-                "next_run_at": (
-                    observed_next_run_at.isoformat() if observed_next_run_at is not None else None
-                ),
-                "audit": {
-                    "action": "schedule.toggle",
-                    "result": "success",
-                    "target": f"schedule:{task_id}",
-                },
-            }
+
+async def _schedule_toggle_connection(
+    conn,
+    task_id: uuid.UUID,
+    *,
+    enabled: bool,
+    stagger_key: str | None,
+    max_stagger_seconds: int,
+) -> dict[str, Any]:
+    """Existing toggle semantics on the transaction's already-owned connection."""
+    row = await conn.fetchrow(
+        """
+        SELECT id, name, cron, timezone, source, enabled, next_run_at
+        FROM scheduled_tasks
+        WHERE id = $1
+        FOR UPDATE
+        """,
+        task_id,
+    )
+    if row is None:
+        return _schedule_toggle_error(
+            task_id,
+            "SCHEDULE_NOT_FOUND",
+            f"Schedule {task_id} not found",
+        )
+
+    source = str(row["source"])
+    if source == "toml":
+        return _schedule_toggle_error(
+            task_id,
+            "SCHEDULE_TOML_MANAGED",
+            "TOML-managed schedules can only be changed in butler.toml",
+            source=source,
+        )
+    if source != "db":
+        return _schedule_toggle_error(
+            task_id,
+            "SCHEDULE_MANAGED",
+            f"Schedule source {source!r} is managed by its owning subsystem",
+            source=source,
+        )
+
+    current_enabled = bool(row["enabled"])
+    requested_enabled = enabled
+    if current_enabled == requested_enabled:
+        observed_next_run_at = row["next_run_at"]
+        changed = False
+    else:
+        observed_next_run_at = (
+            _next_run(
+                row["cron"],
+                timezone=row["timezone"],
+                stagger_key=stagger_key,
+                max_stagger_seconds=max_stagger_seconds,
+            )
+            if requested_enabled
+            else None
+        )
+        observed_next_run_at = await conn.fetchval(
+            """
+            UPDATE scheduled_tasks
+            SET enabled = $2, next_run_at = $3, updated_at = now()
+            WHERE id = $1
+            RETURNING next_run_at
+            """,
+            task_id,
+            requested_enabled,
+            observed_next_run_at,
+        )
+        changed = True
+
+    return {
+        "id": str(task_id),
+        "name": row["name"],
+        "source": source,
+        "status": "updated" if changed else "unchanged",
+        "outcome": "applied" if changed else "already_requested",
+        "requested_enabled": requested_enabled,
+        "observed_enabled": requested_enabled,
+        "changed": changed,
+        "next_run_at": (
+            observed_next_run_at.isoformat() if observed_next_run_at is not None else None
+        ),
+        "audit": {
+            "action": "schedule.toggle",
+            "result": "success",
+            "target": f"schedule:{task_id}",
+        },
+    }
 
 
 async def schedule_delete(

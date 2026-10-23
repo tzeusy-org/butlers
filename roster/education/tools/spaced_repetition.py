@@ -159,11 +159,11 @@ async def spaced_repetition_record_response(
     quality:
         SM-2 response quality 0–5.
     schedule_create:
-        Async callable matching the core schedule_create signature.
-        Defaults to an error stub; inject a real implementation at runtime.
+        Owning scheduler callback accepting connection= for this transaction.
+        The production registration binds the actual core scheduler to it.
     schedule_delete:
-        Async callable matching the core schedule_delete signature.
-        Defaults to an error stub; inject a real implementation at runtime.
+        Owning scheduler callback accepting connection= for this transaction.
+        Deletion errors propagate so node progress cannot commit on failure.
 
     Returns
     -------
@@ -180,13 +180,17 @@ async def spaced_repetition_record_response(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Serialize per-map cap decisions as well as repeated reviews of
+            # this node. Both row locks last through scheduler replacement.
             # 1. Fetch current node state
             node_row = await conn.fetchrow(
                 """
-                SELECT id, label, ease_factor, repetitions,
-                       next_review_at, last_reviewed_at, mastery_status
-                FROM education.mind_map_nodes
-                WHERE id = $1 AND mind_map_id = $2
+                SELECT n.id, n.label, n.ease_factor, n.repetitions,
+                       n.next_review_at, n.last_reviewed_at, n.mastery_status
+                FROM education.mind_map_nodes AS n
+                JOIN education.mind_maps AS m ON m.id = n.mind_map_id
+                WHERE n.id = $1 AND n.mind_map_id = $2
+                FOR UPDATE OF m, n
                 """,
                 node_id,
                 mind_map_id,
@@ -255,52 +259,59 @@ async def spaced_repetition_record_response(
             # 6. Count pending review schedules for the map (for batch-cap decision).
             # We query the schedule names via the scheduler table; if that table
             # does not exist in tests, we fall back to 0 (see schedule_count below).
-            schedule_count = await _count_pending_review_schedules(conn, mind_map_id)
+            schedule_count = await _count_pending_review_schedules(conn, mind_map_id, strict=True)
 
-        # Transaction committed — now manage schedules outside the transaction.
+            # 7. Delete prior schedule for this node (any rep number)
+            # Unlike best-effort lifecycle cleanup, these mutations must fail the
+            # owning progress transaction on any read/delete/create refusal.
+            schedule_names = await conn.fetch(
+                "SELECT name FROM scheduled_tasks WHERE name LIKE $1",
+                f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep%",
+            )
+            for old_schedule in schedule_names:
+                await schedule_delete(str(old_schedule["name"]), connection=conn)
 
-    # 7. Delete prior schedule for this node (any rep number)
-    await _delete_node_schedules(pool, node_id, schedule_delete)
-
-    # 8. Create new schedule (individual or batch)
-    if schedule_count >= _BATCH_CAP:
-        # Batch schedule: single review for the whole map
-        batch_name = f"{_REVIEW_SCHEDULE_PREFIX}{mind_map_id}-batch"
-        cron = _datetime_to_cron(next_review_at)
-        until_at = next_review_at + timedelta(hours=24)
-        await schedule_create(
-            name=batch_name,
-            cron=cron,
-            dispatch_mode="prompt",
-            prompt=(
-                f"Batch spaced-repetition review for mind map {mind_map_id}. "
-                f"There are {schedule_count + 1} pending reviews. "
-                f"Call spaced_repetition_pending_reviews(mind_map_id='{mind_map_id}') "
-                "to get all due nodes and review each one. "
-                "Deliver all questions via notify(channel='telegram', intent='send', "
-                "message=<your_question>). Follow the review-session skill protocol."
-            ),
-            until_at=until_at,
-        )
-    else:
-        # Individual schedule for this specific node
-        schedule_name = f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep{new_reps}"
-        cron = _datetime_to_cron(next_review_at)
-        until_at = next_review_at + timedelta(hours=24)
-        await schedule_create(
-            name=schedule_name,
-            cron=cron,
-            dispatch_mode="prompt",
-            prompt=(
-                f"Spaced repetition review for node '{label}' "
-                f"(node_id={node_id}, mind_map_id={mind_map_id}). "
-                f"Repetition #{new_reps}, ease_factor={new_ef:.2f}. "
-                "Ask the user a focused recall question for this concept. "
-                "Deliver the question via notify(channel='telegram', intent='send', "
-                "message=<your_question>). Follow the review-session skill protocol."
-            ),
-            until_at=until_at,
-        )
+            # 8. Create new schedule (individual or batch)
+            if schedule_count >= _BATCH_CAP:
+                # Batch schedule: single review for the whole map
+                batch_name = f"{_REVIEW_SCHEDULE_PREFIX}{mind_map_id}-batch"
+                cron = _datetime_to_cron(next_review_at)
+                until_at = next_review_at + timedelta(hours=24)
+                await schedule_create(
+                    connection=conn,
+                    name=batch_name,
+                    cron=cron,
+                    dispatch_mode="prompt",
+                    prompt=(
+                        f"Batch spaced-repetition review for mind map {mind_map_id}. "
+                        f"There are {schedule_count + 1} pending reviews. "
+                        f"Call spaced_repetition_pending_reviews(mind_map_id='{mind_map_id}') "
+                        "to get all due nodes and review each one. "
+                        "Deliver all questions via notify(channel='telegram', intent='send', "
+                        "message=<your_question>). Follow the review-session skill protocol."
+                    ),
+                    until_at=until_at,
+                )
+            else:
+                # Individual schedule for this specific node
+                schedule_name = f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep{new_reps}"
+                cron = _datetime_to_cron(next_review_at)
+                until_at = next_review_at + timedelta(hours=24)
+                await schedule_create(
+                    connection=conn,
+                    name=schedule_name,
+                    cron=cron,
+                    dispatch_mode="prompt",
+                    prompt=(
+                        f"Spaced repetition review for node '{label}' "
+                        f"(node_id={node_id}, mind_map_id={mind_map_id}). "
+                        f"Repetition #{new_reps}, ease_factor={new_ef:.2f}. "
+                        "Ask the user a focused recall question for this concept. "
+                        "Deliver the question via notify(channel='telegram', intent='send', "
+                        "message=<your_question>). Follow the review-session skill protocol."
+                    ),
+                    until_at=until_at,
+                )
 
     return {
         "interval_days": interval_days,
@@ -474,7 +485,9 @@ def _determine_sr_status(current_status: str, quality: int) -> str | None:
     return None
 
 
-async def _count_pending_review_schedules(conn: asyncpg.Connection, mind_map_id: str) -> int:
+async def _count_pending_review_schedules(
+    conn: asyncpg.Connection, mind_map_id: str, *, strict: bool = False
+) -> int:
     """Count pending review schedules for a mind map via the scheduler table.
 
     Queries all per-node schedules (review-{node_id}-rep*) for nodes belonging
@@ -511,6 +524,8 @@ async def _count_pending_review_schedules(conn: asyncpg.Connection, mind_map_id:
 
         return node_count + int(batch_count or 0)
     except Exception:
+        if strict:
+            raise
         # Scheduler table not available in this environment
         return 0
 
