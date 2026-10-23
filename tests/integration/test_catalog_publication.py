@@ -20,7 +20,14 @@ from sqlalchemy.exc import DBAPIError
 
 from butlers.core.catalog_publication import CatalogPublisher
 from butlers.core.catalog_reader import DOMAINS, PublishedCatalogProvider
-from butlers.core.goal_admission import EvidenceRefused, GoalAdmission, SourceRef
+from butlers.core.goal_admission import (
+    Evidence,
+    EvidenceRefused,
+    GoalAdmission,
+    Grant,
+    Obligation,
+    SourceRef,
+)
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.contracts.test_catalog_publication import registered_catalog
@@ -113,6 +120,38 @@ async def test_migrated_complete_fleet_actual_goal_admission_and_reader(publicat
                 )
                 == health
             )
+        # The source collaborator stands in for authenticated ingress; it
+        # cannot manufacture a resource dimension missing from the real
+        # published descriptor. This is real SQL refusal/readback coverage,
+        # not proof that the production creator/cause adapter exists.
+        before_goals = await fleet.fetchval("SELECT count(*) FROM switchboard.goals")
+        invalid = Sources(
+            Evidence(
+                "occurrence",
+                "fixture-source",
+                obligation=Obligation(
+                    "health",
+                    "fixture-revision",
+                    (Grant("health__lookup", (("not_a_resource", ("fixture",)),)),),
+                    created_exposed=False,
+                ),
+            )
+        )
+        refused = await GoalAdmission(pool, invalid).admit_submission(
+            SourceRef("occurrence", str(uuid4()), "fixture-slot"), uuid4()
+        )
+        assert refused.result == "refused" and refused.goal_id is None
+        # Different pool/connection after the owning transaction has exited.
+        decision = await fleet.fetchrow(
+            "SELECT result,reason,goal_id FROM switchboard.admission_decisions WHERE id=$1",
+            refused.decision_id,
+        )
+        assert dict(decision) == {
+            "result": "refused",
+            "reason": "source_evidence_unavailable",
+            "goal_id": None,
+        }
+        assert await fleet.fetchval("SELECT count(*) FROM switchboard.goals") == before_goals
 
 
 async def test_real_roles_bootstrap_immutability_and_bad_publisher(

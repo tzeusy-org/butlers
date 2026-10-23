@@ -133,6 +133,7 @@ class Capability:
     owner_authority: bool = False
     owner_default: bool = False
     presentable: bool = True
+    resource_params: tuple[str, ...] = ()
 
     def __post_init__(self):
         if (
@@ -144,6 +145,9 @@ class Capability:
                 type(v) is not bool
                 for v in (self.owner_authority, self.owner_default, self.presentable)
             )
+            or type(self.resource_params) is not tuple
+            or any(type(value) is not str or not value for value in self.resource_params)
+            or len(set(self.resource_params)) != len(self.resource_params)
         ):
             raise EvidenceRefused("catalog_unavailable")
         Grant(self.id)
@@ -278,6 +282,10 @@ def derive_admission(evidence: Evidence, catalog: CatalogView) -> AdmissionPlan:
             g.capability not in eligible for g in grants
         ):
             raise EvidenceRefused("invalid_contract_capabilities")
+        if any(
+            set(dict(g.resources)) - set(eligible[g.capability].resource_params) for g in grants
+        ):
+            raise EvidenceRefused("invalid_contract_resources")
         return tuple(sorted(grants, key=lambda g: g.capability))
 
     if evidence.kind == "message":

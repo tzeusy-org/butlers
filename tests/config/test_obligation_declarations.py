@@ -133,6 +133,61 @@ async def test_actual_registered_catalog_validation_warns_dark_and_refuses_after
         build_obligation_catalog({"health": registry})
 
 
+async def test_published_reader_preserves_resource_dimensions_at_actual_admission():
+    from butlers.core.goal_admission import (
+        Evidence,
+        EvidenceRefused,
+        GoalAdmission,
+        Grant,
+        Obligation,
+        derive_admission,
+    )
+    from tests.contracts.test_catalog_publication import Connection, complete_fleet
+
+    # Real final registration -> publisher -> current reader -> production
+    # admission derivation. The SQL collaborator is not PG or creator proof.
+    store, publishers = await complete_fleet()
+    registry = await _complete_core_catalog("health")
+    notify = registry["notify"]
+    assert notify.grantable and "recipient" in notify.resource_params
+    await publishers["health"].publish(registry)
+    connection = Connection(store, "switchboard")
+    async with connection.transaction():
+        view = await GoalAdmission(None, None).catalog.load(connection)
+        grant = Grant("health__notify", (("recipient", ("fixture-recipient",)),))
+        evidence = Evidence(
+            "occurrence",
+            "fixture-source",
+            obligation=Obligation("health", "fixture-revision", (grant,), created_exposed=False),
+        )
+        plan = derive_admission(evidence, view)
+        assert plan.ceiling == (grant,)
+        assert not plan.exposed
+        # Neither successful publication nor a valid capability can turn a
+        # misspelled scope key into an unrestricted real resource grant.
+        forged = replace(
+            evidence,
+            obligation=replace(
+                evidence.obligation,
+                capabilities=(Grant("health__notify", (("not_a_resource", ("fixture",)),)),),
+            ),
+        )
+        with pytest.raises(EvidenceRefused, match="invalid_contract_resources"):
+            derive_admission(forged, view)
+        # The same key refusal must hold for the actual local diagnostic path.
+        parsed = {
+            "version": 1,
+            "capabilities": [
+                {"capability": "health__notify", "resources": {"not_a_resource": ["fixture"]}}
+            ],
+        }
+        result = validate_declarations(
+            {"fixture": parsed}, build_obligation_catalog({"health": registry}), after_switch=False
+        )
+        assert [issue.code for issue in result.issues] == ["unknown_resource"]
+        assert result.declarations == ()
+
+
 def _loaded_config(tmp_path, declaration="version = 1\ncapabilities = []"):
     from butlers.config import load_config
 

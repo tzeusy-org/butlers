@@ -1,7 +1,7 @@
 """Owning-schema obligation revisions and transactional reference-only outbox.
 
 Revision ID: core_274
-Revises: core_273
+Revises: core_275 (delivered final-registry publication prerequisite).
 
 No Switchboard/control schema dependency or live admission wiring. Definitions
 are tombstoned, not erased: immutable revisions, commands and outbox evidence
@@ -11,7 +11,7 @@ survive source retirement. Nonempty evidence refuses downgrade.
 from alembic import op
 
 revision = "core_274"
-down_revision = "core_273"
+down_revision = "core_275"
 branch_labels = None
 depends_on = None
 

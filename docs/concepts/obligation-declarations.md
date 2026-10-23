@@ -315,6 +315,30 @@ invoke an HA service or scene. A separately authorized owner action retains the
 existing physical-risk and approval rules; a feed/preference is not that action.
 No caller-supplied creator UUID, grant or exposure is accepted by this format.
 
+### Delivered fleet metadata at admission
+
+The delivered final-registry publisher and `PublishedCatalogProvider` now retain
+each descriptor's exact registered resource parameter names in the immutable
+admission projection. The actual `derive_admission()` consumer rejects an
+obligation or staffer contract that constrains a key absent from that descriptor;
+a valid capability ID cannot make a misspelled resource key authoritative.
+An empty parameter tuple means the capability has no resource dimensions, not
+an unrestricted set of parameter names. Local declaration diagnostics preserve
+the same exact metadata.
+
+This checks dimension names only. It does not resolve recipients, populate
+owner-selection records, authenticate a creator or effect, or waive the broker's
+per-call resource and approval checks. The reader retains its existing
+Switchboard role and same-transaction complete-fleet checks; domain startup does
+not gain a new catalog SQL privilege or an admission switch. Source/creator/cause
+and runner handoff remain separate required producers.
+
+Core-274 now follows the actually delivered core-275 publication migration.
+Only the migration ancestry changes; its owning-source SQL, role checks and
+durable evidence/downgrade contracts are unchanged. The existing real-PG catalog
+owner additionally exercises malformed-resource refusal and independent committed
+decision readback; authoring or collecting it is not a PostgreSQL execution pass.
+
 
 ## Runtime schedule and deadline owning writer
 

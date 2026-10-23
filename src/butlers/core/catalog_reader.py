@@ -151,6 +151,7 @@ class PublishedCatalogProvider:
                 # Broker still resolves real call recipients/selection per D4.
                 owner_default=False,
                 presentable=item.grantable,
+                resource_params=tuple(item.resource_params),
             )
             for registration in snapshot.registrations
             for item in registration.catalog.descriptors

@@ -87,6 +87,7 @@ def build_obligation_catalog(registries: Mapping[str, ToolCatalog]) -> Obligatio
                     effect_class=descriptor.effect_class,
                     owner_authority=descriptor.owner_authority,
                     owner_default=False,
+                    resource_params=tuple(descriptor.resource_params),
                 )
             )
             resource_parameters.append((qualified, tuple(descriptor.resource_params)))
