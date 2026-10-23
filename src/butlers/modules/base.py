@@ -91,6 +91,8 @@ class ToolMeta:
     resource_params: tuple[str, ...] | None = None
     selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
+    # Source declaration carries only mode. The daemon supplies gate/config
+    # facts in the final descriptor; omitted legacy mode is not broker eligible.
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None

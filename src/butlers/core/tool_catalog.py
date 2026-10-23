@@ -16,6 +16,7 @@ EffectClass = Literal["read", "record", "communicate", "transact", "actuate", "a
 OutputTrust = Literal["trusted", "untrusted", "stamped"]
 OutputSensitivity = Literal["ordinary", "sensitive"]
 Idempotency = Literal["none", "key_required"]
+ApprovalMode = Literal["default", "always_per_event"]
 AUTHORIZATION_FIELDS = (
     "owner_domain",
     "effect_class",
@@ -108,6 +109,20 @@ def _owner_only_tool(name: str) -> bool:
 
 class ToolCatalogError(ValueError):
     """The registered surface and its checked-in metadata disagree."""
+
+
+def declared_approval_mode(policy: Mapping[str, Any] | None) -> ApprovalMode:
+    """Read an explicit source declaration, never an absent-mode default.
+
+    The daemon enriches this same mapping with its actual gate configuration.
+    Configuration and risk tier cannot change the declared mode.
+    """
+    if not isinstance(policy, Mapping):
+        raise ToolCatalogError("missing declared approval mode")
+    mode = policy.get("mode")
+    if type(mode) is not str or mode not in {"default", "always_per_event"}:
+        raise ToolCatalogError("invalid declared approval mode")
+    return mode
 
 
 def _validate_posture(value: str) -> None:
@@ -367,8 +382,20 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         problems.append("idempotency")
     if not isinstance(descriptor.owner_authority, bool):
         problems.append("owner_authority")
-    if not isinstance(descriptor.approval_policy, Mapping):
-        problems.append("approval_policy")
+    policy = descriptor.approval_policy
+    try:
+        mode = declared_approval_mode(policy)
+    except ToolCatalogError:
+        problems.append("approval_policy.mode")
+    else:
+        if any(type(policy.get(key)) is not bool for key in ("enabled", "configured_gate")):
+            problems.append("approval_policy.gate")
+        if mode == "always_per_event" and not (
+            policy.get("enabled") is True and policy.get("configured_gate") is True
+        ):
+            problems.append("approval_policy.always_per_event_gate")
+        if descriptor.canonical_name == "calendar_respond" and mode != "always_per_event":
+            problems.append("approval_policy.calendar_response_mode")
     properties = descriptor.input_schema.get("properties", {})
     selection = descriptor.selection_bound
     resource_params = descriptor.resource_params

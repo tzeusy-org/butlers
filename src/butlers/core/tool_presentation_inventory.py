@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from butlers.core.tool_catalog import RecipientParameters, StoreWriters, ToolPresentation
+from butlers.core.tool_catalog import (
+    ApprovalMode,
+    RecipientParameters,
+    StoreWriters,
+    ToolPresentation,
+    declared_approval_mode,
+)
 
 
 def _declare(
@@ -19,8 +25,14 @@ def _declare(
     presentable: bool = True,
     posture: str = "deferred",
     namespace: str | None = None,
+    approval_mode: ApprovalMode = "default",
     **authorization: object,
 ) -> tuple[ToolPresentation, ...]:
+    # Explicit checked-in producer value, independent of butler configuration.
+    # Legacy module declarations outside this inventory do not inherit it.
+    policy = {"mode": approval_mode}
+    declared_approval_mode(policy)
+    authorization["approval_policy"] = policy
     # Provider/cache responses retain their external provenance even on writes.
     external_modules = {
         "google_drive",

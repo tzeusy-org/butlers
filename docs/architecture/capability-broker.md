@@ -1,5 +1,39 @@
 # Capability broker transport foundation
 
+## Declared approval modes and broker catalog projection
+
+The checked-in central inventory declares `approval_policy.mode=default`.
+Conditional module registrations declare their mode through the same existing
+`ToolMeta.approval_policy` mapping; `calendar_respond` explicitly declares
+`always_per_event`. The daemon preserves that source declaration while adding
+its actual `enabled`, `configured_gate`, expiry, risk and rule-precedence facts.
+Configuration cannot replace the declaration. Modules declare only the mode,
+not the daemon's configuration-derived authority fields. Legacy metadata with
+no declared mode retains its ordinary callable behavior but is not eligible
+for broker projection.
+
+The authorization catalog check rejects absent or unknown modes and rejects
+`always_per_event` without both an enabled approvals module and a configured
+gate for the actual tool. Calendar invitation answers cannot declare default.
+The mode is already part of the descriptor's frozen policy mapping and catalog
+generation digest; no new top-level publication field is introduced.
+
+`capability_broker.catalog.project_catalog()` converts a verified final
+registration to broker capability values. It preserves exact resource-selection
+marks, recipient declarations, final post-approval input schemas and gate facts.
+It detaches mutable schema values and omits private definitions. An enabled
+owning approvals module supplies the descriptive availability fact for
+broker-induced PARK, including a default-mode tool with no configured gate.
+A configured enabled gate supplies `approval_required`; explicit
+`always_per_event` additionally prevents standing-rule automatic approval.
+
+This projection does not authenticate a local value as the fleet's current
+registration. The genuine M1 current-reader/digest binding, actual owner
+selection and policy producers, and owning approval storage/receipt/replay
+producer remain required. Mode metadata and policy tests do not implement the
+owning always-per-event rule-creation, matching or promotion enforcement. They
+do not enable the private transport or activate the runtime.
+
 The daemon's dedicated private transport is default OFF. It is separate from the
 ordinary model-presentable MCP catalog. The central cancellation and replay
 consumers below remain distinct from the missing owning approval producer,
