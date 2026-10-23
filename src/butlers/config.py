@@ -457,6 +457,15 @@ class SchedulerConfig(_StrictModel):
     heartbeat_interval_seconds: PositiveInt = 120
     # Durable owning-source staging only; never selects goal admission.
     obligation_source_mode: Literal["off", "dark"] = "off"
+    # Private Switchboard Git admission only; staging and legacy dispatch stay separate.
+    obligation_admission_mode: Literal["off", "dark"] = "off"
+
+    @model_validator(mode="after")
+    def _require_staging(self):
+        if self.obligation_admission_mode == "dark" and self.obligation_source_mode != "dark":
+            raise ValueError("Git admission requires dark source staging")
+        return self
+
     switchboard_url: str = "http://localhost:41200"
 
 

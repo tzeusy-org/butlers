@@ -1075,7 +1075,7 @@ def test_key_absent_control_workload_and_session_network_contract():
         ]
         return subprocess.run(command, capture_output=True, text=True)
 
-    result = render("dev")
+    result = render("dev", "--set", "butlersControl.enabled=true")
     assert result.returncode == 0, result.stderr
     docs = {
         (doc["kind"], doc["metadata"]["name"]): doc
@@ -1087,6 +1087,12 @@ def test_key_absent_control_workload_and_session_network_contract():
     for workload in (control, domains):
         assert workload["spec"]["replicas"] == 1
         assert workload["spec"]["strategy"]["type"] == "Recreate"
+        pod = workload["spec"]["template"]["spec"]
+        contexts = [pod.get("securityContext") or {}]
+        contexts.extend(container.get("securityContext") or {} for container in pod["containers"])
+        assert all(
+            context.get("appArmorProfile", {}).get("type") != "Unconfined" for context in contexts
+        ), workload["metadata"]["name"]
     control_container = control["spec"]["template"]["spec"]["containers"][0]
     domain_container = domains["spec"]["template"]["spec"]["containers"][0]
     capacities = [

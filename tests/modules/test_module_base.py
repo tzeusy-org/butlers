@@ -29,9 +29,7 @@ class EmptyConfig(BaseModel):
 class MinimalModule(Module):
     """Fully concrete implementation with the bare minimum logic."""
 
-    @property
-    def name(self) -> str:
-        return "minimal"
+    name = "minimal"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -59,9 +57,7 @@ class MinimalModule(Module):
 class ModuleWithDeps(Module):
     """Module that declares dependencies."""
 
-    @property
-    def name(self) -> str:
-        return "with_deps"
+    name = "with_deps"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -120,9 +116,7 @@ class MissingNameModule(Module):
 class MissingRegisterToolsModule(Module):
     """Missing the `register_tools` method."""
 
-    @property
-    def name(self) -> str:
-        return "incomplete"
+    name = "incomplete"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -299,9 +293,7 @@ class TestGroupEnabled:
 class BareModule(Module):
     """Implements only the three abstract members."""
 
-    @property
-    def name(self) -> str:
-        return "bare"
+    name = "bare"
 
     @property
     def config_schema(self) -> type[BaseModel]:

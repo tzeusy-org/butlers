@@ -1986,7 +1986,8 @@ The API SHALL publish its complete route inventory through the FastAPI-generated
 
 #### Scenario: Ingestion-events list uses the cursor envelope and channels filter
 - **WHEN** `GET /api/ingestion/events` is called with `limit` and an optional opaque `cursor` taken from the preceding response
-- **THEN** the response uses the cursor envelope `{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }` and returns no `total` or `offset`
+- **THEN** the response uses the shared `Page[T]` envelope `{ "items": T[], "next_cursor": string | null, "limit": integer }` and returns no `total`, `offset` or `has_more` (a non-null `next_cursor` means more rows remain)
+- **AND** a cursor that is malformed, tampered with, or issued by another endpoint is rejected with HTTP 400
 - **AND** `channels` is the primary comma-separated source-channel filter
 - **AND** there is no single-value channel alias; an empty `channels=` applies no channel filter
 

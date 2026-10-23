@@ -535,10 +535,10 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
-        # External deadman (bu-9r3hd.4): periodic outbound ping to an
-        # operator-configured URL, catching a silently broken host/egress
-        # firewall after a reboot -- see butlers.jobs.external_deadman for
-        # the full design rationale. Only started when EXTERNAL_DEADMAN_URL
+        # External deadman: DB write/read and receiver-fleet truth gate the
+        # outbound heartbeat. No configured target means no loop or HTTP.
+        # See butlers.jobs.external_deadman for tick identity and failure rules.
+        # Only started when EXTERNAL_DEADMAN_URL
         # is actually configured; with no target there is nothing useful to
         # do every tick, and InfraStateSource treats "unconfigured" as a
         # legitimate absence rather than a failure.

@@ -17,7 +17,14 @@ from butlers.core.goal_admission import (
     Obligation,
     SourceRef,
 )
+from butlers.tools.switchboard.ingestion.goal_input import scoped_reply_ref
 from tests.polling import poll_until
+from tests.switchboard.accepted_source_fixtures import (
+    ObservedSource,
+    accept,
+    admit_source,
+    verified_owner,
+)
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     admit,
@@ -63,6 +70,56 @@ async def test_admission_retry_is_atomic(ledger):
     accepted = await admit(runtime, source=denied_source)
     assert accepted.result == "admitted" and accepted.goal_id != a.goal_id
     assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 2
+    # Repeat the contention/retry through real ingest and retained marked input.
+    async with verified_owner(owner):
+        durable = await accept(owner, markers=[{"kind": "quoted", "start": 0, "end": 5}])
+        reader = ObservedSource()
+        service = GoalAdmission(runtime, reader, Catalogs())
+        attempt = uuid4()
+        first, second = await asyncio.gather(
+            service.admit_submission(durable, attempt), service.admit_submission(durable, uuid4())
+        )
+        assert first == second and first.result == "admitted"
+        assert len(reader.inputs) == 1 and reader.inputs[0].prepared_input.marked
+        assert await service.admit_submission(durable, attempt) == first
+        assert await owner.fetchval(
+            "SELECT exposed FROM switchboard.goals WHERE id=$1", first.goal_id
+        )
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 3
+        with pytest.raises(AdmissionUnavailable):
+            await service.admit_submission(await accept(owner), attempt)
+
+        started = asyncio.Event()
+
+        class PausedAccepted(ObservedSource):
+            async def load(self, connection, source):
+                value = await super().load(connection, source)
+                started.set()
+                await asyncio.Event().wait()
+                return value
+
+        cancelled_source = await accept(owner)
+        cancelled_attempt = uuid4()
+        task = asyncio.create_task(
+            GoalAdmission(runtime, PausedAccepted(), Catalogs()).admit_submission(
+                cancelled_source, cancelled_attempt
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not await owner.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM switchboard.admission_attempt_bindings WHERE attempt_id=$1)",
+            cancelled_attempt,
+        )
+        assert not await owner.fetchval(
+            "SELECT request_context ? '_goal_input_digest' FROM switchboard.message_inbox WHERE request_context->>'request_id'=$1",
+            cancelled_source.id,
+        )
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 3
 
 
 @pytest.mark.parametrize("same_source", [True, False])
@@ -369,6 +426,7 @@ async def test_reply_binding_preserves_goal_authority(ledger):
             uuid4(),
             quiet.goal_id,
         )
+    await accepted_reply_sequences(owner, runtime)
 
 
 async def test_failure_and_cancellation_have_no_partial_success(ledger):
@@ -712,3 +770,180 @@ async def test_waiting_admission_charges_its_captured_window(ledger):
         seconds=2
     )
     assert (await admit(runtime)).result == "admitted"
+
+
+async def accepted_reply_sequences(owner, runtime):
+    """Real provider references, accepted markers and observed PostgreSQL waits."""
+    await configure(owner, limits(new_goals=100, per_source=100))
+    async with verified_owner(owner) as entity:
+        prompt_source = await accept(owner)
+        prompt, _ = await admit_source(runtime, prompt_source, catalog=Catalogs())
+        locator = "100:bot-prompt"
+        delivery = scoped_reply_ref(
+            transport="telegram",
+            endpoint="telegram:bot:closed-test",
+            conversation="telegram:100",
+            recipient_entity=entity,
+            recipient_channel="telegram_bot",
+            locator=locator,
+        )
+        expiry = await owner.fetchval("SELECT now()+interval '1 hour'")
+        _, effect_id = await effect(
+            owner,
+            prompt.goal_id,
+            delivery=delivery,
+            entity=entity,
+            channel="telegram_bot",
+            accepts=True,
+            expiry=expiry,
+        )
+        before = dict(
+            await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", prompt.goal_id)
+        )
+        budget = dict(
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.budgets WHERE goal_id=$1", prompt.goal_id
+            )
+        )
+        source = await accept(
+            owner, reference=locator, markers=[{"kind": "forwarded", "start": 0, "end": 5}]
+        )
+        service = GoalAdmission(runtime, ObservedSource(), Catalogs())
+        a, b = await asyncio.gather(
+            service.admit_submission(source, uuid4()), service.admit_submission(source, uuid4())
+        )
+        assert a == b and a.result == "joined" and a.goal_id == prompt.goal_id
+        after = dict(
+            await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", prompt.goal_id)
+        )
+        assert {k: v for k, v in after.items() if k != "updated_at"} == {
+            k: v for k, v in {**before, "exposed": True}.items() if k != "updated_at"
+        }
+        assert (
+            dict(
+                await owner.fetchrow(
+                    "SELECT * FROM switchboard.budgets WHERE goal_id=$1", prompt.goal_id
+                )
+            )
+            == budget
+        )
+        inbox = await owner.fetch(
+            "SELECT * FROM switchboard.goal_inbox WHERE goal_id=$1", prompt.goal_id
+        )
+        assert len(inbox) == 1 and inbox[0]["reply_effect_id"] == effect_id
+        # A reply to actual bot output inherits its producing goal's exposure,
+        # while a clean bot output itself is not automatically a quote.
+        plain = await accept(owner, reference=locator)
+        result, reader = await admit_source(runtime, plain, catalog=Catalogs())
+        assert result.result == "joined" and reader.inputs[0].outside_content
+        clean, _ = await admit_source(runtime, await accept(owner), catalog=Catalogs())
+        clean_ref = scoped_reply_ref(
+            transport="telegram",
+            endpoint="telegram:bot:closed-test",
+            conversation="telegram:100",
+            recipient_entity=entity,
+            recipient_channel="telegram_bot",
+            locator="100:clean",
+        )
+        await effect(
+            owner,
+            clean.goal_id,
+            delivery=clean_ref,
+            entity=entity,
+            channel="telegram_bot",
+            accepts=True,
+            expiry=expiry,
+        )
+        result, reader = await admit_source(
+            runtime, await accept(owner, reference="100:clean"), catalog=Catalogs()
+        )
+        assert result.result == "joined" and not reader.inputs[0].outside_content
+        # Only exact transport/endpoint/conversation provenance can resolve.
+        for overrides in (
+            {"reference": "unknown"},
+            {"reference": str(effect_id)},
+            {"reference": locator, "endpoint": "telegram:other"},
+            {"reference": locator, "conversation": "telegram:other"},
+        ):
+            result, reader = await admit_source(
+                runtime, await accept(owner, **overrides), catalog=Catalogs()
+            )
+            assert result.result == "admitted" and result.goal_id != prompt.goal_id
+            assert reader.inputs[0].reply_delivery is None
+        # Stored inbound content with no trusted stamp never upgrades to clean.
+        await accept(owner, sender="111", event_id="third-party")
+        result, reader = await admit_source(
+            runtime, await accept(owner, reference="100:third-party"), catalog=Catalogs()
+        )
+        assert result.result == "admitted" and reader.inputs[0].outside_content
+        # Observe the actual goal-lock waiter. Stop and expiry are evaluated
+        # after that wait, without taking the effect lock before the goal.
+        for transition in ("stop", "expire"):
+            target, _ = await admit_source(runtime, await accept(owner), catalog=Catalogs())
+            ref = scoped_reply_ref(
+                transport="telegram",
+                endpoint="telegram:bot:closed-test",
+                conversation="telegram:100",
+                recipient_entity=entity,
+                recipient_channel="telegram_bot",
+                locator="100:" + transition,
+            )
+            _, eid = await effect(
+                owner,
+                target.goal_id,
+                delivery=ref,
+                entity=entity,
+                channel="telegram_bot",
+                accepts=True,
+                expiry=expiry,
+            )
+            accepted = await accept(owner, reference="100:" + transition)
+            task = None
+            try:
+                async with owner.acquire() as holder, holder.transaction():
+                    await holder.execute(
+                        "SELECT id FROM switchboard.goals WHERE id=$1 FOR UPDATE", target.goal_id
+                    )
+                    pid = await holder.fetchval("SELECT pg_backend_pid()")
+                    task = asyncio.create_task(admit_source(runtime, accepted, catalog=Catalogs()))
+
+                    async def waiting(pid=pid):
+                        return await owner.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))",
+                            pid,
+                        )
+
+                    async with asyncio.timeout(5):
+                        await poll_until(waiting, interval_s=0.02)
+                    if transition == "stop":
+                        await holder.execute(
+                            "UPDATE switchboard.goals SET status='stopped',exposed=true WHERE id=$1",
+                            target.goal_id,
+                        )
+                    else:
+                        await holder.execute(
+                            "UPDATE switchboard.effects SET prompt_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+                            eid,
+                        )
+                result, _ = await asyncio.wait_for(task, 5)
+                assert result.result == "admitted" and result.goal_id != target.goal_id
+                row = await owner.fetchrow(
+                    "SELECT * FROM switchboard.goals WHERE id=$1", result.goal_id
+                )
+                assert row["origin"] == "owner" and row["caused_by_goal"] is None
+                assert row["exposed"] == (transition == "stop")
+                assert (
+                    await owner.fetchval(
+                        "SELECT delivery_ref FROM switchboard.admission_decisions WHERE id=$1",
+                        result.decision_id,
+                    )
+                    == ref
+                )
+                assert not await owner.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM switchboard.goal_inbox WHERE goal_id=$1)",
+                    target.goal_id,
+                )
+            finally:
+                if task and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)

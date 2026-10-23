@@ -23,7 +23,32 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from ci_frontend_evidence import ROOT, identity
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def identity(root: Path) -> dict:
+    """Bind evidence to this checkout's tracked frontend source and attempt."""
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
+    if os.environ.get("GITHUB_SHA", head) != head:
+        raise ValueError("frontend checkout differs from workflow")
+    # Only actual tracked source/config/lock bytes; node_modules/dist are advisory.
+    paths = (
+        subprocess.check_output(["git", "ls-files", "-z", "frontend"], cwd=root)
+        .decode()
+        .split("\0")
+    )
+    source = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in paths
+        if name and (root / name).is_file()
+    }
+    return {
+        "head": head,
+        "run": os.environ.get("GITHUB_RUN_ID", "local"),
+        "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
+        "source_digest": hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest(),
+        "lock_digest": source["frontend/package-lock.json"],
+    }
 
 
 class VitestSubprocessFailure(ValueError):

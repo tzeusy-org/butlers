@@ -32,7 +32,12 @@ def test_uv_installer_consumers_share_the_owned_supervisor():
                 if step.get("name") == "Install uv":
                     consumers.append(path)
                     assert body.strip() == "python3 scripts/install_ci_uv.py"
-    assert len([path for path in consumers if path.parent.name == "workflows"]) == 10
+    # ci.yml sets up only through the composite action (bu-29wkwj.2); the four
+    # remaining inline installers are nightly.yml jobs.
+    assert ROOT / ".github/actions/ci-python-environment/action.yml" in consumers
+    assert [path.name for path in consumers if path.parent.name == "workflows"] == [
+        "nightly.yml"
+    ] * 4
 
 
 @pytest.mark.parametrize(
@@ -129,8 +134,10 @@ raise SystemExit(installer.main())
         str(backoffs),
     ]
     if mode == "success":
-        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-        step = next(s for s in workflow["jobs"]["guards"]["steps"] if s.get("name") == "Install uv")
+        action = yaml.safe_load(
+            (ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+        )
+        step = next(s for s in action["runs"]["steps"] if s.get("name") == "Install uv")
         command = ["bash", "-euo", "pipefail", "-c", step["run"]]
     process = subprocess.Popen(
         command,

@@ -6,12 +6,14 @@ Alembic CLI. Supports targeting a specific version chain (core or butler-specifi
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -19,6 +21,9 @@ from sqlalchemy import create_engine, text
 
 from alembic import command
 from butlers.bootstrap_prerequisite import check_bootstrap_database
+
+if TYPE_CHECKING:
+    from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +155,36 @@ def get_all_chains() -> list[str]:
     module_set = set(modules)
     butlers = [c for c in _discover_butler_chains() if c not in shared_set and c not in module_set]
     return shared + modules + butlers
+
+
+def get_module_migration_chains(modules: Iterable[Module], butler_name: str) -> dict[str, str]:
+    """Map admitted module names to their existing, non-empty migration directories.
+
+    Roster modules can have a different public name from their owning directory
+    (``home_assistant`` lives in ``roster/home/modules``). Resolve that layout
+    without a constructor or a module-provided migration hook. The butler's own
+    chain already ran in the preceding phase and must not run twice.
+    """
+    available = set(get_all_chains()) - set(_SHARED_CHAINS)
+    chains: dict[str, str] = {}
+    for module in modules:
+        chain = module.name
+        if chain not in available:
+            source = Path(inspect.getfile(type(module))).resolve()
+            try:
+                relative = source.relative_to(ROSTER_DIR.resolve())
+            except ValueError:
+                continue
+            # Only the roster's root module owns its roster chain. A broker
+            # submodule must not acquire the entire roster chain by proximity.
+            if len(relative.parts) != 3 or relative.parts[1:] != ("modules", "__init__.py"):
+                continue
+            chain = relative.parts[0]
+        if chain == butler_name and has_butler_chain(butler_name):
+            continue
+        if chain in available and _resolve_chain_dir(chain) is not None:
+            chains[module.name] = chain
+    return chains
 
 
 def _normalize_schema(schema: str | None) -> str | None:

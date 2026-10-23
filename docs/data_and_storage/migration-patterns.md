@@ -98,8 +98,8 @@ Alembic's `version_locations` setting is always configured with ALL known chain 
 The butler daemon startup sequence runs migrations in this order:
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module that returns a non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks which revisions have been applied per-chain in the `alembic_version` table within the target schema.
 
@@ -118,7 +118,7 @@ To create a new module migration chain:
 1. Create `src/butlers/modules/<name>/migrations/` directory.
 2. Create `__init__.py` (empty).
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
-4. Return the branch label from the module's `migration_revisions()` method.
+4. CLI and daemon discover the non-empty directory through `get_module_migration_chains()`; no hook override is needed.
 
 ### Database-global protected public boundaries
 

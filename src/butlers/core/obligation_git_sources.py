@@ -35,6 +35,7 @@ from butlers.core.runtime_config import RuntimeConfig
 from butlers.core.tool_catalog import ToolCatalog
 
 if TYPE_CHECKING:
+    from butlers.core.obligation_git_admission import PrivateGitAdmission
     from butlers.core.obligation_sources import DefinitionRevision
 
 
@@ -268,6 +269,17 @@ class GitScheduleRuntime:
 
     owner_domain: str
     bindings: tuple[tuple[DefinitionRevision, GitScheduleDefinition], ...]
+    # Private lifecycle-owned consumer; default staging has none.
+    admission: PrivateGitAdmission | None = None
+
+    async def submit_committed(self, submitted: DarkSubmission | None):
+        if submitted is not None and self.admission is not None:
+            return await self.admission.submit(submitted)
+        return None
+
+    async def close_admission(self):
+        if self.admission is not None:
+            await self.admission.aclose()
 
     def supports(self, row) -> bool:
         return any(
@@ -338,24 +350,32 @@ class GitScheduleRuntime:
         catalog, or submits admission. Runtime creator and feed/cause adapters
         remain separate; this registered Git runtime cannot stand in for them.
         """
-        if type(submitted) is not DarkSubmission:
-            raise SourceConflict("source_submission_required")
 
         async def read(repository):
-            definition, _ = await self._locked(repository, {"id": submitted.definition.source_id})
-            current = await prepare_dark_submission(
-                repository,
-                definition.source_id,
-                submitted.occurrence_id,
-                submitted.claim_token,
-            )
-            if current != submitted:
-                raise SourceConflict("source_submission_changed")
-            return current
+            return await self.read_submission_in_transaction(repository.connection, submitted)
 
         # Do not let a nested savepoint promote a caller's uncommitted write
         # into the independent committed readback promised by this API.
         return await run_source_transaction(pool, self.owner_domain, read, require_fresh=True)
+
+    async def read_submission_in_transaction(self, connection, submitted: DarkSubmission):
+        """Fence full current material/claim on the admission caller's connection.
+
+        The caller retains this transaction through its own durable decision.
+        This method never acquires a pool or releases the owning row locks.
+        """
+        from butlers.core.obligation_sources import ObligationSourceRepository
+
+        if type(submitted) is not DarkSubmission:
+            raise SourceConflict("source_submission_required")
+        repository = ObligationSourceRepository(connection, self.owner_domain)
+        definition, _ = await self._locked(repository, {"id": submitted.definition.source_id})
+        current = await prepare_dark_submission(
+            repository, definition.source_id, submitted.occurrence_id, submitted.claim_token
+        )
+        if current != submitted:
+            raise SourceConflict("source_submission_changed")
+        return current
 
     async def claim_cron(
         self, pool, selected, *, next_run_at, disable: bool

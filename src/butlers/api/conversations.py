@@ -9,7 +9,6 @@ UUID7 generation follows the pattern in the Switchboard ingest module.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import secrets
@@ -21,6 +20,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.chat_stream import publish_chat_stream_event
+from butlers.api.pagination import decode_cursor, encode_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -512,26 +512,6 @@ def _message_search_deep_link(*, session_id: UUID | None, butler_name: str) -> s
     return f"/butlers/{butler_name}"
 
 
-def encode_message_search_cursor(rank: float, created_at: datetime, message_id: UUID | str) -> str:
-    """Encode a message-search keyset position into an opaque cursor string."""
-    payload = {"r": rank, "ca": created_at.isoformat(), "id": str(message_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def decode_message_search_cursor(cursor: str) -> tuple[float, datetime, str]:
-    """Decode a message-search cursor back to ``(rank, created_at, message_id)``.
-
-    Raises:
-        ValueError: If the cursor is malformed or cannot be decoded.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        return float(payload["r"]), datetime.fromisoformat(payload["ca"]), str(payload["id"])
-    except (KeyError, ValueError, TypeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
 async def message_search(
     pool: asyncpg.Pool,
     *,
@@ -563,16 +543,17 @@ async def message_search(
     trip) rather than raising or matching everything — callers must never
     treat "no search term" as "return everything" or fabricate a recall.
 
-    Returns ``{"items": [...], "next_cursor": str | None, "has_more": bool}``.
+    Returns ``{"items": [...], "next_cursor": str | None}``.
     Each item: ``message_id``, ``conversation_id``, ``role``, ``created_at``,
     ``butler_name``, ``session_id``, ``snippet``, ``highlight_ranges``
     (``[start, end)`` offsets into ``snippet``), ``deep_link``.
 
     Raises:
-        ValueError: ``query`` exceeds 512 characters, or ``cursor`` is malformed.
+        ValueError: ``query`` exceeds 512 characters.
+        InvalidCursorError: ``cursor`` is malformed (a ``ValueError`` and a 400).
     """
     if not query or not query.strip():
-        return {"items": [], "next_cursor": None, "has_more": False}
+        return {"items": [], "next_cursor": None}
     if len(query) > _MESSAGE_SEARCH_MAX_QUERY_LEN:
         raise ValueError(f"query exceeds the {_MESSAGE_SEARCH_MAX_QUERY_LEN}-character limit")
 
@@ -580,7 +561,9 @@ async def message_search(
     cursor_created_at: datetime | None = None
     cursor_message_id: str | None = None
     if cursor is not None:
-        cursor_rank, cursor_created_at, cursor_message_id = decode_message_search_cursor(cursor)
+        cursor_rank, cursor_created_at, cursor_message_id = decode_cursor(
+            cursor, (float, datetime, UUID), scope="message-search"
+        )
 
     fetch_limit = limit + 1
     rows = await pool.fetch(
@@ -651,11 +634,11 @@ async def message_search(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_message_search_cursor(
-            last["rank"], last["created_at"], last["message_id"]
+        next_cursor = encode_cursor(
+            (last["rank"], last["created_at"], last["message_id"]), scope="message-search"
         )
 
-    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+    return {"items": items, "next_cursor": next_cursor}
 
 
 async def message_thread_window(

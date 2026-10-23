@@ -30,9 +30,7 @@ class LifestyleModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "lifestyle"
+    name = "lifestyle"
 
     @property
     def config_schema(self) -> type[BaseModel]:

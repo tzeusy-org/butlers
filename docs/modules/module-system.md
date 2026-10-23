@@ -23,7 +23,7 @@ Source of truth:
 ## The Contract
 
 Every module subclasses `Module` (`src/butlers/modules/base.py`) and implements its three abstract
-members: the `name` and `config_schema` properties and `register_tools`. Every other hook
+members: a non-empty class-level `name` string, the `config_schema` property, and `register_tools`. Every other hook
 (`dependencies`, `migration_revisions`, `on_startup`, `on_shutdown`, `credentials_env`,
 `on_all_modules_ready`) has a default and is overridden only when needed. Read the signatures and
 docstrings there.
@@ -58,18 +58,16 @@ The invariants:
 
 `default_registry()` discovers every concrete `Module` subclass under the `butlers.modules`
 package, plus butler-specific modules in `roster/<butler>/modules/__init__.py`. Registration is
-idempotent during discovery for the same class object; the public `register()` method still
+constructor-free and idempotent during discovery for the same class object; the public `register()` method still
 rejects duplicate names. Explicit discovery import failures are raised rather than returning an
 incomplete registry. Registry instances remain fresh; requested roster module names resolve from
 their real checkout package without pytest setup.
 
-The daemon loads modules with `load_all()`: **every** registered module is instantiated, whether or
-not `butler.toml` mentions it (absent modules get an empty config). Discovery is distinct
-from startup: only explicit `[modules.<name>]` declarations are admitted, even for
-schema-less modules. Unknown declared names raise `ValueError` before database work.
-Health and sticky user-enabled state remain separate from declaration eligibility. `load_from_config()` loads only the listed
-modules and is stricter: an unknown name or a dependency outside the enabled set raises
-`ValueError`.
+The daemon calls `load_from_config()`: only explicit `[modules.<name>]` declarations are
+constructed, including schema-less modules. Unknown names, dependencies outside the declared set,
+and cycles raise `ValueError` before provisioning, migrations, startup hooks or tool registration.
+Health and sticky user-enabled state remain separate from declaration eligibility. The explicit
+`load_all()` utility still constructs all registered modules; daemon startup does not call it.
 
 ## Dependency Order
 
@@ -80,19 +78,23 @@ modules and is stricter: an unknown name or a dependency outside the enabled set
 
 ## Migrations
 
-A module that owns tables returns an Alembic branch label from `migration_revisions()` (or `None`
-if it has no tables). The label names a migration chain, resolved by `src/butlers/migrations.py`
-(`_CHAIN_ROOT_FAMILIES`) to `src/butlers/modules/<label>/migrations/`. Module migrations run into
-the butler's own schema unless the module config declares a private schema (for example memory's
-`memory_schema`). See [Migration patterns](../data_and_storage/migration-patterns.md).
+CLI and daemon share `get_module_migration_chains()` in `src/butlers/migrations.py`.
+They select declared modules' existing non-empty migration directories in dependency order, after
+the core and butler chains. The butler's own chain runs once. Roster source layout resolves aliases:
+`home_assistant` lives in `roster/home/modules`, so Health runs its `home` chain while Home already
+runs that chain as its butler chain. The legacy `migration_revisions()` hook remains optional
+metadata and does not select migrations.
+
+Module migrations run into the butler's own schema unless the module config declares a private
+schema (for example memory's `memory_schema`). See [Migration patterns](../data_and_storage/migration-patterns.md).
 
 ## Startup Order
 
 The authoritative step list is the module docstring of `src/butlers/daemon.py` and the numbered
 comments in `src/butlers/lifecycle.py`. For modules, the order that matters is:
 
-1. **Load, order and select** -- `load_all()` discovers every module in dependency order;
-   the daemon rejects unknown names and selects only declared modules before any module effects.
+1. **Load and order declarations** -- `load_from_config()` constructs only declared modules and
+   rejects unknown names, missing declared dependencies and cycles before database work.
 2. **Validate config** -- each module's config is validated against `config_schema`.
 3. **Migrate** -- core, butler-specific, then module migration chains.
 4. **Start** -- `on_startup(config, db, credential_store, blob_store)` in dependency order.
@@ -115,11 +117,15 @@ existing module (for example `src/butlers/modules/pipeline.py`) rather than a te
 
 ## Implementation Notes
 
-- `ButlerDaemon` filters `load_all()` through `ButlerDaemon._select_startup_modules`
-  (`src/butlers/daemon.py`): every omitted name is excluded regardless of schema shape,
-  keeping it out of migrations, startup and tool registration. `enabled` cannot admit
-  an undeclared module. All current rosters declare the RFC 0015 `self_healing` relay;
-  it exposes error reception and read-only history, with no local investigation cleanup.
+- `default_registry()` imports and registers classes without constructors. All implementations
+  expose a stable class-level `name`; registering a property or an empty/non-string name fails.
+  `load_from_config()` is the daemon admission boundary. `enabled` cannot admit an undeclared
+  module. All current rosters declare the RFC 0015 `self_healing` relay; it exposes error reception
+  and read-only history, with no local investigation cleanup.
+- Home Assistant keeps its mandatory `contacts` and `approvals` dependencies. Health declares
+  both even though its Home Assistant tools remain read-only.
+- `credentials_env` describes daemon-side requirements. Module declarations do not add secrets
+  to runtime child environments; explicit butler/runtime credential selection remains authoritative.
 - Module configs pass through `ButlerDaemon._validate_module_configs`, which rejects extra and
   missing fields.
 - Egress audit: every outbound call emits one `dashboard_audit_log` operation at its call site

@@ -29,9 +29,7 @@ class TravelModule(Module):
         self._db: Any = None
         self._switchboard_client: Any = None
 
-    @property
-    def name(self) -> str:
-        return "travel"
+    name = "travel"
 
     @property
     def config_schema(self) -> type[BaseModel]:

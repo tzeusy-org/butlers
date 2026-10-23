@@ -308,9 +308,7 @@ class MemoryModule(Module):
         self._maintenance_runtime_owner: str | None = None
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
-    @property
-    def name(self) -> str:
-        return "memory"
+    name = "memory"
 
     @property
     def config_schema(self) -> type[BaseModel]:

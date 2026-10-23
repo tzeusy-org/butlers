@@ -623,3 +623,46 @@ Threshold selection and durable expiry therefore use the same injected instant,
 including at midnight. Existing direct helper callers that omit `as_of` retain
 their current-UTC-date behavior; neither clock exemptions nor test-only result
 substitution are needed.
+
+
+### Private same-owning Git admission
+
+`obligation_source_mode = "dark"` still selects durable staging only. The
+separate strict `obligation_admission_mode` defaults to `"off"`; `"dark"`
+requires dark staging and the actual Switchboard lifecycle source runtime.
+No roster enables it. Other-domain sources, runtime creators and caused feed
+handoffs remain outside this private adapter. It adds no endpoint or runner.
+
+The scheduler finishes its existing dispatch/outcome path and releases the
+source mutation transaction before passing its committed candidate to the
+private consumer. GoalAdmission locks the durable attempt/source identities,
+then the provider uses that **same connection** to lock owning inventory,
+definition, schedule row and occurrence/claim. It reconstructs and compares
+the whole held definition, material, exact declaration and claim tuple; those
+fences remain through the admission commit. An earlier readback object alone
+cannot authorize a later transaction. There is no second pool or network call
+under these locks.
+
+One current complete fleet publication snapshot must contain the held actual
+Switchboard registry. That same snapshot projects both typed owner-notify
+eligibility and resource parameter keys. Eligibility does not establish an
+actual recipient's ownership or call authority. Missing/stale publications,
+role/shadow mismatch, changed source or invalid resources refuse. Additional
+context is conservatively exposed; a held policy digest does not prove D7.
+
+The occurrence UUID is the durable admission attempt identity. Commit loss is
+UNKNOWN, never a success or a fresh-ID retry; explicit reconciliation of that
+same identity can recover immutable committed history. Each operation owns one
+five-second deadline, including cancellation cleanup. Resistant work is retained
+and quarantines the consumer; shutdown explicitly fails if it is still unsettled,
+without resetting the deadline. Existing dispatch is not suppressed by refusal.
+A committed goal records its source/declaration references, not an executed
+prompt/context payload. Runner handoff and actual Insight execution stay separate.
+
+The delivered Switchboard is a staffer, whose actual notification registrar
+excludes `notify`. Its two existing Insight declarations request
+`switchboard__notify` and therefore refuse against the actual final registry.
+The private mechanism's positive tests use a loaded Git read declaration for an
+actually registered Switchboard tool. They do not deliver those two Insight
+workflows or all 102 schedules/19 dynamic families. Runtime creator, Finance
+reaction cause, feed, runner, genuine PostgreSQL and delivery gates remain.

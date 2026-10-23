@@ -36,17 +36,14 @@ Row DTOs:
     TimelineNotificationRow
     TimelineAttentionRow
 
-Cursor helpers:
-    encode_cursor(timestamp, event_id) -> opaque composite ``(timestamp, id)`` cursor
-    decode_cursor(cursor) -> (timestamp, event_id | None)
-        Also accepts a bare ISO-8601 timestamp (pre-fix cursor format) for
-        backward compatibility, in which case there is no id tiebreak.
+The ``(timestamp, id)`` keyset cursor is minted and read with
+:mod:`butlers.api.pagination`; the id tiebreak is what stops events sharing a
+boundary timestamp (e.g. heartbeat ticks on the same cron second) from being
+skipped across a page boundary.
 """
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,58 +67,6 @@ READ_MODEL_VERSION = "timeline_v1"
 # The attention endpoint deliberately caps returned identifiers while keeping
 # its aggregate counts independent of the cap.
 TIMELINE_ATTENTION_LIMIT = 5
-
-# ---------------------------------------------------------------------------
-# Cursor helpers — composite (timestamp, id) keyset cursor
-#
-# The pre-fix cursor was a bare ISO-8601 timestamp echoed back as ``before``.
-# Comparing only on timestamp means events sharing the exact boundary
-# timestamp (e.g. heartbeat ticks that fire on the same cron second across
-# many butlers) are silently skipped once they straddle a page boundary —
-# whichever of them weren't included in page N are gone forever, because page
-# N+1's ``started_at < before`` / ``created_at < before`` predicate excludes
-# every row at that timestamp, not just the ones already returned. Encoding
-# the id of the last row alongside its timestamp lets the next page use a
-# strict ``(ts, id) < (before_ts, before_id)`` tuple comparison instead,
-# matching the keyset order documented for GET /api/ingestion/events.
-# ---------------------------------------------------------------------------
-
-
-def encode_cursor(timestamp: datetime, event_id: UUID | str) -> str:
-    """Encode a composite ``(timestamp, id)`` keyset position into an opaque cursor.
-
-    Mirrors :func:`butlers.core.ingestion_events.encode_cursor`.
-    """
-    payload = {"ts": timestamp.isoformat(), "id": str(event_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def decode_cursor(cursor: str) -> tuple[datetime, UUID | None]:
-    """Decode an opaque timeline cursor back to ``(timestamp, event_id)``.
-
-    Accepts the composite cursor produced by :func:`encode_cursor`. Also
-    accepts a bare ISO-8601 timestamp for backward compatibility with the
-    pre-fix cursor format (in which case ``event_id`` is ``None`` and callers
-    fall back to the old timestamp-only predicate — same-timestamp events at
-    that specific page boundary may still be skipped, exactly as before this
-    fix, until the caller re-requests with a fresh composite cursor).
-
-    Raises:
-        ValueError: If the cursor is neither a valid composite cursor nor a
-            valid bare ISO-8601 timestamp.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        return datetime.fromisoformat(payload["ts"]), UUID(payload["id"])
-    except Exception:  # noqa: BLE001 - fall through to legacy bare-timestamp parsing
-        pass
-
-    try:
-        return datetime.fromisoformat(cursor), None
-    except ValueError as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
 
 # ---------------------------------------------------------------------------
 # Column projections (v1 schema contract)

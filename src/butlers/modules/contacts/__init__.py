@@ -241,9 +241,7 @@ class ContactsModule(Module):
         """Bind only daemon-supplied transport; initial unwired reads fail closed."""
         self._switchboard_client = switchboard_client
 
-    @property
-    def name(self) -> str:
-        return "contacts"
+    name = "contacts"
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -63,9 +63,7 @@ class RelationshipModule(Module):
         self._db: Any = None
         self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
 
-    @property
-    def name(self) -> str:
-        return "relationship"
+    name = "relationship"
 
     @property
     def config_schema(self) -> type[BaseModel]:

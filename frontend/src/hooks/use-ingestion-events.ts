@@ -30,7 +30,7 @@ import {
   getIngestionEventPayload,
 } from "@/api/index.ts";
 import type {
-  CursorPaginatedResponse,
+  CursorPage,
   IngestionEventsParams,
   IngestionEventSummary,
   IngestionHistogramBucketSize,
@@ -103,7 +103,7 @@ const INGESTION_EVENTS_POLL_DEFAULT_MS = 30_000;
  * Exposes infinite scroll semantics: call fetchNextPage() to load more.
  *
  * Contract (BREAKING from offset+total shape):
- * - pages: CursorPaginatedResponse<IngestionEventSummary>[]
+ * - pages: CursorPage<IngestionEventSummary>[]
  * - fetchNextPage: () => void
  * - hasNextPage: boolean
  * - isFetchingNextPage: boolean
@@ -117,7 +117,7 @@ export function useIngestionEvents(
   filters: IngestionEventsFilters = {},
   options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
-  type Page = CursorPaginatedResponse<IngestionEventSummary>;
+  type Page = CursorPage<IngestionEventSummary>;
   const enabled = options?.enabled !== false;
   const scope = JSON.stringify(filters);
   const [history, setHistory] = useState<{
@@ -155,20 +155,20 @@ export function useIngestionEvents(
   });
   useEffect(() => {
     if (head.isPlaceholderData || !head.data) return;
-    const refreshed = new Map(head.data.data.map(event => [event.id, event]));
+    const refreshed = new Map(head.data.items.map(event => [event.id, event]));
     // Persist observed updates so an event cannot revert to its original
     // snapshot state when newer arrivals push it out of the live head.
     setHistory(previous => {
       if (!previous || previous.scope !== scope) return previous;
       let changed = false;
       const pages = previous.pages.map(page => {
-        const data = page.data.map(event => {
+        const items = page.items.map(event => {
           const latest = refreshed.get(event.id);
           if (!latest || latest === event) return event;
           changed = true;
           return latest;
         });
-        return { ...page, data };
+        return { ...page, items };
       });
       return changed ? { ...previous, pages } : previous;
     });
@@ -180,7 +180,7 @@ export function useIngestionEvents(
   );
   const pageParams = snapshot?.pageParams ?? [null];
   const lastPage = pages.at(-1);
-  const cursor = lastPage?.meta.has_more ? lastPage.meta.next_cursor : null;
+  const cursor = lastPage?.next_cursor ?? null;
 
   async function fetchNextPage() {
     if (!enabled || head.isPlaceholderData || !cursor || olderRequest.current) return;
@@ -211,9 +211,9 @@ export function useIngestionEvents(
     }
   }
 
-  const committedIds = snapshot && new Set(snapshot.pages.flatMap(page => page.data.map(event => event.id)));
+  const committedIds = snapshot && new Set(snapshot.pages.flatMap(page => page.items.map(event => event.id)));
   const newCount = enabled && committedIds
-    ? (head.data?.data.filter(event => !committedIds.has(event.id)).length ?? 0)
+    ? (head.data?.items.filter(event => !committedIds.has(event.id)).length ?? 0)
     : 0;
   function showNewEvents() {
     olderRequest.current?.abort();
@@ -232,7 +232,7 @@ export function useIngestionEvents(
     fetchNextPage,
     newCount,
     isFollowingLive: snapshot === null,
-    latestReceivedAt: head.data?.data[0]?.received_at ?? null,
+    latestReceivedAt: head.data?.items[0]?.received_at ?? null,
     showNewEvents,
   };
 }

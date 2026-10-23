@@ -53,7 +53,7 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import has_butler_chain, run_migrations
+from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
@@ -162,12 +162,9 @@ async def _startup_telemetry(daemon: Any, state: StartupState) -> None:
 
 async def _startup_modules(daemon: Any, state: StartupState) -> None:
     """Select declared modules in dependency order."""
-    # 3. Initialize modules (topological order). The registry instantiates
-    # every built-in module; startup rejects unknown declarations and admits
-    # only explicitly declared names, independent of config schema shape.
-    daemon._modules = daemon._select_startup_modules(
-        daemon._registry.load_all(daemon.config.modules)
-    )
+    # 3. Construct only declared modules and reject unknown names, missing
+    # declared dependencies and cycles before provisioning or module effects.
+    daemon._modules = daemon._registry.load_from_config(daemon.config.modules)
 
 
 async def _startup_module_config(daemon: Any, state: StartupState) -> None:
@@ -243,10 +240,11 @@ async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
     """Run module migrations and cascade isolated migration failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
+    chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
         if mod.name in daemon._module_statuses:
             continue
-        rev = mod.migration_revisions()
+        rev = chains.get(mod.name)
         if rev:
             # A module MAY declare a private schema (validated config field
             # ``memory_schema`` on the memory module) so its chain migrates into
@@ -272,7 +270,7 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
 
 
 async def _startup_credential_store(daemon: Any, state: StartupState) -> None:
-    """Build credentials and retain the healthy modules' spawner requirements."""
+    """Build credentials and validate the healthy modules' daemon requirements."""
     # 8b. Create layered CredentialStore and validate module credentials
     # (non-fatal per-module).
     # DB pool is now available so DB-stored credentials are visible to resolve().
@@ -589,6 +587,15 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
         daemon.obligation_git_sources,
         mode=daemon.config.scheduler.obligation_source_mode,
     )
+    from butlers.core.obligation_git_admission import bind_private_git_admission
+
+    daemon.obligation_schedule_runtime = bind_private_git_admission(
+        state.pool,
+        daemon.obligation_schedule_runtime,
+        daemon.obligation_git_sources,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_admission_mode,
+    )
     diagnose_loaded_schedules(
         daemon.config.schedules,
         owner_domain=daemon.config.name,
@@ -782,7 +789,7 @@ async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
 
 
 async def run_shutdown(daemon: Any) -> None:
-    """Retain shutdown across caller cancellation when publication owns resources.
+    """Retain shutdown across caller cancellation when publication/admission owns resources.
 
     Retirement has its existing single five-second absolute bound. Subsequent
     existing owners retain their own bounds; repeated cancellation never starts
@@ -791,7 +798,11 @@ async def run_shutdown(daemon: Any) -> None:
     """
     task = getattr(daemon, "_catalog_shutdown_task", None)
     if task is None:
-        if getattr(daemon, "_catalog_publication", None) is None:
+        runtime = getattr(daemon, "obligation_schedule_runtime", None)
+        if (
+            getattr(daemon, "_catalog_publication", None) is None
+            and getattr(runtime, "admission", None) is None
+        ):
             await _run_shutdown(daemon)
             return
         task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
@@ -923,42 +934,93 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._scheduler_loop_task = None
 
-    # 5c. Cancel route_inbox recovery task
+    # Admission retains its original per-call deadline. Downstream owners share
+    # the existing configured shutdown budget, captured ONCE before joining it;
+    # an expired admission never earns another admission grace period.
+    source_runtime = getattr(daemon, "obligation_schedule_runtime", None)
+    bounded = getattr(source_runtime, "admission", None) is not None
+    deadline = asyncio.get_running_loop().time() + (
+        daemon.config.shutdown_timeout_s if daemon.config else 30.0
+    )
+    admission_error = None
+    if source_runtime is not None:
+        try:
+            await source_runtime.close_admission()
+        except BaseException as exc:
+            admission_error = exc
+    await _shutdown_after_admission(daemon, admission_error, deadline if bounded else None)
+
+
+async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> None:
+    """Attempt every remaining owner; retain and report any incomplete release.
+
+    A pool close can wait on the still-owned admission connection. Do not await
+    cancellation-resistant releases beyond the single downstream deadline, or
+    detach them and report success. Repeated shutdown joins the same owner.
+    """
+    errors = []
+    retained = getattr(daemon, "_admission_cleanup_tasks", None)
+    if deadline is not None and retained is None:
+        retained = set()
+        daemon._admission_cleanup_tasks = retained
+
+    async def release(operation):
+        if deadline is None:
+            await operation
+            return True
+        task = asyncio.create_task(operation, name="private-admission-owner-release")
+        retained.add(task)
+
+        def finished(done):
+            retained.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        await asyncio.wait({task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
+        if not task.done():
+            task.cancel()
+            errors.append(RuntimeError("private_git_admission_downstream_cleanup_incomplete"))
+            return False
+        try:
+            task.result()
+        except BaseException as exc:
+            errors.append(exc)
+            return False
+        return True
+
+    async def stop_task(task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # 5c/d. Recovery and liveness must stop even after admission close refusal.
     if daemon._route_inbox_recovery_task is not None:
-        daemon._route_inbox_recovery_task.cancel()
-        try:
-            await daemon._route_inbox_recovery_task
-        except asyncio.CancelledError:
-            pass
-        daemon._route_inbox_recovery_task = None
-
-    # 5d. Cancel liveness reporter loop
+        if await release(stop_task(daemon._route_inbox_recovery_task)):
+            daemon._route_inbox_recovery_task = None
     if daemon._liveness_reporter_task is not None:
-        daemon._liveness_reporter_task.cancel()
-        try:
-            await daemon._liveness_reporter_task
-        except asyncio.CancelledError:
-            pass
-        daemon._liveness_reporter_task = None
+        if await release(stop_task(daemon._liveness_reporter_task)):
+            daemon._liveness_reporter_task = None
 
-    # 6. Module shutdown in reverse topological order (active modules only)
+    # 6. Module shutdown in reverse topological order (active modules only).
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 
-    await stop_approval_delivery_worker(daemon)
-
+    await release(stop_approval_delivery_worker(daemon))
     active_set = {m.name for m in daemon._active_modules}
     for mod in reversed(daemon._modules):
         if mod.name not in active_set:
             continue
         try:
-            await mod.on_shutdown()
+            await release(mod.on_shutdown())
         except Exception:
             logger.exception("Error during shutdown of module: %s", mod.name)
 
-    # 6b. Close S3 blob store
+    # 6b. Close S3 blob store.
     if daemon.blob_store is not None:
-        await daemon.blob_store.close()
-        daemon.blob_store = None
+        if await release(daemon.blob_store.close()):
+            daemon.blob_store = None
 
     # 6c. Detach the butler DB log handler before tearing down the pool so
     # in-flight fire-and-forget writes can finish and no new writes are
@@ -972,16 +1034,22 @@ async def _shutdown_resources(daemon: Any) -> None:
 
     # 7. Close audit DB pool (if separate from main DB)
     if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
+        if await release(daemon._audit_db.close()):
+            daemon._audit_db = None
 
     # 8. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
-        daemon._shared_credentials_db = None
+        if await release(daemon._shared_credentials_db.close()):
+            daemon._shared_credentials_db = None
 
     # 9. Close DB pool
     if daemon.db:
-        await daemon.db.close()
+        await release(daemon.db.close())
 
+    if admission_error is not None:
+        if errors:
+            raise admission_error from BaseExceptionGroup("Downstream shutdown failures", errors)
+        raise admission_error
+    if errors:
+        raise BaseExceptionGroup("Downstream shutdown failures", errors)
     logger.info("Butler shutdown complete")

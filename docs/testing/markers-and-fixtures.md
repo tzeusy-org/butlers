@@ -211,12 +211,11 @@ Tests can use this to skip gracefully when Docker is not installed.
   permission, and malformed verdict/classifier/planner evidence fails closed.
 - Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
   recovery policy and frozen dev synchronization. Their command scopes match the former
-  preflight commands and local `make check-guards`. Fresh collection and both budgets belong
-  to early inventory; exact-once manifests, smoke/release cmd/SHA/duration/status/skips and
-  sanitized artifacts stay in preflight. Required check contains only the verdict step.
-  The independent owned `coverage-report` job waits for fresh inventory, all eleven covered
-  shards and complete-identity preflight, reads each raw CoverageData
-  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  preflight commands and local `make check-guards`. Fresh collection, the lane-group totals, both budgets, smoke/release
+  cmd/SHA/duration/status/skips and sanitized artifacts belong to preflight. Required check contains only the verdict step.
+  The independent owned `coverage-report` job waits for all eleven covered groups and preflight,
+  reads each raw CoverageData database and its checkout/run/attempt/lane/group/config/digest
+  metadata, requires the
   complete measured source population and compatible tracing, then combines and publishes
   the report; only scheduled/manual main success may update the badge. Missing, empty,
   corrupt, stale or mismatched inputs fail
@@ -249,8 +248,24 @@ Tests can use this to skip gracefully when Docker is not installed.
   sudo, starts apt in its own process group, and terminates and reaps that group's members
   before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
   unproven cleanup fails closed without starting another attempt. Reserved supervisor exit
-  outcomes 80/81/82 establish cleaned success/failure/timeout; generic zero, nonzero or signal
-  exits never authorize retry. Setup shares the child's cleanup lifetime. Non-reaping leader
+  outcomes 80/81/82/83 establish cleaned success/failure/deadline/cancellation; generic zero,
+  nonzero or signal exits never authorize retry. Cancellation/EOF (83) is never retryable,
+  including a direct supervisor cancellation with the Node parent still alive. Only a
+  confirmed cleaned elapsed deadline (82) selects the official-Ubuntu preference for the
+  existing second attempt; ordinary clean failure (81) retries the default route. The healthy
+  first attempt is unchanged. Recovery accepts only the witnessed Ubuntu24 noble deb822
+  source with the exact local mirror URI and three recognized Azure/archive/security
+  candidates. It changes only that copied Ubuntu URI and mirror priority, preserving all
+  source/trust fields, third-party bytes and ordinary dpkg/index/archive state. Unknown
+  layouts, ambiguous fields, links, writable/untrusted inputs and modified endpoints fail
+  closed. Copied configuration stays root-private; only nonsecret mirror data is sandbox
+  readable. The actual APT configuration reader compares ordinary settings and effective
+  private source paths, rejecting later source overrides, binary path overrides and rerooting.
+  Its child shares the existing process group/deadline; it never prints configuration data.
+  Partial setup removes only its own files, and a full overlay remains until child cleanup
+  is confirmed. Local fixture-reader controls do not prove Ubuntu24 parsing, sandbox access
+  or signed package transport; those require explicit actual-Ubuntu/hosted evidence.
+  Setup shares the child's cleanup lifetime. Non-reaping leader
   observation retains the group identity through its last signal, before reaping. `EPERM` never crashes
   the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
@@ -292,10 +307,10 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
 coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
-decision bu-w72da2 = A retired the former PR-path workflow). It runs the same fresh full inventory,
-five unit and six integration commands, complete execution reconciliation and
-smoke fallback before the strict CoverageData reader. Inventory, execution and
-coverage metadata preserve the actual event, checkout, run and attempt. Both
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same five unit and
+six integration pytest-split groups, the lane totals against fresh collect-only
+counts and the smoke command before the strict CoverageData reader. Coverage
+metadata preserves the actual event, checkout, run, attempt, lane and group. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
 unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from

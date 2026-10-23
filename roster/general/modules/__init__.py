@@ -23,9 +23,7 @@ class GeneralModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "general"
+    name = "general"
 
     @property
     def config_schema(self) -> type[BaseModel]:

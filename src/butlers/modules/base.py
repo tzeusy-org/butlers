@@ -171,7 +171,7 @@ class Module(abc.ABC):
     @property
     @abc.abstractmethod
     def name(self) -> str:
-        """Unique module name (e.g., 'email', 'telegram')."""
+        """Unique name, implemented as a class-level string for discovery."""
         ...
 
     @property
@@ -244,7 +244,7 @@ class Module(abc.ABC):
 
     @property
     def credentials_env(self) -> list[str]:
-        """Environment variable names the module's spawned runtime needs; none by default."""
+        """Daemon-side credential requirements; not forwarded to runtime children."""
         return []
 
     def on_all_modules_ready(self, module_map: dict[str, Module]) -> None:

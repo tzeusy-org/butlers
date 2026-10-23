@@ -56,9 +56,7 @@ class HealthModule(Module):
 
         return _create
 
-    @property
-    def name(self) -> str:
-        return "health"
+    name = "health"
 
     @property
     def config_schema(self) -> type[BaseModel]:

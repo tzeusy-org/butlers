@@ -651,6 +651,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry",
+    ): "sanctioned:REQ-infrastructure-reliability-002: Dashboard-owned deterministic deadman reads its existing Switchboard pool's registry names/TTLs to require complete fleet coverage; no other domain or write authority",
+    (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned:REQ-infrastructure-reliability-002: same Dashboard controller reads receiver boot/policy/readiness facts through its existing Switchboard pool; missing facts refuse, no new role/grant or domain reach",
+    (
         "src/butlers/core/control_plane_identity.py",
         "switchboard.butler_registry",
     ): "burn-down: existing switchboard.butler_registry coupling; route through owning service or make local schema authority explicit",
@@ -962,14 +970,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/owner_bootstrap.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.entity_predicate_registry",
-    ): "burn-down: existing relationship.entity_predicate_registry coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.facts",
-    ): "burn-down: existing relationship.facts coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/testing/migration.py",
         "<dynamic:{_quote_ident(schema)}.alembic_version>",

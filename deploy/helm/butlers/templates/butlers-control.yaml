@@ -55,9 +55,6 @@ spec:
             failureThreshold: 8
           resources:
             {{- toYaml .Values.butlersControl.resources | nindent 12 }}
-          securityContext:
-            # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
-            appArmorProfile: {type: Unconfined}
           volumeMounts:
             - {name: logs, mountPath: /app/logs}
             {{- range list "claude" "codex" "opencode" "gemini" }}

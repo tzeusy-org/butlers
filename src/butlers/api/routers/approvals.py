@@ -313,10 +313,7 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         validated_memory_config = MemoryModuleConfig.model_validate(memory_config)
 
         tool_metadata: dict[str, ToolMeta] = {}
-        configured_modules = set(config.modules)
-        for module in default_registry().load_all(config.modules):
-            if module.name not in configured_modules:
-                continue
+        for module in default_registry().load_from_config(config.modules):
             try:
                 tool_metadata.update(module.tool_metadata())
             except Exception:  # noqa: BLE001 -- daemon uses the same conservative fallback

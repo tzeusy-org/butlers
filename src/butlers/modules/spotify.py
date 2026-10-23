@@ -108,9 +108,7 @@ class SpotifyModule(Module):
         self._user_profile: dict[str, Any] | None = None
         self._credentials_ok: bool = False
 
-    @property
-    def name(self) -> str:
-        return "spotify"
+    name = "spotify"
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -182,8 +182,6 @@
     "tests/modules/test_steam_client.py",
     "tests/relationship/test_ef_channel_helpers.py",
     "tests/relationship/test_interactions_direction.py",
-    "tests/scripts/test_backfill_email_identity_facts.py",
-    "tests/scripts/test_backfill_transitory_entities.py",
     "tests/scripts/test_check_condensation_ledger.py",
     "tests/scripts/test_ci_branch_hygiene.py",
     "tests/scripts/test_compose_dashboard_proxy_readiness.py",

@@ -180,3 +180,24 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - [Trigger Flow](trigger-flow.md) --- details on how triggers are sourced and dispatched
 - [MCP Model](mcp-model.md) --- how MCP tools and the spawner interact
 - [Modules and Connectors](modules-and-connectors.md) --- the module lifecycle in detail
+
+
+### Private Git occurrence admission lifecycle
+
+After final approval wrapping/registry capture and complete owning source
+reconciliation, lifecycle may bind the private Switchboard Git consumer when
+`[butler.scheduler].obligation_admission_mode = "dark"` and source staging is
+also dark. Both selectors default off; no roster is enabled. This factory
+uses the captured config/current registered tools, not a request, session
+locator, creator hint or local-catalog-as-fleet assertion.
+
+The existing scheduler submits only after source commit/release and its
+unchanged dispatch/outcome handling. Admission rechecks the full source/claim
+on GoalAdmission's passed connection, after central attempt/source locks, and
+retains owning locks through decision commit. It verifies the actual current
+fleet and limits. Occurrence identity is stable across an unknown commit;
+there is no automatic retry or new runner/listener. Refusal leaves legacy
+dispatch intact. Cancellation propagates, and teardown settles retained work
+within its original five-second operation deadline or explicitly fails as
+incomplete before closing the pool. Durable admission does not establish
+runner prompt execution, runtime creator/cause lineage or recipient authority.

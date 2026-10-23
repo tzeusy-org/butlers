@@ -1471,9 +1471,10 @@ async def _tick_deadline_pass(
         # either -- Postgres infers the parameter's jsonb type from the target
         # column.
         if source_runtime is not None and source_runtime.supports(row):
-            await source_runtime.record_deadline(
+            submitted = await source_runtime.record_deadline(
                 pool, row, threshold=threshold, status=new_status, fired=new_fired, run_at=now
             )
+            await source_runtime.submit_committed(submitted)
             continue
         await pool.execute(
             """
@@ -2650,6 +2651,8 @@ async def tick(
                 now,
                 result_json,
             )
+            if source_runtime is not None and source_runtime.supports(row):
+                await source_runtime.submit_committed(claim_row.submission)
 
         span.set_attribute("tasks_run", dispatched)
 

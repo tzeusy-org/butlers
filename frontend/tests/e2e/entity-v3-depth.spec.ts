@@ -500,7 +500,7 @@ async function installDetailStubs(
           };
         }),
         next_cursor: null,
-        has_more: false,
+        limit: 50,
       }),
   );
 

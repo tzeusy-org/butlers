@@ -15,7 +15,7 @@
   - The staged deployment preserves the owner's total session capacity five through exactly one control process with one slot and one domain process with four; unsplit production retains five. This changes the topology contract, not the process-local semaphore. No live rollout precedes aggregate-cap proof and required independent admission/review.
 - [ ] 2.1 Catalog authorization metadata for every LLM-presentable tool, with a CI check.
 - [ ] 2.2 Goal ledger migrations: goals, invocations, effects, budgets.
-- [ ] 2.3 Goal admission with origin ceilings, starting exposure and obligation declarations, including connector marking of forwarded, quoted and embedded spans.
+- [x] 2.3 Goal admission with origin ceilings, starting exposure and obligation declarations, including connector marking of forwarded, quoted and embedded spans.
 - [ ] 2.4 Goal runner, session sandbox profiles and runtime adapter proofs, including per-invocation model credential staging, tool-less model-function configurations, and retargeting Codex auth synchronization and the dashboard CLI login to the session host's credential volume.
 - [ ] 2.5 Broker endpoint: per-invocation listing, call checks, exposure, approvals (with goal lineage and the `cancelled` status), effect ledger, signed assertions and `GOAL_BROKER_SIGNING_KEY` lifecycle.
 - [ ] 2.6 Domain-side assertion verification in the core tool wrapper (enabled by the cutover release).

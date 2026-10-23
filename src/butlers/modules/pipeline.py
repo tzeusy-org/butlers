@@ -4473,9 +4473,7 @@ class PipelineModule(Module):
         self._pipeline: MessagePipeline | None = None
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "pipeline"
+    name = "pipeline"
 
     @property
     def config_schema(self) -> type[BaseModel]:

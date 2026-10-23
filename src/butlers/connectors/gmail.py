@@ -2226,6 +2226,8 @@ class GmailConnectorRuntime:
         Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
+            replay_spans = None
+            replay_sender = "unknown"
             try:
                 # Fetch message data (required for label/header-based policy evaluation)
                 message_data = await self._fetch_message(message_id)
@@ -2233,6 +2235,16 @@ class GmailConnectorRuntime:
                 # Extract common fields for buffer recording
                 _subject = self._get_subject(message_data)
                 _from_header = self._get_from_header(message_data)
+                replay_sender = _from_header
+                replay_body = self._extract_body_from_payload(message_data.get("payload", {}))
+                replay_spans = (
+                    email_untrusted_spans(
+                        f"Subject: {html.escape(_subject)}\n\n{html.escape(replay_body)}",
+                        subject=_subject,
+                        has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                    )
+                    or None
+                )
                 _thread_id = message_data.get("threadId")
                 _observed_dt, _observed_source = _resolve_observed_at(message_data)
                 _observed_at = _observed_dt.isoformat()
@@ -2289,6 +2301,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2334,6 +2347,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2371,6 +2385,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2428,7 +2443,7 @@ class GmailConnectorRuntime:
                 self._filtered_event_buffer.record(
                     external_message_id=message_id,
                     source_channel=self._config.connector_channel,
-                    sender_identity="unknown",
+                    sender_identity=replay_sender,
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -2438,8 +2453,9 @@ class GmailConnectorRuntime:
                         external_event_id=message_id,
                         external_thread_id=None,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=replay_sender,
                         raw={"message_id": message_id},
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),

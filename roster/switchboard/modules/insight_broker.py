@@ -35,9 +35,7 @@ class InsightBrokerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "insight_broker"
+    name = "insight_broker"
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -852,3 +852,70 @@ async def test_actual_insight_job_registration_stages_nominal_model_obligation(
     assert not runtime.supports(row)
     with pytest.raises(SourceConflict, match="model_job_registration_changed"):
         await runtime.read_committed_submission(pool, payload)
+
+
+async def test_actual_startup_binds_private_git_consumer_only_after_final_registry(
+    tmp_path, monkeypatch
+):
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from butlers import lifecycle
+    from butlers.config import SchedulerConfig
+    from butlers.core.obligation_git_admission import PrivateGitAdmission
+    from butlers.core.runtime_config import RuntimeConfig
+    from butlers.daemon import ButlerDaemon
+    from tests.core.test_git_obligation_admission import owning_runtime
+    from tests.daemon.test_daemon import _make_registry, _patch_infra
+
+    pool, _, source, _, registry = await owning_runtime()
+    config = pool.startup_config
+    config.scheduler = SchedulerConfig(
+        obligation_source_mode="dark", obligation_admission_mode="dark"
+    )
+    # This changes behavior selection, not the schedule/declaration material.
+    from butlers.config import obligation_config_material_digest
+
+    config.source_material_sha256 = obligation_config_material_digest(config)
+    order, patches = [], _patch_infra()
+
+    class Observed(Exception):
+        pass
+
+    async def finalized(self):
+        order.append("finalized")
+        self._tool_catalog = registry
+        patches["mock_pool"].acquire = pool.acquire
+        return registry
+
+    def diagnosed(*args, **kwargs):
+        assert order == ["sync", "finalized"]
+        assert isinstance(daemon.obligation_schedule_runtime.admission, PrivateGitAdmission)
+        assert pool.connection.depth == 0
+        raise Observed
+
+    monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
+    with ExitStack() as stack:
+        for name, value in patches.items():
+            if not name.startswith("mock_"):
+                stack.enter_context(value)
+        stack.enter_context(patch.object(ButlerDaemon, "_finalize_tool_catalog", finalized))
+        stack.enter_context(
+            patch(
+                "butlers.core.runtime_config.RuntimeConfigAccessor.seed_if_empty",
+                new=AsyncMock(return_value=RuntimeConfig("switchboard")),
+            )
+        )
+        monkeypatch.setattr(lifecycle, "diagnose_loaded_schedules", diagnosed)
+        lifecycle.sync_schedules.side_effect = lambda *args, **kwargs: order.append("sync")
+        daemon = ButlerDaemon(tmp_path, registry=_make_registry())
+        daemon.config = config
+        with pytest.raises(Observed):
+            await daemon.start()
+    dispatch = AsyncMock(return_value={"legacy": "unchanged"})
+    from butlers.core.scheduler import tick
+
+    assert await tick(pool, dispatch, source_runtime=daemon.obligation_schedule_runtime) == 1
+    assert dispatch.await_count == 1 and len(pool.connection.goals) == 1
+    assert next(iter(pool.connection.occurrences.values()))["source_id"] == source
+    await daemon.obligation_schedule_runtime.close_admission()

@@ -3,9 +3,7 @@
 Covers:
 - Column spec integrity (_UNION_COLUMN_SPEC architectural invariants)
 - ingestion_event_get: get / unified lookup (ingested + filtered fallback)
-- ingestion_events_list: cursor-paginated list with filters and has_more detection
-- encode_cursor / decode_cursor: round-trip and error cases
-- encode_cost_cursor / decode_cost_cursor: cost-sort cursor round-trip (core_126)
+- ingestion_events_list: cursor-paginated list with filters and next_cursor detection
 - ingestion_events_list sort=cost: offset-based pagination (core_126)
 - ingestion_event_set_cost_usd: lazy write-through UPDATE (core_126)
 - ingestion_event_sessions: fan-out, merge, field mapping
@@ -331,53 +329,36 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
 
 
 async def test_ingestion_events_list_and_sessions() -> None:
-    """list returns cursor-paginated result; has_more / next_cursor set correctly;
+    """list returns cursor-paginated result; next_cursor set correctly;
     channel filter passed to SQL; sessions fan-out/merge/cost-decode/rollup."""
     from butlers.core.ingestion_events import (
-        decode_cursor,
-        encode_cursor,
         ingestion_event_rollup,
         ingestion_event_sessions,
         ingestion_events_list,
     )
+    from butlers.pagination import decode_cursor
 
-    # List: empty → items=[], has_more=False, next_cursor=None
+    # List: empty → items=[], next_cursor=None
     result = await ingestion_events_list(_FakePool(fetch_results=[]))
-    assert result["items"] == [] and not result["has_more"] and result["next_cursor"] is None
+    assert result["items"] == [] and result["next_cursor"] is None
 
-    # List: limit=2, 2 rows returned → has_more=False (fetched limit+1=3, got 2)
+    # List: limit=2, 2 rows returned → last page (fetched limit+1=3, got 2)
     rows = [_make_event_record(source_channel="email"), _make_event_record(source_channel="tg")]
     result2 = await ingestion_events_list(_FakePool(fetch_results=rows), limit=2)
     assert len(result2["items"]) == 2
-    assert not result2["has_more"] and result2["next_cursor"] is None
+    assert result2["next_cursor"] is None
     assert isinstance(result2["items"][0]["id"], str)
 
-    # List: limit=2, 3 rows returned (limit+1) → has_more=True, next_cursor set
+    # List: limit=2, 3 rows returned (limit+1) → next_cursor set
     extra_row = _make_event_record(source_channel="extra")
     three_rows = rows + [extra_row]
     result3 = await ingestion_events_list(_FakePool(fetch_results=three_rows), limit=2)
     assert len(result3["items"]) == 2  # only limit rows exposed
-    assert result3["has_more"] and result3["next_cursor"] is not None
+    assert result3["next_cursor"] is not None
 
-    # The next_cursor must round-trip through decode_cursor
-    decoded_ra, decoded_id = decode_cursor(result3["next_cursor"])
-    assert decoded_id == result3["items"][-1]["id"]
-
-    # encode_cursor / decode_cursor round-trip
-    from datetime import UTC, datetime
-
-    ra = datetime(2026, 5, 17, 14, 30, 0, tzinfo=UTC)
-    import uuid
-
-    uid = uuid.uuid4()
-    token = encode_cursor(ra, uid)
-    d_ra, d_id = decode_cursor(token)
-    assert d_id == str(uid)
-    assert d_ra.isoformat() == ra.isoformat()
-
-    # decode_cursor raises ValueError on garbage input
-    with pytest.raises(ValueError):
-        decode_cursor("not-a-valid-cursor")
+    # The next_cursor carries the last returned row's keyset position
+    _decoded_ra, decoded_id = decode_cursor(result3["next_cursor"], scope="ingestion-events.recent")
+    assert str(decoded_id) == result3["items"][-1]["id"]
 
     # List: channel filter in SQL — single channel via channels list
     pool = _FakePool(fetch_results=[])
@@ -569,43 +550,26 @@ async def test_ingestion_events_received_at_bounds() -> None:
 async def test_cost_cursor_and_cost_sort() -> None:
     """Cost cursor round-trips correctly; sort=cost uses offset pagination (core_126)."""
     import uuid as _uuid
+    from datetime import UTC, datetime
 
     from butlers.core.ingestion_events import (
-        decode_cost_cursor,
-        encode_cost_cursor,
         ingestion_event_set_cost_usd,
         ingestion_events_list,
     )
+    from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
 
-    # encode_cost_cursor / decode_cost_cursor round-trip
-    assert decode_cost_cursor(encode_cost_cursor(0)) == 0
-    assert decode_cost_cursor(encode_cost_cursor(40)) == 40
-    assert decode_cost_cursor(encode_cost_cursor(100)) == 100
-
-    # decode_cost_cursor raises ValueError on garbage input
-    with pytest.raises(ValueError):
-        decode_cost_cursor("not-a-cursor")
-
-    # decode_cost_cursor raises ValueError on a keyset cursor (wrong type)
-    from datetime import UTC, datetime
-
-    from butlers.core.ingestion_events import encode_cursor
-
-    keyset_cursor = encode_cursor(datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4())
-    with pytest.raises(ValueError):
-        decode_cost_cursor(keyset_cursor)
-
-    # decode_cost_cursor raises ValueError on negative offset
-    with pytest.raises(ValueError):
-        decode_cost_cursor(encode_cost_cursor(-10))
-
-    # decode_cost_cursor raises ValueError on non-dict payload
-    import base64 as _b64
-    import json as _json
-
-    non_dict_cursor = _b64.urlsafe_b64encode(_json.dumps([1, 2, 3]).encode()).decode()
-    with pytest.raises(ValueError):
-        decode_cost_cursor(non_dict_cursor)
+    # sort=cost refuses a keyset cursor (wrong shape) and a negative offset
+    keyset_cursor = encode_cursor(
+        (datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4()), scope="ingestion-events.cost"
+    )
+    with pytest.raises(InvalidCursorError):
+        await ingestion_events_list(_FakePool(fetch_results=[]), sort="cost", cursor=keyset_cursor)
+    with pytest.raises(InvalidCursorError):
+        await ingestion_events_list(
+            _FakePool(fetch_results=[]),
+            sort="cost",
+            cursor=encode_cursor((-10,), scope="ingestion-events.cost"),
+        )
 
     # sort=cost: SQL uses ORDER BY cost_usd DESC NULLS LAST + OFFSET
     pool = _FakePool(fetch_results=[])
@@ -616,20 +580,21 @@ async def test_cost_cursor_and_cost_sort() -> None:
     assert 6 in args  # limit+1 sentinel
     assert 0 in args  # initial offset
 
-    # sort=cost, first page → has_more=False, next_cursor=None when ≤limit rows
+    # sort=cost, first page → next_cursor=None when ≤limit rows
     rows = [_make_event_record(cost_usd=0.05), _make_event_record(cost_usd=0.01)]
     result = await ingestion_events_list(_FakePool(fetch_results=rows), sort="cost", limit=5)
-    assert not result["has_more"] and result["next_cursor"] is None
+    assert result["next_cursor"] is None
     assert len(result["items"]) == 2
 
-    # sort=cost, limit+1 rows returned → has_more=True, cursor encodes offset=limit
+    # sort=cost, limit+1 rows returned → cursor encodes offset=limit
     three = [_make_event_record(cost_usd=x) for x in [0.05, 0.02, 0.01]]
     result2 = await ingestion_events_list(_FakePool(fetch_results=three), sort="cost", limit=2)
-    assert result2["has_more"] and result2["next_cursor"] is not None
-    assert decode_cost_cursor(result2["next_cursor"]) == 2  # next offset = limit
+    assert decode_cursor(result2["next_cursor"], scope="ingestion-events.cost") == (
+        2,
+    )  # next offset = limit
 
     # sort=cost with cursor → offset sent to SQL
-    cursor_val = encode_cost_cursor(20)
+    cursor_val = encode_cursor((20,), scope="ingestion-events.cost")
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, sort="cost", cursor=cursor_val, limit=10)
     _, sql2, args2 = pool2.calls[0]
@@ -682,12 +647,13 @@ async def test_ingestion_events_list_q_search_coverage() -> None:
 
     # Cursor pagination still composes correctly: adding a cursor must not break
     # the q predicate already in the WHERE clause.
-    import base64
-    import json as _json_mod
     from datetime import UTC, datetime
 
-    cursor_payload = {"ra": datetime(2026, 5, 1, tzinfo=UTC).isoformat(), "id": str(uuid.uuid4())}
-    cursor = base64.urlsafe_b64encode(_json_mod.dumps(cursor_payload).encode()).decode()
+    from butlers.pagination import encode_cursor
+
+    cursor = encode_cursor(
+        (datetime(2026, 5, 1, tzinfo=UTC), uuid.uuid4()), scope="ingestion-events.recent"
+    )
 
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, q="xyz", cursor=cursor, limit=5)

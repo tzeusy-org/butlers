@@ -1032,6 +1032,7 @@ async def ingest_v1(
     # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
     # representation: nothing on the routing path reads them.
     _persist_exposure_markers(envelope, raw_payload, normalized_text)
+    raw_payload = _strip_null_bytes(raw_payload)
 
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot

@@ -33,9 +33,7 @@ class DashboardReadModule(Module):
         self._db: Any = None
         self._pricing: PricingConfig | None = None
 
-    @property
-    def name(self) -> str:
-        return "dashboard_read"
+    name = "dashboard_read"
 
     @property
     def config_schema(self) -> type[BaseModel]:

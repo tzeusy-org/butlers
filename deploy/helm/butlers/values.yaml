@@ -134,6 +134,11 @@ dashboardApi:
   # idmap unsupported on kernel 5.15); see docs/operations/kubernetes-deployment.md.
   privileged: true
   extraEnv: {}
+  # Optional existing Secret reference only; no endpoint is stored in values.
+  externalDeadman:
+    enabled: false
+    urlSecretRef: {name: "", key: ""}
+    intervalSeconds: 600
 
 frontend:
   resources:
