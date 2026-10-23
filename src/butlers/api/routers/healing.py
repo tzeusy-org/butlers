@@ -186,11 +186,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 def _publication_lineage_held(attempt_id: uuid.UUID) -> HTTPException:
@@ -583,7 +583,7 @@ async def retry_healing_attempt(
         )
     except Exception as exc:
         logger.error("Failed to create retry attempt for %s: %s", attempt_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to create retry attempt")
+        raise HTTPException(status_code=500, detail="Failed to create retry attempt") from exc
 
     if new_row is None:
         # The only filter on the INSERT is the publication hold: a hold appeared after the
@@ -732,7 +732,7 @@ async def reset_circuit_breaker(
         logger.info("Healing circuit breaker reset via dashboard (breaker_resets recorded)")
     except Exception as exc:
         logger.error("Failed to reset circuit breaker: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to reset circuit breaker")
+        raise HTTPException(status_code=500, detail="Failed to reset circuit breaker") from exc
 
     # Return the updated state — use the same helper as get_circuit_breaker_status
     # so last_failure_at is correctly populated (previously was hard-coded None).

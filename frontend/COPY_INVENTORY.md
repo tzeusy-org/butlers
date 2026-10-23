@@ -43,6 +43,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Undo
 - loading…
 - failed to load dossier
+- Open only: an exact safe preview is unavailable. Approval is disabled.
 - Defer
 - Approve:
 - Referenced Entities
@@ -83,6 +84,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Stalled
 - Approval origin: {}
 - {} Undo
+- Stored call preview
 - Deny reason (optional)
 - None
 - UTC
@@ -122,6 +124,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Rule re-enabled
 - Rule disabled
 - Update failed: {}
+- Review the stored call before approving.
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
@@ -209,84 +212,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
-- Duration
-- When
-- Window
-- Avoid weekends
-- Failed to find open time slots.
-- Choose a duration and search for open time.
-- No open slots match those constraints in the selected window.
-- Drawing the calendar…
-- Calendar Source
-- Title
-- Start
-- End
-- Timezone
-- Description
-- Location
-- Suggested times:
-- Book anyway (overlap)
-- Cancel
-- Delete Event
-- Edit recurring event
 - Calendar sync
-- Calendar events
-- Cross-domain overlays
-- Linked people
-- Next 7 days
-- Next 14 days
-- Next 30 days
-- 30 minutes
-- 45 minutes
-- 1 hour
-- 90 minutes
-- 2 hours
-- Any time of day
-- Mornings
-- Afternoons
-- Evenings
-- Create butler event
-- Create event
-- Jump to today
-- Previous range
-- Next range
-- Search events
-- No writable calendar is available to search for free time.
-- Reversed {} · undo {}
-- Invitation details unavailable. Try again shortly.
-- No writable calendar sources are available for user events.
-- Could not resolve calendar owner for this event.
-- Could not resolve butler event for this drag.
-- Change not saved: {}
-- Reverted.
-- Event moved.
-- Failed to save calendar change.
-- Failed to create event: {}
-- Failed to update event: {}
-- Created event ({}).
-- Created calendar event.
-- Updated event ({}).
-- Updated calendar event.
-- Title is required.
-- Start and end times must be valid.
-- End time must be after start time.
-- Could not resolve owning butler for this calendar source.
-- Event id is missing for update.
-- Failed to save calendar event.
-- Failed to add calendar event.
-- Could not resolve owning butler for this event.
-- Failed to delete event: {}
-- Deleted event ({}).
-- Deleted calendar event.
-- Failed to delete calendar event.
-- Could not update {}: the new time conflicts with another event.
-- Failed to update {}: {}
-- Event {} updated.
-- Failed to update {}.
-- Proposal accepted. Event added to the Butlers calendar.
-- Failed to accept the proposed fix.
-- Proposal dismissed.
-- Failed to dismiss the proposed fix.
 
 ## `frontend/src/pages/ChatPage.tsx`
 
@@ -617,6 +543,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
+- Retry
+- All-time notification statistics are stale. The latest refresh failed.
 - Butler
 - Channel
 - Status
@@ -628,6 +556,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next
 - Notifications
 - Monitor notification delivery across all butlers.
+- All-time notification statistics unavailable
+- The statistics request failed. Try again to load the counts.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
@@ -1147,7 +1077,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - No events in this range.
 - Detail
-- Delete
 
 ## `frontend/src/pages/calendar/ButlerEventDialog.tsx`
 
@@ -1191,7 +1120,18 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next ›
 - session ›
 - Activity log
-- Reverse this calendar change
+
+## `frontend/src/pages/calendar/CalendarCanvas.tsx`
+
+- Drawing the calendar…
+- Calendar events
+- Cross-domain overlays
+- Linked people
+
+## `frontend/src/pages/calendar/CalendarConflictRadar.tsx`
+
+- Proposal accepted. Event added to the Butlers calendar.
+- Proposal dismissed.
 
 ## `frontend/src/pages/calendar/CalendarEntryDetailPanel.tsx`
 
@@ -1203,11 +1143,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - session ›
 - Attendees
 - People
-- Description
-- Location
-- Delete event
 - Close detail panel
 - Live entry detail
+- Description
+- Location
 - Failed to update {}: {}
 - Event {} updated.
 - Failed to update {}.
@@ -1216,15 +1155,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Search
 - Agenda
-- Export / Import
 - Create butler event
-- Create event
 - Sync all sources now
 - Search events
 - Open printable agenda
-- Export or import calendar
 - Configure sources
-- Create user event
 
 ## `frontend/src/pages/calendar/CalendarSearchPalette.tsx`
 
@@ -1256,13 +1191,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Cross-domain overlays
 - Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
 - Activity
-- Find time
 - Proposals
-- Duplicates
 
 ## `frontend/src/pages/calendar/MonthGrid.tsx`
 
-- Create event on {}
 - {} more on {}: open day view
 
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
@@ -1283,10 +1215,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - ISO 8601
 - Draft end
 - Draft location
-
-## `frontend/src/pages/calendar/RecurrenceScopeFieldset.tsx`
-
-- Recurrence scope
 
 ## `frontend/src/pages/calendar/SourcesDialog.tsx`
 
@@ -1312,10 +1240,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/calendar/TimeGrid.tsx`
 
 - All day
-- Undo
-- Create event on {}
-- Open slot {}: {}
-- Undo move
 
 ## `frontend/src/pages/calendar/atoms.tsx`
 
@@ -1750,11 +1674,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Model ID
 - Runtime
 - Extra Args
+- 0 && rate
+- Loading cost preview...
+- Cost preview unavailable. You can still save with a reason.
+- Catalog rates in USD per 1M tokens (base tier)
 - Override the model catalog settings for this butler.
 - Model
 - Complexity Override
 - Use catalog default
 - Override the complexity tier for this model on this butler only.
+- Choosing another catalog entry adds its override; the existing entry stays unchanged.
+- Reason
 - Cancel
 - No overrides configured. The butler uses the global model catalog.
 - Alias
@@ -1772,7 +1702,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Override specific catalog entries for this butler.
 - Add override
 - Remove Override?
+- Cost preview
 - Select a model...
+- Why is this override needed?
 - Model override saved
 - Failed: {}
 - Unknown error
@@ -2028,54 +1960,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Printable agenda
 - Close agenda
 
-## `frontend/src/components/calendar/CalendarDuplicatesPanel.tsx`
-
-- Reviewing duplicates…
-- Duplicate review
-- Match strategy
-- Noisy threshold
-- No cross-source duplicates in this range. Nothing is being collapsed.
-- Noisy threshold (minimum cluster size)
-- Matched on {}
-- Exact
-- Balanced
-- Aggressive
-- Match strategy set to {}.
-- Failed to update match strategy.
-- Noisy threshold must be a whole number ≥ 2.
-- Noisy threshold set to {}.
-- Failed to update noisy threshold.
-- Cluster kept separate. Copies will show.
-- Cluster will collapse again.
-- Failed to update keep-separate.
-
-## `frontend/src/components/calendar/CalendarPortabilityDialog.tsx`
-
-- Export / Import calendar
-- Export .ics
-- Download .ics
-- Subscribe (live feed)
-- Copy
-- Open in calendar app (webcal://)
-- Import .ics
-- File
-- Import into
-- Parsed
-- Imported
-- Skipped duplicates
-- Download calendar as ICS
-- Subscribe feed URL
-- Copy subscribe URL
-- Choose .ics file
-- Import target calendar
-- Import calendar file
-- Import result
-- Subscribe URL copied
-- Could not copy. Select the URL and copy manually
-- Choose a .ics file to import
-- Choose a calendar to import into
-- Imported {} · skipped {} duplicate{}
-
 ## `frontend/src/components/calendar/CalendarProposalsPanel.tsx`
 
 - Loading proposals…
@@ -2103,7 +1987,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Submitting response…
 - Check response outcome
 - Review response receipt
-- Undo response
 - Open approval dossier
 - Approval review unavailable; source or action identity is unverified.
 - Close receipt
@@ -2244,6 +2127,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/chat/FloatingChatWidget.tsx`
 
 - Talk to Butlers
+- Saved conversation details may be out of date.
+- Saved updates may be out of date.
 - Conversation history
 - History
 - New conversation
@@ -2252,6 +2137,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Close chat
 - Close
 - conversation history
+- conversation updates
 - Talk to Butlers (new reply)
 
 ## `frontend/src/components/chat/MessageInput.tsx`
@@ -4579,7 +4465,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Backups
 - Backup recency and reachability
-- Could not load backup facts.
 - Run failed
 - Stale
 - Healthy
@@ -4591,7 +4476,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Restore drill
 - No drill yet
 - Passed
-- if (isError) return
 - Backup status unavailable.
 - Backup source is unreachable or not configured.
 - Status
@@ -4614,8 +4498,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Database Size
 - PostgreSQL disk footprint
-- Could not load database size.
-- if (isError) return
 - Total size
 - Largest schemas (top 5)
 
@@ -4623,9 +4505,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Deployment
 - What's actually serving right now
-- Could not load deployment status.
 - 0: red clause "serving
-- if (isError) return
 - No deployment recorded yet.
 - up to date with origin/main
 - Commits-behind-origin/main check unavailable.
@@ -4639,8 +4519,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Migration Drift
 - Codebase vs. deployed schema state
-- Could not load migration drift status.
-- if (isError) return
 - Drift check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 - In sync
@@ -4650,7 +4528,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Data Egress
 - External services that received data
-- Could not load egress catalog.
 - Owner only -- sign in as the owner to view.
 - No external egress recorded yet.
 - Last seen
@@ -4659,8 +4536,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Insight Delivery
 - Proactive insight pipeline state
-- Could not load insight delivery state.
-- if (isError) return
 - Queued
 - Delivered
 - Failed
@@ -4670,8 +4545,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Security Posture
 - Auth and secrets configuration
-- Could not load security posture.
-- if (isError) return
 - Owner authentication
 - Export secret
 - Infra credentials
@@ -4715,8 +4588,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Definer search-path check unavailable. This is not a clean bill of health.
 - Stored Functions
 - Deployed bodies vs. init-db.sql
-- Could not load stored-function drift status.
-- if (isError) return
 - Stored-function check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 
@@ -4736,8 +4607,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Uptime
 - Process uptime
-- Could not load uptime info.
-- if (isError) return
 - Running for
 - Started
 
@@ -4745,8 +4614,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Version
 - Software version
-- Could not load version info.
-- if (isError) return
 - Package version
 - Last deploy
 
@@ -4962,6 +4829,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ui/query-boundary.tsx`
 
+- Retry
+- Refreshing
+- Offline. Showing last confirmed result.
+
+## `frontend/src/components/ui/query-tile.tsx`
+
+- extends Omit
 - Retry
 
 ## `frontend/src/components/ui/range-toggle.tsx`

@@ -26,6 +26,8 @@ check, not signer readiness. Service health stays on 41100; session health on
 
 The daemon follows a deterministic multi-phase startup. Each phase depends on the successful completion of the previous one. If any phase fails, already-initialized modules receive their `on_shutdown()` call before the process exits.
 
+`butlers.lifecycle.STARTUP_PHASES` declares the execution order. Its 22 named async functions implement the 17 RFC 0001 stages, splitting phase 8 into module migrations, credential-store setup, blob storage, CLI-auth restoration, shared bootstrap and orphan recovery. Each receives the daemon and a fresh per-run `StartupState` carrying shared prerequisites such as the pool, credential store and migration inputs. Fatal exceptions stop the sequence; module phases retain their existing failure isolation.
+
 ### Phase 1: Load and Validate Config
 
 The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
@@ -72,7 +74,7 @@ Each healthy module's `on_startup(config, db)` runs in topological order after s
 
 ### Phase 12: Create Spawner and Runtime Wiring
 
-The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and module credentials. It then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
+The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and credential store for explicitly declared butler variables and selected runtime authentication. Module channel credentials remain daemon-owned: startup still validates them and modules resolve them, but their declarations do not add them to runtime child environments. Explicit `[butler.env]` declarations remain supported, subject to owner-auth and administrative-variable exclusions. The daemon then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
 
 ### Phase 13: Create FastMCP and Register Core Tools
 
@@ -174,6 +176,11 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 ```
 
 ## Implementation Notes
+
+- Startup phases stay in `src/butlers/lifecycle.py`, including the owner/catalogue/event-contract
+  bootstrap group. Dependencies remain resolved in that module so existing monkeypatch seams
+  still exercise production startup. Keep `STARTUP_PHASES` in RFC order and each phase at most
+  120 lines; the determinism contract checks execution order, fatal abort and phase size.
 
 - Fleet-event publication (`butlers.fleet_events.publish_fleet_event`) is lossy and bounded:
   pool acquisition/query work has a one-second budget. Caller-owned asyncpg connections use a

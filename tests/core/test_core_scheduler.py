@@ -524,7 +524,7 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, 
     async def _audit_failure(*args, **kwargs):
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("butlers.api.routers.audit.append", _audit_failure)
+    monkeypatch.setattr("butlers.core.audit.append", _audit_failure)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await ensure_module_default_schedule(
             pool,
@@ -1540,7 +1540,7 @@ async def test_schedule_create_and_list(pool):
 
     # Duplicate name raises
     await schedule_create(pool, "dup-name", "0 9 * * *", "first")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="already exists"):
         await schedule_create(pool, "dup-name", "0 10 * * *", "second")
 
 

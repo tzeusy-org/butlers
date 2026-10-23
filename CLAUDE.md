@@ -57,11 +57,12 @@ asyncio. Butler config is git-based under `roster/{butler}/`.
 
 ```bash
 uv sync --dev                                          # Install dependencies
-make lint | make format | make test | make check       # ruff / ruff / pytest / lint+test
+make install-lint-tools                                # Pinned gitleaks + actionlint (once per worktree)
+make lint | make format | make test | make check       # ruff+secrets+workflows / ruff / pytest / lint+test
 uv run pytest tests/test_foo.py -q --tb=short          # Single file (quiet)
 uv run pytest tests/test_foo.py::test_bar -n 0         # Single test (avoid inherited xdist)
 make test-plan                                         # Dirty-worktree plan only; does not run pytest
-uv run ruff check src/ tests/ --output-format concise  # Lint only (quiet)
+uv run ruff check src/ tests/ roster/ scripts/ --output-format concise  # Ruff only (quiet)
 uv run ruff format src/ tests/                         # Format only
 ```
 
@@ -69,13 +70,13 @@ uv run ruff format src/ tests/                         # Format only
 committed, staged, unstaged, and untracked changes but does **not** execute tests. `make test-qg`
 is a local `tests/` gate, not universal coverage: it omits roster, root DB/migration suites, and
 the CI-shaped selection. The exact agent ladder and final CI-shaped commands live in
-`AGENTS.md` (§ Test Scope Policy). `pytest_gate.py` receipts require a positive terminator before a
-run is called green; `UNKNOWN` is never a pass.
+`docs/testing/ci.md` (summary in `AGENTS.md` § Test Scope Policy). `pytest_gate.py` receipts
+require a positive terminator before a run is called green; `UNKNOWN` is never a pass.
 
 ## Key Conventions
 
 - **uv**, not pip. Hatchling build backend, `src/butlers/` layout.
-- **Ruff:** target py312, line-length 100, rules E, F, I, UP.
+- **Ruff:** target py312, line-length 100, rules E, F, I, UP, B, ASYNC.
 - **pytest** with pytest-asyncio (`asyncio_mode = "auto"`); write the failing test first.
 - **Modules only add tools** — they never touch core infrastructure. Implement the `Module` ABC
   (`src/butlers/modules/base.py`): `register_tools`, `migrations`, `on_startup`, `on_shutdown`.

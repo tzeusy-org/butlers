@@ -170,11 +170,11 @@ def _get_day_close_dispatch_fn() -> DayCloseDispatchCallable | None:
 def _pool(db: DatabaseManager):
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Chronicler butler database is not available",
-        )
+        ) from exc
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -3571,13 +3571,13 @@ def _validate_routine_window(window_start: dt_time, window_end: dt_time) -> None
 def _validate_routine_timezone(tz: str) -> None:
     try:
         zoneinfo.ZoneInfo(tz)
-    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError):
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError) as exc:
         # ValueError covers an empty/malformed key ("" -> "keys must be
         # normalized relative paths"); without it a blank timezone would 500.
         raise HTTPException(
             status_code=400,
             detail=f"Unrecognized IANA timezone: {tz!r}",
-        )
+        ) from exc
 
 
 def _routine_to_row(routine: Any) -> RoutineRow:

@@ -42,15 +42,15 @@ import asyncpg
 from opentelemetry import trace
 from opentelemetry.context import Context
 
-from butlers.api.conversations import (
+from butlers.config import ButlerConfig
+from butlers.core.audit import write_audit_entry
+from butlers.core.child_env import without_owner_auth
+from butlers.core.conversation_sessions import (
     conversation_clear_provider_session,
     conversation_get_provider_session,
     conversation_set_provider_session,
     resolve_resume_handle,
 )
-from butlers.config import ButlerConfig
-from butlers.core.audit import write_audit_entry
-from butlers.core.child_env import without_owner_auth
 from butlers.core.dashboard_turns import (
     acknowledge_cancel,
     claim_invoke,
@@ -619,8 +619,6 @@ class Spawner:
         Path to the butler's config directory (containing CLAUDE.md, etc.).
     pool:
         asyncpg connection pool for session logging.
-    module_credentials_env:
-        Dict mapping module name to list of env var names needed by that module.
     runtime:
         A RuntimeAdapter instance to use for invocation. When not provided,
         a default ClaudeCodeAdapter is created.
@@ -640,7 +638,6 @@ class Spawner:
         config: ButlerConfig,
         config_dir: Path,
         pool: asyncpg.Pool | None = None,
-        module_credentials_env: dict[str, list[str]] | None = None,
         runtime: RuntimeAdapter | None = None,
         audit_pool: asyncpg.Pool | None = None,
         credential_store: CredentialStore | None = None,
@@ -649,7 +646,6 @@ class Spawner:
         self._config = config
         self._config_dir = config_dir
         self._pool = pool
-        self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
         self._credential_store = credential_store
         self._runtime_config_accessor = runtime_config_accessor
@@ -1217,7 +1213,7 @@ class Spawner:
         self._accepting = False
         logger.info("Spawner stopped accepting new triggers")
 
-    async def drain(self, timeout: float = 30.0) -> None:
+    async def drain(self, timeout: float = 30.0) -> None:  # noqa: ASYNC109 - RFC 0001 contract tests pin it
         """Wait for in-flight runtime sessions to complete, up to *timeout* seconds.
 
         If sessions are still running after the timeout, they are cancelled.
@@ -2511,9 +2507,7 @@ class Spawner:
                 # Include traceparent for distributed tracing continuity
                 env.update(get_traceparent_env())
             else:
-                env = await _build_env(
-                    self._config, self._module_credentials_env, self._credential_store
-                )
+                env = await _build_env(self._config, self._credential_store)
 
             # Owner authentication belongs to the dashboard, including when an
             # explicit caller override or a custom adapter is used.

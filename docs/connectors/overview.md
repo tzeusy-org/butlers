@@ -270,6 +270,27 @@ an authentication artifact.
 connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
 carry typed placeholders; a detector failure withholds that text without changing the row's status.
 
+Filtered-event replay retains `payload.untrusted_spans` and `event.in_reply_to_ref` from
+message-capable policy, batch/discretion and error producers. Unchanged retained text keeps the
+exact span records. When privacy omits a body, bearer scrubbing changes it, NUL removal moves its
+offsets or the detector fails, known exposure kinds conservatively cover the whole retained text
+(or `[no text]` placeholder). Discarded bodies and bearer values are never restored to recover
+offsets. Malformed-present markers remain rejectable by canonical ingest validation; replay never
+silently deletes them. Repeated scrubbing and sanitization retain the exposure facts.
+
+The forwarding owner remains the sender. The opaque replied-message locator stays distinct from
+`reply_target_ref`: it confers no origin, feed selection, goal or effect authority, and only later
+admission resolves it. Replay removes stored `drop_context` metadata while preserving these two
+envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
+stored a marker or reference cannot recover it; there is no historical backfill.
+
+The authorized replay API still queues only under the connector's replay-safety policy. Drains
+retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
+rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
+followed by uncertain status persistence may be delivered again with the same event identity for
+existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
+switch.
+
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
 full-payload, replay, logging and legacy-row findings are separate from this preview

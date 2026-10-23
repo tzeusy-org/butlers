@@ -142,7 +142,7 @@ def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
     driver = _driver()
     plan = driver.guard_plan(["tests/test_example.py"])
     names = [name for name, _ in plan]
-    assert names.count("fresh-inventory-partition-budget") == 1
+    assert names.count("test-budget") == 1
     assert {
         "lock",
         "ruff-check",
@@ -160,15 +160,13 @@ def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
         "check-guards" not in command and "extract-frontend-copy.py" not in " ".join(command)
         for _, command in plan
     )
-    # Budget/partition remains the actual one-collection ordinary entrypoint.
-    command = dict(plan)["fresh-inventory-partition-budget"]
-    assert command[-1] == "scripts/check_ci_test_shards.py"
-    assert "fresh-inventory-partition-budget" in dict(driver.guard_plan(["docs/x.md"]))
-    assert "fresh-inventory-partition-budget" in dict(driver.guard_plan(["unknown.asset"]))
+    # The per-lane budget is the one-collection ordinary entrypoint (bu-29wkwj.2).
+    command = dict(plan)["test-budget"]
+    assert command[-1] == "scripts/check_test_budget.py"
+    assert "test-budget" in dict(driver.guard_plan(["docs/x.md"]))
+    assert "test-budget" in dict(driver.guard_plan(["unknown.asset"]))
     # Deletion still changes collection even though Ruff cannot read the path.
-    assert "fresh-inventory-partition-budget" in dict(
-        driver.guard_plan(["tests/deleted.py"], root=ROOT)
-    )
+    assert "test-budget" in dict(driver.guard_plan(["tests/deleted.py"], root=ROOT))
 
 
 def test_owned_process_failure_timeout_and_signal_cleanup(tmp_path):

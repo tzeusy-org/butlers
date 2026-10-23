@@ -59,15 +59,20 @@ Full-payload shape
         "source": {"channel": ..., "provider": ..., "endpoint_identity": ...},
         "event":  {"external_event_id": ..., "external_thread_id": ...,
                    "external_conversation_id": ..., "reply_target_ref": ...,  # optional
-                   "observed_at": ...},
+                   "in_reply_to_ref": ..., "observed_at": ...},  # reference optional
         "sender": {"identity": ...},
-        "payload": {"raw": ..., "normalized_text": ...},
+        "payload": {"raw": ..., "normalized_text": ..., "untrusted_spans": ...},
         "control": {"policy_tier": ...},
         "drop_context": {"important_dropped": true, "basis": "known_contact"},  # optional
     }
 
 ``drop_context`` is stored-row metadata, not envelope content: replay strips it
 before the envelope is rebuilt (the envelope model forbids unknown keys).
+Exposure markers and the opaque replied-message locator remain envelope fields.
+Unchanged retained text keeps exact spans; privacy omission, bearer scrubbing,
+NUL removal or detector-failure withholding conservatively marks the retained text
+with the original known exposure kinds. Malformed metadata stays rejectable.
+Historical rows without these optional fields cannot recover facts never stored.
 """
 
 from __future__ import annotations
@@ -89,6 +94,7 @@ from butlers.ingestion_bearer_scrub import (
     scrub_filtered_preview,
     scrub_message_text,
 )
+from butlers.ingestion_spans import collapse_spans
 
 if TYPE_CHECKING:
     import asyncpg
@@ -172,6 +178,10 @@ def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
         if isinstance(raw, dict):
             fallback = raw.get("subject", "") or raw.get("snippet", "") or ""
         payload_section["normalized_text"] = fallback or "[no text]"
+        if "untrusted_spans" in payload_section:
+            payload_section["untrusted_spans"] = collapse_spans(
+                payload_section["normalized_text"], payload_section["untrusted_spans"]
+            )
 
     control_section = payload_dict.get("control")
     if isinstance(control_section, dict) and control_section.get("policy_tier") is None:
@@ -246,11 +256,14 @@ async def drain_replay_pending(
     - Submit via *submit_fn*.
     - Mark status=replay_complete on success or replay_failed on error.
 
-    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent connector instances never
-    process the same row twice.  The SELECT and all UPDATEs share a single
+    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent drains skip actively locked
+    rows. The SELECT and all UPDATEs share a single
     connection and transaction so the row locks are held until every status
     update commits — defeating the race window that would otherwise exist
-    between connection-per-update calls.
+    between connection-per-update calls. Submission and status commit are not
+    exactly-once delivery: an uncertain commit can cause resubmission with the
+    same event identity for ingest deduplication. Failed submissions require an
+    explicit replay request before another drain attempts them.
 
     Args:
         pool: asyncpg pool with access to the ``connectors`` schema.
@@ -374,6 +387,14 @@ def _scrub_stored_event(
         # Normalize to JSON primitives first so non-native leaves (bytes, sets,
         # objects) are scrubbed as the text they will be persisted as.
         normalized = json.loads(json.dumps(full_payload, default=str))
+        inner = normalized.get("payload")
+        if isinstance(inner, dict) and isinstance(inner.get("normalized_text"), str):
+            text = inner["normalized_text"]
+            inner["normalized_text"] = text.replace("\x00", "")
+            if text != inner["normalized_text"] and "untrusted_spans" in inner:
+                inner["untrusted_spans"] = collapse_spans(
+                    inner["normalized_text"], inner["untrusted_spans"]
+                )
         payload, _ = scrub_envelope(normalized)
         if "payload" not in full_payload:
             # scrub_envelope materialises an empty payload; keep the row shape as-is.
@@ -397,6 +418,10 @@ def _scrub_stored_event(
                 for key in ("normalized_text", "raw"):
                     if inner.get(key) is not None:
                         inner[key] = _WITHHELD if key == "normalized_text" else {}
+                if "untrusted_spans" in inner:
+                    inner["untrusted_spans"] = collapse_spans(
+                        inner.get("normalized_text") or "[no text]", inner["untrusted_spans"]
+                    )
                 withheld["payload"] = inner
             elif inner is not None:
                 withheld["payload"] = {}
@@ -681,6 +706,8 @@ class FilteredEventBuffer:
         policy_tier: str | None = None,
         important_dropped_basis: str | None = None,
         classification: dict[str, Any] | None = None,
+        untrusted_spans: list[dict[str, Any]] | None = None,
+        in_reply_to_ref: str | None = None,
     ) -> dict[str, Any]:
         """Build an ``ingest.v1``-shaped payload dict for storage.
 
@@ -700,7 +727,13 @@ class FilteredEventBuffer:
             raw: Raw provider payload (any JSON-serialisable value).
             external_conversation_id: Stable conversation key (optional).
             reply_target_ref: Per-message reply target (optional).
+            in_reply_to_ref: Opaque locator for an earlier replied-to message,
+                distinct from the current message's reply target. Replay retains
+                it exactly; only later admission resolves it.
             normalized_text: Normalised text body (optional).
+            untrusted_spans: Provider-marked forwarded, quoted or embedded spans.
+                Exact records survive unchanged text. If privacy omits the text,
+                whole-placeholder spans retain the kinds without restoring a body.
             policy_tier: Policy tier assigned to the message (optional).
             important_dropped_basis: Set (e.g. ``"known_contact"``) when the
                 drop silently discards a message the owner would want to see.
@@ -712,6 +745,12 @@ class FilteredEventBuffer:
         payload_section: dict[str, Any] = {"raw": raw}
         if normalized_text is not None:
             payload_section["normalized_text"] = normalized_text
+        if untrusted_spans is not None:
+            payload_section["untrusted_spans"] = (
+                untrusted_spans
+                if normalized_text is not None
+                else collapse_spans("[no text]", untrusted_spans)
+            )
 
         control_section: dict[str, Any] = {}
         if policy_tier is not None:
@@ -726,6 +765,8 @@ class FilteredEventBuffer:
             event_section["external_conversation_id"] = external_conversation_id
         if reply_target_ref is not None:
             event_section["reply_target_ref"] = reply_target_ref
+        if in_reply_to_ref is not None:
+            event_section["in_reply_to_ref"] = in_reply_to_ref
 
         stored: dict[str, Any] = {
             "source": {
@@ -747,7 +788,7 @@ class FilteredEventBuffer:
             }
         if classification is not None:
             # The producer freezes a fixed, content-free projection, never contacts.
-            from butlers.connectors.known_contact_state import parse_projection, utc_timestamp
+            from butlers.core.known_contact_state import parse_projection, utc_timestamp
 
             projection = parse_projection(classification)
             observed = utc_timestamp(classification.get("observed_at"))

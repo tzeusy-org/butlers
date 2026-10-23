@@ -195,7 +195,7 @@ def validate_inventory(data: dict, *, root: Path, current: bool = True) -> None:
     if set(data["lanes"]) != set(DIMENSIONS):
         raise ValueError("inventory lane population mismatch")
     global_nodes = set()
-    for lane, files in data["lanes"].items():
+    for _lane, files in data["lanes"].items():
         if not isinstance(files, dict) or not files:
             raise ValueError("required lane empty")
         nodes = []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from butlers.modules.approvals.notifications import (
     build_approval_digest_envelope,
     build_approval_request_envelope,
 )
+from butlers.modules.approvals.previews import args_digest
 
 _LEASE_SECONDS = 30
 _BACKOFF_BASE_SECONDS = 15
@@ -42,6 +44,17 @@ approval_delivery_backlog = get_or_create_gauge(
     "Current content-blind approval delivery backlog by owning schema and kind.",
     labelnames=["schema", "kind"],
 )
+
+
+def _claim_key(claim: DeliveryClaim) -> tuple[Any, int, int]:
+    return (claim.presentation_id, claim.presentation_generation, claim.claim_fence)
+
+
+def _as_tool_args(raw: Any) -> dict[str, Any]:
+    """Decode stored ``tool_args`` whether or not the pool has a jsonb codec."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return dict(raw) if isinstance(raw, Mapping) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +111,9 @@ class ApprovalDeliveryRepository:
             raise ValueError("lease_seconds must be positive")
         self._pool = pool
         self._lease_seconds = lease_seconds
+        # Digest of the stored call each fenced claim last rendered; consumed by
+        # mark_handoff_started so the persisted digest is the one the card showed.
+        self._rendered_digests: dict[tuple[Any, int, int], str] = {}
 
     async def authorize_transport(
         self, claim: DeliveryClaim, *, owning_schema: str
@@ -313,7 +329,7 @@ class ApprovalDeliveryRepository:
             """
             SELECT p.presentation_mode, i.origin_butler,
                    pa.id, pa.tool_name, pa.requested_at, pa.expires_at,
-                   pa.why, pa.blast_radius, pa.reversibility
+                   pa.why, pa.blast_radius, pa.reversibility, pa.tool_args, pa.origin
               FROM approval_delivery_presentations AS p
               JOIN approval_delivery_intents AS i ON i.id = p.intent_id
               JOIN pending_actions AS pa ON pa.id = i.action_id
@@ -329,8 +345,16 @@ class ApprovalDeliveryRepository:
             claim.claim_fence,
         )
         if row is not None:
+            tool_args = _as_tool_args(row["tool_args"])
+            if claim.presentation_mode == "single":
+                # One entry per presentation: a re-claim supersedes any abandoned render.
+                for stale in [k for k in self._rendered_digests if k[0] == claim.presentation_id]:
+                    del self._rendered_digests[stale]
+                self._rendered_digests[_claim_key(claim)] = args_digest(tool_args)
             return DirectRenderSubject(
                 action={
+                    "tool_args": tool_args,
+                    "origin": row["origin"],
                     "id": row["id"],
                     "tool_name": row["tool_name"],
                     "requested_at": row["requested_at"],
@@ -373,6 +397,8 @@ class ApprovalDeliveryRepository:
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""
         self._validate_reason(reason_code)
+        # A retried claim re-renders under a new fence; its old digest is stale.
+        self._rendered_digests.pop(_claim_key(claim), None)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 current = await connection.fetchrow(
@@ -430,11 +456,32 @@ class ApprovalDeliveryRepository:
                 eligible = await self._lock_and_check_subject(connection, claim)
                 if not eligible:
                     return False
+                rendered_digest = self._rendered_digests.pop(_claim_key(claim), None)
+                current_args = await connection.fetchval(
+                    """
+                    SELECT pa.tool_args
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1
+                    """,
+                    claim.presentation_id,
+                )
+                # The action row is locked: the stored call can no longer change
+                # between this check and the digest write below.
+                current_digest = args_digest(_as_tool_args(current_args))
+                if rendered_digest is not None and current_digest != rendered_digest:
+                    return False
+                if claim.presentation_mode == "single":
+                    # Never persist a NULL digest for a card: without a cached render
+                    # (a fenced re-claim in a new process) bind the locked current call.
+                    rendered_digest = rendered_digest or current_digest
                 row = await connection.fetchrow(
                     """
                     UPDATE approval_delivery_presentations
                        SET state = 'handoff_started', attempt_count = attempt_count + 1,
                            claim_expires_at = clock_timestamp() + make_interval(secs => $5),
+                           args_digest = COALESCE($6, args_digest),
                            updated_at = clock_timestamp()
                      WHERE id = $1 AND presentation_generation = $2
                        AND claim_token = $3 AND claim_fence = $4 AND state = 'claimed'
@@ -445,6 +492,7 @@ class ApprovalDeliveryRepository:
                     claim.claim_token,
                     claim.claim_fence,
                     float(self._lease_seconds),
+                    rendered_digest,
                 )
                 if row is None:
                     return False

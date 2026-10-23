@@ -24,22 +24,6 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "inventory",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
-      "p95_s": null,
-      "candidate_timeout_minutes": 35,
-      "retry_extra_s": 0,
-      "state": "provisional; extracted producer retains complete former guards35min envelope; named current calibration pending",
-      "sample_source": "bu-q1hzqn.1 extraction from guards; no independent inventory whole-job observations",
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "additional_provisional_cold_dependency_allowance_s": 180,
-      "review_policy": "Retain the complete35min former producer job cap rather than infer a shorter collection/setup floor. Frozen editable repair and full UV recovery remain. No stable p95 or timing gain is established by this source move.",
-      "installed_timeout_minutes": 35
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
       "job": "guards",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
@@ -165,19 +149,20 @@
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
       "p95_s": 228.0,
-      "candidate_timeout_minutes": 14,
-      "retry_extra_s": 260,
-      "state": "measured before-only candidate; remeasure after source/setup change",
+      "candidate_timeout_minutes": 20,
+      "retry_extra_s": 720,
+      "state": "provisional source-derived cap after split installer; current healthy/p95 calibration pending",
       "sample_source": "before-10-merge-group-timings.json",
       "retained_original_candidate_minutes": 12,
       "review_uv_nominal_envelope_s": 0,
-      "review_browser_hard_retry_interval_s": 380,
-      "review_conservative_before_only_candidate_minutes": 14,
+      "review_browser_hard_retry_interval_s": 720,
+      "review_conservative_before_only_candidate_minutes": 20,
       "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
-      "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
+      "review_policy": "Provisional source-derived adjustment authorized by bu-29wkwj.7: ceil((2*228s named before-only whole-job observation + full720s installer recovery reserve)/60)=20min (1176s). Retain all observed setup and the accepted installer reserve, without first-attempt subtraction. The before p95 and sample source remain historical; this changed cap is not measured new p95, current healthy calibration, or timing gain. Active retry_extra_s retains the full installer reserve; the original260s retry-only estimate is preserved separately.",
       "reviewed_job_name": "frontend-e2e",
       "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 14
+      "installed_timeout_minutes": 20,
+      "retained_original_retry_extra_s": 260
     },
     {
       "workflow": ".github/workflows/nightly.yml",
@@ -336,30 +321,6 @@
       "installed_timeout_minutes": 18
     },
     {
-      "workflow": ".github/workflows/ci-shard-weights.yml",
-      "job": "observe",
-      "installed_timeout_minutes": 12,
-      "state": "provisional finite 150-run/300-artifact horizon with each read bounded30s; complete current calibration unknown",
-      "sample_source": "source-enumerated finite API horizon; no healthy timing claim",
-      "p95_s": null
-    },
-    {
-      "workflow": ".github/workflows/nightly.yml",
-      "job": "coverage-inventory",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
-      "p95_s": null,
-      "candidate_timeout_minutes": 35,
-      "retry_extra_s": 0,
-      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
-      "sample_source": ".github/workflows/ci.yml inventory complete watchdog; no independent owned coverage job observations; relocated from ci-coverage.yml to nightly.yml by bu-29wkwj.1 with unchanged caps",
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "additional_provisional_cold_dependency_allowance_s": 180,
-      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
-      "installed_timeout_minutes": 35
-    },
-    {
       "workflow": ".github/workflows/nightly.yml",
       "job": "coverage-shards",
       "existing_timeout_minutes": null,
@@ -410,6 +371,16 @@
       "additional_provisional_cold_dependency_allowance_s": 180,
       "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
       "installed_timeout_minutes": 16
+    },
+    {
+      "workflow": ".github/workflows/nightly.yml",
+      "job": "durations-refresh",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "installed_timeout_minutes": 10,
+      "state": "provisional; new job (bu-29wkwj.2) merging eleven small JSON artifacts and opening at most one PR; no healthy p95 proof",
+      "sample_source": "none; stdlib-only merge with no dependency install"
     },
     {
       "workflow": ".github/workflows/ci-latency.yml",

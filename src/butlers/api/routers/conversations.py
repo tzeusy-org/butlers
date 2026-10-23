@@ -312,7 +312,7 @@ async def _submit_to_switchboard(
     # The exact canonical payload is bound by the authenticated API producer,
     # before transport. Public dashboard labels/message locators cannot stamp it.
     if owner_source_pool is not None:
-        from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+        from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
         if in_http_request.get() and verified_http_principal.get() == "owner":
             import hashlib
@@ -1011,7 +1011,7 @@ async def _persist_dashboard_user_message(
     ``page_context``, not from the request body, so a retry never re-sends a
     stale or since-changed page context.
     """
-    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get() and verified_http_principal.get() == "owner":
         from butlers.core.fact_authority import FactWriteContext

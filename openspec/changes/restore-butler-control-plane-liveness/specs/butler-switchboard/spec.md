@@ -4,7 +4,7 @@
 Switchboard SHALL derive target eligibility from receiver-observed current-generation health, administrative policy, and route compatibility, including staffer targets reachable through sanctioned butler-to-staffer routing. The old single `eligibility_state` and daemon-authored heartbeat SHALL not independently confer route authority.
 
 ID: REQ-butler-switchboard-002
-Source: heart-and-soul/vision.md Rule 3; RFC 0003 §Route Inbox and Crash Recovery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: heart-and-soul/vision.md Rule 3; RFC 0003 §Route Inbox and Crash Recovery; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Staffer remains reachable when policy and observation permit
@@ -51,7 +51,7 @@ credential or public routing authority; split-host exposure requires a
 separate trust amendment.
 
 ID: REQ-butler-switchboard-004
-Source: RFC 0003 Receiver-Derived Routing Eligibility; RFC 0007 Amendment 3; docs/reviews/2026-09-23-reliability-beads-plan.md Q4
+Source: RFC 0003 Receiver-Derived Routing Eligibility; RFC 0007 Amendment 3; docs/plans/2026-09-23-reliability-beads-plan.md Q4
 Scope: v1-mandatory
 
 #### Scenario: Fixed-target preflight uses the production selection path

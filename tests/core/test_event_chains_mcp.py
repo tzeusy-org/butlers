@@ -144,7 +144,7 @@ class TestEventChainsDB:
             trigger_type="deadline_passed",
             actions=self._ACTIONS,
         )
-        with pytest.raises(Exception):  # duplicate name
+        with pytest.raises(ValueError):  # duplicate name
             await event_chain_create(
                 pool,
                 butler_name=butler,

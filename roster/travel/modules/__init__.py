@@ -36,13 +36,6 @@ class TravelModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return TravelModuleConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # travel tables already exist via separate migrations
-
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:

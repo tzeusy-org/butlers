@@ -50,7 +50,7 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         root=tmp_path,
     )
     scoped = ci_route.route(**inputs)
-    assert scoped["mode"] == "scoped" and scoped["inventory"] == "false"
+    assert scoped["mode"] == "scoped"
     assert scoped["test_paths"] == ["tests/test_selected.py"]
     assert calls[0][0] == ("HEAD",)
     assert calls[0][1]["fallback_allowlist"][-1] == "tests/e2e/"
@@ -66,10 +66,10 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         ["tests//test_selected.py"],
     ):
         monkeypatch.setattr(
-            ci_route, "plan_scoped_tests", lambda *_a, **_k: _plan("scoped", unsafe)
+            ci_route, "plan_scoped_tests", lambda *_a, unsafe=unsafe, **_k: _plan("scoped", unsafe)
         )
         refused = ci_route.route(**inputs)
-        assert refused["mode"] == "full" and refused["inventory"] == "true"
+        assert refused["mode"] == "full"
         assert refused["test_paths"] == []
     monkeypatch.setattr(ci_route, "plan_scoped_tests", planned)
     assert ci_route.route(**inputs)["mode"] == "scoped"
@@ -86,14 +86,12 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         ["src/butlers/core/db.py"],
     ):
         widened = ci_route.route(**{**inputs, "files": changed})
-        assert widened["mode"] == "full" and widened["inventory"] == "true"
+        assert widened["mode"] == "full"
         assert widened["test_paths"] == []
     assert ci_route.route(**{**inputs, "event": "merge_group", "files": None})["mode"] == "full"
     assert ci_route.route(**{**inputs, "event": "push", "ref": "refs/heads/main"})["mode"] == "push"
     docs = ci_route.route(**{**inputs, "files": ["docs/guide.md"], "docs": ["docs/guide.md"]})
-    assert docs == dict(
-        backend="false", frontend="false", mode="docs", test_paths=[], inventory="false"
-    )
+    assert docs == dict(backend="false", frontend="false", mode="docs", test_paths=[])
     frontend = ci_route.route(**{**inputs, "files": ["frontend/src/App.tsx"]})
     assert frontend["mode"] == "full" and frontend["frontend"] == "true"
     with pytest.raises(ValueError):

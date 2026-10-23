@@ -31,7 +31,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, guarded_tool
 
 logger = logging.getLogger(__name__)
 
@@ -221,13 +221,6 @@ class GoogleHealthModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return GoogleHealthConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None
-
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -360,10 +353,6 @@ class GoogleHealthModule(Module):
             self._entity_id,
         )
 
-    async def on_shutdown(self) -> None:
-        """No-op — this module holds no open connections."""
-        pass
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -389,11 +378,16 @@ class GoogleHealthModule(Module):
         )
         module = self  # captured for closures
         pool = getattr(db, "pool", None)
+        guarded = guarded_tool(
+            credential=lambda: module._scopes_ok and pool is not None,
+            missing=module._not_connected,
+        )
 
         # ----------------------------------------------------------------
         # Group 1: Sleep
         # ----------------------------------------------------------------
 
+        @guarded
         async def health_sleep_latest() -> dict[str, Any]:
             """Return the most recent sleep session for the owner.
 
@@ -404,8 +398,6 @@ class GoogleHealthModule(Module):
             stages (deep, light, rem, wake), and summary text.
             Returns an empty result with explanation when no data exists.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             row = await pool.fetchrow(
                 "SELECT valid_at, content, metadata FROM facts"
                 " WHERE predicate = 'sleep_session' AND scope = 'health'"
@@ -436,6 +428,7 @@ class GoogleHealthModule(Module):
                 "summary": row["content"],
             }
 
+        @guarded
         async def health_sleep_history(days: int = 7) -> dict[str, Any]:
             """Return sleep session history over the requested window.
 
@@ -447,8 +440,6 @@ class GoogleHealthModule(Module):
             same fields as ``health_sleep_latest``, plus aggregate stats:
             avg_duration_minutes, avg_efficiency, avg_deep_minutes, avg_rem_minutes.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 90))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             rows = await pool.fetch(
@@ -512,6 +503,7 @@ class GoogleHealthModule(Module):
         # Group 2: Heart rate and HRV
         # ----------------------------------------------------------------
 
+        @guarded
         async def health_hr_history(days: int = 30) -> dict[str, Any]:
             """Return resting heart rate history over the requested window.
 
@@ -521,8 +513,6 @@ class GoogleHealthModule(Module):
             Queries ``measurement_resting_hr`` facts. Returns daily resting HR values
             plus a summary with min, max, avg, and a linear trend slope.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 365))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             daily = await _daily_numeric_rollup(pool, "measurement_resting_hr", "value", time_from)
@@ -535,6 +525,7 @@ class GoogleHealthModule(Module):
             summary["trend_slope"] = _trend_slope(values)
             return {"found": True, "days": days, "daily": daily, "summary": summary}
 
+        @guarded
         async def health_hrv_history(days: int = 30) -> dict[str, Any]:
             """Return heart rate variability (HRV) history over the requested window.
 
@@ -544,8 +535,6 @@ class GoogleHealthModule(Module):
             Queries ``measurement_hrv`` facts. Returns daily RMSSD values plus a
             summary with avg_rmssd, coverage, and trend direction.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 365))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             daily = await _daily_numeric_rollup(pool, "measurement_hrv", "daily_rmssd", time_from)
@@ -568,6 +557,7 @@ class GoogleHealthModule(Module):
         # Group 3: Oxygen and breathing
         # ----------------------------------------------------------------
 
+        @guarded
         async def health_spo2_history(days: int = 30) -> dict[str, Any]:
             """Return blood oxygen saturation (SpO2) history over the requested window.
 
@@ -576,8 +566,6 @@ class GoogleHealthModule(Module):
 
             Queries ``measurement_spo2`` facts. Returns daily average SpO2 values.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 365))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             rows = await pool.fetch(
@@ -621,6 +609,7 @@ class GoogleHealthModule(Module):
                 },
             }
 
+        @guarded
         async def health_breathing_rate_history(days: int = 30) -> dict[str, Any]:
             """Return breathing rate history over the requested window.
 
@@ -629,8 +618,6 @@ class GoogleHealthModule(Module):
 
             Queries ``measurement_breathing_rate`` facts. Returns daily breathing rate values.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 365))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             daily = await _daily_numeric_rollup(
@@ -654,6 +641,7 @@ class GoogleHealthModule(Module):
         # Group 4: Activity
         # ----------------------------------------------------------------
 
+        @guarded
         async def health_activity_summary(days: int = 7) -> dict[str, Any]:
             """Return activity summary combining steps and active minutes.
 
@@ -665,8 +653,6 @@ class GoogleHealthModule(Module):
             fairly_active_minutes, lightly_active_minutes, sedentary_minutes.
             Aggregate: average steps, average active minutes, days meeting 10 000 steps.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             days = max(1, min(days, 90))
             time_from = datetime.now(tz=UTC) - timedelta(days=days)
             steps_rows = await pool.fetch(
@@ -755,14 +741,13 @@ class GoogleHealthModule(Module):
         # Group 5: VO2 max
         # ----------------------------------------------------------------
 
+        @guarded
         async def health_vo2_max_latest() -> dict[str, Any]:
             """Return the most recent VO2 max measurement.
 
             Queries the ``measurement_vo2_max`` fact for the owner entity.
             Returns: value, range_low, range_high, midpoint, and measurement date.
             """
-            if not module._scopes_ok or pool is None:
-                return module._not_connected()
             row = await pool.fetchrow(
                 "SELECT valid_at, metadata FROM facts"
                 " WHERE predicate = 'measurement_vo2_max' AND scope = 'health'"

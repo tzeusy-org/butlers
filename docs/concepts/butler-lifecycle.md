@@ -12,7 +12,7 @@ A butler daemon goes through distinct phases during its lifetime: a multi-step s
 
 ## Startup Sequence
 
-The `ButlerDaemon.start()` method executes a carefully ordered startup sequence. Each step depends on the success of previous steps, though module-specific failures are non-fatal --- a failing module is recorded as failed and skipped in later phases while the butler continues with its remaining healthy modules.
+The `ButlerDaemon.start()` method executes `butlers.lifecycle.STARTUP_PHASES` in order, sharing a fresh `StartupState` between named phases. The list implements the 17 stages below, with stage 8 split into six dependency steps. Each step depends on the success of previous steps, though module-specific failures are non-fatal --- a failing module is recorded as failed and skipped in later phases while the butler continues with its remaining healthy modules.
 
 ### Step 1: Load Configuration and Logging
 

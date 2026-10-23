@@ -128,6 +128,9 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "executed": "✅ Approved",
     "rejected": "❌ Rejected",
     "expired": "⏰ Expired",
+    "changed_since_shown": (
+        "⚠️ Changed since shown. Nothing was executed; open the dashboard to review the new call."
+    ),
 }
 
 
@@ -313,6 +316,16 @@ class TelegramBotConnectorConfig:
             health_port=health_port,
             internal_api_url=internal_api_url,
         )
+
+
+def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
+    """Provider exposure facts without retaining a filtered message's body."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if isinstance(msg, dict):
+            spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
+            return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
+    return {}
 
 
 class TelegramBotConnector:
@@ -897,6 +910,7 @@ class TelegramBotConnector:
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
             _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
+            envelope = None
             try:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
@@ -952,6 +966,7 @@ class TelegramBotConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -988,6 +1003,7 @@ class TelegramBotConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -1009,7 +1025,7 @@ class TelegramBotConnector:
                 self._filtered_event_buffer.record(
                     external_message_id=update_id,
                     source_channel=self._config.channel,
-                    sender_identity="unknown",
+                    sender_identity=self._extract_sender_identity(update),
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -1021,8 +1037,21 @@ class TelegramBotConnector:
                         external_conversation_id=_conversation_id,
                         reply_target_ref=_reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=self._extract_sender_identity(update),
                         raw=update,
+                        normalized_text=(
+                            envelope["payload"].get("normalized_text") if envelope else None
+                        ),
+                        untrusted_spans=(
+                            envelope["payload"].get("untrusted_spans")
+                            if envelope
+                            else _replay_message_metadata(update).get("untrusted_spans")
+                        ),
+                        in_reply_to_ref=(
+                            envelope["event"].get("in_reply_to_ref")
+                            if envelope
+                            else _replay_message_metadata(update).get("in_reply_to_ref")
+                        ),
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -1399,6 +1428,8 @@ class TelegramBotConnector:
                     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
                 },
             )
+            if response.status_code == 409 and "changed since shown" in response.text:
+                return "changed_since_shown"
             if response.status_code >= 400:
                 return None
             payload = response.json()
@@ -1890,6 +1921,7 @@ class TelegramBotConnector:
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=sender_id,
                         raw={},
+                        **_replay_message_metadata(update),
                     ),
                     status="error",
                     error_detail=media_failure_reason,

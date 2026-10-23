@@ -726,7 +726,7 @@ def _path_matches(fe_template: str, api_path: str) -> bool:
     fe_segs = ("/api" + fe_template).split("/")
     api_segs = api_path.split("/")
     return len(fe_segs) == len(api_segs) and all(
-        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs)
+        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs, strict=False)
     )
 
 

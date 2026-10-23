@@ -59,11 +59,11 @@ async def list_state(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch("SELECT key, value, updated_at FROM state ORDER BY key")
 
@@ -94,11 +94,11 @@ async def get_state(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     row = await pool.fetchrow(
         "SELECT key, value, updated_at FROM state WHERE key = $1",
@@ -143,14 +143,14 @@ async def set_state(
     try:
         client = await mgr.get_client(name)
         await client.call_tool("state_set", {"key": key, "value": request.value})
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "state.set", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             await log_audit_entry(
@@ -200,14 +200,14 @@ async def delete_state(
     try:
         client = await mgr.get_client(name)
         await client.call_tool("state_delete", {"key": key})
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "state.delete", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             await log_audit_entry(

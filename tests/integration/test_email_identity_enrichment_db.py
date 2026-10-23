@@ -1,7 +1,8 @@
-"""Real-Postgres regression for the email identity enrichment loop (bu-qeaou).
+"""Real-Postgres regression for the email identity enrichment loop + backfill (bu-qeaou).
 
-Mocked-pool unit tests (tests/jobs/test_relationship_email_identity_enrichment.py)
-already cover the control flow with a fake pool. Per the repo's DB-query verification policy (a prior PR
+Mocked-pool unit tests (tests/jobs/test_relationship_email_identity_enrichment.py,
+tests/scripts/test_backfill_email_identity_facts.py) already cover the control
+flow with a fake pool. Per the repo's DB-query verification policy (a prior PR
 broke main for ~8h exactly this way — relationship.facts accessed bare under a
 scoped search_path), this file exercises the same code paths against a REAL
 Postgres instance (testcontainers) so JSONB round-tripping, real SQL syntax,
@@ -28,6 +29,7 @@ import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -41,6 +43,8 @@ from butlers.testing.schema_standins import (
     PENDING_ACTIONS,
 )
 
+_THIS_FILE = Path(__file__).resolve()
+
 
 def _apply_evidence_schema():
     """Load ``roster/relationship/tests/evidence_schema.py`` by path.
@@ -50,15 +54,8 @@ def _apply_evidence_schema():
     would drift from the migration the moment either side changes.
     """
     import importlib.util
-    from pathlib import Path
 
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
+    schema_path = _THIS_FILE.parents[2] / "roster" / "relationship" / "tests" / "evidence_schema.py"
     spec = importlib.util.spec_from_file_location("_rel034_evidence_schema", schema_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -86,8 +83,6 @@ def _get_rjobs() -> ModuleType:
 
 
 _ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
-
-_NOW = datetime(2026, 7, 1, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -186,7 +181,8 @@ async def _insert_event(
         VALUES ($1, $2, 'email', $3, $4, $5, $6, 'ingested')
         """,
         uuid.uuid4(),
-        _NOW - timedelta(days=day_offset),
+        # The job's lookback window ends at the wall clock, so events must too.
+        datetime.now(UTC) - timedelta(days=day_offset),
         address,
         display_name,
         thread_id,

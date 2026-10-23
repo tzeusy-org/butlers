@@ -71,13 +71,13 @@ def _shared_store(db: DatabaseManager) -> CredentialStore:
     """Return a CredentialStore backed by the shared credential pool."""
     try:
         pool = db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         from fastapi import HTTPException
 
         raise HTTPException(
             status_code=503,
             detail="Shared credential database is not available",
-        )
+        ) from exc
     return CredentialStore(pool)
 
 

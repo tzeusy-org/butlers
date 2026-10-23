@@ -80,7 +80,7 @@ class _Connection:
         self.transaction_kwargs.append({"isolation": isolation, "readonly": readonly})
         return _Transaction(self.events)
 
-    async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:
+    async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         self.calls.append((sql, args, timeout))
         if "COUNT(*)" in sql:
             self.events.append("candidate_count")
@@ -100,7 +100,10 @@ class _Connection:
         raise AssertionError(f"unexpected fetchval SQL: {sql}")
 
     async def fetch(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "WITH candidates AS MATERIALIZED" in sql:
@@ -139,7 +142,10 @@ class _ObservabilityConnection:
         return _Transaction()
 
     async def fetch(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "GROUP BY" in sql:
@@ -154,7 +160,10 @@ class _ObservabilityConnection:
         raise AssertionError(f"unexpected fetch SQL: {sql}")
 
     async def fetchrow(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> dict[str, object]:
         self.calls.append((sql, args, timeout))
         if "pg_stat_user_tables" in sql:

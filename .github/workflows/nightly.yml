@@ -70,10 +70,12 @@ jobs:
     # tree. It deliberately does NOT touch the monotonic clock, so
     # asyncio sleep/timeout semantics are unaffected (verified locally: a
     # faked process still measures asyncio.sleep(0.2) as ~0.2s of monotonic
-    # time while datetime.now() reports the shifted date). Postgres runs as a
-    # separate service container whose own clock is NOT shifted -- SQL
-    # NOW()/CURRENT_TIMESTAMP stays real -- so this catches the Python-level
-    # frozen-fixture class above, not a DB-side clock skew.
+    # time while datetime.now() reports the shifted date). bu-29wkwj.6: the
+    # root conftest gives the shared Postgres testcontainer the same library
+    # and FAKETIME offset, so SQL now() agrees with the Python clock. Before
+    # that only the Python clock moved, every DB test comparing the two clocks
+    # failed by the offset unless it carried pg_clock, and the leg stayed red
+    # from 2026-07-25 as new tests arrived without the marker.
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
     # slow the required `check` job, only surface future hazards early. A
@@ -189,10 +191,10 @@ jobs:
           # clean summary + tracebacks on the runs that do finish.
           # bu-szgi9: `not pg_clock` drops the tests whose pass/fail hinges on
           # comparing a Postgres-clock timestamp against a Python-clock value.
-          # libfaketime shifts only the Python process clock, not the Postgres
-          # testcontainer, so those tests skew by the offset and false-fail --
-          # they are CI-artifact skew, not wall-clock time-bombs, so they are
-          # excluded from THIS leg only (they still run in every other job).
+          # They were marked while libfaketime shifted only the Python process
+          # clock; since bu-29wkwj.6 the testcontainer shares the offset, so new
+          # tests need no mark and these await re-admission. Excluded from
+          # THIS leg only (they still run in every other job).
           #
           # bu-ik7p3: session/worker-level watchdog. --timeout=300 bounds each
           # test CALL, but the observed wedge lives in xdist/session shutdown
@@ -218,7 +220,10 @@ jobs:
           # the recurring 99% wedge: run 29254910952 hung in
           # test_concurrent_same_model_builds_single_instance's RaceDict.wait,
           # NOT in a real embedding-model load). No time semantics -> zero value
-          # under faketime; they still run in every other job.
+          # under faketime; they still run in every other job. bu-29wkwj.6
+          # adds tests needing a live TLS handshake (uv fetching from PyPI):
+          # certificate validity is checked against the shifted clock, so the
+          # +120d leg fails whenever the real certificate expires inside it.
           WATCHDOG_SECONDS=3600
           timeout --signal=SIGABRT --kill-after=30s "${WATCHDOG_SECONDS}" \
             env LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
@@ -375,78 +380,48 @@ jobs:
   # Required CI runs the same selected tests untraced; this nightly run is the only
   # covered one. It uploads the combined report as an artifact and refreshes the
   # main badge; it is not a required check.
-  coverage-inventory:
-    runs-on: ubuntu-latest
-    env:
-      UV_PYTHON: 3.12.15
-      CI_COVERAGE: '1'
-    timeout-minutes: 35
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/ci-python-environment
-      - name: Restore compatible advisory file weights
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
-      - name: Collect full current inventory
-        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
-      - name: Upload exact attempt inventory and assignment
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory/*.json
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
   coverage-shards:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: 3.12.15
       CI_COVERAGE: '1'
     timeout-minutes: ${{ matrix.timeout }}
-    needs:
-      - coverage-inventory
     strategy:
       fail-fast: false
       matrix:
         include:
           - lane: unit
-            shard: 1
+            group: 1
             timeout: 28
           - lane: unit
-            shard: 2
+            group: 2
             timeout: 28
           - lane: unit
-            shard: 3
+            group: 3
             timeout: 28
           - lane: unit
-            shard: 4
+            group: 4
             timeout: 28
           - lane: unit
-            shard: 5
+            group: 5
             timeout: 28
           - lane: integration
-            shard: 1
+            group: 1
             timeout: 36
           - lane: integration
-            shard: 2
+            group: 2
             timeout: 36
           - lane: integration
-            shard: 3
+            group: 3
             timeout: 36
           - lane: integration
-            shard: 4
+            group: 4
             timeout: 36
           - lane: integration
-            shard: 5
+            group: 5
             timeout: 36
           - lane: integration
-            shard: 6
+            group: 6
             timeout: 36
     steps:
       - uses: actions/checkout@v6
@@ -482,68 +457,42 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
         if: matrix.lane == 'integration'
-      - name: Download current inventory and computed assignment
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-      - name: Compute compatible shard timing key
-        id: timing-key
-        run: |
-          set -euo pipefail
-          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane ${{ matrix.lane }} --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory")"
-          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
-      - name: Restore advisory shard timings
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-      - name: Run the complete assigned covered shard
+      - name: Run the covered lane group
         env:
-          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}
-          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
+          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}
           TESTCONTAINERS_RYUK_DISABLED: ${{ matrix.lane == 'integration' && 'true' || 'false' }}
-        run: uv run python scripts/check_ci_test_shards.py run --lane ${{ matrix.lane }} --shard ${{ matrix.shard
-          }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
-      - name: Save complete shard timings
-        if: success()
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-      - name: Prepare ${{ matrix.lane }} shard ${{ matrix.shard }} duration evidence
+        run: uv run python scripts/ci_lanes.py run --lane ${{ matrix.lane }} --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}"
+      - name: Prepare ${{ matrix.lane }} group ${{ matrix.group }} duration evidence
         if: always()
         run: |
           python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt" \
+            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt" \
             --limit 25
       - name: Upload complete covered execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-${{ matrix.lane }}-${{ matrix.shard }}-test-evidence
+          name: ci-${{ matrix.lane }}-${{ matrix.group }}-test-evidence
           path: |
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/runner-observation.json
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/condensation-refusal-*.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
-      - name: Upload raw covered shard inputs
+      - name: Upload raw covered group inputs
         if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ci-${{ matrix.lane }}-${{ matrix.shard }}-coverage-data
+          name: ci-${{ matrix.lane }}-${{ matrix.group }}-coverage-data
           path: |
-            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data
-            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.shard }}.data.metadata.json
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -554,7 +503,6 @@ jobs:
       CI_COVERAGE: '1'
     timeout-minutes: 27
     needs:
-      - coverage-inventory
       - coverage-shards
     if: always()
     steps:
@@ -565,7 +513,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           needs = json.loads(os.environ['NEEDS_JSON'])
-          expected = {'coverage-shards', 'coverage-inventory'}
+          expected = {'coverage-shards'}
           valid = isinstance(needs, dict) and set(needs) == expected
           valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
           raise SystemExit(0 if valid else 1)
@@ -574,25 +522,13 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/ci-python-environment
-      - name: Download fresh full inventory
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-      - name: Download all eleven child test receipts
+      - name: Download every covered lane group's evidence
         uses: actions/download-artifact@v4
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-receipts
-      - name: Reconcile all eleven covered execution populations
-        id: reconcile
-        env:
-          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
-        run: |
-          uv run --no-sync python scripts/ci_preflight_reconcile.py \
-            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
-            --receipts "${RUNNER_TEMP}/ci-test-receipts" \
-            --output "${RUNNER_TEMP}/ci-artifacts/smoke"
+      - name: Check the covered lane groups add up and stay within the test budget
+        run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
         env:
@@ -656,7 +592,6 @@ jobs:
           PYEOF
 
           exit "$SMOKE_EXIT"
-        if: steps.reconcile.outputs.smoke_covered != 'true'
       - name: Prepare smoke test duration evidence
         if: ${{ always() && steps.smoke.outcome != 'skipped' }}
         run: |
@@ -665,15 +600,6 @@ jobs:
             --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/smoke/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/smoke/top-durations.txt" \
             --limit 25
-      - name: Upload complete execution reconciliation
-        if: always() && steps.reconcile.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-coverage-execution-proof
-          path: ${{ runner.temp }}/ci-artifacts/smoke/reconciliation.json
-          retention-days: 14
-          if-no-files-found: error
-          overwrite: true
       - name: Upload smoke release evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -701,7 +627,6 @@ jobs:
       CI_COVERAGE: '1'
     timeout-minutes: 16
     needs:
-      - coverage-inventory
       - coverage-shards
       - coverage-preflight
     if: always()
@@ -713,7 +638,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           needs = json.loads(os.environ['NEEDS_JSON'])
-          expected = {'coverage-shards', 'coverage-preflight', 'coverage-inventory'}
+          expected = {'coverage-shards', 'coverage-preflight'}
           valid = isinstance(needs, dict) and set(needs) == expected
           valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
           raise SystemExit(0 if valid else 1)
@@ -722,67 +647,62 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/ci-python-environment
-      - name: Download generated inventory and assignment
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-      - name: Download unit shard 1 coverage data
+      - name: Download unit group 1 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-1
-      - name: Download unit shard 2 coverage data
+      - name: Download unit group 2 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-2
-      - name: Download unit shard 3 coverage data
+      - name: Download unit group 3 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-3
-      - name: Download unit shard 4 coverage data
+      - name: Download unit group 4 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-4
-      - name: Download unit shard 5 coverage data
+      - name: Download unit group 5 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-5
-      - name: Download integration shard 1 coverage data
+      - name: Download integration group 1 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-1
-      - name: Download integration shard 2 coverage data
+      - name: Download integration group 2 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-2
-      - name: Download integration shard 3 coverage data
+      - name: Download integration group 3 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-3
-      - name: Download integration shard 4 coverage data
+      - name: Download integration group 4 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-4
-      - name: Download integration shard 5 coverage data
+      - name: Download integration group 5 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-5
-      - name: Download integration shard 6 coverage data
+      - name: Download integration group 6 coverage data
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-6-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-6
-      - name: Combine coverage from all independent test shards
+      - name: Combine coverage from all independent lane groups
         id: coverage
         env:
           UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
@@ -803,7 +723,6 @@ jobs:
           rm -f "$COMBINED_COVERAGE" "$COMBINED_REPORT"
           uv run python scripts/check_ci_coverage.py \
             --input-root "${RUNNER_TEMP}/ci-coverage" \
-            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
             --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" --event "$GITHUB_EVENT_NAME"
           uv run coverage combine --data-file="$COMBINED_COVERAGE" \
@@ -850,3 +769,60 @@ jobs:
           label: coverage
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
+  durations-refresh:
+    # Merges every covered group's measured durations into the committed
+    # .test_durations that pytest-split balances the CI lane groups with. The
+    # merged file is always uploaded; Monday's scheduled run on main, or a manual
+    # dispatch on main, also opens a PR with it. It never pushes to main. A stale
+    # file only skews group balance: which tests run stays exact, because
+    # `ci_lanes.py totals` checks every lane's groups against --collect-only
+    # (bu-29wkwj.2).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [coverage-shards]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download every lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-evidence
+      - name: Merge the measured durations
+        run: python3 scripts/ci_lanes.py durations --evidence "${RUNNER_TEMP}/ci-test-evidence"
+      - name: Upload the merged durations
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-durations
+          path: .test_durations
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Open a durations refresh PR
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
+            echo "Scheduled refreshes open a PR on Mondays only."
+            exit 0
+          fi
+          if git diff --quiet -- .test_durations; then
+            echo "Durations unchanged."
+            exit 0
+          fi
+          branch="ci/test-durations-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add .test_durations
+          git commit -m "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}" \
+            --body "Measured by the covered lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."

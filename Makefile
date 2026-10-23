@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -6,8 +6,24 @@ CI_UNIT_PYTEST_ARGS = tests/ roster/ -q --maxfail=1 --tb=short --ignore=tests/e2
 CI_INTEGRATION_PYTEST_ARGS = tests/ roster/ -q --maxfail=5 --tb=short -m "integration and not nightly and not bench and not perf" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
 BASE ?= origin/main
 
+# One shared lint path: CI's Lint step runs exactly `make lint`. The pinned gitleaks and
+# actionlint come only from `make install-lint-tools`; a missing tool fails, never skips.
 lint:
-	uv run ruff check src/ tests/
+	uv run ruff check src/ tests/ roster/ scripts/
+	uv run --no-sync lint-imports
+	$(MAKE) --no-print-directory secrets-scan lint-workflows lint-tools-self-test
+
+install-lint-tools:
+	python3 scripts/lint_tools.py install
+
+secrets-scan:
+	python3 scripts/lint_tools.py secrets-scan
+
+lint-workflows:
+	python3 scripts/lint_tools.py lint-workflows
+
+lint-tools-self-test:
+	python3 scripts/lint_tools.py self-test
 
 # Identical nonmutating static survivors in the hosted guards job.
 check-lock:
@@ -130,7 +146,7 @@ test-ci-integration:
 	$(QG_GATE) run --tee --log "$$LOG" -- $(CI_INTEGRATION_PYTEST_ARGS); \
 	$(QG_GATE) verdict "$$LOG"
 
-# Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
+# Quality-gate default: parallel xdist (see docs/testing/ci.md).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
 # are not torn down mid-module (important for shared FastAPI app and module-scoped DB pools).
 test-qg:
@@ -163,12 +179,6 @@ test-qg-parallel:
 # Safe form: FOR UPDATE OF <table>  (excludes the nullable join side)
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
-
-# Fail-closed replacement for the former integration-only coverage guard.
-# Collects the real unit and integration marker populations and rejects stale,
-# missing, overlapping, or zero-selected checked-in file manifests.
-check-ci-test-shards:
-	uv run --no-sync python scripts/check_ci_test_shards.py
 
 # Per-lane collected-test budget ratchet (bu-r5mnn). Fails when a CI lane
 # collects more tests than scripts/test-budget-baseline.json allows: condense
@@ -250,7 +260,7 @@ check-guards: check-lock lint check-format check-for-update-joins check-em-dashe
 		echo "check-guards: openspec not on PATH, skipping check-openspec-strict (CI runs it)"; \
 	fi
 
-check: lint check-for-update-joins check-ci-test-shards check-test-budget check-guards test
+check: lint check-for-update-joins check-test-budget check-guards test
 
 # Local dry run of the session-link step of the CI `guards` job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

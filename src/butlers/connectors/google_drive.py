@@ -629,7 +629,7 @@ def _build_batch_digest_text(pending: list[_PendingChange]) -> str:
     file_count = len(by_file)
 
     lines = [f"google_drive_batch: {total} change(s) across {file_count} file(s)"]
-    for file_id, changes in by_file.items():
+    for _file_id, changes in by_file.items():
         name = changes[-1].name  # latest name
         types = [c.change_type for c in changes]
 

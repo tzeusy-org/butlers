@@ -123,14 +123,26 @@ def normalize_spans(text: str, spans: Iterable[Mapping[str, Any]]) -> list[dict[
     return out
 
 
-def collapse_spans(text: str, spans: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def collapse_spans(text: str, spans: Any) -> Any:
     """One whole-text span per kind, keeping the first origin seen for that kind.
 
     Used when ``text`` was rewritten after the spans were computed (bearer scrubbing), so the
     old offsets can no longer be trusted but the fact that the message carries such content can.
+    Malformed containers, entries and unknown kinds stay present for canonical rejection.
+    A rewrite must never turn a present exposure fact into an unmarked message.
     """
+    if not isinstance(spans, (list, tuple)):
+        return spans
     by_kind: dict[str, dict[str, Any]] = {}
+    out: list[Any] = []
     for span in spans:
+        if (
+            not isinstance(span, Mapping)
+            or not isinstance(span.get("kind"), str)
+            or span["kind"] not in SPAN_KINDS
+        ):
+            out.append(span)
+            continue
         kind = span.get("kind")
         if kind in SPAN_KINDS and kind not in by_kind:
             by_kind[kind] = whole_text_span(
@@ -139,7 +151,8 @@ def collapse_spans(text: str, spans: Iterable[Mapping[str, Any]]) -> list[dict[s
                 origin_identity=span.get("origin_identity"),
                 origin_display_name=span.get("origin_display_name"),
             )
-    return list(by_kind.values())
+            out.append(by_kind[kind])
+    return out
 
 
 def effective_channel_kind(capabilities: Mapping[str, Any] | None) -> ChannelKind:

@@ -879,7 +879,7 @@ class SteamAccountPoller:
         """Signal shutdown and wait for all polling tasks to finish."""
         self._state.shutdown_event.set()
 
-        for data_type, task in list(self._state.tasks.items()):
+        for _data_type, task in list(self._state.tasks.items()):
             task.cancel()
             try:
                 await task

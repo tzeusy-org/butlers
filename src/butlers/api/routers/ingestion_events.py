@@ -903,9 +903,9 @@ async def bulk_retry_ingestion_events(
     # ---------------------------------------------------------------------------
     try:
         replay_policies = await ingestion_events_replay_policy(pool, event_ids)
-    except Exception:
+    except Exception as exc:
         logger.warning("bulk_retry: replay policy pre-flight check failed", exc_info=True)
-        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON)
+        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON) from exc
 
     unsafe_events: list[dict] = []
     for event_id in event_ids:

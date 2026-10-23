@@ -557,6 +557,15 @@ class ButlerDaemon:
         while not self._shutting_down and self._boot_epoch is None:
             await asyncio.sleep(delay_s)
             if await self._register_boot_epoch() and not self._shutting_down:
+                from butlers.core.catalog_publication import start_catalog_publication
+
+                try:
+                    await start_catalog_publication(self, self.db.pool)
+                except Exception:
+                    # No acceptance from a partial/uncertain publication. Its
+                    # retained operation is available to bounded shutdown.
+                    self._catalog_publication_failed = True
+                    return
                 self._accepting_connections = True
                 logger.info("Boot epoch committed for butler=%s", self.config.name)
                 return
@@ -1538,6 +1547,16 @@ class ButlerDaemon:
         if current is not None and current.generation_digest == candidate.generation_digest:
             return current
         self._tool_catalog = candidate
+        # Republish a real definition replacement, never renew an old digest
+        # against a changed registry. The role-bound owner is created only by
+        # the explicitly enabled final-startup publication hook.
+        publication = getattr(self, "_catalog_publication", None)
+        if publication is not None:
+            try:
+                await publication.publish(candidate)
+            except BaseException:
+                await publication.retire()
+                raise
         return candidate
 
     @property

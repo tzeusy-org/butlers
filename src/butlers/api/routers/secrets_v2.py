@@ -212,14 +212,14 @@ from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.models import ApiMeta, ApiResponse
-from butlers.api.models.audit import (
-    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
-)
-from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
+from butlers.core.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
@@ -2334,14 +2334,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row)
+        for row, provider in zip(rows, providers_by_row, strict=False)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row):
+    for row, provider in zip(rows, providers_by_row, strict=False):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])
@@ -5422,7 +5422,7 @@ async def disconnect_user_credential(
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
 #
-# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# The tuple itself now lives in ``butlers.core.audit`` (bu-vhie6): the
 # same closed vocabulary is what ``public.audit_log.failure_category`` stores
 # at rest, and ``routers/audit`` cannot import this router.  It is re-exported
 # here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every
@@ -7394,7 +7394,7 @@ async def reauthorize_cli_credential(
         try:
             await session.start()
             # Wait briefly for the device code to appear in stdout.
-            await session.wait(timeout=10.0)
+            await session.wait(timeout_s=10.0)
         except Exception as exc:  # noqa: BLE001
             if provider_def.name == "codex":
                 # Device-code subprocess errors can contain provider auth

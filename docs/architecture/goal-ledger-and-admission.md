@@ -20,7 +20,7 @@ are third party, while an unavailable verifier returns a typed refusal.
 
 ## Durable records
 
-All six tables live in Switchboard's schema:
+All seven tables live in Switchboard's schema:
 
 | Table | Retained invariant |
 | --- | --- |
@@ -29,6 +29,7 @@ All six tables live in Switchboard's schema:
 | `effects` | Same-goal invocation FK; capability/argument digests and D11 state; exact unique delivery, verified recipient and finite prompt expiry |
 | `budgets` | One per goal; explicit finite maxima, reserved/used counters and child occupancy; sums bounded by maxima; absolute deadline and config snapshot |
 | `admission_decisions` | Append-only attempts; at most one accepted association per source; fixed refusal reasons, immutable quota window/retry-after, delivery/effect and valid cause references |
+| `admission_attempt_bindings` | Every returned server attempt maps immutably to its canonical decision and exact source, including a retry which reuses another attempt's accepted decision; composite FK, no extra goal/budget/decision |
 | `goal_inbox` | One row per joined reply: its decision, source, delivery and same-goal prompt effect; immutable except a once-set `consumed_at`; never deleted by the runtime |
 
 No message body, arguments, results, bearer token, approval permission or
@@ -65,6 +66,13 @@ captured window charged; waiting across a boundary never changes that window.
 Only new admitted goals consume slots; joins/refusals do not. Different origins
 cannot consume owner capacity. Repeated attempts return their exact decision;
 after a retryable refusal, a new server attempt reuses the same durable source.
+SW050 persists a binding before returning any deduped decision in that same
+transaction. S/B followed by S/A therefore binds both attempts to the same
+decision; T/A refuses even on a fresh connection. Historical canonical attempts
+are backfilled from their actual decisions. Earlier unrecorded losing retries
+cannot be reconstructed and receive no invented historical binding. Migration
+050 descends from delivered 047; separately held 048/049 require reparenting
+after its delivery. Downgrade refuses to discard any attempt binding.
 
 Lock order is dedupe attempt/source keys, all referenced goals in sorted order,
 then effect rows, then sorted aggregate origin/window and source/window quota

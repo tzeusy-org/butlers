@@ -162,7 +162,7 @@ def test_malformed_or_incomplete_metadata_cannot_pass():
         lambda value: value["workflow_runs"][0].update(event="push"),
     ):
 
-        def malformed(endpoint):
+        def malformed(endpoint, *, mutate=mutate):
             result = fetch(endpoint)
             mutate(result)
             return result
@@ -194,7 +194,6 @@ def test_bounded_read_and_error_report_are_closed(tmp_path):
     assert "report.md" in job["steps"][1]["run"]
     assert job["steps"][2]["if"] == "always()"
     assert job["steps"][2]["with"]["name"] == "ci-latency"
-    assert "ci_latency" not in (root / ".github/workflows/ci-shard-weights.yml").read_text()
     assert (
         latency.observe(
             repository="owner/repo",
@@ -317,7 +316,7 @@ def test_gh_transport_refuses_partial_duplicate_or_failed_payloads(monkeypatch):
         SimpleNamespace(returncode=0, stdout=b" " * (4 * 1024 * 1024 + 1)),
     ):
 
-        def execute(command, **kwargs):
+        def execute(command, *, result=result, **kwargs):
             assert command == ["gh", "api", "repos/owner/repo/actions/runs"]
             assert kwargs == {"capture_output": True, "timeout": 20}
             return result

@@ -588,11 +588,11 @@ async def kill_butler(
             client.call_tool("shutdown", {"grace_seconds": body.grace_seconds}),
             timeout=_MCP_CALL_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable — cannot initiate shutdown",
-        )
+        ) from exc
     except TimeoutError:
         # A timeout here may mean the butler has already started shutting down.
         logger.info("Kill call to butler %s timed out — may have started shutting down", name)

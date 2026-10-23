@@ -58,7 +58,7 @@ def _episode(
 def test_returns_zero_filled_row_for_every_lane_with_no_episodes() -> None:
     result = compute_daily_lane_rollup([], day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert set(result.keys()) == set(LANES)
-    for lane, totals in result.items():
+    for _lane, totals in result.items():
         assert totals == {"seconds": 0.0, "episode_count": 0}
 
 

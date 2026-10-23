@@ -58,6 +58,16 @@ values share the existing literal nonnegative bounded-integer contract. Invalid
 observer state becomes an UNKNOWN gap before sealing; a sealed malformed value
 is refused by the strict reader before upload admission.
 
+The miniature healthy positive control holds one actual approved test frame
+until the asynchronous writer acknowledges an existing stack request. An opaque
+call event alone cannot establish that its frame is still live when sampled.
+The acknowledgement has a ten-second inner bound within the unchanged
+45-second child wait; it does not add a sampling retry, extend a workload
+deadline or fabricate a frame. Missing/unavailable stacks in ordinary capture
+still remain UNKNOWN. The control keeps an unapproved dynamic frame active
+during that wait and verifies its private path and other canaries stay absent
+from the sealed snapshot.
+
 Slots are scheduled at action elapsed0/120/300/600/900/1200/1440/1560 seconds.
 Action elapsed is not provider job elapsed. Unknown setup offsets or a missing
 late upload remain UNKNOWN. Names are
