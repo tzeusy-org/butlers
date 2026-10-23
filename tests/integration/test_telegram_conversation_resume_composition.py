@@ -21,6 +21,7 @@ import pytest
 
 from butlers.api import conversations
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
+from butlers.core import conversation_sessions
 from butlers.core.model_routing import QuotaStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.spawner import Spawner
@@ -121,10 +122,14 @@ async def test_two_telegram_ingests_share_one_anchor_and_resume(
             return await real_get_or_create(db_pool, **kwargs)
 
         async def get_provider_session(_pool: Any, *args: Any, **kwargs: Any):
-            return await conversations.conversation_get_provider_session(db_pool, *args, **kwargs)
+            return await conversation_sessions.conversation_get_provider_session(
+                db_pool, *args, **kwargs
+            )
 
         async def set_provider_session(_pool: Any, *args: Any, **kwargs: Any):
-            return await conversations.conversation_set_provider_session(db_pool, *args, **kwargs)
+            return await conversation_sessions.conversation_set_provider_session(
+                db_pool, *args, **kwargs
+            )
 
         adapter = _ResumeRecordingAdapter()
         spawner = Spawner(

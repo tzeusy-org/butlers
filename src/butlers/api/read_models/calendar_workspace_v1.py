@@ -2010,49 +2010,6 @@ async def load_dedup_rules(db: DatabaseManager) -> CalendarDedupRules:
     return CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
 
 
-async def update_dedup_rules(
-    db: DatabaseManager,
-    *,
-    match_strategy: str | None = None,
-    noisy_threshold: int | None = None,
-) -> CalendarDedupRules:
-    """Upsert the singleton dedup rules row, returning the persisted rules.
-
-    Only provided (non-``None``) fields are written.  Validation of values is the
-    caller's responsibility (the API layer rejects unknown strategies / bad
-    thresholds with a 400 before reaching here).  Raises when no pool is
-    available — this is an explicit user write, not a fail-open read.
-    """
-    pool = _dedup_pool(db)
-    if pool is None:
-        raise RuntimeError("no calendar-enabled butler pool available for dedup rules")
-
-    fields: dict[str, Any] = {}
-    if match_strategy is not None:
-        fields["match_strategy"] = match_strategy
-    if noisy_threshold is not None:
-        fields["noisy_threshold"] = noisy_threshold
-    if not fields:
-        return await load_dedup_rules(db)
-
-    cols = ["id"] + list(fields.keys())
-    params: list[Any] = [True] + list(fields.values())
-    placeholders = ", ".join(f"${i}" for i in range(1, len(params) + 1))
-    set_clause = ", ".join(["updated_at = now()"] + [f"{col} = EXCLUDED.{col}" for col in fields])
-    row = await pool.fetchrow(
-        f"""
-        INSERT INTO {_DEDUP_RULES_TABLE} ({", ".join(cols)})
-        VALUES ({placeholders})
-        ON CONFLICT (id) DO UPDATE SET {set_clause}
-        RETURNING match_strategy, noisy_threshold
-        """,
-        *params,
-    )
-    return CalendarDedupRules(
-        match_strategy=row["match_strategy"], noisy_threshold=int(row["noisy_threshold"])
-    )
-
-
 async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
     """Load the set of cluster keys the user pinned as keep-separate, fail-open.
 
@@ -2068,40 +2025,3 @@ async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
         logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
         return set()
     return {row["cluster_key"] for row in rows}
-
-
-async def set_keep_separate(
-    db: DatabaseManager,
-    *,
-    cluster_key: str,
-    keep_separate: bool,
-    match_pass: str | None = None,
-    label: str | None = None,
-) -> bool:
-    """Pin (or unpin) a cluster as keep-separate, returning the new state.
-
-    When ``keep_separate`` is true an override row is upserted; when false the
-    override row is removed (the cluster collapses again).  Raises when no pool is
-    available — this is an explicit user write.
-    """
-    pool = _dedup_pool(db)
-    if pool is None:
-        raise RuntimeError("no calendar-enabled butler pool available for dedup overrides")
-
-    if keep_separate:
-        await pool.execute(
-            f"""
-            INSERT INTO {_DEDUP_OVERRIDES_TABLE} (cluster_key, match_pass, label)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (cluster_key) DO UPDATE
-                SET match_pass = EXCLUDED.match_pass, label = EXCLUDED.label
-            """,
-            cluster_key,
-            match_pass or "",
-            label,
-        )
-    else:
-        await pool.execute(
-            f"DELETE FROM {_DEDUP_OVERRIDES_TABLE} WHERE cluster_key = $1", cluster_key
-        )
-    return keep_separate

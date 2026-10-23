@@ -42,7 +42,6 @@ from butlers.api.conversations import (
     message_create_idempotent,
     message_find_reply_since,
     message_set_session_id_if_null,
-    resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -55,6 +54,7 @@ from butlers.api.routers.conversations import (
     _stream_conversation_response,
     _submit_to_switchboard,
 )
+from butlers.core.conversation_sessions import resolve_resume_handle
 from butlers.core.dashboard_turns import DashboardTurnResult
 
 pytestmark = pytest.mark.unit

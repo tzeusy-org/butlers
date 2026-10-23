@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,7 +27,10 @@ from butlers.connectors.discretion_dispatcher import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     DiscretionDispatcher,
 )
+from butlers.core.model_call import SpendCeilingReached
 from butlers.core.model_routing import (
+    CEILING_DENIAL_REASON_PREFIX,
+    CeilingStatus,
     Complexity,
     QuotaStatus,
     SpendRoutingResult,
@@ -35,6 +39,7 @@ from butlers.core.model_routing import (
 pytestmark = pytest.mark.unit
 
 _MODULE = "butlers.connectors.discretion_dispatcher"
+_KERNEL = "butlers.core.model_call"
 
 
 def _catalog_result() -> tuple[str, str, list, uuid.UUID, int, str]:
@@ -173,11 +178,11 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     resolver = AsyncMock(return_value=_catalog_result())
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", resolver),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", resolver),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi", identity="tg:12345")
 
@@ -219,20 +224,20 @@ async def test_private_content_uses_normal_catalog_and_content_blind_attribution
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(side_effect=_resolver_with_receipt(remote)),
         ),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(return_value=unchanged),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as get_adapter,
         patch.object(
             dispatcher, "_resolve_provider_config", AsyncMock(return_value=provider_config)
         ) as provider_lookup,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as record_usage,
-        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as record_usage,
+        patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("private fixture", identity="synthetic-chat")
 
@@ -261,13 +266,13 @@ async def test_call_without_identity_falls_back_to_constructor_butler_name() -> 
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(return_value=_catalog_result()),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         await dispatcher.call("hi")
 
@@ -300,13 +305,13 @@ async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         result = await dispatcher.call("hi")
 
@@ -323,13 +328,13 @@ async def test_call_with_explicit_butler_name_and_no_identity_uses_butler_name()
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(return_value=_catalog_result()),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         await dispatcher.call("hi")
 
@@ -357,8 +362,8 @@ async def test_resolve_model_none_raises_before_any_ledger_write() -> None:
     dispatcher = DiscretionDispatcher(pool=pool, complexity_tier=Complexity.SPECIALTY)
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=None)),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         with pytest.raises(RuntimeError, match="No specialty model configured"):
             await dispatcher.call("hi", identity="tg:1")
@@ -389,17 +394,17 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=rerouted)
+            f"{_KERNEL}.apply_spend_routing_rules", AsyncMock(return_value=rerouted)
         ) as mock_apply,
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_get,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
-        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -446,14 +451,14 @@ async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:
     unchanged = SpendRoutingResult(resolved=catalog[:5])
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=unchanged)
+            f"{_KERNEL}.apply_spend_routing_rules", AsyncMock(return_value=unchanged)
         ) as mock_apply,
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
@@ -474,15 +479,15 @@ async def test_call_spend_rule_evaluation_failure_fails_open() -> None:
     catalog = _catalog_result()
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(side_effect=RuntimeError("db down")),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
@@ -504,11 +509,11 @@ async def test_call_unpatched_apply_spend_routing_rules_fails_open_on_mock_pool(
     catalog = _catalog_result()
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
@@ -582,3 +587,76 @@ async def test_evaluator_leaves_ordinary_numbers_unchanged() -> None:
     await evaluator.evaluate("Order 482913 total 20.50", weight=0.6)
 
     assert "Order 482913 total 20.50" in dispatcher.call.await_args.args[0]
+
+
+@contextmanager
+def _ceiling_reached(dispatcher: DiscretionDispatcher, adapter: MagicMock):
+    """Patch the kernel seam so the owner's monthly ceiling is reached ($51 of $50)."""
+    catalog = _catalog_result()
+    with (
+        patch(
+            f"{_KERNEL}.resolve_model_with_effective_tier",
+            AsyncMock(side_effect=_resolver_with_receipt(catalog)),
+        ),
+        patch(
+            f"{_KERNEL}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=catalog[:5])),
+        ),
+        patch(
+            f"{_KERNEL}.check_monthly_ceiling",
+            AsyncMock(return_value=CeilingStatus(allowed=False, mtd_usd=51.0, ceiling_usd=50.0)),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+    ):
+        yield record_attempt
+
+
+async def test_monthly_ceiling_refuses_a_discretion_call_before_any_invocation() -> None:
+    """bu-svqpzo.14 [decision]: the owner's monthly ceiling binds discretion too."""
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    adapter = _make_adapter()
+
+    with (
+        _ceiling_reached(dispatcher, adapter) as record_attempt,
+        pytest.raises(SpendCeilingReached) as raised,
+    ):
+        await dispatcher.call("hello", identity="tg:1")
+
+    # The Spawner's refusal text, so both gates read the same in logs and attempt rows.
+    expected = f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date $51.00 >= ceiling $50.00"
+    assert str(raised.value) == expected
+    adapter.invoke.assert_not_awaited()
+    row = record_attempt.await_args.kwargs
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        expected,
+        True,
+    )
+    assert row["butler"] == "__discretion__"
+
+
+@pytest.mark.parametrize(
+    ("weight", "verdict", "reason"),
+    [
+        (0.6, "FORWARD", "fail-open: SpendCeilingReached"),
+        (0.3, "IGNORE", "fail-closed: SpendCeilingReached"),
+    ],
+)
+async def test_evaluator_applies_its_weight_default_when_the_ceiling_refuses(
+    weight: float, verdict: str, reason: str
+) -> None:
+    """A ceiling refusal reaches the evaluator as an ordinary error: its default applies."""
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    adapter = _make_adapter()
+    evaluator = DiscretionEvaluator(source_name="tg:1", dispatcher=dispatcher)
+
+    with _ceiling_reached(dispatcher, adapter):
+        result = await evaluator.evaluate("Dinner at 7?", weight=weight)
+
+    assert (result.verdict, result.reason, result.is_fail_open) == (
+        verdict,
+        reason,
+        verdict == "FORWARD",
+    )
+    adapter.invoke.assert_not_awaited()

@@ -471,6 +471,36 @@ async def test_lost_commit_reply_requires_exact_readback_not_success_retry():
     assert store.current["health"]["live"] is False
 
 
+async def test_phased_startup_publishes_final_catalog_using_its_database_state(monkeypatch):
+    from butlers import lifecycle
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    store = Store()
+    pool = Pool(store, "health")
+    _, catalog = await registered_catalog()
+
+    async def committed_boot_registration():
+        return True
+
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health", port=9100),
+        _register_boot_epoch=committed_boot_registration,
+        _module_statuses={},
+        _tool_registration_failures=[],
+        tool_catalog=catalog,
+    )
+    try:
+        await lifecycle._startup_readiness(daemon, lifecycle.StartupState(pool=pool))
+        assert daemon._accepting_connections is True
+        assert daemon._started_at > 0
+        assert store.current["health"]["live"] is True
+        assert store.current["health"]["body"] == publication(catalog, "health")
+        assert len(store.history) == 1
+    finally:
+        await close_catalog_publication(daemon)
+    assert store.current["health"]["live"] is False
+
+
 async def test_startup_off_no_publication_and_enabled_failed_registry_refuses(monkeypatch):
     store = Store()
     store.enabled = False

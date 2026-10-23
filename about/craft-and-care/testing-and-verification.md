@@ -55,7 +55,7 @@ The local hygiene gate commands (lint, format, `make test-qg`) are listed in
 `make test-qg` is valuable regression evidence, but it is not CI-equivalent: it
 does not cover `roster/`, root DB/migration suites, or the CI marker selection.
 For a final backend claim, use the CI-shaped unit and integration targets in
-`AGENTS.md` only when local reproduction is needed; otherwise push the exact
+[`docs/testing/ci.md`](../../docs/testing/ci.md) only when local reproduction is needed; otherwise push the exact
 head after focused evidence and use terminal hosted CI as the one broad result.
 
 That one broad result is the merge queue's `merge_group` run, which validates
@@ -191,7 +191,7 @@ are not grounds for deletion. A missed target keeps the phase open with its
 limiting domains recorded in the owning Beads task.
 
 The graduated commands and planner behavior live in
-[AGENTS.md](../../AGENTS.md#test-scope-policy) and the
+[CI and test scope policy](../../docs/testing/ci.md) and the
 [testing spec](../../openspec/specs/testing/spec.md). The performance target
 does not weaken their escalation rules or the merge queue's full-tree gate.
 
@@ -236,7 +236,7 @@ If something could not be verified, state that plainly.
 
 ## Repo-Specific Risk Areas
 
-Read `AGENTS.md` before broad verification in these areas:
+Read [`docs/testing/test-traps.md`](../../docs/testing/test-traps.md) and `AGENTS.md` before broad verification in these areas:
 
 - DB-backed tests using `testcontainers`
 - asyncio loop-scope and xdist interactions

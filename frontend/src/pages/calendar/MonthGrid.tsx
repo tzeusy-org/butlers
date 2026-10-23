@@ -17,8 +17,6 @@ interface MonthGridProps {
   overlaysEnabled: boolean;
   overlaysByDayMap: Map<string, UnifiedCalendarEntry[]>;
   defaultTimezone: string;
-  /** When set, each day cell is clickable to create an event on that day. */
-  onCreateOnDay?: (day: Date) => void;
   onOpenDetail: (entry: UnifiedCalendarEntry) => void;
   updateQuery: UpdateCalendarQuery;
 }
@@ -30,7 +28,6 @@ export function MonthGrid({
   overlaysEnabled,
   overlaysByDayMap,
   defaultTimezone,
-  onCreateOnDay,
   onOpenDetail,
   updateQuery,
 }: MonthGridProps) {
@@ -62,14 +59,6 @@ export function MonthGrid({
                 !inMonth && "bg-foreground/[0.02]",
               )}
             >
-              {onCreateOnDay ? (
-                <button
-                  type="button"
-                  aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                  onClick={() => onCreateOnDay(day)}
-                  className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
-                />
-              ) : null}
               <div className="pointer-events-none relative z-10">
                 <div className="mb-1 flex items-center justify-between">
                   {today ? (

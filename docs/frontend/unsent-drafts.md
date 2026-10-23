@@ -43,10 +43,9 @@ in provider configuration, `/secrets`, or shared controls.
 | `chronicles.correction` | title when rendered, privacy, note | episode ID |
 | `butler-state.set` | key, value JSON text | butler, create |
 | `butler-state.edit` | key, value JSON text | butler, edit, target key |
-| `calendar.user-event` | sourceKey, title, startAtLocal, endAtLocal, timezone, description, location, entityIds | source, operation, provider event ID or new |
 | `calendar.butler-event` | butlerName, eventKind, title, startAtLocal, endAtLocal, timezone, recurrenceFrequency, cron, hasUntilAt, untilAtLocal | butler, operation, entry ID or new |
 
-The eighteenth adopted identity, `relationship.reach-out`, remains in the typed
+The retired `relationship.reach-out` identity remains in the typed
 registry with message/channel fields but has no consumer: that action is retired.
 No replacement action is registered. Medication supply quantity, the standing-rule
 butler selector, participant display names/emails, page-context chips, inline

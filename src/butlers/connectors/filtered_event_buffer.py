@@ -747,7 +747,7 @@ class FilteredEventBuffer:
             }
         if classification is not None:
             # The producer freezes a fixed, content-free projection, never contacts.
-            from butlers.connectors.known_contact_state import parse_projection, utc_timestamp
+            from butlers.core.known_contact_state import parse_projection, utc_timestamp
 
             projection = parse_projection(classification)
             observed = utc_timestamp(classification.get("observed_at"))

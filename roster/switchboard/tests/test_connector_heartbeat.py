@@ -324,7 +324,7 @@ def test_parse_heartbeat_with_capabilities(valid_heartbeat_payload):
     envelope = parse_connector_heartbeat(valid_heartbeat_payload)
     assert envelope.capabilities == {"backfill": True}
     # The new object is normalized before generic validation diagnostics.
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
 
     for malformed in ["CONTACT-token-error", {"state": "CONTACT-token-error"}]:
         valid_heartbeat_payload["capabilities"][CLASSIFICATION_KEY] = malformed
@@ -378,7 +378,7 @@ async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_pa
     # The last positional arg (after checkpoint_updated_at) should be capabilities JSON
     capabilities_arg = args[-1]
     assert capabilities_arg == {"backfill": True}
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
 
     caplog.set_level("INFO")
     sentinel = "private-contact raw-error provider-token epoch-sentinel"

@@ -63,11 +63,9 @@ policy = "suggest"
 provider = "google"
 include_other_contacts = false
 
+# Relationship is the only butler that syncs contacts (it owns entities).
 [modules.contacts.sync]
-enabled = true
-run_on_startup = true
-interval_minutes = 15
-full_sync_interval_days = 6
+enabled = false
 
 [modules.spotify]
 
