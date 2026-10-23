@@ -41,8 +41,10 @@ class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
     tracking : task_create, task_list, task_complete, task_delete,
                loan_create, loan_settle, loan_list
     management : dunbar_tier_set, stay_in_touch_set, contacts_overdue
-    entity : entity_resolve, entity_get, entity_update, entity_set_posture,
-             entity_neighbors, relationship_lookup
+    entity : entity_resolve, entity_get, entity_neighbors,
+             relationship_fact_evidence, relationship_predicate_coverage,
+             relationship_lookup
+    entity_write : entity_update, relationship_record_coverage, entity_set_posture
 
     ``relationship_assert_fact`` (the central entity_facts writer) is registered
     unconditionally, not via a group — approval dispatch depends on it. See

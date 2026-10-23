@@ -63,7 +63,7 @@ import type {
   FinanceUpcomingBillItem,
   FinanceSpendingGroup,
 } from "@/api/index.ts";
-import { Panel, KpiCell } from "@/components/butler-detail/atoms";
+import { Panel, KpiCell } from "@/components/ui/atoms";
 import { chartColor } from "@/lib/chart-colors";
 
 // ---------------------------------------------------------------------------

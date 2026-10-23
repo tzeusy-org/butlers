@@ -89,6 +89,7 @@ class ToolMeta:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None

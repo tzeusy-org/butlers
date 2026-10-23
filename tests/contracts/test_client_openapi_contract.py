@@ -1011,7 +1011,7 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
     ),
     (
         "general-collections",
-        "components/butler-detail/ButlerGeneralEntitiesTab.tsx",
+        "components/general/ButlerGeneralEntitiesTab.tsx",
         r"\bDROPDOWN_FETCH_LIMIT\s*=\s*(\d+)",
         "/api/general/collections",
         "limit",

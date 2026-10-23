@@ -34,6 +34,7 @@ _D4_FIELDS = (
     "output_trust",
     "output_sensitivity",
     "resource_params",
+    "selection_bound",
     "safety_args",
     "approval_policy",
     "idempotency",
@@ -353,6 +354,9 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
         ("idempotency", "sometimes"),
         ("owner_authority", "yes"),
         ("resource_params", ("absent_parameter",)),
+        ("selection_bound", {"absent_parameter": True}),
+        ("selection_bound", {}),
+        ("selection_bound", {"key": "yes"}),
         ("safety_args", ("_command_digest",)),
         ("owner_domain", " "),
         ("approval_policy", "enabled"),
@@ -445,6 +449,7 @@ async def test_authorization_policy_freezes_and_changes_generation_only() -> Non
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("query",),
+        selection_bound={"query": False},
         safety_args=(),
         approval_policy=policy,
         idempotency="none",
@@ -568,3 +573,30 @@ async def test_module_declarations_cannot_override_actual_owner_or_policy(monkey
     monkeypatch.setattr(CalendarModule, "tool_metadata", incorrect_policy)
     with pytest.raises(ToolCatalogError, match="calendar_respond.*approval_policy"):
         await _roster_catalog("messenger")
+
+
+def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
+    """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    unmarked = [
+        (entry.canonical_name, entry.resource_params, entry.selection_bound)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        if not isinstance(entry.selection_bound, dict)
+        or set(entry.selection_bound) != set(entry.resource_params or ())
+        or any(not isinstance(flag, bool) for flag in entry.selection_bound.values())
+    ]
+    assert not unmarked, unmarked
+
+    # Selection-bound is true only where a spec requires the scope be exactly what the owner
+    # picked (REQ-capability-authorization-018; RFC 0038 D7). A bound param makes its capability
+    # neither listed nor callable without an owner-surface selection record, and obligation,
+    # third-party, caused and message-admitted goals never carry one, so no current param
+    # qualifies. Adding the first one is a deliberate edit to this pin.
+    bound = {
+        (entry.module_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, flag in entry.selection_bound.items()
+        if flag
+    }
+    assert bound == set()
