@@ -123,7 +123,7 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
                     if type(kwargs[key]) is not list:
                         raise ValueError
                     kwargs[key] = tuple(kwargs[key])
-            for key in ("input_schema", "approval_policy", "arg_sensitivities"):
+            for key in ("input_schema", "approval_policy", "arg_sensitivities", "selection_bound"):
                 kwargs[key] = _freeze(kwargs[key])
             if kwargs["recipient_params"] is not None:
                 recipient = dict(kwargs["recipient_params"])

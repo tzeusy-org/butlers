@@ -78,6 +78,7 @@ async def registered_catalog(
                 output_trust="untrusted",
                 output_sensitivity="ordinary",
                 resource_params=(),
+                selection_bound={},
                 safety_args=(),
                 approval_policy={"enabled": approval_enabled},
                 idempotency="none",
@@ -251,6 +252,9 @@ async def test_real_registry_repository_reader_and_admission_projection():
         )
         with pytest.raises(TypeError):
             health.catalog["lookup"].input_schema["type"] = "forged"
+        assert health.catalog["lookup"].selection_bound == {}
+        with pytest.raises(TypeError):
+            health.catalog["lookup"].selection_bound["unexpected"] = False
         assert health.authorization_digest == authorization_digest(health.catalog)
     # Complete canonical registry listing still has its real registered tool.
     mcp, catalog = await registered_catalog()
@@ -327,7 +331,16 @@ async def test_current_generation_restart_drift_and_exact_registration_refusal(m
 async def test_incomplete_failed_malformed_and_forged_publications_refuse():
     baseline, _ = await complete_fleet()
     # Each failure changes an actual producer-owned record, not the provider API.
-    for fault in ("omitted", "expired", "digest", "schema", "authorization", "member", "disabled"):
+    for fault in (
+        "omitted",
+        "expired",
+        "digest",
+        "schema",
+        "selection",
+        "authorization",
+        "member",
+        "disabled",
+    ):
         store = copy.deepcopy(baseline)
         row = store.current["health"]
         if fault == "omitted":
@@ -338,6 +351,9 @@ async def test_incomplete_failed_malformed_and_forged_publications_refuse():
             row["body_digest"] = "0" * 64
         elif fault == "schema":
             row["body"]["descriptors"][0]["input_schema"]["type"] = "array"
+            row["body_digest"] = digest(row["body"])
+        elif fault == "selection":
+            del row["body"]["descriptors"][0]["selection_bound"]
             row["body_digest"] = digest(row["body"])
         elif fault == "authorization":
             row["authorization_digest"] = "0" * 64
