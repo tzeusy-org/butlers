@@ -716,10 +716,17 @@ def _exercise_browser_installer(root: Path, only_mode: str | None = None) -> Non
                 scaled.replace("const TOTAL_MS = 12_000", "const TOTAL_MS = 3_000")
             )
         if mode == "deps-supervisor-eof":
-            supervisor = supervisor.replace(
-                "if select.select([sys.stdin], [], [], 0)[0]:",
-                "if Path(os.environ['M3_INSTALL_LEDGER']).with_name('stall-ready').exists():",
-            ).replace("os.read(sys.stdin.fileno(), 4096)", "pass  # injected supervisor pipe EOF")
+            # Close the ACTUAL pipe while Node stays live. Parent death alone
+            # cannot pin cancellation versus deadline admission in that state.
+            eof_source = "import { existsSync } from 'node:fs'\n" + scaled.replace(
+                "let expired = false",
+                "let expired = false\n"
+                "const eofProbe = setInterval(() => {\n"
+                "  if (existsSync(path.join(path.dirname(process.env.M3_INSTALL_LEDGER), 'stall-ready')))\n"
+                "    activeDeps?.stdin.end()\n"
+                "}, 10)\neofProbe.unref()",
+            )
+            (scripts / "install-playwright-browsers.mjs").write_text(eof_source)
         if mode == "deps-cleanup-denied":
             # Real lifecycle, with only the OS signalling boundary denied. The
             # still-running dependency pair must never race another attempt.
