@@ -6,7 +6,7 @@ The relationship butler SHALL run date checks, maintenance sweeps, and memory jo
 
 The registered upcoming_dates management tool and the scheduled upcoming-dates-check birthday/anniversary push SHALL consider only canonical people whose current posture is active at the date query; an unreadable posture SHALL raise rather than fabricate active or empty results. This contract SHALL preserve historical dates and the separate calendar overlay's existing remembrance behavior.
 
-ID: REQ-butler-relationship-003
+ID: REQ-butler-relationship-005
 Source: RFC 0038 D2 and D18; bu-idc5mx.4
 Scope: v1-mandatory
 
