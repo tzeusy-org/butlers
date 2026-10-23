@@ -19,6 +19,7 @@ const CLEANUP_MS = 2_000
 const DEPS_CLEANED_SUCCESS = 80
 const DEPS_CLEANED_FAILURE = 81
 const DEPS_CLEANED_TIMEOUT = 82
+const DEPS_CLEANED_CANCELLED = 83
 const depsSupervisor = path.join(frontendRoot, 'scripts/install-playwright-deps.py')
 const BROWSER = {
   script: 'set -euo pipefail; "$1" install chromium ${3:+"$3"}; node "$2" --verify-browser',
@@ -36,12 +37,12 @@ function signalGroup(signal) {
   return signalPid(activeGroup, signal)
 }
 
-function dependencyAttempt() {
+function dependencyAttempt(profile) {
   return new Promise(resolve => {
     // The privileged supervisor creates, signals and reaps its own private
     // install group. Closing stdin also cancels it if this parent exits.
     const child = spawn('sudo', ['-n', '--', 'python3', depsSupervisor,
-      String(DEPS_TERM_MS), String(DEPS_KILL_MS), process.execPath, cli,
+      String(DEPS_TERM_MS), String(DEPS_KILL_MS), process.execPath, cli, profile,
     ], { stdio: ['pipe', 'inherit', 'inherit'] })
     activeDeps = child
     child.stdin.on('error', () => {}) // An early supervisor exit may close the pipe.
@@ -49,10 +50,15 @@ function dependencyAttempt() {
     child.once('close', code => {
       activeDeps = undefined
       // Generic zero/nonzero/signal exits cannot prove that cleanup ran.
-      if (![DEPS_CLEANED_SUCCESS, DEPS_CLEANED_FAILURE, DEPS_CLEANED_TIMEOUT].includes(code)) {
+      if (![DEPS_CLEANED_SUCCESS, DEPS_CLEANED_FAILURE,
+        DEPS_CLEANED_TIMEOUT, DEPS_CLEANED_CANCELLED].includes(code)) {
         cleanupFailed = true
       }
-      resolve(code === DEPS_CLEANED_SUCCESS && !expired)
+      // Cancellation is cleaned but never retryable, including a supervisor
+      // signal/EOF while this parent remains live.
+      if (code === DEPS_CLEANED_CANCELLED) expired = true
+      resolve({ success: code === DEPS_CLEANED_SUCCESS && !expired,
+        deadline: code === DEPS_CLEANED_TIMEOUT && !expired && !cleanupFailed })
     })
   })
 }
@@ -112,11 +118,14 @@ process.once('exit', () => {
 try {
   const backoff = () => new Promise(resolve => setTimeout(resolve, BACKOFF_MS))
   let depsInstalled = false
+  let dependencyProfile = 'runner-default'
   for (let index = 0; index < 2 && !expired && !cleanupFailed; index += 1) {
-    if (await dependencyAttempt()) {
+    const outcome = await dependencyAttempt(dependencyProfile)
+    if (outcome.success) {
       depsInstalled = true
       break
     }
+    dependencyProfile = outcome.deadline ? 'official-ubuntu-recovery' : 'runner-default'
     if (index < 1 && !expired && !cleanupFailed) await backoff()
   }
   let installed = false
@@ -129,6 +138,9 @@ try {
   }
   if (cleanupFailed) {
     console.error('Playwright cleanup could not be confirmed; refusing retry')
+    process.exitCode = 1
+  } else if (expired) {
+    console.error('Playwright installation cancelled; refusing retry')
     process.exitCode = 1
   } else if (!depsInstalled) {
     console.error('Playwright OS dependency installation failed after two bounded attempts')

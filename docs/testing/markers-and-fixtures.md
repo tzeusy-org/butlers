@@ -248,8 +248,24 @@ Tests can use this to skip gracefully when Docker is not installed.
   sudo, starts apt in its own process group, and terminates and reaps that group's members
   before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
   unproven cleanup fails closed without starting another attempt. Reserved supervisor exit
-  outcomes 80/81/82 establish cleaned success/failure/timeout; generic zero, nonzero or signal
-  exits never authorize retry. Setup shares the child's cleanup lifetime. Non-reaping leader
+  outcomes 80/81/82/83 establish cleaned success/failure/deadline/cancellation; generic zero,
+  nonzero or signal exits never authorize retry. Cancellation/EOF (83) is never retryable,
+  including a direct supervisor cancellation with the Node parent still alive. Only a
+  confirmed cleaned elapsed deadline (82) selects the official-Ubuntu preference for the
+  existing second attempt; ordinary clean failure (81) retries the default route. The healthy
+  first attempt is unchanged. Recovery accepts only the witnessed Ubuntu24 noble deb822
+  source with the exact local mirror URI and three recognized Azure/archive/security
+  candidates. It changes only that copied Ubuntu URI and mirror priority, preserving all
+  source/trust fields, third-party bytes and ordinary dpkg/index/archive state. Unknown
+  layouts, ambiguous fields, links, writable/untrusted inputs and modified endpoints fail
+  closed. Copied configuration stays root-private; only nonsecret mirror data is sandbox
+  readable. The actual APT configuration reader compares ordinary settings and effective
+  private source paths, rejecting later source overrides, binary path overrides and rerooting.
+  Its child shares the existing process group/deadline; it never prints configuration data.
+  Partial setup removes only its own files, and a full overlay remains until child cleanup
+  is confirmed. Local fixture-reader controls do not prove Ubuntu24 parsing, sandbox access
+  or signed package transport; those require explicit actual-Ubuntu/hosted evidence.
+  Setup shares the child's cleanup lifetime. Non-reaping leader
   observation retains the group identity through its last signal, before reaping. `EPERM` never crashes
   the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked

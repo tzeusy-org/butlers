@@ -179,6 +179,16 @@ and REQ-testing-053; the test budget is unchanged by it.
   two-second cleanup reserves, one ten-second backoff) and three browser attempts
   (TERM110/KILL120, two ten-second backoffs). Privileged dependency cleanup must terminate
   and reap its owned group before a retry. A shell exit must not strand resistant descendants.
+  The first dependency attempt keeps the runner's default APT route. Only a confirmed cleaned
+  deadline selects the existing second attempt's official-Ubuntu preference; ordinary clean
+  failures retry the default route. Supervisor cancellation/EOF is a distinct cleaned,
+  non-retryable result, even while the Node parent remains alive. Recovery supports only the
+  recognized Ubuntu24 noble deb822/local-mirror layout and fails closed otherwise. Its
+  private source overlay preserves trust, third-party sources, packages and APT state; the
+  actual APT reader must confirm effective isolation despite normal/binary configuration.
+  Preparation and cleanup share the existing owned lifetime. See the
+  [installer failure matrix](playwright-installer-failure-matrix.md) for local controls and
+  the separate actual-Ubuntu/hosted evidence boundary.
 
 ## Frontend CI gate order (knip masks build and test)
 
