@@ -9,12 +9,16 @@ an atomic replay claim that also enforces its restart-window policy.
 from __future__ import annotations
 
 import base64
+import os
 import re
+import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from uuid import UUID
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from butlers.core.capability_json import arguments_digest, canonical_bytes, parse_arguments
@@ -89,6 +93,89 @@ class AssertionSigner:
     def __post_init__(self):
         if not self.kid or not isinstance(self.private_key, Ed25519PrivateKey):
             raise BrokerRefused(Reason.UNAVAILABLE)
+
+    @classmethod
+    def from_file(
+        cls,
+        *,
+        enabled: bool = False,
+        path: Path | None = None,
+        kid: str | None = None,
+        verification_keys: Mapping[str, Ed25519PublicKey] | None = None,
+    ) -> AssertionSigner | None:
+        """Read one immutable startup snapshot; never provision or activate keys.
+
+        The trusted control-process constructor supplies a deployment file and
+        the configured current/next public verifier keys. This is not a secret
+        resolver, environment fallback, process-isolation check or live reload.
+        Disabled construction returns before even inspecting those inputs.
+        """
+        if enabled is False:
+            return None
+        try:
+            if (
+                enabled is not True
+                or not isinstance(path, Path)
+                or not path.is_absolute()
+                or type(kid) is not str
+                or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", kid) is None
+                or not isinstance(verification_keys, Mapping)
+            ):
+                raise ValueError("invalid_key_configuration")
+            public = verification_keys.get(kid)
+            if not isinstance(public, Ed25519PublicKey):
+                raise ValueError("unrecognized_key")
+            # O_NONBLOCK refuses FIFOs without waiting for a writer. fstat
+            # checks the descriptor actually read, not a racy pathname probe.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            try:
+                metadata = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or stat.S_IMODE(metadata.st_mode) != 0o400
+                    or metadata.st_uid != os.geteuid()
+                    or not 0 < metadata.st_size <= 8192
+                ):
+                    raise ValueError("unsafe_key_file")
+                raw = bytearray()
+                while len(raw) <= 8192:
+                    chunk = os.read(fd, 8193 - len(raw))
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                after = os.fstat(fd)
+                stable = (
+                    "st_dev",
+                    "st_ino",
+                    "st_mode",
+                    "st_uid",
+                    "st_gid",
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                )
+                if len(raw) != metadata.st_size or any(
+                    getattr(metadata, name) != getattr(after, name) for name in stable
+                ):
+                    raise ValueError("changed_key_file")
+            finally:
+                os.close(fd)
+            key = serialization.load_pem_private_key(bytes(raw), password=None)
+            if not isinstance(key, Ed25519PrivateKey):
+                raise ValueError("wrong_key_algorithm")
+            # Require exactly one canonical unencrypted PKCS8 PEM document:
+            # parsers otherwise accept trailing or concatenated key material.
+            canonical = key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+            if canonical != raw or key.public_key().public_bytes_raw() != public.public_bytes_raw():
+                raise ValueError("key_mismatch")
+            return cls(kid, key)
+        except (OSError, ValueError, TypeError, UnsupportedAlgorithm):
+            # No path, key ID, parser detail or private bytes enter diagnostics.
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
 
     def sign(self, reservation: Reservation, *, issued_at: int, approval_ref: str | None = None):
         if type(issued_at) is not int or issued_at < 0:
