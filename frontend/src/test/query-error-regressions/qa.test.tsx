@@ -16,9 +16,6 @@ vi.mock("@/hooks/use-approvals", async (original) => ({
   ...await original<typeof import("@/hooks/use-approvals")>(),
   useApprovalMetrics: () => ({ data: { data: { total_pending: 0 }, meta: {} } }),
 }));
-vi.mock("@/hooks/use-decisions", () => ({
-  useDecisions: () => ({ data: { data: [], meta: {} } }),
-}));
 vi.mock("@/hooks/use-nav-intent", () => ({
   useNavIntent: () => ({ onActivate() {}, onPointerEnter() {}, onPointerLeave() {}, onFocus() {}, onBlur() {} }),
 }));

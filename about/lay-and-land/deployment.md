@@ -25,8 +25,7 @@ graph TB
         MIG["dashboard-api initContainer: migrations"]
         Front["Deployment frontend<br/>nginx static build"]
         Jobs["CronJobs butlers-backup / butlers-log-cleanup"]
-        Beads["Optional CronJob butlers-beads-export<br/>dev enabled, prod disabled"]
-        PVC["Persistent volumes<br/>logs, backups, runtime homes, WA bridge, optional beads export"]
+        PVC["Persistent volumes<br/>logs, backups, runtime homes, WA bridge"]
     end
     PG["PostgreSQL (external to chart)"]
     OTel["Cluster LGTM telemetry"]
@@ -38,7 +37,6 @@ graph TB
     UP -- "SQL" --> PG
     MIG -- "db migrate" --> PG
     Jobs --> PVC
-    Beads --> PVC
     UP -- "OTLP" --> OTel
 ```
 

@@ -1,5 +1,12 @@
 # Beads Runtime Data Bridge
 
+> Retirement status (bu-g2zuv2 = A, 2026-10-21): the first removal slice retires
+> the Helm bridge and frontend pages. The backend/API, jobs and stored intent
+> history described below remain pending later removal and a deployment-safe
+> migration. This document records the retained bridge contract during that
+> transition; it is not an instruction to re-enable the retired Helm exporter.
+
+
 Beads is authoritative in a Dolt server on the tracker host; runtime containers never get network
 or credential access to it. The shipped bridge is single-host: bd's own auto-export keeps
 `.beads/issues.export.jsonl` fresh, and `docker-compose.yml` bind-mounts only that one file,

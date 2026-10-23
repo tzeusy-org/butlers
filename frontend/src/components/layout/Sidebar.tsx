@@ -130,13 +130,11 @@ function resolveSidebarBadge(
     count: value.kind === 'count' ? value.count : 0,
     unavailableLabel:
       value.kind === 'unavailable'
-        ? item.badgeKey === 'decisions-open'
-          ? 'Decisions digest unavailable'
-          : item.badgeKey === 'approvals-pending'
-            ? 'Pending approvals unavailable'
-            : item.badgeKey === 'qa-escalations'
-              ? 'QA escalations unavailable'
-              : 'Badge unavailable'
+        ? item.badgeKey === 'approvals-pending'
+          ? 'Pending approvals unavailable'
+          : item.badgeKey === 'qa-escalations'
+            ? 'QA escalations unavailable'
+            : 'Badge unavailable'
         : undefined,
   }
 }
