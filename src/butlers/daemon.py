@@ -1206,6 +1206,11 @@ class ButlerDaemon:
             completion_hooks=runtime_context.completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
             default_timezone=runtime_context.default_timezone,
+            **(
+                {"source_runtime": self.obligation_schedule_runtime}
+                if getattr(self, "obligation_schedule_runtime", None) is not None
+                else {}
+            ),
         )
 
     def _resolve_memory_module(self) -> Any | None:

@@ -455,6 +455,8 @@ class SchedulerConfig(_StrictModel):
 
     tick_interval_seconds: PositiveInt = 60
     heartbeat_interval_seconds: PositiveInt = 120
+    # Durable owning-source staging only; never selects goal admission.
+    obligation_source_mode: Literal["off", "dark"] = "off"
     switchboard_url: str = "http://localhost:41200"
 
 
@@ -533,6 +535,7 @@ def obligation_config_material_digest(config: ButlerConfig) -> str:
         "schedules": [spec.model_dump(mode="json") for spec in config.schedules],
         "subscriptions": [spec.model_dump(mode="json") for spec in config.subscriptions],
         "runtime_seed": config.runtime_seed.model_dump(mode="json"),
+        "obligation_source_mode": config.scheduler.obligation_source_mode,
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()

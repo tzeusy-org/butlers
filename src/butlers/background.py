@@ -229,6 +229,7 @@ async def scheduler_loop(
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
+    source_runtime=None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -347,6 +348,7 @@ async def scheduler_loop(
                     completion_hooks=completion_hooks,
                     eligibility_pool=eligibility_pool,
                     default_timezone=default_timezone,
+                    **({"source_runtime": source_runtime} if source_runtime is not None else {}),
                 )
             )
             try:

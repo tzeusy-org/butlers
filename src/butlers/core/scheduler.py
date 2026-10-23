@@ -31,6 +31,7 @@ from butlers.core.model_routing import Complexity, allowance_deferral, coerce_co
 from butlers.core.obligations import project_loaded_schedule
 
 if TYPE_CHECKING:
+    from butlers.core.obligation_git_sources import GitScheduleRuntime
     from butlers.core.obligation_schedule_sources import (
         GitScheduleSyncCommand,
         StagedScheduleDefinition,
@@ -1279,6 +1280,7 @@ async def _tick_deadline_pass(
     active_seasons: list[dict[str, Any]] | None = None,
     admission_refusal: Callable[[], Awaitable[str | None]] | None = None,
     butler_name: str | None = None,
+    source_runtime: GitScheduleRuntime | None = None,
 ) -> tuple[int, int]:
     """Evaluate deadline tasks: fire due thresholds and handle expiry.
 
@@ -1366,6 +1368,9 @@ async def _tick_deadline_pass(
             target_date=target_date,
         )
         if should_disable:
+            if source_runtime is not None and source_runtime.supports(row):
+                await source_runtime.expire_deadline(pool, row, status=new_status, as_of=now.date())
+                continue
             await pool.execute(
                 """
                 UPDATE scheduled_tasks
@@ -1466,6 +1471,11 @@ async def _tick_deadline_pass(
         # _list_to_jsonb's docstring (bu-xfcpf). No ::jsonb cast in the SQL
         # either -- Postgres infers the parameter's jsonb type from the target
         # column.
+        if source_runtime is not None and source_runtime.supports(row):
+            await source_runtime.record_deadline(
+                pool, row, threshold=threshold, status=new_status, fired=new_fired, run_at=now
+            )
+            continue
         await pool.execute(
             """
             UPDATE scheduled_tasks
@@ -2220,6 +2230,7 @@ async def tick(
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    source_runtime: GitScheduleRuntime | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -2397,6 +2408,7 @@ async def tick(
                 active_seasons=active_seasons,
                 admission_refusal=admission_refusal,
                 butler_name=butler_name,
+                **({"source_runtime": source_runtime} if source_runtime is not None else {}),
             )
             span.set_attribute("deadlines_evaluated", deadlines_evaluated)
             span.set_attribute("deadline_dispatched", deadline_dispatched)
@@ -2498,7 +2510,11 @@ async def tick(
             # loop iteration) has already claimed this occurrence.
             # If the claim returns nothing, skip silently — the occurrence was
             # handled elsewhere.
-            if should_auto_disable:
+            if source_runtime is not None and source_runtime.supports(row):
+                claim_row = await source_runtime.claim_cron(
+                    pool, row, next_run_at=next_run_at, disable=should_auto_disable
+                )
+            elif should_auto_disable:
                 claim_row = await pool.fetchrow(
                     """
                     UPDATE scheduled_tasks

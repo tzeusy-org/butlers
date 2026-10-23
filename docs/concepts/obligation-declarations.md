@@ -176,8 +176,9 @@ are implemented below; their software controls do not authenticate callers.
 ## Dark integration and remaining work
 
 The implementation remains dark. No source adapter is registered with
-`GoalAdmission`, current production paths write no new source or goal table,
-and today's dispatch paths remain unchanged. In particular a passing value test
+`GoalAdmission`. The default `obligation_source_mode = "off"` performs no source
+or goal writes and keeps today's dispatch paths unchanged. Explicit dark source
+staging is described below; it does not enable admission. In particular a passing value test
 does not prove committed
 source creation, duplicate admission, creator authentication, feed subscription
 verification or causal lineage. Those require the actual source-owned repository,
@@ -469,3 +470,51 @@ creator/cause/feed adapters, verified fleet publication, complete invocation
 context and genuine goal-runner handoff remain required full-issue work. The
 recording-connection controls are software evidence, not PostgreSQL role,
 concurrency, locking or commit-durability proof.
+
+
+## Owning cron/deadline source staging
+
+`[butler.scheduler].obligation_source_mode` is a strict `off`/`dark` selector;
+its default is `off`, and no roster setting is enabled by this change. It selects
+owning-source persistence only. It is not an admission, permission or activation
+switch and cannot supply verified fleet, invocation, creator or cause evidence.
+
+After ordinary TOML sync and final approval-wrapped registration, startup uses
+the same strict-loaded config, held runtime policy and final local registry to
+capture source material. Explicit dark staging reconciles the **whole** Git
+source inventory in one owning transaction before registering its immutable
+scheduler binding. Missing/invalid input or unconfirmed reconciliation refuses
+registration; a hash is not commit proof. OFF returns before any source IO.
+The held-policy/cache and local-registration limits remain explicit.
+
+Both the daemon loop and the zero-argument manual MCP tick closure receive that
+same server-held binding. No public/model argument can supply a source runtime.
+Job-mode, undeclared and unregistered runtime rows retain their ordinary path;
+real authenticated runtime creation remains a separate required producer.
+
+For a registered cron row, the source adapter locks inventory, optional command,
+source, then row; checks the current revision and complete source material; and
+uses the **selected original `next_run_at`** in the existing scheduler CAS.
+Advancing the slot, capturing its revision-bound occurrence, claiming it and
+writing its reference-only outbox occur in the same transaction. The staged
+`DarkSubmission` is returned only after commit and pool release, before legacy
+dispatch. Another CAS winner yields no new occurrence. The normal cron dispatch
+failure semantics remain: its already-claimed slot is consumed. Auto-disable
+retires and cancels dark work while retaining the legacy final dispatch behavior.
+
+Deadlines retain their different ordering: dispatch failure leaves the threshold
+unfired and writes no source occurrence. After successful dispatch, a transaction
+rechecks the persisted target, selected threshold/progress and current material;
+records the threshold and captures/claims its date-plus-threshold occurrence
+together. Expiry disables the actual row and cancels staged work in one owning
+transaction. No network/model callback runs under these source locks. This does
+not add a new pre-dispatch deadline claim or repair the legacy possibility of
+concurrent deadline dispatches; source recording itself is fenced and idempotent.
+
+A source refusal in explicit dark mode is not successful admission. An unknown
+transaction/commit/release outcome never authorizes a second legacy CAS or blind
+retry. Actual PostgreSQL role, two-actor locking, rollback and independent
+committed readback controls remain separate from software collaborators; newly
+authored PG controls are not runtime evidence until executed. Publication also
+requires composing core-274 after the actual delivered core-275 prerequisite;
+no unmerged migration or fleet authority is imported here.

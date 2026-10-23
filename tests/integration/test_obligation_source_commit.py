@@ -826,3 +826,202 @@ async def test_migrated_runtime_deadline_and_toggle_commit_and_historical_replay
     replay = await scheduler.schedule_toggle(pool, task, **arguments)
     assert replay["status"] == "reconciled" and "observed_enabled" not in replay
     assert await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id=$1", task) is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
+    owning_sources, tmp_path, monkeypatch
+):
+    """Real owning SQL/readback; AUTHOR_ONLY until a hosted PG body executes.
+
+    The registry/held policy is real source material, not verified fleet or D7
+    creator evidence. Two actual connections contend on the same owning lock.
+    """
+    import asyncio
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from butlers.config import load_config
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_git_sources import (
+        GitScheduleRuntime,
+        capture_loaded_git_sources,
+        start_schedule_sources,
+    )
+    from butlers.core.obligation_sources import ObligationSourceRepository, SourceConflict
+    from butlers.core.runtime_config import RuntimeConfig
+    from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
+
+    name = "cas-" + uuid4().hex
+    today = datetime.now(UTC).date()
+    (tmp_path / "butler.toml").write_text(
+        '[butler]\nname="health"\nport=9100\n'
+        '[[butler.schedule]]\nname="' + name + '"\ncron="0 9 * * *"\n'
+        'prompt="fixture narration"\n[butler.schedule.obligation]\nversion=1\ncapabilities=[]\n'
+        '[[butler.schedule]]\nname="' + name + '-deadline"\ncron="0 9 * * *"\n'
+        'prompt="fixture deadline"\ntask_type="deadline"\ntarget_date="' + today.isoformat() + '"\n'
+        'lead_time_days=7\nalert_thresholds=[{days_before=0,severity="info"}]\n'
+        "[butler.schedule.obligation]\nversion=1\ncapabilities=[]\n"
+    )
+    pool = owning_sources.pool
+    snapshot = capture_loaded_git_sources(
+        load_config(tmp_path), RuntimeConfig("health"), await _complete_core_catalog("health")
+    )
+    runtime = await start_schedule_sources(pool, snapshot, mode="dark")
+    nominal = datetime.now(UTC) - timedelta(minutes=1)
+    async with pool.acquire() as observer:
+        source = await observer.fetchval(
+            "SELECT id FROM health.scheduled_tasks WHERE name=$1", name
+        )
+        await observer.execute(
+            "UPDATE health.scheduled_tasks SET next_run_at=$2 WHERE id=$1", source, nominal
+        )
+        selected = await observer.fetchrow(
+            "SELECT * FROM health.scheduled_tasks WHERE id=$1", source
+        )
+
+    entered, release, second_acquired = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    actor_pids = []
+    capture = GitScheduleRuntime._capture
+
+    async def gated_capture(self, repository, definition, slot):
+        if definition.source_id == source and not entered.is_set():
+            entered.set()
+            await asyncio.wait_for(release.wait(), 10)
+        return await capture(self, repository, definition, slot)
+
+    class ActorPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as connection:
+                actor_pids.append(connection.get_server_pid())
+                if len(actor_pids) == 2:
+                    second_acquired.set()
+                yield connection
+
+    monkeypatch.setattr(GitScheduleRuntime, "_capture", gated_capture)
+    next_slot = nominal + timedelta(days=1)
+    actors = []
+    try:
+        actors.append(
+            asyncio.create_task(
+                runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 10)
+        actors.append(
+            asyncio.create_task(
+                runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+            )
+        )
+        await asyncio.wait_for(second_acquired.wait(), 10)
+        assert actor_pids[0] != actor_pids[1]
+        async with pool.acquire() as observer:
+            async with asyncio.timeout(10):
+                while not await observer.fetchval(
+                    "SELECT wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%' "
+                    "FROM pg_stat_activity WHERE pid=$1",
+                    actor_pids[1],
+                ):
+                    await asyncio.sleep(0.01)
+        release.set()
+        first, second = await asyncio.wait_for(asyncio.gather(*actors), 10)
+        assert first.submission is not None and second is None
+    finally:
+        release.set()
+        for actor in actors:
+            if not actor.done():
+                actor.cancel()
+        await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 10)
+        monkeypatch.setattr(GitScheduleRuntime, "_capture", capture)
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval(
+                "SELECT next_run_at FROM health.scheduled_tasks WHERE id=$1", source
+            )
+            == next_slot
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1 AND state='claimed'",
+                source,
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_source_outbox WHERE source_id=$1 "
+                "AND kind='occurrence_captured'",
+                source,
+            )
+            == 1
+        )
+
+    # An actual SQL failure after the new outbox write rolls back the legacy
+    # next_run CAS, occurrence, claim and outbox together. No product ACL changes.
+    async with pool.acquire() as observer:
+        selected = await observer.fetchrow(
+            "SELECT * FROM health.scheduled_tasks WHERE id=$1", source
+        )
+    outbox = ObligationSourceRepository._outbox
+
+    async def fail_after_outbox(self, source_id, revision, kind, reference):
+        await outbox(self, source_id, revision, kind, reference)
+        if source_id == source and kind == "occurrence_captured":
+            await self.connection.execute("SELECT 1/0")
+
+    monkeypatch.setattr(ObligationSourceRepository, "_outbox", fail_after_outbox)
+    try:
+        with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+            await runtime.claim_cron(
+                pool, selected, next_run_at=next_slot + timedelta(days=1), disable=False
+            )
+    finally:
+        monkeypatch.setattr(ObligationSourceRepository, "_outbox", outbox)
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval(
+                "SELECT next_run_at FROM health.scheduled_tasks WHERE id=$1", source
+            )
+            == next_slot
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1", source
+            )
+            == 1
+        )
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await runtime.claim_cron(
+            owning_sources.peer, selected, next_run_at=next_slot + timedelta(days=1), disable=False
+        )
+
+    # Deadline success is already observed by its caller. This transaction
+    # records the exact persisted target/threshold and staged identity together.
+    async with pool.acquire() as observer:
+        deadline = await observer.fetchrow(
+            "SELECT * FROM health.scheduled_tasks WHERE name=$1", name + "-deadline"
+        )
+    threshold = deadline["alert_thresholds"][0]
+    submission = await runtime.record_deadline(
+        pool,
+        deadline,
+        threshold=threshold,
+        status="alerted",
+        fired=[threshold],
+        run_at=datetime.now(UTC),
+    )
+    assert submission is not None
+    async with pool.acquire() as observer:
+        assert await observer.fetchval(
+            "SELECT fired_thresholds FROM health.scheduled_tasks WHERE id=$1", deadline["id"]
+        ) == [threshold]
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1 AND state='claimed'",
+                deadline["id"],
+            )
+            == 1
+        )

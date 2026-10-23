@@ -219,6 +219,7 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
         assert order == ["sync", "finalized"]
         assert schedules[0] is config.schedules[0]
         assert local_catalog is registry
+        assert daemon.obligation_schedule_runtime is None
         assert daemon.obligation_git_sources is not None
         assert (
             daemon.obligation_git_sources.definitions[0].declaration

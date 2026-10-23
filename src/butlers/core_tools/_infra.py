@@ -215,6 +215,11 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
             default_timezone=runtime_context.default_timezone,
+            **(
+                {"source_runtime": daemon.obligation_schedule_runtime}
+                if getattr(daemon, "obligation_schedule_runtime", None) is not None
+                else {}
+            ),
         )
         return {"dispatched": count}
 

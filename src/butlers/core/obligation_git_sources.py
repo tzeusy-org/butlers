@@ -12,12 +12,17 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from butlers.config import ButlerConfig, obligation_config_material_digest
 from butlers.core.goal_admission import digest
-from butlers.core.obligation_admission import run_source_transaction
+from butlers.core.obligation_admission import (
+    DarkSubmission,
+    prepare_dark_submission,
+    run_source_transaction,
+)
 from butlers.core.obligation_schedule_sources import (
     SCHEDULE_FIELDS,
     GitScheduleDefinition,
@@ -131,9 +136,9 @@ async def reconcile_loaded_git_sources(
     """Reconcile a complete held config in ONE owning source transaction.
 
     This internal dark adapter does not select/enable an admission mode. The
-    actual startup path only captures its inputs and performs zero B2 IO while
-    OFF. No caller/model hash authenticates this snapshot. A trusted lifecycle
-    selector must own the full config before registering reconciliation.
+    actual startup performs zero B2 IO while OFF. Its explicit dark selector
+    owns this complete captured config before registering the scheduler source
+    consumer. No caller/model hash authenticates this snapshot.
 
     Reconciliation reads current committed/staged rows; it is NOT historical
     command replay. After an unconfirmed commit the caller must explicitly
@@ -224,3 +229,249 @@ async def reconcile_loaded_git_sources(
         return tuple(results)
 
     return await run_source_transaction(pool, snapshot.owner_domain, reconcile)
+
+
+@dataclass(frozen=True)
+class ScheduleClaim:
+    """A committed legacy CAS, with optional staged (not admitted) material."""
+
+    source_id: UUID
+    submission: DarkSubmission | None
+
+
+@dataclass(frozen=True)
+class GitScheduleRuntime:
+    """Lifecycle-owned source staging; never public/model or D7 authority.
+
+    Only sources reconciled from the complete actual startup snapshot enter
+    this immutable binding. Runtime-created rows await their real authenticated
+    creator producer. No network/model call occurs while owning locks are held.
+    """
+
+    owner_domain: str
+    bindings: tuple[tuple[DefinitionRevision, GitScheduleDefinition], ...]
+
+    def supports(self, row) -> bool:
+        return row["dispatch_mode"] == "prompt" and any(
+            definition.source_id == row["id"] for definition, _ in self.bindings
+        )
+
+    async def _locked(self, repository, selected, *, command=None):
+        source_id = selected["id"]
+        binding = next((pair for pair in self.bindings if pair[0].source_id == source_id), None)
+        if binding is None or repository.owner_domain != self.owner_domain:
+            raise SourceConflict("schedule_source_unregistered")
+        expected, material = binding
+        # Match full reconciliation: inventory -> command -> source -> row.
+        # Recheck the relation on every transaction, including temp shadows.
+        await repository.lock_git_inventory()
+        if command is not None:
+            await repository.read_command(command)
+        await repository.lock_source(source_id)
+        current = await repository.read(source_id)
+        table = f'"{repository.owner_domain}".scheduled_tasks'
+        row = await repository.connection.fetchrow(
+            f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE",
+            source_id,
+        )
+        if (
+            current != expected
+            or current.state != "active"
+            or row is None
+            or row["source"] != "toml"
+            or any(key not in row or row[key] != value for key, value in material.schedule.items())
+            or any(
+                key in SCHEDULE_FIELDS and row[key] != value
+                for key, value in dict(selected).items()
+            )
+        ):
+            raise SourceConflict("schedule_material_changed")
+        return current, row
+
+    async def _capture(self, repository, definition, slot):
+        occurrence = await repository.capture(definition.source_id, definition.revision, slot=slot)
+        token = uuid4()
+        if not await repository.claim(definition.source_id, occurrence, token):
+            raise SourceConflict("occurrence_already_claimed")
+        return await prepare_dark_submission(repository, definition.source_id, occurrence, token)
+
+    async def claim_cron(
+        self, pool, selected, *, next_run_at, disable: bool
+    ) -> ScheduleClaim | None:
+        """Source -> row lock, original nominal CAS + occurrence in ONE TX.
+
+        Nothing is returned until commit and pool release. A transaction with
+        an unknown commit is never retried as a second legacy CAS here. OFF
+        does not construct/call this object. Auto-disable retains the existing
+        last legacy dispatch but retires, rather than creates, dark work.
+        """
+        slot = selected["next_run_at"]
+        if type(slot) is not datetime or slot.utcoffset() is None or type(disable) is not bool:
+            raise SourceConflict("invalid_nominal_slot")
+        if not disable and (
+            type(next_run_at) is not datetime
+            or next_run_at.utcoffset() is None
+            or next_run_at <= slot
+        ):
+            raise SourceConflict("invalid_nominal_slot")
+        command = uuid4()
+
+        async def claim(repository):
+            definition, row = await self._locked(
+                repository, selected, command=command if disable else None
+            )
+            table = f'"{repository.owner_domain}".scheduled_tasks'
+            if row["task_type"] != "cron":
+                raise SourceConflict("invalid_nominal_slot")
+            if disable:
+                claimed = await repository.connection.fetchrow(
+                    f"UPDATE {table} SET enabled=false,next_run_at=NULL,updated_at=now() "
+                    "WHERE id=$1 AND next_run_at IS NOT DISTINCT FROM $2 RETURNING id",
+                    row["id"],
+                    slot,
+                )
+            else:
+                claimed = await repository.connection.fetchrow(
+                    f"UPDATE {table} SET next_run_at=$2,updated_at=now() "
+                    "WHERE id=$1 AND next_run_at IS NOT DISTINCT FROM $3 RETURNING id",
+                    row["id"],
+                    next_run_at,
+                    slot,
+                )
+            if claimed is None:
+                return None
+            if disable:
+                await repository.revise(
+                    command,
+                    replace(definition, generation=definition.generation + 1, state="disabled"),
+                    expected_revision=definition.revision,
+                )
+                return ScheduleClaim(row["id"], None)
+            staged = await self._capture(repository, definition, "cron:" + slot.isoformat())
+            return ScheduleClaim(row["id"], staged)
+
+        return await run_source_transaction(pool, self.owner_domain, claim)
+
+    async def expire_deadline(self, pool, selected, *, status, as_of):
+        """Disable the real expired row and cancel staged work in the same TX."""
+        command = uuid4()
+
+        async def expire(repository):
+            definition, row = await self._locked(repository, selected, command=command)
+            if (
+                row["task_type"] != "deadline"
+                or status != "expired"
+                or type(as_of) is not date
+                or row["target_date"] >= as_of
+            ):
+                raise SourceConflict("invalid_deadline_expiry")
+            table = f'"{repository.owner_domain}".scheduled_tasks'
+            expired = await repository.connection.fetchrow(
+                f"UPDATE {table} SET deadline_status=$2,enabled=false,updated_at=now() "
+                "WHERE id=$1 AND target_date=$3 "
+                "AND deadline_status IS NOT DISTINCT FROM $4 RETURNING id",
+                row["id"],
+                status,
+                selected["target_date"],
+                selected["deadline_status"],
+            )
+            if expired is None:
+                return None
+            return await repository.revise(
+                command,
+                replace(definition, generation=definition.generation + 1, state="disabled"),
+                expected_revision=definition.revision,
+            )
+
+        return await run_source_transaction(pool, self.owner_domain, expire)
+
+    async def record_deadline(self, pool, selected, *, threshold, status, fired, run_at):
+        """Capture only AFTER successful legacy dispatch, beside threshold CAS.
+
+        A failed dispatch never calls this method and leaves its threshold
+        unfired. The stable slot is the actual target date plus selected
+        threshold, not the recording clock. Concurrent/stale observations do
+        not overwrite newer threshold progress or manufacture another source.
+        """
+        from butlers.core.temporal.deadlines import (
+            compute_next_deadline_status,
+            find_unfired_threshold,
+        )
+
+        if type(run_at) is not datetime or run_at.utcoffset() is None:
+            raise SourceConflict("invalid_deadline_threshold")
+
+        async def record(repository):
+            definition, row = await self._locked(repository, selected)
+            if any(row[key] != selected[key] for key in ("fired_thresholds", "deadline_status")):
+                return None
+            if (
+                row["task_type"] != "deadline"
+                or threshold not in row["alert_thresholds"]
+                or threshold in row["fired_thresholds"]
+                or fired != [*row["fired_thresholds"], threshold]
+                or threshold
+                != find_unfired_threshold(
+                    days_remaining=(row["target_date"] - run_at.date()).days,
+                    alert_thresholds=row["alert_thresholds"],
+                    fired_thresholds=row["fired_thresholds"],
+                )
+                or status
+                != compute_next_deadline_status(
+                    current_status=row["deadline_status"] or "pending", fired_threshold=threshold
+                )
+            ):
+                raise SourceConflict("invalid_deadline_threshold")
+            table = f'"{repository.owner_domain}".scheduled_tasks'
+            recorded = await repository.connection.fetchrow(
+                f"UPDATE {table} SET deadline_status=$2,fired_thresholds=$3,"
+                "last_run_at=$4,updated_at=now() WHERE id=$1 AND enabled=true "
+                "AND target_date=$5 AND fired_thresholds=$6 "
+                "AND deadline_status IS NOT DISTINCT FROM $7 RETURNING id",
+                row["id"],
+                status,
+                fired,
+                run_at,
+                row["target_date"],
+                row["fired_thresholds"],
+                row["deadline_status"],
+            )
+            if recorded is None:
+                return None
+            slot = "deadline:" + row["target_date"].isoformat() + ":" + digest(threshold)
+            return await self._capture(repository, definition, slot)
+
+        return await run_source_transaction(pool, self.owner_domain, record)
+
+
+async def start_schedule_sources(
+    pool, snapshot: LoadedGitSources | None, *, mode: str
+) -> GitScheduleRuntime | None:
+    """Default-OFF lifecycle selector for durable staging, NOT admission.
+
+    No roster setting is enabled by this implementation. `dark` requires the
+    actual owning schema migration and full reconciliation before registration;
+    missing/failed source input refuses startup instead of claiming coverage.
+    Neither mode supplies verified fleet/current invocation/creator authority.
+    """
+    if type(mode) is not str or mode not in {"off", "dark"}:
+        raise SourceConflict("invalid_source_mode")
+    if mode == "off":
+        return None
+    if type(snapshot) is not LoadedGitSources:
+        raise SourceConflict("loaded_source_required")
+    revisions = await reconcile_loaded_git_sources(pool, snapshot)
+    by_name = {item.schedule["name"]: item for item in snapshot.definitions}
+    bindings = []
+    # Reconciliation results carry source identities, not names. Match the
+    # entire material digest rather than guessing source/name from a caller.
+    for revision in revisions:
+        if revision.state != "active":
+            continue
+        matches = [
+            item for item in by_name.values() if item.material_digest == revision.material_digest
+        ]
+        if len(matches) != 1 or not matches[0].available:
+            raise SourceConflict("loaded_source_binding_invalid")
+        bindings.append((revision, matches[0]))
+    return GitScheduleRuntime(snapshot.owner_domain, tuple(bindings))
