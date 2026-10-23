@@ -122,3 +122,32 @@ producer, authenticated approved replay/executor handoff, isolated production
 profile and resource-owner attachment, genuine role/PG/transport races, runner
 termination and terminal hosted/protected evidence remain mandatory before
 production enablement or full broker acceptance.
+
+
+## Central stored-approved dispatch transaction
+
+The private `prepare_approved_dispatch` consumer implements the central half of
+approved replay against existing sw047/sw048. It is absent from both MCP
+listeners. `StoredGoalCall` is data, not proof that an owner approved anything;
+the authenticated owning snapshot, local revalidation/dispatch witness and real
+executor handoff remain required. `replay_approved` therefore continues to refuse.
+
+The consumer takes the same verified runtime/RLS transaction and goal-first lock
+as Stop. It checks the original invocation, immutable PARK tuple and original
+digest, exact approval reference, current grant/ceiling/catalog, resources,
+selection, exposure and independent policy refusals. The owner's edited digest
+is distinct from the immutable effect digest. It commits one dispatch intent
+before returning; it neither creates another effect nor charges the original
+PARK again. A returned invocation needs no resurrected bearer token: D13 permits
+stored approvals during `settling`. Stopped/terminal goals, cancellation work,
+any earlier dispatch intent, mismatches and commit uncertainty refuse. A lost
+PARK response may attach only the exact action/effect reference.
+
+`settle_approved_dispatch` binds that intent and original effect identity in a
+fresh goal-first transaction. Earlier dispatched work may settle after Stop;
+Stop does not claim it undone. Untrusted output exposure commits with settlement
+before any value returns. A failed/unknown settlement never permits redispatch.
+These consumers perform no domain network request and create no owning receipt.
+Actual A2 approval/schema/receipt authority is still blocked on the separately
+delivered approvals migration chain; positive UnitB, authenticated owning replay,
+real PostgreSQL outcomes and full original broker acceptance remain unearned.

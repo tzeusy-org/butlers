@@ -72,9 +72,12 @@ class StoredGoalCall:
 def stored_goal_call(locked_row: Any) -> StoredGoalCall:
     """Project only a locked, authenticated owner-approved stored call.
 
-    The owning executor must keep the source row lock and reauthorize at the
-    broker before dispatch. Neither operation is supplied by this projection.
-    No caller replacement arguments are accepted.
+    The owning executor must snapshot under its row/gate locks, release those
+    locks before central authorization, then re-lock and revalidate this exact
+    snapshot while committing its local dispatch witness before forwarding.
+    It must never hold an owning transaction over a central/network call.
+    Those operations are not supplied by this projection. No caller replacement
+    arguments are accepted.
     """
     action = PendingAction.from_row(locked_row)
     lineage = action.goal_lineage()

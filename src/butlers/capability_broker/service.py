@@ -164,3 +164,49 @@ class Broker:
     async def replay_approved(self, *args, **kwargs):
         """Owning stored-call/edit verification is phase B; no caller replay fallback."""
         raise BrokerRefused(Reason.UNAVAILABLE)
+
+    async def prepare_approved_dispatch(self, stored_call):
+        """Private central half, for the future authenticated owning producer.
+
+        This is deliberately absent from both MCP listeners. A supplied DTO is
+        not approval authority. The actual owning snapshot/revalidation/local
+        witness/forward producer remains required; replay_approved stays closed.
+        Return only after confirmed central commit, never after commit loss.
+        """
+        from butlers.core.goal_stop import GoalStop
+
+        from .approved import prepare_approved
+
+        self.require_available()
+        try:
+            # The existing central transaction verifies sw047 AND all sw048
+            # runtime RLS/ACL policies and carries one acquire-through-commit
+            # deadline. Reuse it without another pool/transaction/lock order.
+            async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+                prepared = await prepare_approved(conn, stored_call, self.authorities)
+            return prepared
+        except BrokerRefused:
+            raise
+        except Exception:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+
+    async def settle_approved_dispatch(self, prepared, receipt: DomainReceipt) -> BrokerResult:
+        """Private central settlement; no authenticated owning result is invented.
+
+        Never return downstream value until original effect/intent/exposure and
+        the actual transaction commit are confirmed. An uncertain commit is a
+        refusal, with no contradictory retry or second dispatch.
+        """
+        from butlers.core.goal_stop import GoalStop
+
+        from .approved import settle_approved
+
+        self.require_available()
+        try:
+            async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+                await settle_approved(conn, prepared, receipt)
+            return BrokerResult(receipt.status, prepared.reservation.effect_id, value=receipt.value)
+        except BrokerRefused:
+            raise
+        except Exception:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None

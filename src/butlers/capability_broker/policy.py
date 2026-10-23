@@ -74,11 +74,11 @@ def decide(
         return Decision(Disposition.REFUSE)
     if principal.exposed and capability.effect_class == "record" and capability.owner_authority:
         return Decision(Disposition.REFUSE)
+    if principal.origin == "third_party" and capability.effect_class in {"actuate", "administer"}:
+        return Decision(Disposition.REFUSE)
     # No rule, owner-directed shortcut or inherited approval can remove park-only.
     if grant.park_only or capability.always_per_event:
         return Decision(Disposition.PARK)
-    if principal.origin == "third_party" and capability.effect_class in {"actuate", "administer"}:
-        return Decision(Disposition.REFUSE)
     permitted_rule = evidence.standing_rule and (
         not principal.exposed
         or (

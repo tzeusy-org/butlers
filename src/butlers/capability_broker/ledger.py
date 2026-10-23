@@ -17,6 +17,7 @@ from butlers.core.goal_ledger import GoalLedger
 from .contracts import (
     BrokerRefused,
     Capability,
+    Decision,
     Disposition,
     Principal,
     Reason,
@@ -199,14 +200,20 @@ class BrokerLedger:
             result.append(capability)
         return tuple(result)
 
-    async def reserve(
+    async def resolve_call(
         self,
         principal: Principal,
         name: str,
         args: dict,
         args_digest: str,
         authorities: Authorities,
-    ) -> Reservation | BrokerRefused:
+    ) -> tuple[Capability, Decision]:
+        """Revalidate current catalog, scope, selection and independent refusals.
+
+        Used by both new calls and the private stored-approved central path.
+        An owner decision may satisfy PARK; it never makes REFUSE grantable.
+        This performs no budget/effect writes or external I/O.
+        """
         catalog = await authorities.catalog(self.connection, principal)
         if catalog.digest != principal.catalog_digest:
             raise BrokerRefused(Reason.CATALOG)
@@ -244,6 +251,19 @@ class BrokerLedger:
             raise BrokerRefused(Reason.POLICY)
         if decision.disposition is Disposition.PARK and not capability.approvals_available:
             raise BrokerRefused(Reason.UNAVAILABLE)
+        return capability, decision
+
+    async def reserve(
+        self,
+        principal: Principal,
+        name: str,
+        args: dict,
+        args_digest: str,
+        authorities: Authorities,
+    ) -> Reservation | BrokerRefused:
+        capability, decision = await self.resolve_call(
+            principal, name, args, args_digest, authorities
+        )
         budget = await self.connection.fetchrow(
             "SELECT *,deadline>now() AS deadline_valid FROM switchboard.budgets "
             "WHERE goal_id=$1 FOR UPDATE",
