@@ -3604,7 +3604,19 @@ export interface ApprovalsFlatListResponse {
 }
 
 /** Full dossier for GET /api/approvals/{id}. */
+export interface DisplayedApprovalCall {
+  tool_name: string;
+  args_digest: string;
+}
+
+export interface ApprovalCallPreview {
+  title: string;
+  facts: { label: string; value: string }[];
+  displayed_call: DisplayedApprovalCall;
+}
+
 export interface ApprovalDetail {
+  call_preview?: ApprovalCallPreview | null;
   id: string;
   title: string;
   butler: string;
@@ -3664,6 +3676,7 @@ export interface ApprovalsPolicy {
 }
 
 export interface ApprovalApproveRequest {
+  displayed_call?: DisplayedApprovalCall | null;
   edits?: Record<string, unknown> | null;
 }
 

@@ -103,6 +103,26 @@ def resolve_call_preview(tool_name: str, tool_args: Any) -> CallPreview | None:
     return None
 
 
+def dashboard_call_preview(tool_name: str, tool_args: Any) -> dict[str, Any] | None:
+    """Return only complete registered facts; oversized/unshowable calls are Open-only.
+
+    This has no model text, secret-field fallback or raw-argument dump. The
+    dashboard renders every fact as inert plain text before using the snapshot.
+    """
+    preview = resolve_call_preview(tool_name, tool_args)
+    if preview is None:
+        return None
+    result = {
+        "title": preview.title,
+        "facts": [{"label": fact.label, "value": fact.value} for fact in preview.facts],
+        "displayed_call": {"tool_name": tool_name, "args_digest": args_digest(tool_args)},
+    }
+    # Keep an exact, fully shown preview rather than truncating an approved call.
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 16_384:
+        return None
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Renderer helpers
 # ---------------------------------------------------------------------------

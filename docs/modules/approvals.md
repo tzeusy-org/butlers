@@ -207,7 +207,15 @@ approve endpoint refuses it with 409 "changed since shown" when any presented
 digest differs from the stored call, and the tap edits the message to say nothing
 was executed. This check applies to card taps only: a dashboard approval binds to
 the call the dashboard displayed, and dashboard edits are the owner's explicit
-change. Rows presented before migration 018 carry no digest and are not checked.
+change. The dashboard dossier and summary review dialog expose only a complete registered
+owner-safe `call_preview`, including the tool identity and argument digest from the
+same stored row. Both approval API routes require that `displayed_call` and
+compare it under the pending-row lock before any owner edit, status/audit write
+or dispatch. Missing, malformed, stale or unshowable calls execute nothing.
+Summary actions first open the complete review; the five-second undo callback
+retains that exact reviewed snapshot even if a later fetch sees a different call.
+No raw secret-field fallback or truncated preview earns an Approve button.
+Rows presented before migration 018 carry no digest and are not checked.
 Migration 018's downgrade refuses while any presentation carries a digest.
 
 ## Related Pages

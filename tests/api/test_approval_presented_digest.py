@@ -77,3 +77,7 @@ async def test_only_connector_authenticated_approvals_run_the_card_check(
 
     assert result == "ok"
     assert seen["check_presented_digests"] is authenticated
+    # Connector taps use durable card digests; ordinary decisions must compare
+    # their own displayed snapshot inside the owning transaction.
+    assert seen["require_displayed_call"] is (not authenticated)
+    assert seen["displayed_call"] is None

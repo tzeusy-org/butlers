@@ -59,6 +59,7 @@ from butlers.api.models.approval import (
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
+    DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
@@ -86,7 +87,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
-from butlers.modules.approvals.previews import args_digest
+from butlers.modules.approvals.previews import args_digest, dashboard_call_preview
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
@@ -628,6 +629,7 @@ def _pending_action_to_detail(
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         proposed_action=proposed_action,
+        call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
@@ -1142,59 +1144,19 @@ async def approve_action(
     if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
     action_butler, target_pool = found
-    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
-
-    # Read the action before approval so we have tool_name/args for dispatch
-    async with target_pool.acquire() as conn:
-        action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
-        )
-
-    async with target_pool.acquire() as conn:
-        result = await approvals_ops.approve_action(
-            conn,
-            action_id=action_id,
-            create_rule=request.create_rule,
-            decision_memory_writer=decision_memory_writer,
-        )
-
-    if "error" in result:
-        error_msg = result["error"]
-        if "not found" in error_msg.lower():
-            raise HTTPException(status_code=404, detail=error_msg)
-        if "cannot transition" in error_msg.lower():
-            raise HTTPException(status_code=409, detail=error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    # Dispatch the approved action via MCP call_tool on a running butler
-    if action_row is not None:
-        tool_name = action_row["tool_name"]
-        raw_args = action_row["tool_args"]
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-
-        dispatch_outcome = await _dispatch_approved_action_outcome(
-            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
-        )
-        if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
-            result = dispatch_outcome.action
-
-    # Build the ApprovalAction from the result dict, injecting the butler name
-    result.setdefault("butler", action_butler)
-    action_resp = ApprovalAction(
-        **{k: result[k] for k in ApprovalAction.model_fields if k in result}
+    return await approve_owning_action(
+        parsed_id=parsed_id,
+        actor_id=_decision_actor_id(None, callback_authenticated=False),
+        edits=None,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+        mcp_mgr=mcp_mgr,
+        displayed_call=request.displayed_call,
+        require_displayed_call=True,
+        create_rule=request.create_rule,
+        decision_memory_writer=_decision_memory_writer_for(db_mgr, action_butler, target_pool),
     )
-    # Honest dispatch status (see approve_approval): only 'executed' actually ran.
-    action_resp.dispatched = action_resp.status == "executed"
-    # Emit stream event
-    _emit_kind_legacy = "executed" if action_resp.status == "executed" else "approved"
-    emit_approvals_event(
-        _emit_kind_legacy,
-        action_id,
-        butler=action_butler,
-        tool_name=action_resp.tool_name,
-        status=action_resp.status,
-    )
-    return ApiResponse(data=action_resp)
 
 
 _MCP_DISPATCH_TIMEOUT_S = 30.0
@@ -3121,6 +3083,8 @@ async def approve_approval(
         db_mgr=db_mgr,
         mcp_mgr=mcp_mgr,
         check_presented_digests=callback_authenticated,
+        displayed_call=request.displayed_call,
+        require_displayed_call=not callback_authenticated,
     )
 
 
@@ -3170,6 +3134,10 @@ async def approve_owning_action(
     mcp_mgr: MCPClientManager,
     expected_tool_args: dict[str, Any] | None = None,
     check_presented_digests: bool = False,
+    displayed_call: DisplayedApprovalCall | None = None,
+    require_displayed_call: bool = False,
+    create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> ApiResponse[ApprovalAction]:
     """Shared verified decision/audit/dispatch on an already selected owner.
 
@@ -3190,6 +3158,19 @@ async def approve_owning_action(
             "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
+
+        if require_displayed_call:
+            preview = (
+                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
+                if action_row is not None
+                else None
+            )
+            if (
+                displayed_call is None
+                or preview is None
+                or displayed_call.model_dump() != preview["displayed_call"]
+            ):
+                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
 
         if action_row is not None and check_presented_digests:
             await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
@@ -3225,7 +3206,10 @@ async def approve_owning_action(
             conn,
             action_id=action_id,
             actor_id=actor_id,
-            create_rule=False,
+            create_rule=create_rule,
+            # A pool-backed writer uses a separate transaction. Defer it until
+            # this approval, optional standing rule and audit have committed.
+            decision_memory_writer=None,
         )
         if "error" not in result:
             edits_note = json.dumps(edits) if edits else None
@@ -3245,6 +3229,17 @@ async def approve_owning_action(
         if "cannot transition" in error_msg.lower():
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
+
+    created_rule = result.get("created_rule")
+    if decision_memory_writer is not None and created_rule is not None:
+        try:
+            await decision_memory_writer.record_standing_rule(
+                ApprovalRuleModel.from_dict(created_rule), active=True
+            )
+        except Exception:
+            # Memory is descriptive and fail-open; a committed approval/rule
+            # must not become a failed decision because its memory sink failed.
+            logger.exception("Post-commit standing-rule memory writeback failed")
 
     if action_row is not None:
         tool_name = action_row["tool_name"]

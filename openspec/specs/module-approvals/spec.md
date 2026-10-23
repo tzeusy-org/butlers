@@ -738,7 +738,13 @@ handed off with a NULL digest. A connector-authenticated card decision SHALL tak
 the pending action's row lock and refuse with HTTP 409 "changed since shown" when
 any recorded presentation digest differs from the digest of the stored call,
 executing nothing; a dashboard approval binds to the call the dashboard displayed
-and does not use that check. Downgrading the migration that adds the digest column
+and does not use that check. Both dashboard approval routes SHALL compare the
+owner-safe displayed tool identity and argument digest against the locked pending
+row before edits, approval, audit or dispatch. Summary-only surfaces SHALL show
+the complete safe stored-call preview before enabling approval, and delayed undo
+callbacks SHALL retain that reviewed snapshot rather than substitute a refreshed
+call. Missing, stale, malformed or unshowable snapshots SHALL execute nothing.
+Downgrading the migration that adds the digest column
 SHALL refuse while any presentation carries a digest.
 
 #### Scenario: Email card shows the call

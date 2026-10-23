@@ -43,6 +43,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Undo
 - loading…
 - failed to load dossier
+- Open only: an exact safe preview is unavailable. Approval is disabled.
 - Defer
 - Approve:
 - Referenced Entities
@@ -83,6 +84,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Stalled
 - Approval origin: {}
 - {} Undo
+- Stored call preview
 - Deny reason (optional)
 - None
 - UTC
@@ -122,6 +124,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Rule re-enabled
 - Rule disabled
 - Update failed: {}
+- Review the stored call before approving.
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
@@ -4900,4 +4903,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3905*
+*Total strings: 3908*
