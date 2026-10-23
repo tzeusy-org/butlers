@@ -138,7 +138,9 @@ Playwright browser job is required through `check`: every merge group and main p
 as does every pull request the route classifies as frontend (a change under `frontend/`,
 `.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
 reuses only the source/attempt/content-bound build and retains locked browser version,
-mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
+mandatory OS dependencies on cache hits/misses (two bounded attempts with privileged group
+cleanup), then three bounded browser attempts within the 720-second installer budget.
+Dependency retries require confirmed termination and reaping of the owned process group.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
 
 The frontend verifier compares configuration booleans, module error counters and reconstructed
