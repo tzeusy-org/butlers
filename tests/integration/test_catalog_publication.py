@@ -122,9 +122,52 @@ async def test_real_roles_bootstrap_immutability_and_bad_publisher(
 ):
     from tests.migrations.test_goal_ledger_migration import bootstrap_again
 
-    # Bootstrap deliberately regrants public DML; forced RLS must still fence.
+    # Bootstrap deliberately regrants public DML; non-owner runtime RLS must still fence.
     await asyncio.to_thread(bootstrap_again, postgres_container, publication_url)
     await publish_all(publication_url)
+    # Ordinary database-owner maintenance is not a runtime authority. Creator
+    # changes during managed re-upgrade must not change this stable ownership.
+    posture = await fleet.fetch(
+        "SELECT c.relname,c.relowner=d.datdba AS database_owned,"
+        "c.relrowsecurity,c.relforcerowsecurity FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN pg_database d "
+        "WHERE n.nspname='public' AND c.relname LIKE 'capability_catalog_%' "
+        "AND c.relkind='r' AND d.datname=current_database()"
+    )
+    assert len(posture) == 5
+    assert all(
+        r["database_owned"] and r["relrowsecurity"] and not r["relforcerowsecurity"]
+        for r in posture
+    )
+    from tests.migrations.test_goal_ledger_migration import (
+        BOOTSTRAP_RUNTIME_ROLES,
+        OPTIONAL_BOOTSTRAP_ROLES,
+    )
+
+    for role in sorted(BOOTSTRAP_RUNTIME_ROLES | OPTIONAL_BOOTSTRAP_ROLES):
+        privileges = await fleet.fetchrow(
+            "SELECT rolsuper,rolbypassrls,pg_has_role(r.oid,d.datdba,'MEMBER') AS owner_member "
+            "FROM pg_roles r CROSS JOIN pg_database d "
+            "WHERE rolname=$1 AND d.datname=current_database()",
+            role,
+        )
+        if privileges:
+            assert not any(privileges.values())
+            async with fleet.acquire() as connection, connection.transaction():
+                await connection.execute(f'SET LOCAL ROLE "{role}"')
+                assert await connection.fetchval(
+                    "SELECT row_security_active('public.capability_catalog_control'::regclass)"
+                )
+                try:
+                    async with connection.transaction():
+                        assert (
+                            await connection.execute(
+                                "DELETE FROM public.capability_catalog_installations"
+                            )
+                            == "DELETE 0"
+                        )
+                except asyncpg.InsufficientPrivilegeError:
+                    pass
     original = await fleet.fetchval(
         "SELECT to_jsonb(c) FROM public.capability_catalog_current c WHERE domain='health'"
     )

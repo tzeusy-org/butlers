@@ -4,8 +4,10 @@ Revision ID: core_275
 Revises: core_273 (delivered parent; core_274 is a separately held M6 slot).
 
 Shared public metadata only; no private payloads, keys, tools or activation.
-The bootstrap may regrant public DML; forced RLS and immutable triggers remain
-mandatory. Core-only databases are supported. Runtime roles never own tables.
+The bootstrap may regrant public DML; enabled RLS and immutable triggers remain
+mandatory for non-owner runtimes. The stable database owner retains ordinary
+backup/restore maintenance (non-FORCE); no runtime may assume that owner.
+Core-only databases are supported.
 """
 
 from alembic import op
@@ -32,6 +34,24 @@ _DOMAINS = (
 )
 
 
+def _maintenance_owner(table: str) -> None:
+    # Creator identity changes during managed downgrade/re-upgrade. Normalize
+    # to the database's existing trusted owner, never the bootstrap executor or
+    # a new runtime/definer role. This also preserves ordinary pg_dump's full
+    # row_security=off contract without a new data exclusion or BYPASS role.
+    roles = ",".join("'butler_" + domain + "_rw'" for domain in (*_DOMAINS, "calendar"))
+    op.execute(f"""DO $$ DECLARE trusted_owner oid; BEGIN
+        SELECT datdba INTO STRICT trusted_owner FROM pg_database WHERE datname=current_database();
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ({roles},'connector_writer')
+            AND (rolsuper OR rolbypassrls OR pg_has_role(oid,trusted_owner,'MEMBER'))) THEN
+            RAISE EXCEPTION 'Runtime may not bypass or assume catalog maintenance owner';
+        END IF;
+        EXECUTE format('ALTER TABLE public.%I OWNER TO %I',
+            '{table}',pg_get_userbyid(trusted_owner));
+        EXECUTE format('ALTER TABLE public.%I NO FORCE ROW LEVEL SECURITY','{table}');
+    END $$""")
+
+
 def upgrade() -> None:
     op.execute("SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_275:catalog',0))")
     op.execute("""
@@ -39,8 +59,10 @@ def upgrade() -> None:
             schema_name TEXT PRIMARY KEY,
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+    """)
+    _maintenance_owner("capability_catalog_installations")
+    op.execute("""
         ALTER TABLE public.capability_catalog_installations ENABLE ROW LEVEL SECURITY;
-        ALTER TABLE public.capability_catalog_installations FORCE ROW LEVEL SECURITY;
         DROP POLICY IF EXISTS catalog_installation_owner ON public.capability_catalog_installations;
         CREATE POLICY catalog_installation_owner ON public.capability_catalog_installations
             USING (current_user::text=(SELECT pg_get_userbyid(relowner) FROM pg_class
@@ -234,7 +256,7 @@ def upgrade() -> None:
     for table in ("control", "members", "history", "current"):
         name = f"public.capability_catalog_{table}"
         op.execute(f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {name} FORCE ROW LEVEL SECURITY")
+        _maintenance_owner(f"capability_catalog_{table}")
         op.execute(f"DROP POLICY IF EXISTS catalog_read ON {name}")
         op.execute(f"CREATE POLICY catalog_read ON {name} FOR SELECT USING (true)")
         if table in {"history", "current"}:

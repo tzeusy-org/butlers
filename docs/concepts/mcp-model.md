@@ -242,8 +242,13 @@ schema. Canonical FastMCP registration and `tools/list` remain complete.
 The daemon's final-startup hook publishes its actual post-approval `ToolCatalog`.
 Publication is authenticated by the acquired connection's non-owner,
 non-superuser, non-BYPASSRLS `butler_<domain>_rw` role. There is no caller-verified
-flag or model-facing publication tool. Forced RLS restricts writes to that
-role's domain even after bootstrap regrants public DML. History is append-only;
+flag or model-facing publication tool. Enabled RLS restricts non-owner writes to
+that role's domain even after bootstrap regrants public DML. The existing database
+owner stably owns all five catalog tables, independent of the migration executor.
+RLS is non-FORCE so ordinary full `pg_dump` and restore retain every catalog row;
+no backup exclusion, security-definer or BYPASSRLS role is added. Runtime roles
+may neither own nor inherit/assume that trusted maintenance owner, and may not
+be superusers or bypass RLS. Immutable triggers remain mandatory. History is append-only;
 current registrations advance monotonically and cannot resurrect a retired or
 expired lease. A changed finalization republishes the real replacement.
 
