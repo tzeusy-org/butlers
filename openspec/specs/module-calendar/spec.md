@@ -67,7 +67,13 @@ Configuration SHALL be declared under `[modules.calendar]` in `butler.toml` with
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Attendee Management Tools (2: `calendar_add_attendees`, `calendar_remove_attendees`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+The module SHALL register 20 MCP tools before conditional invitation-response and historical-fence tools are added under their own requirements. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+
+The retired `attendees` group SHALL register no tools, including when explicitly requested. The standalone `calendar_add_attendees` and `calendar_remove_attendees` tools SHALL NOT be registered. Event attendee fields, attendee arguments on retained create/update tools and approval-bound self invitation responses retain their separate contracts.
+
+ID: REQ-module-calendar-031
+Source: accepted bu-qozovd.1 slice 1 design and unchanged AC5
+Scope: v1-mandatory
 
 #### Scenario: List events with time window
 
@@ -272,23 +278,6 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 - **WHEN** `calendar_toggle_butler_event` is called with an event ID and enabled flag
 - **THEN** the butler event is paused or resumed without deletion
 - **AND** high-impact mutations require approval gate
-
-### Requirement: Attendee Management Tools
-
-The module SHALL register MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
-
-#### Scenario: Add attendees to event
-
-- **WHEN** `calendar_add_attendees` is called with an event ID and list of email addresses
-- **THEN** attendees are added to the event with deduplication
-- **AND** notification policy controls whether attendees are notified
-- **AND** provider failures return a fail-closed structured error
-
-#### Scenario: Remove attendees from event
-
-- **WHEN** `calendar_remove_attendees` is called with an event ID and list of email addresses
-- **THEN** matching attendees are removed (case-insensitive email match)
-- **AND** cancellation notifications follow the send_updates policy
 
 ### Requirement: Google OAuth and Rate Limiting
 
