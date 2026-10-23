@@ -3,17 +3,19 @@
 ### Requirement: Relationship Butler Registered Tool Surface
 
 The relationship butler SHALL expose its currently approved manifesto-owned
-personal CRM tool set. Its eight configured relationship-module groups
+personal CRM tool set. The original eight relationship-module groups
 (`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`,
 `notes`, `tracking`, and `management`) own 62 tools. The mandatory
 `relationship_assert_fact` approval-dispatch handler registers unconditionally,
-for 63 relationship-module handlers in total. The mixed `entity` group SHALL
-remain disabled until the adopted six-read/two-write split is implemented; it
-MUST NOT be activated while it still exposes both reads and writes.
-The 62 tools in those eight groups SHALL include 60 existing domain tools and the two existing identity handlers `identity_resolve_channels` and `identity_assert_sender_channel`. When separately selected, the `contacts_ingress` group SHALL contain exactly `contacts_report_channel` and `contacts_resolve_channel`, making 64 group-owned and one unconditional handler, for 65 Relationship-module handlers with Contacts ingress. Their registration SHALL preserve the complete Contacts backfill/identity and central-writer provenance, candidate, owner, policy, temporal and privacy contracts and SHALL confer no source-authentication or authority exemption. Separate owner approval of the exact held Entity artifact and its implementation remain mandatory; neither Contacts ingress nor this bookkeeping amendment earns either gate.
+for 63 relationship-module handlers in total. The `entity` group SHALL contain exactly six reads after the adopted
+six-read/three-write split. The roster SHALL select those six reads and leave
+`entity_write` inactive, including `entity_update`,
+`relationship_record_coverage`, and `entity_set_posture`. It MUST NOT select a
+mixed read/write entity group.
+The 62 tools in those eight groups SHALL include 60 existing domain tools and the two existing identity handlers `identity_resolve_channels` and `identity_assert_sender_channel`. When separately selected, the `contacts_ingress` group SHALL contain exactly `contacts_report_channel` and `contacts_resolve_channel`, making 64 group-owned and one unconditional handler, for 65 Relationship-module handlers with Contacts ingress. Their registration SHALL preserve the complete Contacts backfill/identity and central-writer provenance, candidate, owner, policy, temporal and privacy contracts and SHALL confer no source-authentication or authority exemption. Closed owner decision `bu-t89d9m` option A (2026-10-20 14:36 UTC) authorizes implementation of the exact six-read/three-write split and source roster selection through normal PR review; it does not earn deployment, runtime activation, temporal cutover or real-Postgres proof.
 
 ID: REQ-butler-relationship-002
-Source: Existing Relationship manifesto and baseline Registered Tool Surface; add-meeting-debrief approved tools; bu-ss4o2u adopted Contacts P0-P6 and seven outcomes, actual fixed grouped tool inventory and core Tool Group Filtering contract
+Source: Existing Relationship manifesto and baseline Registered Tool Surface; add-meeting-debrief approved tools; bu-ss4o2u adopted Contacts P0-P6 and seven outcomes, actual fixed grouped tool inventory and core Tool Group Filtering contract; closed `bu-t89d9m` option A (2026-10-20 14:36 UTC)
 Scope: v1-mandatory
 
 #### Scenario: Exact current registered inventory
@@ -36,15 +38,15 @@ Scope: v1-mandatory
 
 - **WHEN** the configured Relationship group allowlist selects the eight legacy groups plus `contacts_ingress`
 - **THEN** both fixed owning Contacts operations SHALL be callable with all original handlers preserved, for exactly 65 Relationship-module handlers
-- **AND** the six held reads, `entity_update`, `relationship_record_coverage`, and bare `entity_create` SHALL remain absent
-- **AND** the existing held Entity owner-approval task and every temporal owner, cutover and real-Postgres hold SHALL remain unchanged and unearned
+- **AND** the six unselected reads, `entity_update`, `relationship_record_coverage`, and bare `entity_create` SHALL remain absent
+- **AND** the closed Entity implementation authority SHALL NOT be treated as completion of any temporal owner, cutover, deployment or real-Postgres hold
 - **AND** neither unavailable lookup nor candidate/pending approval SHALL be treated as authoritative empty lookup or active success
 
 #### Scenario: Tool inventory after the read-only split
 
-- **WHEN** the separately owner-approved implementation activates the read-only Relationship `entity` group after its exact six-read/two-write split is implemented
+- **WHEN** the separately owner-approved implementation activates the read-only Relationship `entity` group after its exact six-read/three-write split is implemented
 - **THEN** it SHALL preserve every handler in the then-current configured inventory and add exactly the six Relationship entity reads (`entity_resolve`, `entity_get`, `entity_neighbors`, `relationship_fact_evidence`, `relationship_predicate_coverage`, and `relationship_lookup`): 69 total on the original eight-group configuration or 71 total when Contacts ingress is also selected
 - **AND** `relationship_assert_fact` SHALL remain the additional mandatory unconditional handler, included exactly once in those totals
-- **AND** `entity_update` and `relationship_record_coverage` SHALL remain absent from the active surface
+- **AND** `entity_update`, `relationship_record_coverage`, and `entity_set_posture` SHALL remain absent from the active surface
 - **AND** the separately configured memory module MAY expose `memory_entity_create` under that canonical prefixed name
 - **AND** no bare `entity_create` MCP tool or alias SHALL be registered

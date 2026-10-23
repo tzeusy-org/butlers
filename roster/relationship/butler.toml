@@ -193,9 +193,9 @@ enabled = true
 risk_tier = "medium"
 
 [modules.relationship]
-# The enabled Relationship groups are manifesto-owned. The mixed entity group
-# remains disabled until the adopted read-only split is implemented; activating
-# it today would also expose two writes the owner explicitly kept pruned.
+# The enabled Relationship groups are manifesto-owned. The entity group adds
+# exactly six reads; entity_write stays inactive, keeping all three grouped
+# writes unavailable on this roster (owner decision bu-t89d9m, option A).
 groups = [
     "contacts",
     "contacts_ingress",  # fixed owning backfill report/read; no legacy-group expansion
@@ -206,6 +206,7 @@ groups = [
     "notes",
     "tracking",
     "management",
+    "entity",
 ]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
