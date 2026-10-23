@@ -21,7 +21,7 @@ import {
   KV,
   MonoLabel,
   Panel,
-} from "@/components/butler-detail/atoms"
+} from "@/components/ui/atoms"
 import { ButlerDelegationsPanel } from "@/components/butler-detail/ButlerDelegationsPanel"
 import { ButlerDomainEventsPanel } from "@/components/butler-detail/ButlerDomainEventsPanel"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"

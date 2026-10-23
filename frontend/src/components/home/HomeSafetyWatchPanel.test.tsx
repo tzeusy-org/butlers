@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import { HomeSafetyWatchPanel } from "@/components/butler-detail/HomeSafetyWatchPanel.tsx";
+import { HomeSafetyWatchPanel } from "@/components/home/HomeSafetyWatchPanel.tsx";
 
 const save = vi.fn();
 const remove = vi.fn();
