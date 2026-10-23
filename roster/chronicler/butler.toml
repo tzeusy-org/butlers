@@ -230,13 +230,6 @@ run — your job is to narrate over that result, not to re-derive it.
    explicitly-opted-in surfaces, not part of day-close.
 """
 
-# Day-close GAP INTERVIEW (bu-whhll.12) — one of the "separate, explicitly-
-# opted-in surfaces" the day-close prompt above defers to. Deliberately its OWN
-# scheduled surface (NOT bolted into day-close), owner-toggleable, max one
-# message/day. Runs at 09:00 owner-local — after the 01:05 day-close reconciles
-# yesterday, at a civil hour; notify() additionally applies quiet-hours /
-# delivery preferences. The tool enforces the per-day dedupe.
-
 [butler.schedule.obligation]
 version = 1
 capabilities = [
@@ -244,24 +237,19 @@ capabilities = [
   { capability = "chronicler__notify" },
 ]
 
+# Day-close GAP INTERVIEW (bu-whhll.12) — one of the "separate, explicitly-
+# opted-in surfaces" the day-close prompt above defers to. Deliberately its OWN
+# scheduled surface (NOT bolted into day-close), owner-toggleable, max one
+# message/day. Runs at 09:00 owner-local — after the 01:05 day-close reconciles
+# yesterday, at a civil hour. A deterministic job (bu-idc5mx.4): it computes
+# yesterday in the owner's general timezone and calls the same ask service as the
+# chronicler_gap_interview tool, which enforces the per-day dedupe and the
+# quiet-hours / delivery-preferences gate. No session, no model.
 [[butler.schedule]]
 name = "chronicler_gap_interview"
 cron = "0 9 * * *"
-dispatch_mode = "prompt"
-complexity = "cheap"
-prompt = """
-Run the Chronicler day-close GAP INTERVIEW for yesterday. This is a separate,
-explicitly-opted-in surface — NOT part of day-close.
-1. Use the owner's configured timezone from your system prompt. Compute
-   yesterday's local date in that timezone, not in UTC.
-2. Call chronicler_gap_interview(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>").
-   This one tool does everything — it evaluates the day, enforces the
-   max-one-per-day dedupe, applies quiet-hours/delivery preferences, and (only
-   when the day qualifies) delivers the one-tap inline-button prompt to the
-   owner itself. The owner's tap is applied automatically.
-3. Do NOT send any message yourself (no notify(), no summary, no commentary).
-   Just report the tool's returned status. That is the entire task.
-"""
+dispatch_mode = "job"
+job_name = "chronicler_gap_interview"
 
 # RFC 0015: report errors to QA; this module never dispatches locally.
 [modules.self_healing]

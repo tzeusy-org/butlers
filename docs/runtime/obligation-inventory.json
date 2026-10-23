@@ -5,7 +5,7 @@
   "schedules": [
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_sessions",
       "dispatch_mode": "job",
@@ -15,7 +15,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_calendar",
       "dispatch_mode": "job",
@@ -25,7 +25,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks",
       "dispatch_mode": "job",
@@ -35,7 +35,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks_place_cluster",
       "dispatch_mode": "job",
@@ -45,7 +45,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_owntracks_ssid",
       "dispatch_mode": "job",
@@ -55,7 +55,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_activitywatch",
       "dispatch_mode": "job",
@@ -65,7 +65,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_owner_outbound",
       "dispatch_mode": "job",
@@ -75,7 +75,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_steam",
       "dispatch_mode": "job",
@@ -85,7 +85,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_meals",
       "dispatch_mode": "job",
@@ -95,7 +95,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_home_assistant",
       "dispatch_mode": "job",
@@ -105,7 +105,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_home_assistant_sensor_activity",
       "dispatch_mode": "job",
@@ -115,7 +115,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_sleep",
       "dispatch_mode": "job",
@@ -125,7 +125,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_workout",
       "dispatch_mode": "job",
@@ -135,7 +135,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_steps",
       "dispatch_mode": "job",
@@ -145,7 +145,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_google_health_heart_rate",
       "dispatch_mode": "job",
@@ -155,7 +155,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_focus_inferred",
       "dispatch_mode": "job",
@@ -165,7 +165,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_reading_inferred",
       "dispatch_mode": "job",
@@ -175,7 +175,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_exercise_inferred",
       "dispatch_mode": "job",
@@ -185,7 +185,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_occupation_inferred",
       "dispatch_mode": "job",
@@ -195,7 +195,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_spotify",
       "dispatch_mode": "job",
@@ -205,7 +205,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_project_comms",
       "dispatch_mode": "job",
@@ -215,7 +215,7 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_day_close",
       "dispatch_mode": "prompt",
@@ -226,17 +226,17 @@
     },
     {
       "path": "roster/chronicler/butler.toml",
-      "source_sha256": "9e13cee9bbddbab45d0490624461dcddd7ac3768f33929226cdb2ffae02e0c87",
+      "source_sha256": "8b40e3588a9da01b7a4d4b2a951aa2c5d988b8f4b8ad0ef59cb31e6d6bb99261",
       "butler": "chronicler",
       "name": "chronicler_gap_interview",
-      "dispatch_mode": "prompt",
-      "job_name": null,
-      "declaration_status": "missing_pending_roster_allocation",
-      "classification": "prompt_obligation"
+      "dispatch_mode": "job",
+      "job_name": "chronicler_gap_interview",
+      "declaration_status": "not_inferred_from_job_mode",
+      "classification": "unchanged_job_pending_closed_call_graph_review"
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "nightly-analytics",
       "dispatch_mode": "job",
@@ -246,7 +246,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "weekly-mind-map-staleness",
       "dispatch_mode": "job",
@@ -256,7 +256,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "weekly-progress-digest",
       "dispatch_mode": "prompt",
@@ -267,7 +267,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "weekly-stale-flow-check",
       "dispatch_mode": "prompt",
@@ -278,7 +278,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "daily-spaced-repetition-nudge",
       "dispatch_mode": "prompt",
@@ -289,7 +289,7 @@
     },
     {
       "path": "roster/education/butler.toml",
-      "source_sha256": "21a7b3815e1b91ee3df87f5a3156c06b28c5be1a15d255183415f895d687345b",
+      "source_sha256": "4a1359740d925d8f935a8cc12a160bdeb02faccb66283e788be091170c2f9dcf",
       "butler": "education",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -379,7 +379,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
+      "source_sha256": "83204680199ed43cb3c4cb4fe17b3c2f1b3cfbcf6a0ba9cef61a9d78f1de4cc9",
       "butler": "general",
       "name": "eod-tomorrow-prep",
       "dispatch_mode": "prompt",
@@ -390,7 +390,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
+      "source_sha256": "83204680199ed43cb3c4cb4fe17b3c2f1b3cfbcf6a0ba9cef61a9d78f1de4cc9",
       "butler": "general",
       "name": "collect_briefing_contributions",
       "dispatch_mode": "job",
@@ -400,7 +400,7 @@
     },
     {
       "path": "roster/general/butler.toml",
-      "source_sha256": "38f8fb0a57915e0165db0430a64a779df26e12add0f8dd082271c9b2f3aade64",
+      "source_sha256": "83204680199ed43cb3c4cb4fe17b3c2f1b3cfbcf6a0ba9cef61a9d78f1de4cc9",
       "butler": "general",
       "name": "context_producer_calendar",
       "dispatch_mode": "job",
@@ -410,7 +410,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "weekly-health-summary",
       "dispatch_mode": "prompt",
@@ -421,7 +421,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -431,7 +431,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -441,7 +441,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "insight_scan",
       "dispatch_mode": "job",
@@ -451,7 +451,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "baseline_watch",
       "dispatch_mode": "job",
@@ -461,7 +461,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "health_visit_brief",
       "dispatch_mode": "job",
@@ -471,7 +471,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "atmosphere-advisory",
       "dispatch_mode": "job",
@@ -481,7 +481,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "38570925295a98cf8406adc03e3e545c4939c7544c4b4613c00da93397646f71",
+      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
       "butler": "health",
       "name": "context_producer_sleep_window",
       "dispatch_mode": "job",
@@ -491,7 +491,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "weekly-energy-digest",
       "dispatch_mode": "job",
@@ -501,7 +501,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "environment-report",
       "dispatch_mode": "job",
@@ -511,7 +511,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "device-health-check",
       "dispatch_mode": "job",
@@ -521,7 +521,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "maintenance-schedule-check",
       "dispatch_mode": "job",
@@ -531,7 +531,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "atmosphere-feed-refresh",
       "dispatch_mode": "job",
@@ -541,7 +541,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "atmosphere-preconditioning",
       "dispatch_mode": "job",
@@ -551,7 +551,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -561,7 +561,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "context_producer_home_presence",
       "dispatch_mode": "job",
@@ -571,7 +571,7 @@
     },
     {
       "path": "roster/home/butler.toml",
-      "source_sha256": "84f3dbd571b59329b940bd3cc65427b23d313e1096906b2f66cc02d08aa6edd8",
+      "source_sha256": "a78d8fd8b9285492db065c05ff9963d36fddf68f63d30a502ab4125a74f92a37",
       "butler": "home",
       "name": "home-safety-sentinel",
       "dispatch_mode": "job",
@@ -581,7 +581,7 @@
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
+      "source_sha256": "aadb82837bb137dd477332b03991b207720acfeb36d3ab51544f55dbe4e5fba6",
       "butler": "lifestyle",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -591,7 +591,7 @@
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
+      "source_sha256": "aadb82837bb137dd477332b03991b207720acfeb36d3ab51544f55dbe4e5fba6",
       "butler": "lifestyle",
       "name": "weekly-taste-digest",
       "dispatch_mode": "prompt",
@@ -602,7 +602,7 @@
     },
     {
       "path": "roster/lifestyle/butler.toml",
-      "source_sha256": "c72df2f45363601e03aefc3564431c6ae2c77d78ff5bde07c5c5abc84c81d4f9",
+      "source_sha256": "aadb82837bb137dd477332b03991b207720acfeb36d3ab51544f55dbe4e5fba6",
       "butler": "lifestyle",
       "name": "taste-ledger-project",
       "dispatch_mode": "job",
@@ -652,27 +652,27 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "upcoming-dates-check",
-      "dispatch_mode": "prompt",
-      "job_name": null,
+      "dispatch_mode": "job",
+      "job_name": "upcoming_dates_check",
       "declaration_status": "missing_pending_roster_allocation",
       "classification": "prompt_obligation"
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "relationship-maintenance",
-      "dispatch_mode": "prompt",
-      "job_name": null,
+      "dispatch_mode": "job",
+      "job_name": "relationship_maintenance",
       "declaration_status": "missing_pending_roster_allocation",
       "classification": "prompt_obligation"
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -682,7 +682,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -692,7 +692,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "calendar_prep_contribution",
       "dispatch_mode": "job",
@@ -702,7 +702,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "meeting-debrief",
       "dispatch_mode": "job",
@@ -712,7 +712,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "insight-scan",
       "dispatch_mode": "job",
@@ -722,7 +722,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "interaction-sync",
       "dispatch_mode": "job",
@@ -732,7 +732,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "loan-cost-claim-backfill",
       "dispatch_mode": "job",
@@ -742,7 +742,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "memory-curation",
       "dispatch_mode": "job",
@@ -752,7 +752,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "pending-actions-curation",
       "dispatch_mode": "job",
@@ -762,7 +762,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "fact-retraction-curation",
       "dispatch_mode": "job",
@@ -772,7 +772,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "prepared-action-orphan-sweep",
       "dispatch_mode": "job",
@@ -782,7 +782,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "entity-dedup-curation",
       "dispatch_mode": "job",
@@ -792,7 +792,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "episodic-predicate-curation",
       "dispatch_mode": "job",
@@ -802,7 +802,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "d9244e522bf999f22a56e8b0346562a59b89af892478f862ae826b7cfff9b042",
+      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
       "butler": "relationship",
       "name": "email-identity-enrichment",
       "dispatch_mode": "job",

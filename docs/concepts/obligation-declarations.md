@@ -107,10 +107,11 @@ predicate/time filters, as a resource dimension; `notify` does not register
 `fleet_catalog_unavailable`, because a local registry cannot validate its remote
 existence. Even healthy owning-domain declarations remain unverified fleet data.
 
-The adjacent Chronicler gap-interview and both Relationship prompt blocks remain
-undeclared pending their separately owned deterministic conversions. No prompt,
-cron, job, module or current dispatch behavior changes here. The census still
-contains all 102 schedules and 19 producer families, including unfinished ones.
+The delivered Chronicler gap-interview now runs its existing deterministic job;
+it retains no declaration and cannot inherit the day-close notify ceiling. Both
+Relationship prompt blocks remain undeclared pending their separately owned
+conversions. The census records that delivered dispatch mode while retaining
+all 102 schedule identities and 19 producer families, including unfinished ones.
 
 Health's skill now uses the registered history/trend APIs and distinguishes
 expected coverage from logged observations; General's unbound travel-time
@@ -127,7 +128,14 @@ or creator authority, a verified fleet catalog or admission readiness.
 
 `build_obligation_catalog()` projects immutable final `ToolCatalog` snapshots.
 It checks classification and authorization completeness and uses the registered
-domain plus canonical tool name. It is a local value projection, **not** the
+domain plus canonical tool name. Each resource parameter also carries an explicit
+`selection_bound` boolean. The three Travel inventory readers use false for
+each of their actual resource parameters (an explicit empty map for the reader
+without resource arguments), preserving dynamic server authorization rather
+than creating an owner-selection grant. Missing metadata fails eligibility.
+The phased startup carries the exact seeded runtime snapshot and owning pool
+through `StartupState`; final-registration capture performs no replacement
+policy read. It is a local value projection, **not** the
 fleet's authenticated, freshness-verified `CatalogProvider`. Conditional recipient
 prose is not executable owner resolution: the projection conservatively marks no
 capability as an unconditional owner default. The broker must still resolve the

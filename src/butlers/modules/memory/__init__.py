@@ -335,6 +335,7 @@ class MemoryModule(Module):
                 output_trust="untrusted",
                 output_sensitivity="sensitive",
                 resource_params=("predicate", "scope"),
+                selection_bound={"predicate": False, "scope": False},
                 safety_args=(),
                 idempotency="none",
                 owner_authority=False,

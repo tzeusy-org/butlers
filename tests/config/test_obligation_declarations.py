@@ -430,6 +430,16 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
                 # Dynamic dates/IDs/recipients are not fabricated static owner
                 # selections. Empty restrictions never authenticate those values.
                 assert grants[f"{domain}__{call}"].resources == ()
+                if domain == "travel" and call in {
+                    "document_expiry_inventory",
+                    "memory_fact_inventory",
+                    "calendar_scan_reminder_events",
+                }:
+                    # Explicit false keeps current dynamic authorization and
+                    # never creates an owner-selected resource grant.
+                    assert descriptor.selection_bound == {
+                        parameter: False for parameter in descriptor.resource_params
+                    }
             assert [
                 i.code
                 for i in diagnose_loaded_schedules(
@@ -439,9 +449,18 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
             assert spec.prompt not in caplog.text
 
         if domain == "chronicler":
-            # The adjacent helper conversion is separately owned and remains
-            # undeclared; it must not inherit the day-close notify grant.
-            assert prompts["chronicler_gap_interview"].obligation.status == "missing"
+            # The delivered adjacent helper is a deterministic job. It must
+            # retain that executing successor and cannot inherit notify grants.
+            from butlers.background import _deterministic_jobs_for_butler
+            from butlers.scheduled_jobs import _run_chronicler_gap_interview_job
+
+            gap = next(s for s in config.schedules if s.name == "chronicler_gap_interview")
+            assert gap.dispatch_mode == "job" and gap.job_name == "chronicler_gap_interview"
+            assert gap.obligation.status == "missing" and gap.name not in prompts
+            assert (
+                _deterministic_jobs_for_butler(domain)[gap.job_name]
+                is _run_chronicler_gap_interview_job
+            )
             spec = prompts["chronicler_day_close"]
 
             def changed(raw):

@@ -17,7 +17,7 @@
 | [Travel](travel.md) | Trip containers built from booking and itinerary email |
 | [Education](education.md) | Adaptive tutoring with spaced repetition |
 | [Home](home.md) | Home Assistant comfort, scenes, energy, and actuation |
-| [Chronicler](../../roster/chronicler/MANIFESTO.md) | Reconstructs lived past time from other butlers' timestamped evidence |
+| [Chronicler](chronicler.md) | Reconstructs lived past time from other butlers' timestamped evidence |
 | [Lifestyle](../../roster/lifestyle/MANIFESTO.md) | Remembers taste: music, entertainment, food, hobbies, routines |
 | [Concierge](../../roster/concierge/MANIFESTO.md) | System-plane staffer answering fleet status, spend, and session questions |
 | [QA](../../roster/qa/MANIFESTO.md) | System-wide SRE staffer: error patrol, triage, investigation dispatch |

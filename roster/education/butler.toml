@@ -139,6 +139,10 @@ groups = ["core", "entity"]
 [modules.contacts]
 provider = "google"
 
+# Relationship is the only butler that syncs contacts (it owns entities).
+[modules.contacts.sync]
+enabled = false
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

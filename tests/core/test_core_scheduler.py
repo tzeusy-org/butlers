@@ -524,7 +524,7 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, 
     async def _audit_failure(*args, **kwargs):
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("butlers.api.routers.audit.append", _audit_failure)
+    monkeypatch.setattr("butlers.core.audit.append", _audit_failure)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await ensure_module_default_schedule(
             pool,

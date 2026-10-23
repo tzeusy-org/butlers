@@ -190,11 +190,19 @@ async def test_registered_report_fixes_authority_and_preserves_outcomes(monkeypa
     assert production_names == legacy_names | {
         "contacts_report_channel",
         "contacts_resolve_channel",
+        "entity_resolve",
+        "entity_get",
+        "entity_neighbors",
+        "relationship_fact_evidence",
+        "relationship_predicate_coverage",
+        "relationship_lookup",
     }
     assert len(legacy_names - {"identity_resolve_channels", "identity_assert_sender_channel"}) == 61
     assert not {"contacts_report_channel", "contacts_resolve_channel"} & legacy_names
     assert "relationship_assert_fact" in legacy_names
     assert "entity_update" not in production_names
+    assert "relationship_record_coverage" not in production_names
+    assert "entity_set_posture" not in production_names
     client = _Switchboard(mcp)
     owner = ContactsOwner(lambda: client, "general")
     ingress = importlib.import_module("butlers.tools.relationship.contacts_ingress")
@@ -380,7 +388,7 @@ async def test_transport_refusal_correlations_and_late_wiring():
     contacts_package = importlib.import_module("butlers.modules.contacts")
     for hosting_name in ["general", "health"]:
         started = ContactsModule()
-        config = contacts_package.ContactsConfig(provider="google")
+        config = contacts_package.ContactsConfig(provider="google", sync={"enabled": True})
         database = SimpleNamespace(pool=SimpleNamespace())
         started._create_provider = AsyncMock(return_value=SimpleNamespace(name="google"))
         with patch.object(contacts_package.ContactsSyncRuntime, "start", AsyncMock()):

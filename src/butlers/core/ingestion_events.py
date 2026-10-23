@@ -43,18 +43,20 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
 
-from butlers.api.db import DatabaseManager
-from butlers.connectors.known_contact_state import (
+from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,
     current_available,
     historical_available,
 )
 from butlers.core.pricing import PricingConfig, estimate_session_cost
+
+if TYPE_CHECKING:
+    from butlers.api.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
 

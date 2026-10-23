@@ -34,6 +34,12 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 - **AND** this is a deliberate carve-out, not an instance of the "audit.append raises on missing table" scenario above: these call sites emit secondary, non-transactional telemetry about an operation that has already succeeded or is orthogonal to the audited state change (e.g. a scheduler tick, a butler-run log line, an inbound-message record), so a missing audit table must never block or roll back the primary operation
 - **AND** this carve-out is distinct from the canonical mutation-endpoint path: the state-changing endpoint that owns the transaction (e.g. permissions, model priority, spend rules, webhook CRUD, approval verbs, data ops) SHALL still call `audit.append()` directly inside its own transaction and propagate `AuditTableNotAvailableError` per the scenario above; a shim call site MUST NOT be introduced as a substitute for that direct, propagating call.
 
+#### Scenario: Model override mutation owns its receipt
+- **WHEN** a model-override PUT batch or DELETE commits
+- **THEN** its mutation transaction appends exactly one `model.override.upsert` or `model.override.delete` row with server-derived actor, trimmed reason and any explicitly client-reported preview-unavailable flag
+- **AND** failed/cancelled audit persistence rolls back the mutation; the dashboard middleware does not add a second success row after the owning receipt committed
+- **AND** unsuccessful requests retain the existing best-effort error telemetry contract
+
 ### Requirement: Audit Log Read API
 The dashboard SHALL expose paginated read access to the audit log.
 
@@ -364,7 +370,7 @@ only from `action`, `target`, and `failure_category`, and SHALL NOT be derived
 from the row's `error`, `note`, or `metadata` at read time.
 
 `failure_category` SHALL hold only a member of
-`butlers.api.models.audit.PROBE_FAILURE_VOCABULARY` — `not_set`, `expired`,
+`butlers.core.audit.PROBE_FAILURE_VOCABULARY` — `not_set`, `expired`,
 `rejected`, `rate_limited`, `provider_error`, `malformed`, `unverified`,
 `other` — or `NULL`. It SHALL NEVER hold a raw probe-status token, a provider
 HTTP status code, a provider string, or any audit free text. The value is

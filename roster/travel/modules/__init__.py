@@ -55,6 +55,7 @@ class TravelModule(Module):
                 output_trust="untrusted",
                 output_sensitivity="sensitive",
                 resource_params=(),
+                selection_bound={},
                 safety_args=(),
                 idempotency="none",
                 owner_authority=False,

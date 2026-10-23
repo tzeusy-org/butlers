@@ -1,6 +1,6 @@
 ## Context
 
-Proposed direction, awaiting exact owner adoption/release. Evidence is the accepted [monthly packet](../../../docs/reviews/2026-10-14-qa-month-packet.md), reviewed source `b747a55a530364d987fb37457c343193e9362fe7`, deployed image `c966a1cdde9e`. A scoped diff through origin/main `3bde6119914e066414451d3df609a8c20e84fa30` found no changes to the governing QA source/specs, doctrine or RFC0015. Refresh that check before release. This changes required behavior; it does not assert that the repair has shipped.
+Proposed direction, awaiting exact owner adoption/release. Evidence is the accepted [monthly packet](../../../docs/plans/2026-10-14-qa-month-packet.md), reviewed source `b747a55a530364d987fb37457c343193e9362fe7`, deployed image `c966a1cdde9e`. A scoped diff through origin/main `3bde6119914e066414451d3df609a8c20e84fa30` found no changes to the governing QA source/specs, doctrine or RFC0015. Refresh that check before release. This changes required behavior; it does not assert that the repair has shipped.
 
 The month produced 100 attempts, 95 linked sessions attributed to travel, 38 no-op outcomes and 15 publication failures; no QA PR was opened in the window. Discovery worked substantially better than investigation. The owner reported correcting identity to `tzeusy-orca`; the author-reported resolver/grant recheck was not retained and is currently unverified. Configured repository `tzeusy-org/butlers` does not prove publication capability, confinement or operational recovery.
 

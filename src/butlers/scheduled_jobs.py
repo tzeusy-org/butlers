@@ -1288,6 +1288,28 @@ async def _run_relationship_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_relationship_upcoming_dates_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Remind the owner of active people's dates this week (bu-idc5mx.4; template, zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_upcoming_dates_check
+
+    return await run_upcoming_dates_check(pool)
+
+
+async def _run_relationship_maintenance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Suggest the week's top overdue reconnections by urgency (bu-idc5mx.4; zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    return await run_relationship_maintenance(pool)
+
+
 async def _run_prepared_action_orphan_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1748,6 +1770,16 @@ async def _run_qa_evidence_cleanup_job(
 # ---------------------------------------------------------------------------
 
 
+async def _run_chronicler_gap_interview_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
+    from butlers.chronicler.gap_interview_job import run_gap_interview_job
+
+    return await run_gap_interview_job(pool, job_args)
+
+
 async def _run_chronicler_project_sessions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2175,6 +2207,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
+            "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
+            "relationship_maintenance": _run_relationship_maintenance_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
@@ -2219,6 +2253,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # purge_superseded / catalog_backfill) or they fail with "unknown
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,

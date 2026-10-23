@@ -672,7 +672,7 @@ def current_fact_write_context() -> FactWriteContext:
     context = _current_report.get()
     if context is not None:
         return context
-    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get():
         if verified_http_principal.get() != "owner":

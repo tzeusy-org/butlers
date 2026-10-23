@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -171,6 +171,7 @@ class ApprovalDetail(BaseModel):
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
+    call_preview: ApprovalCallPreview | None = None
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None
@@ -305,10 +306,27 @@ class ApprovalsPolicyUpdate(ApprovalsPolicy):
         return self
 
 
+class DisplayedApprovalCall(BaseModel):
+    """The call shown to the owner; never a source of actor authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tool_name: str = Field(min_length=1)
+    args_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ApprovalCallPreview(BaseModel):
+    """Complete deterministic facts of a call safe for one-tap approval."""
+
+    title: str
+    facts: list[dict[str, str]]
+    displayed_call: DisplayedApprovalCall
+
+
 class ApprovalApproveRequest(BaseModel):
     """Request body for POST /api/approvals/{id}/approve."""
 
     edits: dict[str, Any] | None = Field(default=None, description="Optional edits to tool args")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalDenyRequest(BaseModel):
@@ -409,6 +427,7 @@ class ApprovalActionApproveRequest(BaseModel):
     """Request body for approving an action."""
 
     create_rule: bool = Field(default=False, description="Create a standing rule from this action")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalActionRejectRequest(BaseModel):

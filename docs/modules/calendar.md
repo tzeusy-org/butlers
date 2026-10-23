@@ -39,7 +39,7 @@ suggestion_count = 3
 [modules.calendar.sync]
 enabled = true
 interval_minutes = 5
-window_days = 30
+full_sync_window_days = 30
 ```
 
 ### Credentials
@@ -149,10 +149,13 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   removes the provider copy before the authoritative local row.
 - Workspace: `/butlers/calendar` (`CalendarWorkspacePage.tsx`) reads `GET /api/calendar/workspace`
   and `/workspace/meta` via `use-calendar-workspace.ts`. Tests cover URL-backed `view=user|butler`,
-  butler-lane grouping, and both create/edit payload shapes. The `dashboard-*`
-  OpenSpec specs must list the mutation endpoints (`/api/calendar/workspace/user-events`, `/butler-events`), the v1
-  recurrence scope (`series` only for provider recurring updates/deletes), and `projection_freshness`
-  / `request_id`.
+  butler-lane grouping, and the butler-event create/edit payload shapes. The workspace is an
+  operator view (bu-q11586.7): the dashboard no longer edits, deletes, drags, dedups, exports or
+  undoes Google events, and `POST /api/calendar/workspace/user-events` accepts `action: "create"`
+  only (the quick-add confirmation). The `dashboard-*` OpenSpec specs list that route and
+  `/butler-events`, `projection_freshness` and `request_id`. Every calendar MCP write tool,
+  including the provider update/delete and recurrence-scope tools, stays registered for
+  butlers and chat.
 - `src/butlers/modules/calendar.py::_normalize_recurrence()` rejects any rule containing `\n` or
   `\r` (iCalendar injection) and
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
@@ -176,8 +179,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `calendar_sync_cursors`, `calendar_action_log`) are core tables in every migrated schema, keyed
   for idempotency by `UNIQUE (source_id, origin_ref)`, `UNIQUE (event_id, origin_instance_ref)` and
   `UNIQUE (idempotency_key)`, with GiST range indexes for window queries.
-- Workspace mutations (`POST /api/calendar/workspace/user-events` and `/butler-events`, envelope
-  `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
+- Workspace mutations (`POST /api/calendar/workspace/user-events` with `action: "create"` and
+  `/butler-events`, envelope `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
   `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
   delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
@@ -258,10 +261,11 @@ unresolved markers and their historical owners.
 The mounted controls use the same typed handler for contextual, keyboard and
 palette actions. Receipt state survives inbox-row removal; outcome refresh
 reuses the original key and never optimistically labels an invitation accepted.
-Only an applied pre-state earns Undo. The existing undo route reserves one
-server-owned inverse, including a retained `needsAction`, and uses the same
-approval tool, exact source and unchanged provider post-version. A lost inverse
-HTTP result does not offer another Undo. Existing CRUD inverses remain intact.
+The dashboard offers no Undo for an invitation answer: the `/undo/{action_id}`
+route was removed with the operator-view cut (bu-q11586.7), so a receipt reports
+the outcome only. The module's server-owned inverse reservation
+(`reserve_response_inverse`) and the stored-inverse receipt read below are
+unchanged.
 
 Response review links use the existing approval dossier with the distinct
 `review_source=calendar:<owning-butler>` read selector. The server checks the
