@@ -55,12 +55,14 @@ async def pool(migrated_db_url: str):
     await db_pool.close()
 
 
-async def _park_and_approve(pool, *, action_id: uuid.UUID, tool_args: dict) -> None:
+async def _park_and_approve(
+    pool, *, action_id: uuid.UUID, tool_args: dict, tool_name: str = "notify"
+) -> None:
     now = datetime.now(UTC)
     await park_prepared_action(
         pool,
         action_id=action_id,
-        tool_name="notify",
+        tool_name=tool_name,
         tool_args=tool_args,
         agent_summary="Prepared reach-out draft",
         requested_at=now,
@@ -103,6 +105,57 @@ async def test_approve_replays_exact_stored_args_and_writes_execution_result(poo
     assert row["status"] == ActionStatus.EXECUTED.value
     assert row["execution_result"]["success"] is True
     assert row["execution_result"]["result"] == {"status": "sent"}
+
+
+async def test_legacy_calendar_marker_retires_only_after_original_binding(pool) -> None:
+    from butlers.modules.approvals.execution_context import get_approval_execution_context
+    from butlers.modules.calendar_approval import calendar_approval_args
+
+    tool_name = "calendar_toggle_butler_event"
+    for extra, admitted in (
+        ({"_approval_bypass": True}, True),
+        ({"_approval_bypass": False}, False),
+        ({"_approval_bypass": 1}, False),
+        ({"_approval_bypass": "true"}, False),
+        ({"_approval_bypass": None}, False),
+        ({"_approval_bypass": True, "unknown": "value"}, False),
+        ({"unknown": "value"}, False),
+    ):
+        action_id = uuid.uuid4()
+        stored = {"event_id": "event", "enabled": False, **extra}
+        await _park_and_approve(pool, action_id=action_id, tool_args=stored, tool_name=tool_name)
+        calls = []
+
+        async def handler(event_id, enabled, source_hint=None, request_id=None):
+            args = calendar_approval_args(
+                tool_name,
+                event_id=event_id,
+                enabled=enabled,
+                source_hint=source_hint,
+                request_id=request_id,
+            )
+            assert get_approval_execution_context(tool_name=tool_name, tool_args=args) is not None
+            calls.append(args)
+            return {"status": "updated"}
+
+        if admitted:
+            altered = await execute_approved_action(
+                pool, action_id, tool_name, {**stored, "enabled": True}, handler
+            )
+            assert not altered.success and calls == []
+        outcome = await execute_approved_action(pool, action_id, tool_name, stored, handler)
+        assert outcome.success is admitted
+        if admitted:
+            repeated = await execute_approved_action(pool, action_id, tool_name, stored, handler)
+            assert repeated.to_dict() == outcome.to_dict()
+            assert len(calls) == 1 and "_approval_bypass" not in calls[0]
+        else:
+            assert calls == []
+        row = await pool.fetchrow(
+            "SELECT status, tool_args FROM pending_actions WHERE id=$1", action_id
+        )
+        assert row["status"] == ("executed" if admitted else "approved")
+        assert row["tool_args"] == stored
 
 
 async def test_execution_failure_on_a_prepared_action_records_attention_ledger_row(
