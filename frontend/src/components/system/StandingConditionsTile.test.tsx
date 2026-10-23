@@ -920,6 +920,46 @@ describe("StandingConditionsTile -- linked owner-alert status", () => {
     expect(tile !== null).toBe(unavailable)
   })
 
+  it.each([
+    ["not_raised", "No owner alert has been raised for this condition", true],
+    ["within_grace", "Owner alert waits for the attention grace", false],
+  ])("renders markerless %s with its label; only not_raised degrades the tile", (status, label, degraded) => {
+    const { root, line } = renderWith({
+      status,
+      episode_id: null,
+      created_at: null,
+      delivered_at: null,
+      safe_reason: null,
+      outbox_retained: null,
+    })
+    expect(line?.dataset.status).toBe(status)
+    expect(line?.textContent).toBe(label)
+    expect(root.querySelector("[data-degraded]") !== null).toBe(degraded)
+  })
+
+  it("does not degrade the tile for a resolved row whose attention is not_raised", () => {
+    resetCommitmentMocks()
+    showConditions([
+      {
+        ...fleetCondition,
+        state: "resolved",
+        resolved_at: "2026-07-20T13:00:00Z",
+        attention: {
+          status: "not_raised",
+          episode_id: null,
+          created_at: null,
+          delivered_at: null,
+          safe_reason: null,
+          outbox_retained: null,
+        },
+      },
+    ])
+    const root = new DOMParser().parseFromString(render(), "text/html").body
+    const line = root.querySelector<HTMLElement>('[data-testid="condition-attention"]')
+    expect(line?.textContent).toBe("No owner alert has been raised for this condition")
+    expect(root.querySelector("[data-degraded]")).toBeNull()
+  })
+
   it("appends safe_reason verbatim and nothing when it is null", () => {
     const withReason = renderWith(attention({ status: "failed", safe_reason: "Telegram rejected the message." }))
     expect(withReason.line?.textContent).toContain(" · Telegram rejected the message.")

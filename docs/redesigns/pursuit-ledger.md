@@ -14,8 +14,8 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 02 | 2026-07-04 | 15 | bu-qvnce | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |
 | 03 | 2026-07-10 | 15 | one epic per move (no umbrella) | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
 | 04 | 2026-07-12 | 15 | bu-hmdqz | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
-| 05 | 2026-07-17 | 15 | bu-kqnum | [2026-07-17-jarvis-pursuit.md](2026-07-17-jarvis-pursuit.md) |
-| 06 | 2026-07-22 | 15 | bu-27dxl | [2026-07-22-jarvis-pursuit.md](2026-07-22-jarvis-pursuit.md) |
+| 05 | 2026-07-17 | 15 | bu-kqnum | `git show 7cfd3b301:docs/redesigns/2026-07-17-jarvis-pursuit.md` |
+| 06 | 2026-07-22 | 15 | bu-27dxl | `git show 7cfd3b301:docs/redesigns/2026-07-22-jarvis-pursuit.md` |
 | 07 | 2026-07-25 | 16 | bu-ep4ks | [2026-07-25-jarvis-pursuit.md](2026-07-25-jarvis-pursuit.md) |
 |: (talk-to-butlers) | 2026-07-28 | (see dossier) |: | [2026-07-28-talk-to-butlers-maturity-pursuit.md](2026-07-28-talk-to-butlers-maturity-pursuit.md) |
 | 08 | 2026-08-09 | 15 | bu-6jv4m | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
@@ -23,10 +23,10 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 10 (dashboard chat) | 2026-09-02 | 15 | bu-0ynlk | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) |
 | 11 | 2026-09-03 | 15 | bu-8cdl1 | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 12 | 2026-09-05 | 15 | bu-2jtfw | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
-| 13 | 2026-09-12 | 15 | bu-h40h2b | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
-| 14 | 2026-09-22 | 4 | bu-p5umi2 | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
+| 13 | 2026-09-12 | 15 | bu-h40h2b | `git show 7cfd3b301:docs/redesigns/2026-09-12-jarvis-pursuit.md` |
+| 14 | 2026-09-22 | 4 | bu-p5umi2 | `git show 7cfd3b301:docs/redesigns/2026-09-22-jarvis-pursuit.md` |
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
-| 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
+| 16 | 2026-10-06 | 15 | bu-s11n0s | `git show 7cfd3b301:docs/redesigns/2026-10-06-jarvis-pursuit.md` |
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
 | 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |

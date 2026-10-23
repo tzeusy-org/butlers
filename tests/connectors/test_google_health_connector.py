@@ -57,7 +57,7 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -87,6 +87,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate",
         "vo2_max",
         "workout",
+        "weight",
+        "body_fat",
     }
     assert {bundle.resource: bundle.endpoint_path for bundle in RESOURCE_BUNDLES} == {
         "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
@@ -97,6 +99,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
         "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
+        "weight": "/users/me/dataTypes/weight/dataPoints",
+        "body_fat": "/users/me/dataTypes/body-fat/dataPoints",
     }
 
 

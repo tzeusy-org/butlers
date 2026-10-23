@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -790,6 +791,239 @@ class TestTrackBill:
 
 
 # ---------------------------------------------------------------------------
+# track_bill payment destination fingerprint tests (bu-s11n0s.21)
+# ---------------------------------------------------------------------------
+
+# Synthetic destinations and keys only: nothing here is a real account or secret.
+_DEST_F1 = "GB82 WEST 1234 5698 7654 32"
+_DEST_F2 = "012-345-6789"
+_DEST_HANDLE = "$SyntheticPayee"
+_RAW_DESTINATIONS = (_DEST_F1, _DEST_F2, _DEST_HANDLE)
+
+
+@pytest.fixture
+def destination_key():
+    """Configure a synthetic fingerprint key for the test and clear it afterwards."""
+    from butlers.tools.finance.payment_destinations import configure_destination_key
+
+    configure_destination_key("synthetic-key-for-tests-only")
+    yield
+    configure_destination_key(None)
+
+
+def _days(offset: int) -> date:
+    return datetime.now(UTC).date() + timedelta(days=offset)
+
+
+async def _destination_rows(pool, payee_key: str) -> list[asyncpg.Record]:
+    return await pool.fetch(
+        "SELECT * FROM payment_destinations WHERE payee_key = $1 ORDER BY first_seen_at",
+        payee_key,
+    )
+
+
+async def _assert_no_raw_destination(pool, raw_values) -> None:
+    """Scan every text/jsonb-bearing row of bills, payment_destinations and the SPO mirror."""
+    import asyncio
+
+    from butlers.tools.finance import bills as bills_module
+
+    # The SPO mirror is a fire-and-forget background task; let it land before scanning.
+    pending = list(bills_module._background_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    # The mirror swallows its own errors, so prove it landed before scanning its rows:
+    # five bills were tracked, each a distinct subject, and none may be missing here.
+    mirrored = await pool.fetchval(
+        "SELECT count(*) FROM public.facts WHERE predicate = 'bill' AND subject LIKE 'owner:bill:%'"
+    )
+    assert mirrored >= 4, "SPO mirror rows did not land; the public.facts scan would be vacuous"
+
+    needles = set()
+    for raw in raw_values:
+        needles.add(raw.lower())
+        needles.add("".join(ch for ch in raw if ch.isalnum() or ch in "$@").lower())
+    scanned = 0
+    scans = {
+        "bills": "SELECT row_to_json(t)::text AS doc FROM bills t",
+        "payment_destinations": "SELECT row_to_json(t)::text AS doc FROM payment_destinations t",
+        "public.facts": "SELECT row_to_json(t)::text AS doc FROM public.facts t",
+    }
+    for table, query in scans.items():
+        rows = await pool.fetch(query)
+        for row in rows:
+            scanned += 1
+            doc = row["doc"].lower()
+            doc_compact = "".join(ch for ch in doc if ch.isalnum() or ch in "$@")
+            for needle in needles:
+                assert needle not in doc, f"raw destination found in {table}"
+                assert needle not in doc_compact, f"raw destination found in {table}"
+    assert scanned > 0
+
+
+class TestTrackBillPaymentDestination:
+    """track_bill fingerprints payment destinations per counterparty."""
+
+    @pytest.fixture(scope="module")
+    def migrated_db_url(self, postgres_container) -> str:
+        """Add the memory chain so the SPO mirror's ``facts`` table exists to be scanned."""
+        return create_migrated_test_db(
+            postgres_container,
+            migration_db_name(),
+            chains=["core", "memory", "finance"],
+        )
+
+    @pytest.fixture(autouse=True)
+    def _mirror_embeddings(self, monkeypatch):
+        """Stub the embedding engine so the SPO mirror write does not load a model."""
+        engine = MagicMock()
+        engine.embed.return_value = [0.1] * 384
+        engine.model_name = "test-model"
+        from butlers.tools.finance import facts as facts_module
+
+        monkeypatch.setattr(facts_module, "_get_embedding_engine", lambda: engine)
+
+    @pytest.fixture(autouse=True)
+    async def _clear_destinations(self, pool):
+        """The shared ``pool`` fixture does not truncate payment_destinations."""
+        await pool.execute("TRUNCATE TABLE payment_destinations")
+
+    async def _bill(self, pool, payee, due, destination, **kwargs):
+        from butlers.tools.finance import track_bill
+
+        return await track_bill(
+            pool=pool,
+            payee=payee,
+            amount=100.00,
+            currency="USD",
+            due_date=due,
+            payment_destination=destination,
+            **kwargs,
+        )
+
+    async def test_changed_destination_is_new_for_counterparty(self, pool, destination_key):
+        """Three bills to F1 build a baseline; a bill to F2 is new_for_counterparty."""
+        first = await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        assert first["destination_verdict"] == "unverifiable"
+        for offset in (31, 61):
+            again = await self._bill(pool, "Acme Utilities", _days(offset), _DEST_F1)
+            assert again["destination_verdict"] == "known"
+
+        changed = await self._bill(pool, "Acme Utilities", _days(91), _DEST_F2)
+
+        assert changed["destination_verdict"] == "new_for_counterparty"
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 2
+        assert {r["kind"] for r in rows} == {"iban", "account"}
+
+    async def test_known_destination_increments_seen_count(self, pool, destination_key):
+        """A bill to an already-seen destination is known and adds no row."""
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(31), _DEST_F2)
+        before = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+
+        result = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F1)
+
+        assert result["destination_verdict"] == "known"
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 2
+        after = {r["kind"]: r["seen_count"] for r in rows}
+        assert after["iban"] == before["iban"] + 1
+        assert after["account"] == before["account"]
+
+    async def test_first_destination_for_a_payee_is_unverifiable_baseline(
+        self, pool, destination_key
+    ):
+        """The first destination ever seen for a payee is stored as its baseline."""
+        result = await self._bill(pool, "Brand New Payee", _days(5), _DEST_HANDLE)
+
+        assert result["destination_verdict"] == "unverifiable"
+        assert result["destination_reason"] == "no_prior_destination"
+        rows = await _destination_rows(pool, "brand new payee")
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "handle"
+        assert rows[0]["last4"] == "payee"[-4:]
+        assert rows[0]["seen_count"] == 1
+
+    async def test_no_destination_leaves_columns_null(self, pool, destination_key):
+        """Existing callers are unchanged: no destination, no columns, no rows."""
+        result = await self._bill(pool, "Plain Payee", _days(5), None)
+
+        assert result["destination_fingerprint"] is None
+        assert result["destination_verdict"] is None
+        assert "destination_reason" not in result
+        assert result["payee"] == "Plain Payee"
+        assert await pool.fetchval("SELECT count(*) FROM payment_destinations") == 0
+
+    async def test_missing_key_fails_closed_and_stores_nothing(self, pool):
+        """With no fingerprint key the verdict is unverifiable and nothing is stored."""
+        from butlers.tools.finance.payment_destinations import configure_destination_key
+
+        configure_destination_key(None)
+
+        result = await self._bill(pool, "Keyless Payee", _days(5), _DEST_F1)
+
+        assert result["destination_verdict"] == "unverifiable"
+        assert result["destination_reason"] == "fingerprint_key_unavailable"
+        assert result["destination_fingerprint"] is None
+        assert await pool.fetchval("SELECT count(*) FROM payment_destinations") == 0
+        assert _DEST_F1 not in repr(result)
+        assert "GB82" not in repr(result)
+
+    async def test_reingesting_the_same_bill_does_not_double_count(self, pool, destination_key):
+        """Same payee, due date and destination: seen_count is unchanged on re-ingest."""
+        first = await self._bill(pool, "Acme Utilities", _days(10), _DEST_F1)
+        again = await self._bill(pool, "Acme Utilities", _days(10), _DEST_F1)
+
+        assert again["id"] == first["id"]
+        assert again["destination_verdict"] == first["destination_verdict"]
+        rows = await _destination_rows(pool, "acme utilities")
+        assert len(rows) == 1
+        assert rows[0]["seen_count"] == 1
+
+    async def test_unverifiable_reingest_keeps_a_stamped_verdict(self, pool, destination_key):
+        """A key-less or garbled re-ingest never erases a new_for_counterparty warning."""
+        from butlers.tools.finance.payment_destinations import configure_destination_key
+
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        flagged = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        assert flagged["destination_verdict"] == "new_for_counterparty"
+        counts_before = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+
+        configure_destination_key(None)
+        no_key = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        garbled = await self._bill(pool, "Acme Utilities", _days(61), "--")
+        configure_destination_key("synthetic-key-for-tests-only")
+        restored = await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+
+        assert no_key["destination_reason"] == "fingerprint_key_unavailable"
+        assert garbled["destination_reason"] == "unparseable_destination"
+        for result in (no_key, garbled, restored):
+            assert result["destination_verdict"] == "new_for_counterparty"
+            assert result["destination_fingerprint"] == flagged["destination_fingerprint"]
+        counts_after = {
+            r["kind"]: r["seen_count"] for r in await _destination_rows(pool, "acme utilities")
+        }
+        assert counts_after == counts_before
+
+    async def test_no_raw_destination_is_stored_anywhere(self, pool, destination_key):
+        """After the other cases, no table carries a raw destination string."""
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(31), _DEST_F1)
+        await self._bill(pool, "Acme Utilities", _days(61), _DEST_F2)
+        await self._bill(pool, "Handle Payee", _days(5), _DEST_HANDLE)
+        await self._bill(pool, "Acme Utilities", _days(1), _DEST_F1)  # re-ingest
+        await self._bill(pool, "Plain Payee", _days(7), None)
+
+        await _assert_no_raw_destination(pool, _RAW_DESTINATIONS)
+
+
+# ---------------------------------------------------------------------------
 # upcoming_bills tests
 # ---------------------------------------------------------------------------
 
@@ -1109,3 +1343,132 @@ class TestUpcomingBills:
         result = await upcoming_bills(pool=pool, days_ahead=14)
         due_dates = [item["bill"]["due_date"] for item in result["needs_action"]]
         assert due_dates == sorted(due_dates)
+
+
+# ---------------------------------------------------------------------------
+# Subscription field provenance (bu-svqpzo.10)
+# ---------------------------------------------------------------------------
+
+_GMAIL_ROUTING_CONTEXT = {
+    "source_entity_id": "00000000-0000-0000-0000-000000000001",
+    "request_context": {
+        "source_channel": "email",
+        "source_endpoint_identity": "gmail:user:owner@example.invalid",
+    },
+}
+
+
+class TestSubscriptionFieldProvenance:
+    """cancellation_url and status keep who wrote them; email never outranks the owner."""
+
+    @staticmethod
+    def _as_owner(monkeypatch) -> None:
+        from butlers.tools.finance import subscriptions as subscriptions_module
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+
+        async def _owner(_pool):
+            return FinanceSignalSource("owner")
+
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _owner)
+
+    @staticmethod
+    def _as_routed_gmail(monkeypatch) -> None:
+        from butlers.tools.finance import expected_signals as expected_signals_module
+
+        monkeypatch.setattr(
+            expected_signals_module,
+            "get_current_runtime_session_routing_context",
+            lambda: _GMAIL_ROUTING_CONTEXT,
+        )
+
+    async def _track(self, pool, **overrides):
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        kwargs = {
+            "pool": pool,
+            "service": "Provenance Co",
+            "amount": 12.0,
+            "currency": "USD",
+            "frequency": "yearly",
+            "next_renewal": datetime.now(UTC).date() + timedelta(days=30),
+        }
+        kwargs.update(overrides)
+        return await track_subscription(**kwargs)
+
+    async def test_routed_gmail_write_is_stored_as_extracted(self, pool, monkeypatch):
+        self._as_routed_gmail(monkeypatch)
+
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["cancellation_url"] == "https://example-phish.test/cancel"
+        assert result["cancellation_url_source"] == "extracted"
+        assert result["status_source"] == "extracted"
+
+    async def test_routed_gmail_write_never_overwrites_owner_set_values(self, pool, monkeypatch):
+        with monkeypatch.context() as owner_context:
+            self._as_owner(owner_context)
+            owned = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+        assert owned["cancellation_url_source"] == "owner"
+        assert owned["status_source"] == "owner"
+
+        self._as_routed_gmail(monkeypatch)
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["id"] == owned["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["cancellation_url_source"] == "owner"
+        assert result["status"] == "active"
+        assert result["status_source"] == "owner"
+
+    async def test_owner_write_replaces_extracted_values_and_takes_ownership(
+        self, pool, monkeypatch
+    ):
+        self._as_routed_gmail(monkeypatch)
+        first = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+        self._as_owner(monkeypatch)
+
+        result = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+
+        assert result["id"] == first["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["cancellation_url_source"] == "owner"
+        assert result["status"] == "active"
+        assert result["status_source"] == "owner"
+
+    async def test_attestation_lookup_failure_is_treated_as_extracted(self, pool, monkeypatch):
+        from butlers.tools.finance import subscriptions as subscriptions_module
+
+        async def _unavailable(_pool):
+            raise RuntimeError("attestation store down")
+
+        with monkeypatch.context() as owner_context:
+            self._as_owner(owner_context)
+            owned = await self._track(pool, cancellation_url="https://vendor.example/cancel")
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _unavailable)
+
+        result = await self._track(
+            pool, cancellation_url="https://example-phish.test/cancel", status="cancelled"
+        )
+
+        assert result["id"] == owned["id"]
+        assert result["cancellation_url"] == "https://vendor.example/cancel"
+        assert result["status"] == "active"
+
+    async def test_attestation_lookup_failure_on_insert_stores_extracted(self, pool, monkeypatch):
+        from butlers.tools.finance import subscriptions as subscriptions_module
+
+        async def _unavailable(_pool):
+            raise RuntimeError("attestation store down")
+
+        monkeypatch.setattr(subscriptions_module, "runtime_signal_source", _unavailable)
+
+        result = await self._track(pool, cancellation_url="https://example-phish.test/cancel")
+
+        assert result["cancellation_url_source"] == "extracted"
+        assert result["status_source"] == "extracted"

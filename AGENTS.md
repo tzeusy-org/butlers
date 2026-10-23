@@ -56,8 +56,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    receipt-producing targets mirror the pytest populations of CI's
    `check-unit (N)` and `check-integration (N)` matrix children when a local reproduction
    is genuinely needed. They retain local covered defaults; required CI runs those
-   populations untraced, and owned daily/manual plus pipeline-PR assurance supplies
-   full eleven-shard coverage:
+   populations untraced, and the nightly workflow's covered jobs supply full
+   eleven-shard coverage as an artifact:
 
    ```bash
    make test-ci-unit
@@ -76,8 +76,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    proves only its named scope; terminal hosted CI is the broad merge evidence.
 
    The merge queue's `merge_group` run is that terminal broad gate: it runs
-   every shard, `guards`, and `frontend` against the exact tree about to land
-   (enforced by the `main-merge-queue` ruleset from
+   every shard, `guards`, `frontend` and Playwright `frontend-e2e` (required
+   through `check`) against the exact tree about to land (enforced by the `main-merge-queue` ruleset from
    `scripts/setup_main_ruleset.sh`). A PR's own CI run is deliberately
    narrower: the stdlib `route` job classifies the diff fail-closed, and a
    docs/spec-only PR skips the backend shards and frontend jobs on purpose,
@@ -92,7 +92,14 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
    (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
-   `guards` step locally before you push.
+   `guards` step locally before you push, except the hosted-only `knip`, `build`, and node
+   `--test` tooling contract. When this branch changed `frontend/` since its fork from the base
+   it also runs the hosted frontend lint steps (`npm run lint`, `lint:emdash`,
+   `lint:query-coercion`) through `scripts/frontend_guards.py`, whose `STEPS`
+   list is pinned to `ci.yml` by `tests/contracts/test_frontend_guard_steps.py`. It fails loudly
+   ("frontend guard steps not run: ...") when `frontend/node_modules` is missing (`npm ci` in
+   `frontend/`), and `scripts/pre_push.py` runs the same script for frontend paths. No frontend
+   change on the branch: no cost.
 
 ### Scope names are not interchangeable
 
@@ -118,19 +125,21 @@ No local gate command matches CI's scope; check which command produced a number.
   Exit 0 is the only acceptance criterion; no skip count is pass/fail.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
 
-### Condensation survivor evidence
+### Removing or weakening tests
 
-`make check-condensation-ledger` is the single read-only source admission guard
-for in-place assertion/parameter/fixture losses, moves and deletions across
-`tests/` and `roster/*/tests/`. It defaults to the actual `origin/main` base;
-CI supplies its exact event/base/checkout identities. A matching name, deleted
-product path, empty ledger directory or green count cannot excuse lost coverage.
-Before condensation, run the actual branch/mutation producer and retain every
-removed owner's executing survivor and complete case population. See
-[the evidence protocol](docs/testing/condensation-evidence.md). Fresh same-head
-carriers must be wired into the consumer for a real cluster change; the guard's
-current no-ledger CI invocation refuses every observed unproven loss. Migrated
-PostgreSQL/catalog authority and genuine review remain separate mandatory proof.
+Review is the only deletion gate; there is no inventory, ledger or guard script
+(owner decision bu-lm2b4v, option B). A PR that deletes, moves or renames a test,
+or weakens one in place (drops an assertion, parameter case, fixture or marker),
+must carry the `Tests: +a ~m -d` line in its body and, for every removed check,
+either name the executing survivor (`Survivor: <old> -> <new>`, existing at the
+PR head) or state that the behavior itself was intentionally removed or changed
+in the same PR. Architecture, wire, privacy, authorization, no-send, retry,
+idempotency and migration-outcome checks need a named survivor unless their
+governing requirement changes in the same PR. Reviewers refuse a missing
+`Tests:` line, an invented survivor, or a protected-check loss with neither. The
+rule and its rationale live in
+[testing doctrine](about/craft-and-care/testing-and-verification.md#removing-or-weakening-tests)
+and REQ-testing-053; the test budget is unchanged by it.
 
 ### Gate verdicts and long runs
 
@@ -440,12 +449,19 @@ it before changing the subsystem.
     `roster/*/{MANIFESTO,AGENTS}.md`.
   - `spec-overwrite-guard` reads only `## MODIFIED` blocks in `openspec/changes/`: it is blind to
     direct baseline edits and to `## REMOVED` blocks.
+  - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
+    `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
   - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
     merge of two branches adding the same helper produces.
 
 ### Database and migrations
+
+- `tests/contracts/test_schema_reach.py` fences foreign-butler SQL literals across `src/` and
+  `roster/`. Its single reasoned allowlist must shrink when reads disappear; stale entries fail.
+  Unresolved dynamic relation slots require explicit justification, and the Chronicler router
+  retains its stricter zero-foreign-relation rule.
 
 - Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
   them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
@@ -579,8 +595,8 @@ it before changing the subsystem.
   attributing it to the code.
 - A flaky test whose cause cannot be removed yet goes in `tests/quarantine.json` with a bead
   ([quarantine](docs/testing/quarantine.md)), never behind a rerun, a raised timeout or a looser
-  assertion. Marking it `nightly` in the test file does not work for most tests: the condensation
-  ledger guard refuses marker changes to existing tests without a proof.
+  assertion. The registry leaves the test file untouched, so removing the entry restores the test
+  exactly; a `nightly` marker edits the test and is a weakening under the test-removal rule above.
 - Logging state is process-global and survives across tests in an xdist worker: a test that calls
   `set_butler_context`, `configure_logging` or `lifecycle.run_startup` must restore the context var
   (`reset_butler_context(token)`), root handlers, filters and level. A leaked `ButlerDBLogHandler`
@@ -589,7 +605,7 @@ it before changing the subsystem.
 - A signal handler that raises can land inside `ThreadPoolExecutor.submit()` after the worker
   thread started but before the pool registered it; the `with` exit then never joins that worker.
   While pool workers are live, have the handler only set a cancellation event and raise after the
-  join (`scripts/condense_evidence.py` `execute_sides`, bu-w4c1iw).
+  join (found in the since-retired condensation proof producer, bu-w4c1iw).
 
 ### Git and recovery
 

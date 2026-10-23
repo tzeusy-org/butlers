@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import Any
@@ -12,7 +13,10 @@ from butlers.tools.finance._helpers import _row_to_dict
 from butlers.tools.finance.expected_signals import (
     FinanceSignalSource,
     metadata_with_signal_source,
+    runtime_signal_source,
 )
+
+logger = logging.getLogger(__name__)
 
 _VALID_STATUSES = ("active", "cancelled", "paused")
 _VALID_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly", "custom")
@@ -35,6 +39,21 @@ def _normalize_optional_date(value: str | date | None) -> date | None:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
+
+
+async def _writer_is_owner(pool: asyncpg.Pool) -> bool:
+    """True only when server-held routing context attests an owner session.
+
+    The answer never comes from a tool argument.  A routed email, a missing context
+    and an unreadable attestation are all "not the owner", so a failure here makes
+    the write extracted (fail closed).
+    """
+    try:
+        source = await runtime_signal_source(pool)
+    except Exception:  # noqa: BLE001 -- unavailable attestation fails closed
+        logger.error("Subscription writer attestation failed; treating write as extracted")
+        return False
+    return source is not None and source.producer == "owner"
 
 
 async def track_subscription(
@@ -62,6 +81,13 @@ async def track_subscription(
     update all provided fields and refresh updated_at. If no match is found,
     insert a new record.
 
+    Provenance (bu-svqpzo.10): ``cancellation_url`` and ``status`` are stored with
+    the source that wrote them, derived from the server-held runtime routing
+    context (``owner`` only for an owner-attested session; otherwise
+    ``extracted``).  An extracted write never overwrites an owner-set
+    ``cancellation_url`` or ``status``; the rule lives in the UPDATE itself so
+    concurrent writers cannot race it.
+
     Parameters
     ----------
     pool:
@@ -87,8 +113,8 @@ async def track_subscription(
     source_message_id:
         Source email or provider message ID for provenance.
     cancellation_url:
-        URL where the subscription can be cancelled. Optional; may be
-        populated later by owner enrichment.
+        URL where the subscription can be cancelled. Optional. Stored as
+        ``extracted`` unless the writer is an owner-attested session.
     notice_period_days:
         Number of days' notice the provider requires before cancellation
         takes effect. Optional.
@@ -113,6 +139,7 @@ async def track_subscription(
     cancel_by_date = _normalize_optional_date(cancel_by)
     metadata_value = metadata_with_signal_source(metadata, _expected_signal_source)
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
+    write_source = "owner" if await _writer_is_owner(pool) else "extracted"
 
     # Upsert: look up existing record by (service, frequency)
     existing = await pool.fetchrow(
@@ -129,12 +156,26 @@ async def track_subscription(
                 amount              = $1,
                 currency            = $2,
                 next_renewal        = $3,
-                status              = $4,
+                status              = CASE WHEN $14::text = 'owner' OR status_source <> 'owner'
+                                           THEN $4 ELSE status END,
+                status_source       = CASE WHEN $14::text = 'owner' OR status_source = 'owner'
+                                           THEN 'owner' ELSE 'extracted' END,
                 auto_renew          = $5,
                 payment_method      = COALESCE($6, payment_method),
                 account_id          = COALESCE($7, account_id),
                 source_message_id   = COALESCE($8, source_message_id),
-                cancellation_url    = COALESCE($9, cancellation_url),
+                cancellation_url    = CASE
+                    WHEN $9::text IS NULL THEN cancellation_url
+                    WHEN $14::text = 'owner' THEN $9::text
+                    WHEN cancellation_url_source = 'owner' AND cancellation_url IS NOT NULL
+                        THEN cancellation_url
+                    ELSE $9::text END,
+                cancellation_url_source = CASE
+                    WHEN $9::text IS NULL THEN cancellation_url_source
+                    WHEN $14::text = 'owner' THEN 'owner'
+                    WHEN cancellation_url_source = 'owner' AND cancellation_url IS NOT NULL
+                        THEN 'owner'
+                    ELSE 'extracted' END,
                 notice_period_days  = COALESCE($10, notice_period_days),
                 cancel_by           = COALESCE($11, cancel_by),
                 metadata            = (metadata - 'expected_signal_source') || $12,
@@ -155,6 +196,7 @@ async def track_subscription(
             cancel_by_date,
             metadata_value,
             existing["id"],
+            write_source,
         )
     else:
         row = await pool.fetchrow(
@@ -162,9 +204,10 @@ async def track_subscription(
             INSERT INTO subscriptions (
                 service, amount, currency, frequency, next_renewal, status,
                 auto_renew, payment_method, account_id, source_message_id,
-                cancellation_url, notice_period_days, cancel_by, metadata
+                cancellation_url, notice_period_days, cancel_by, metadata,
+                cancellation_url_source, status_source
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
             RETURNING *
             """,
             service,
@@ -181,6 +224,7 @@ async def track_subscription(
             notice_period_days,
             cancel_by_date,
             metadata_value,
+            write_source,
         )
 
     return _row_to_dict(row)

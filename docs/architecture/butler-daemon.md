@@ -10,13 +10,25 @@
 ![Daemon Startup Sequence](./startup-sequence.svg)
 Every butler in the system is a long-running Python process managed by the `ButlerDaemon` class (`src/butlers/daemon.py`). The daemon owns the full lifecycle of a butler: loading configuration, provisioning infrastructure, wiring modules, and serving MCP tools over an SSE transport. It is the single entry point for both `butlers run --config` (single butler) and `butlers up` (multi-butler) execution modes.
 
+## Key-absent control stage
+
+`butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard` uses the
+same daemon for current classification, routing, notify and deliver, alongside
+a separate refusal-only listener. `butlers up --exclude switchboard` runs the
+domains. Trusted startup checks forbidden environment/mount names before daemon
+construction, and stored credential key names before credential resolution.
+Presence (including an empty environment assignment) refuses startup without
+reading private values. Metadata errors also refuse startup. This is an absence
+check, not signer readiness. Service health stays on 41100; session health on
+41199 deliberately returns 503. See [the full stage boundary](key-absent-control.md).
+
 ## Startup Sequence
 
 The daemon follows a deterministic multi-phase startup. Each phase depends on the successful completion of the previous one. If any phase fails, already-initialized modules receive their `on_shutdown()` call before the process exits.
 
 ### Phase 1: Load and Validate Config
 
-The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig`, and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
+The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
 
 ### Phase 2: Initialize Telemetry and Scan Config
 

@@ -194,6 +194,16 @@ The page MUST contain:
 - **THEN** the row MUST expand in place to show the full content
 - **AND** clicking it again MUST collapse it
 
+#### Scenario: Blank research titles keep readable names without changing note identity
+
+- **WHEN** a research note has an empty or whitespace-only title
+- **THEN** its topic SHALL display `Untitled note`, and its expand, edit, delete, and confirmation
+  controls SHALL retain readable names
+- **AND** the presentation fallback SHALL NOT replace the original title or note identity passed
+  to editing and deletion; existing form validation and mutation payload semantics remain unchanged
+- **WHEN** a research title is nonblank
+- **THEN** its existing title presentation SHALL be preserved
+
 ---
 
 ### Requirement: Health data hooks with auto-refresh
@@ -1278,16 +1288,16 @@ Scope: v1-mandatory
 
 ### Requirement: Health and General retain distinct Butler identity slots
 
-The dashboard MUST resolve the Health butler to `--category-5` and the General butler to
-`--category-4` through the canonical `ButlerMark` roster order. These identity tokens MUST remain
-confined to Butler letter-marks and MUST NOT be globally replaced with one another.
+The dashboard MUST resolve the Health butler to identity slot 5 and the General butler to
+slot 4 of the `ButlerMark` palette through the canonical roster order. These identity hues MUST
+remain confined to Butler letter-marks and MUST NOT be globally replaced with one another.
 
 #### Scenario: Health and General marks keep their permanent slots
 
 - **WHEN** `ButlerMark` renders Health and General identity marks
-- **THEN** Health MUST use `--category-5`
-- **AND** General MUST use `--category-4`
-- **AND** neither token may be applied as a global replacement for the other
+- **THEN** Health MUST use identity slot 5
+- **AND** General MUST use identity slot 4
+- **AND** neither hue may be applied as a global replacement for the other
 
 ### Requirement: Health measurements page at the canonical route
 
@@ -1411,9 +1421,9 @@ Voice briefing plus a KPI strip; the right column is a quiet attention index. On
 the grid MUST collapse to a single column with the attention index below the briefing.
 
 The Overview MUST follow the Dispatch language: Display headline (not bold), the health butler's
-`--category-5` identity hue only on the `ButlerMark` letter-mark, surfaces-not-cards, and state
+identity slot 5 hue only on the `ButlerMark` letter-mark, surfaces-not-cards, and state
 color (`--red`/`--amber`/`--green`) reserved for genuine health signal, never decoration.
-The General butler's separate `--category-4` identity slot remains unchanged.
+The General butler's separate identity slot 4 remains unchanged.
 
 The Overview MUST contain, in the left column:
 
@@ -1506,6 +1516,19 @@ keys.
 - **THEN** the measurements tab SHALL render instrument unavailability and state that owner-behavior nudges are paused
 - **WHEN** the endpoint returns `available=false` with `signals=null`
 - **THEN** the tab SHALL render signal-health degradation, never an empty all-clear
+- **AND** the routed Health Overview and measurement chart SHALL consume the same expected-signal
+  read contract without changing its query identity or cadence
+- **WHEN** a successful available read contains an `unmeasurable` signal with the exact key
+  `health:measurement-gap:<type>` for an absent displayed vital or the selected empty chart type
+- **THEN** that absence SHALL visibly state that the instrument is unreachable
+- **AND** a vacant core KPI slot MAY use only its established core type identity for this state;
+  expected signals MUST NOT add a requested measurement type, change eligibility, or displace a slot
+- **AND** actual readings and trend data MUST remain visible regardless of acquisition state
+- **WHEN** no exact signal matches, its state is `present` or `absent`, or the signal read is pending
+- **THEN** the ordinary dash or empty chart state SHALL remain without an instrument-failure claim
+- **WHEN** the signal read fails, returns `available=false`, or returns `signals=null`
+- **THEN** the ordinary absent state SHALL remain with a named signal-health degradation note and
+  paused absence nudges, never an invented value or an unreachable claim about every instrument
 
 #### Scenario: Voice line carries the honesty pill
 
@@ -1527,6 +1550,17 @@ keys.
 - **THEN** its attention row MUST link to `/health/measurements` with encoded `type`, `since`, and
   `until` query keys
 - **AND** the dashboard MUST build that URL itself, never navigate to `metadata.href`
+
+#### Scenario: Symptom trend insights open the matching symptom filter
+
+- **WHEN** the health insight scan generates a symptom-trend candidate for a known symptom
+- **THEN** it SHALL include that exact symptom name in the candidate's `metadata.name`
+- **AND** its attention link SHALL use the fixed `/health/symptoms` route with an encoded `name`
+  query parameter that populates the existing name filter
+- **AND** navigation to a different symptom SHALL update the filter and reset pagination while
+  ordinary rerenders preserve manual filter edits
+- **WHEN** a symptom-trend candidate has missing, blank, or non-string name metadata
+- **THEN** its attention link SHALL retain the unfiltered `/health/symptoms` fallback
 
 #### Scenario: Invalid measurement-door metadata cannot control navigation
 

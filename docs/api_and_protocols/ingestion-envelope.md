@@ -11,7 +11,7 @@ Connectors are transport adapters that normalize events from external systems (T
 
 ## Envelope Contract
 
-The wire shape is defined by Pydantic models in `roster/switchboard/tools/routing/contracts.py`:
+The wire shape is defined by Pydantic models in `roster/switchboard/tools/contracts.py`:
 `IngestEnvelopeV1` and its blocks `IngestSourceV1`, `IngestEventV1`, `IngestSenderV1`,
 `IngestPayloadV1`, and `IngestControlV1`. The closed vocabularies — `SourceChannel`,
 `SourceProvider`, `PolicyTier`, `IngestionTier` — and the allowed channel-to-provider pairs
@@ -73,11 +73,20 @@ retained as the notify-facing name for the reply target and never carries the co
 Deduplication is the Switchboard's responsibility at the ingest boundary (`_compute_dedupe_key`
 in `roster/switchboard/tools/ingestion/ingest.py`). The key prefers `control.idempotency_key`,
 then `external_event_id` plus source identity, then a content hash; a secondary content-hash
-check catches the same message arriving through two connectors. Connectors must:
+check catches the same message arriving through two connectors. Content hashes derive from the
+bearer-scrubbed text, so a stored key cannot be brute-forced back to a withheld one-time code;
+when bearer material was withheld (by ingest or by a pre-scrubbing connector) the secondary check
+is skipped and `content_hash_key` is omitted. This decision includes all content subtrees scrubbed
+for storage, including bearer links present only in `payload.raw` beside benign visible text.
+The same decision applies before and inside the advisory lock. Connectors must:
 
 - Send stable source identity fields on every submission, including retries.
 - Provide `control.idempotency_key` when the source has no stable event id.
 - Treat duplicate acceptance as success, not error.
+
+## Sender Authentication Verdict
+
+For every accepted `email` envelope the Switchboard stores one verdict on the canonical `public.ingestion_events.sender_authentication` column: `authenticated`, `unverified` or `failed`. It describes the From domain only and is computed once at ingest from the topmost `Authentication-Results` header kept in `payload.raw` (a lower or injected header never counts). An aligned `dkim=pass` or a `dmarc=pass` gives `authenticated`; a `dmarc` fail or permerror, or an aligned `dkim` fail, gives `failed`; a missing header, a metadata-tier row with no raw payload, `temperror`, `none` and unaligned passes give `unverified`. Non-email rows, and rows ingested before the column existed, read `NULL`. A verifier error stores `NULL` and never fails the ingest. Header parsing is quote-, comment- and literal-aware, so sender text echoed by the receiver cannot forge a clause; an unreadable header is `unverified`, unless it still carries a `dmarc` fail or permerror or a fail on an aligned `dkim` signature, which reads `failed` (a stray character in echoed text can hide a forgery from the strict parser but never a real failure). Alignment uses `header.d` only. The verdict is the receiving provider's claim from the topmost header: it is not proof for mail placed without SMTP receipt (IMAP APPEND, import or insert), where the sender can write that header. The verdict never grants owner origin. Readers use this column instead of parsing headers themselves. See `openspec/specs/ingestion-event-registry/spec.md`.
 
 ## Heartbeat Protocol
 

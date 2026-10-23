@@ -256,8 +256,7 @@ class TestPolicyDecisionEmbedding:
         """route_to decision must appear in request_context for downstream pipeline."""
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -265,6 +264,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         # Build a minimal envelope
         envelope = IngestEnvelopeV1(
@@ -311,8 +311,7 @@ class TestPolicyDecisionEmbedding:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -320,6 +319,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
@@ -354,8 +354,7 @@ class TestPolicyDecisionEmbedding:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -363,6 +362,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
@@ -459,7 +459,7 @@ class TestGroupChatMetadataPropagation:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,

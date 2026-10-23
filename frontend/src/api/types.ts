@@ -3001,6 +3001,15 @@ export interface Episode {
   last_referenced_at: string | null;
   expires_at: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Recovery-safe lifecycle dossier (bu-kqnum.14.3). The error and reason strings are the
+   * sanitized category summaries the consolidator stores; worker lease internals are never
+   * exposed. The API always returns all four.
+   */
+  consolidation_attempts: number;
+  last_consolidation_error: string | null;
+  dead_letter_reason: string | null;
+  next_consolidation_retry_at: string | null;
 }
 
 /** Availability of a durable reference to an episode source. */
@@ -3024,6 +3033,9 @@ export interface Fact {
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
   superseded_by?: string | null;
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
   entity_id: string | null;
   entity_name: string | null;
   object_entity_id: string | null;
@@ -3065,6 +3077,9 @@ export interface MemoryRule {
   /** Server-derived authorship of the content this rule came from (null on legacy rows). */
   content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
   authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
+  endorsed_by?: string | null;
+  endorsed_by_name?: string | null;
   /** Set when the owner endorsed a held rule. */
   endorsed_at?: string | null;
   /** True while the rule is invisible to sessions, awaiting owner endorsement. */
@@ -3127,6 +3142,24 @@ export interface GraphHealthPoolCoverage {
 export interface GraphHealthCoverage {
   coverage: "complete" | "incomplete" | "unknown";
   pools: GraphHealthPoolCoverage[];
+}
+
+/**
+ * Pagination metadata for the memory list routes (episodes, facts, rules,
+ * inspect). Each fans out across butler pools and, when one pool errors, drops
+ * it and names it in `pools_failed` rather than failing the request, so a page
+ * (including an empty one) may be incomplete. Absent or empty means every
+ * queried pool answered.
+ */
+export interface MemoryPaginationMeta extends PaginationMeta {
+  /** Names of memory pools whose query failed and were dropped from the page and total. */
+  pools_failed?: string[];
+}
+
+/** Paginated memory list response carrying the degraded-pool meta. */
+export interface MemoryPaginatedResponse<T> {
+  data: T[];
+  meta: MemoryPaginationMeta;
 }
 
 /**
@@ -3283,6 +3316,8 @@ export interface FactParams {
 
 /** Query parameters for rule list endpoints. */
 export interface RuleParams {
+  /** Restrict the register to unendorsed held guidance. */
+  held?: boolean;
   q?: string;
   scope?: string;
   maturity?: string;
@@ -5335,6 +5370,29 @@ export interface ModelAttentionObservation {
   episodes: Record<string, ModelAttentionEpisode>;
 }
 
+export interface AllowanceEntry {
+  id: string;
+  alias: string;
+}
+
+export type AllowanceState = "available" | "exhausted" | "unknown";
+export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
+
+export interface AllowanceAccount {
+  account_key: string;
+  state: AllowanceState;
+  reset_at: string | null;
+  reset_source: AllowanceResetSource;
+  first_seen_at: string;
+  updated_at: string;
+  entries: AllowanceEntry[];
+}
+
+export interface AllowanceObservation {
+  available: boolean;
+  accounts: AllowanceAccount[];
+}
+
 export interface ModelAttentionReissueResult {
   original_episode_id: string;
   successor_episode_id: string;
@@ -5719,6 +5777,32 @@ export interface OverdueContactsResponse {
   contacts: OverdueContact[];
   cadence_available: boolean;
   unmeasurable_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Pending meeting debriefs (bu-q7vx1q.63)
+// ---------------------------------------------------------------------------
+
+export interface PendingDebriefAttendee {
+  entity_id: string | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface PendingDebrief {
+  debrief_id: string;
+  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
+  number: number | null;
+  event_title: string | null;
+  occurrence_start: string;
+  prompted_at: string;
+  attendees: PendingDebriefAttendee[];
+}
+
+/** Response from GET /api/relationship/meeting-debriefs/pending */
+export interface PendingDebriefsResponse {
+  debriefs: PendingDebrief[];
+  debriefs_available: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -7931,7 +8015,7 @@ export interface ConditionEntry {
  * "sending" and "uncertain" never do, and nothing here can resend.
  */
 export interface ConditionAttention {
-  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" */
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
   status: string;
   episode_id: string | null;
   created_at: string | null;

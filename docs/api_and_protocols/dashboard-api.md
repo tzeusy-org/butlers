@@ -8,6 +8,9 @@
 
 The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves the shared and roster-specific dashboard endpoints, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
 
+`GET /api/butlers` summaries expose no schedule count. Scheduling facts remain on
+the existing schedule and board endpoints rather than an unobserved summary default.
+
 ## Application Factory
 
 `create_app()` accepts three optional parameters:
@@ -73,6 +76,19 @@ Static routers live in `src/butlers/api/routers/` and are mounted, all under `/a
 the inventory; the generated OpenAPI schema lists every operation and its response model.
 Cross-cutting envelope, pagination, and degraded-source rules are in
 [Response Conventions](response-conventions.md).
+
+### Provider allowance observation
+
+`GET /api/settings/models/allowance` (`src/butlers/api/routers/model_settings.py`) is an
+owner-only, read-only projection of `public.provider_allowance_states`, guarded by the same
+`require_dashboard_owner_control` dependency as `/api/settings/models/attention`. It returns
+`{available, accounts: [{account_key, state, reset_at, reset_source, first_seen_at, updated_at,
+entries: [{id, alias}]}]}`; catalog entries belong to the account named by
+`COALESCE(allowance_account, runtime_type)`. A read failure returns the degraded envelope
+(`available: false`, empty `accounts`) and logs without row content. The Models tab renders it as
+an Allowance strip and the `/system` verdict adds an allowance source (a 403 is silent, an
+unreadable table reads "allowance unknown"). It never writes, resets, or probes. The model-routing
+contract page cross-links this section after the contract-evolution change that owns it lands.
 
 ## Auto-Discovered Butler Routers
 

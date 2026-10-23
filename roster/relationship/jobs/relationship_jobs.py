@@ -1117,6 +1117,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
               AND sender.identity IS NOT NULL
               AND sender.identity NOT IN ('unknown', 'multiple')
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
+              -- Out-of-office replies, bounces and other automated mail are not the
+              -- contact reaching out.  Ingest classifies them and persists only
+              -- raw_payload.control.automated_kind, so read it from there.
+              AND COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') = ''
             GROUP BY
                 COALESCE(
                     request_context ->> 'external_conversation_id',

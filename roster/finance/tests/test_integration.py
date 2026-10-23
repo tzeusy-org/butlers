@@ -103,6 +103,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     notice_period_days  INTEGER
                             CHECK (notice_period_days IS NULL OR notice_period_days >= 0),
     cancel_by           DATE,
+    cancellation_url_source TEXT NOT NULL DEFAULT 'extracted'
+                            CHECK (cancellation_url_source IN ('owner', 'extracted')),
+    status_source       TEXT NOT NULL DEFAULT 'extracted'
+                            CHECK (status_source IN ('owner', 'extracted')),
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()

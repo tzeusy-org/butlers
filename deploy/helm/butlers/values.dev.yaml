@@ -31,6 +31,7 @@ dashboardAuth:
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
   # Decision Desk prompts send real Telegram messages to the owner; stays off
   # until the owner consents to live prompts (bu-ckkpz.3).
   BUTLERS_DECISION_ROUTING_ENABLED: "0"
@@ -48,3 +49,7 @@ beadsExport:
   credentialBwsKeys:
     user: BUTLERS_RUNTIME_BEADS_DOLT_USER
     password: BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD
+
+# Current service traffic moves to its own process; session health refuses (503).
+butlersControl:
+  enabled: true

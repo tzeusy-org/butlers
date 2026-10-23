@@ -86,6 +86,15 @@ vi.mock("@/hooks/use-system", () => ({
   })),
 }));
 
+vi.mock("@/hooks/use-model-catalog", () => ({
+  useModelAllowance: vi.fn(() => ({
+    data: { data: { available: true, accounts: [] } },
+    isLoading: false,
+    isError: false,
+    isForbidden: false,
+  })),
+}));
+
 vi.mock("@/hooks/use-healing", () => ({
   useInfraConditionSuppressionCounts: vi.fn(() => ({
     counts: new Map(),

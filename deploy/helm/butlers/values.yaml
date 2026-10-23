@@ -100,12 +100,20 @@ commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
   BUTLERS_FLEET_CONDITION_HANDOFF: "0"
 
+# Dev-only opt-in to a key-absent topology. No signing configuration exists.
+butlersControl:
+  enabled: false
+  resources:
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 4Gi}
+
 butlersUp:
   resources:
     requests: {cpu: 500m, memory: 2Gi}
     limits: {memory: 12Gi}
-  # Fleet-wide cap on concurrent LLM sessions (BUTLERS_MAX_GLOBAL_SESSIONS).
-  # Every butler shares this one process, so this is the whole fleet's limit.
+  # Owner fleet budget. Unsplit releases put it in the one process; the dev
+  # key-absent stage reserves1 for control and assigns the remainder to domains.
+  # Each process gets its honest share via BUTLERS_MAX_GLOBAL_SESSIONS.
   # Owner-set to 5 on 2026-10-15 (bu-6y6f6m); the code default is 3.
   maxGlobalSessions: 5
   # Persist LLM CLI homes (~/.claude, ~/.codex, ...). Tokens are also

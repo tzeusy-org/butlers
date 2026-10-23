@@ -56,7 +56,6 @@ _REQUIRED_KEYS: dict[str, set[str]] = {
     "telegram_user_client": {"priority_action"},
     "home-assistant": {"priority_action"},
     "home_assistant": {"priority_action"},
-    "discord": {"priority_action"},
     "spotify": {"priority_action"},
     "owntracks": {"priority_action"},
     "whatsapp": {"priority_action"},

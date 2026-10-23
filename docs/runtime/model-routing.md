@@ -200,7 +200,7 @@ explicit exact-row compare-and-swap action. A generic catalog `PUT` is not the a
 new `vision=true` declaration or an identity-changing write to an existing true row. Existing
 unchanged historical declarations retain their current behavior until explicitly moved into the
 managed proof lifecycle. Do not use a text-only canary or manually set `vision=true` to claim
-proof under the new contract.
+proof under the new contract. The Models page shows declarations, not proof.
 
 **Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
 `structuredContent` when a tool result carries it, dropping `content[]` and the image with it

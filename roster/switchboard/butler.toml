@@ -85,6 +85,7 @@ job_name = "eligibility_sweep"
 [[butler.schedule]]
 name = "insight-delivery-cycle"
 cron = "15,45 6-11 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
@@ -112,6 +113,7 @@ job_name = "insight_urgent_subcycle"
 [[butler.schedule]]
 name = "commitment-escalation"
 cron = "40 5 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "commitment_escalation"
 
@@ -119,6 +121,7 @@ job_name = "commitment_escalation"
 [[butler.schedule]]
 name = "spend-rule-savings"
 cron = "15 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "spend_rule_savings"
 
@@ -134,6 +137,16 @@ cron = "50 * * * *"
 dispatch_mode = "job"
 job_name = "rule_promotion_trigger"
 
+# Dropped-known watch (bu-q7vx1q.88.2) — opens one standing owner condition per
+# (filter_reason, sender) episode of drops from known contacts, every 15 minutes
+# (the Gmail known-contact refresh horizon). Does nothing while classification
+# is unknown.
+[[butler.schedule]]
+name = "dropped-known-watch"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "dropped_known_watch"
+
 # Decision-review digest (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk") —
 # weekly digest of open owner-decision beads ("N decisions waiting, oldest
 # Xd"), Monday 09:00 UTC. Reads the beads JSONL export bind-mounted into this
@@ -144,6 +157,7 @@ job_name = "rule_promotion_trigger"
 [[butler.schedule]]
 name = "decision-review-digest"
 cron = "0 9 * * 1"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "decision_review_digest"
 
@@ -187,6 +201,7 @@ job_name = "domain_event_reconciliation_sweep"
 [[butler.schedule]]
 name = "fleet-case-lapse-sweep"
 cron = "10 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
 

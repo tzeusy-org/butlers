@@ -7,7 +7,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import os
 import subprocess
 import sys
 import tarfile
@@ -173,23 +172,6 @@ def test_builds_are_offline_and_contexts_exclude_dotenv_variants(tmp_path: Path)
         in launcher_source
     )
     launcher.validate_sealed_build_inputs(ROOT)
-    workflow = launcher.yaml.safe_load(
-        (ROOT / ".github/workflows/migration-chain-main.yml").read_text()
-    )
-    events = workflow.get("on", workflow.get(True))
-    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
-    proof_job = workflow["jobs"]["offline-route-a-build-proof"]
-    guard = proof_job["steps"][0]
-    assert guard["name"] == "Reject conflicting manual build modes"
-    for flag, expected in (("false", 0), ("", 0), ("true", 2)):
-        done = subprocess.run(
-            ["bash", "-eu", "-c", guard["run"]],
-            env={**os.environ, "OTHER_BUILD_MODE": flag},
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-        assert done.returncode == expected
     recipes = (
         launcher.ROUTE_A_DOCKERFILE,
         "frontend/Dockerfile.meeting-prep-evidence",

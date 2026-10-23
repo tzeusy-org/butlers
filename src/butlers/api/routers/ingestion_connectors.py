@@ -45,7 +45,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -94,6 +94,73 @@ _DB_INTERVAL: dict[PeriodLiteral, str] = {
     "7d": "7 days",
     "30d": "30 days",
 }
+
+
+class ConnectorSummaryToday(BaseModel):
+    """Existing last-24h ingestion total and reported failure counter."""
+
+    messages_ingested: int
+    messages_failed: int
+
+
+class ConnectorDeviceLiveness(BaseModel):
+    """Event-derived device evidence, independent of process heartbeats."""
+
+    sender_identity: str
+    last_seen_at: str
+    stale: bool
+
+
+class ConnectorCheckpointRecord(BaseModel):
+    """Storage-only cursor projection; it has no runtime health authority."""
+
+    connector_type: str
+    endpoint_identity: str
+    parent_endpoint_identity: str | None
+    label: str
+    checkpoint_cursor: str | None
+    checkpoint_updated_at: str | None
+    archived: bool
+
+
+class ConnectorSummary(BaseModel):
+    """Canonical summary wire data; policy stays in the existing derivation helpers."""
+
+    connector_type: str
+    endpoint_identity: str
+    operational_role: str
+    liveness: str
+    state: str
+    error_message: str | None
+    version: str | None
+    uptime_s: int | None
+    last_heartbeat_at: str | None
+    first_seen_at: str
+    archived: bool
+    archived_at: str | None
+    archive_candidate: bool
+    operational_warnings: list[str]
+    today: ConnectorSummaryToday | None = None
+    hourly_events: list[int]
+    hourly_filtered_events: list[int]
+    devices: list[ConnectorDeviceLiveness] | None
+    checkpoints: list[ConnectorCheckpointRecord]
+
+
+class ConnectorSummaryResponse(BaseModel):
+    """Summary data envelope, preserving the minimal registry-unavailable wire shape.
+
+    The route excludes unset fields: secondary-source defaults must not turn
+    primary-source failure into fabricated availability or an empty roster.
+    """
+
+    connectors: list[ConnectorSummary]
+    connector_registry_available: bool
+    unparented_checkpoints: list[ConnectorCheckpointRecord] = Field(default_factory=list)
+    unclassified_count: int = 0
+    device_liveness_available: bool = True
+    hourly_events_available: bool = True
+    owntracks_cadence_available: bool = True
 
 
 class ConnectorScopeRow(BaseModel):
@@ -675,10 +742,14 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/summaries", response_model=ApiResponse[dict])
+@router.get(
+    "/summaries",
+    response_model=ApiResponse[ConnectorSummaryResponse],
+    response_model_exclude_unset=True,
+)
 async def list_connector_summaries_with_aggregates(
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
+) -> ApiResponse[ConnectorSummaryResponse]:
     """Return the connector list. Every field is DB-sourced.
 
     Fetches connector registry rows from the switchboard database. This
@@ -820,7 +891,10 @@ async def list_connector_summaries_with_aggregates(
         )
     except Exception:
         logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
-        return ApiResponse[dict](data={"connectors": [], "connector_registry_available": False})
+        return ApiResponse[ConnectorSummaryResponse](
+            data=ConnectorSummaryResponse(connectors=[], connector_registry_available=False),
+            meta=ApiMeta(),
+        )
 
     # Split runtime authority from storage state (bu-6jv4m.11). Only
     # `runtime_instance` rows (plus `unknown` rows, kept visible as explicitly
@@ -1178,7 +1252,7 @@ async def list_connector_summaries_with_aggregates(
             }
         )
 
-    return ApiResponse[dict](
+    return ApiResponse[ConnectorSummaryResponse](
         data={
             "connectors": connectors,
             # The registry is the primary roster source. This explicit true
@@ -1205,7 +1279,9 @@ async def list_connector_summaries_with_aggregates(
             # raised. The connector warnings stay empty in that case and the
             # frontend names the degraded source explicitly.
             "owntracks_cadence_available": owntracks_cadence_available,
-        }
+        },
+        # Keep the existing empty meta object when excluding unset data fields.
+        meta=ApiMeta(),
     )
 
 
@@ -2242,12 +2318,6 @@ _CONNECTOR_CATALOG: list[dict[str, Any]] = [
         "channel": "home-assistant",
         "provider": "home_assistant",
         "display_name": "Home Assistant",
-    },
-    {
-        "connector_type": "discord_user",
-        "channel": "discord",
-        "provider": "discord",
-        "display_name": "Discord User Client",
     },
     {
         "connector_type": "spotify",

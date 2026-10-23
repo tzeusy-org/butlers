@@ -35,7 +35,8 @@ full_sync_interval_days = 6
 
 [[butler.schedule]]
 name = "eod-tomorrow-prep"
-cron = "0 15 * * *"
+# 23:00 owner-local (SGT): hour-pinned crons are evaluated in the owner timezone.
+cron = "0 23 * * *"
 prompt = """
 Tomorrow prep: review tomorrow's calendar and incorporate today's specialist highlights into a
 multi-domain preparation summary you send at the end of the day (23:00 SGT) to get the user ready for the day ahead.
@@ -106,8 +107,6 @@ job_name = "context_producer_calendar"
 # [[butler.schedule]] block needed here. Add one only to override cadence.
 [modules.memory]
 groups = ["core", "preferences", "entity"]
-
-[modules.steam]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

@@ -160,7 +160,7 @@ jobs:
       - name: Set up Node 24
         uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.22.0"
 
       - name: Install OpenSpec 1.9.0
         run: npm install --global @fission-ai/openspec@1.9.0
@@ -183,15 +183,6 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
@@ -288,6 +279,15 @@ jobs:
         id: spec_overwrites
         if: ${{ !cancelled() }}
         run: python3 scripts/check_spec_overwrites.py
+
+      # bu-xjs98p.1: new and edited requirements in active changes carry identity. Every
+      # ADDED/MODIFIED block needs ID, Source and Scope lines unless it is frozen in the
+      # content-addressed baseline (scripts/requirement-trace-baseline.json); editing a frozen
+      # block makes it carry the lines. Source scan only; no CLI needed.
+      - name: Check ADDED/MODIFIED requirements carry ID, Source and Scope lines
+        id: requirement_trace
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_requirement_trace_lines.py
 
       # Strict OpenSpec validation gate for bu-n58sv. The repository carries
       # both canonical specs and active deltas; validating both prevents
@@ -409,21 +409,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
 
-      # Exact event/base/checkout admission precedes the complete tests+roster
-      # source scan. Counts, a retained name and a missing ledger directory cannot
-      # excuse loss; future condensation supplies fresh producer carriers.
-      - name: Require current executable condensation survivor evidence
-        id: condensation
-        if: ${{ !cancelled() }}
-        env:
-          CONDENSATION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          CONDENSATION_HEAD: ${{ github.sha }}
-          CONDENSATION_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}
-        run: |
-          uv run --no-sync python scripts/check_condensation_ledger.py \
-            --base "$CONDENSATION_BASE" --ci-event "$GITHUB_EVENT_NAME" \
-            --expected-head "$CONDENSATION_HEAD" --source-head "$CONDENSATION_SOURCE_HEAD"
-
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -436,6 +421,7 @@ jobs:
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
             spec_overwrites=${{ steps.spec_overwrites.outcome }}
+            requirement_trace=${{ steps.requirement_trace.outcome }}
             openspec_strict=${{ steps.openspec_strict.outcome }}
             archived_requirements=${{ steps.archived_requirements.outcome }}
             countable_tasks=${{ steps.countable_tasks.outcome }}
@@ -443,7 +429,6 @@ jobs:
             frontend_copy_regenerate=${{ steps.frontend_copy_regenerate.outcome }}
             frontend_copy=${{ steps.frontend_copy.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
-            condensation=${{ steps.condensation.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do
@@ -468,7 +453,7 @@ jobs:
         if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.22.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
@@ -509,13 +494,11 @@ jobs:
         run: npm run build
 
 
-      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
+      - name: Preserve bounded Node tooling
         if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: |
-          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
-          npm run lint:owner-time
-          npm run lint:visual-role-css
+          node --test --test-timeout=300000 route-a-api-receipt.test.mjs
 
       - name: Bind the single frontend build to this exact checkout and attempt
         if: needs.route.outputs.frontend == 'true'
@@ -564,15 +547,6 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
@@ -737,15 +711,6 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -847,15 +812,6 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
@@ -992,15 +948,6 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -1042,7 +989,7 @@ jobs:
   check:
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [route, guards, inventory, check-preflight, check-unit, check-integration, check-affected]
+    needs: [route, guards, inventory, check-preflight, check-unit, check-integration, check-affected, frontend-e2e]
     if: always()
     steps:
       - name: Fail closed from prerequisite verdicts only
@@ -1085,6 +1032,7 @@ jobs:
                   "check-unit",
                   "check-integration",
                   "check-affected",
+                  "frontend-e2e",
               }
               if not isinstance(needs, dict) or not expected <= needs.keys():
                   return False
@@ -1147,6 +1095,9 @@ jobs:
                   "check-affected": "success" if mode == "scoped" else "skipped",
                   "check-unit": "success" if mode == "full" else "skipped",
                   "check-integration": "success" if mode == "full" else "skipped",
+                  # Playwright e2e is required wherever it runs: every merge group
+                  # and main push, and pull requests the route marks as frontend changes.
+                  "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
               }
               return all(job["result"] == results.get(name, "success") for name, job in needs.items())
           needs = json.loads(os.environ['NEEDS_JSON'])
@@ -1170,7 +1121,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.22.0"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install the locked frontend environment
@@ -1230,8 +1181,11 @@ jobs:
     timeout-minutes: 14
     runs-on: ubuntu-latest
     needs: [route, guards]
-    # merge_group and push:main: always (cheap, no coverage dependency).
-    # pull_request: only when frontend/ changed (fail-closed, see `changes`).
+    # Required through the `check` verdict (owner decision bu-w72da2 = A):
+    # merge_group and push:main always run it; pull_request runs it only when the
+    # route classifies the PR as frontend: frontend/, .github/workflows/, scripts/ci_
+    # or scripts/check_ci_ changed, or the diff is undeterminable (fail-closed, see
+    # `route`). Every other PR requires the explicit skip.
     if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
 
     defaults:
@@ -1244,7 +1198,7 @@ jobs:
       - name: Set up Node 24
         uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.22.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 

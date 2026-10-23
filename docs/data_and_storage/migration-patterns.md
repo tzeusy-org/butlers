@@ -386,8 +386,8 @@ their separate authority contract or equate the trusted migration owner with run
   once both minted `core_164` and merged green. Before publishing a migration, take the next number
   from every live branch (`git ls-remote --heads origin`, then `git ls-tree -r --name-only
   origin/<branch> -- alembic/versions/core/`), not just `origin/main`, and re-run
-  `tests/config/test_migration_chain_head.py` against the merge result. The
-  `migration-chain-main.yml` workflow re-runs that guard on every `main` push.
+  `tests/config/test_migration_chain_head.py` against the merge result. The merge queue runs that
+  guard on the exact merged tree before anything lands on `main`.
 - Head-pinned assertions derive the head: use `butlers.testing.migration.assert_at_chain_head()` or
   `butlers.migrations.get_chain_head(chain)`. An AST guard in `test_migration_chain_head.py` fails a
   literal revision compared with an `alembic_version` read; a deliberate pin carries
@@ -437,3 +437,15 @@ their separate authority contract or equate the trusted migration owner with run
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+### Ordinary owner-held goal ledger
+
+The dark RFC0038 ledger (`sw_047`) follows the existing `sw_035` enabled,
+non-FORCE RLS pattern. The trusted migration login owns the six tables and can
+use ordinary `row_security=off` backup; only the exact Switchboard runtime passes
+the command policies. Replay `init-db.sql` and test real runtime identities,
+including denied connector/Chronicler identities and owner memberships. Verify
+the existing complete backup and restore scripts retain every ledger row, owner,
+policy and constraint. No backup exclusion or new privileged owner is needed.
+Downgrade refuses durable goals/admission history. `core_273` likewise refuses
+to discard configured admission limits. These migrations do not activate callers.

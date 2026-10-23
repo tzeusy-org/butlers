@@ -48,6 +48,7 @@ from butlers.core.temporal.scheduling import (
     get_scheduling_preferences,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.core.tool_catalog import RecipientParameters
 from butlers.fleet_events import publish_fleet_event
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 from butlers.modules.calendar_response import (
@@ -3269,12 +3270,27 @@ class CalendarModule(Module):
         self._response_ready = ready
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
-        # Sensitivities only: presentation fields come from the central inventory,
-        # and a partial declaration fails the daemon's catalog check at startup.
+        # Conditional registrations declare their complete descriptive metadata
+        # through the same module channel as argument sensitivities. The daemon
+        # binds the actual owner and configured approval policy after registration.
         metadata: dict[str, ToolMeta] = {}
         if self._butler_name in RESPONSE_FENCE_OWNERS:
             metadata["calendar_response_fence_status"] = ToolMeta(
                 arg_sensitivities={"request": True},
+                canonical_name="calendar_response_fence_status",
+                module_name="calendar",
+                group_name="direct",
+                namespace="calendar.response",
+                llm_presentable=False,
+                load_posture="deferred",
+                effect_class="read",
+                output_trust="untrusted",
+                output_sensitivity="sensitive",
+                resource_params=("request",),
+                safety_args=(),
+                idempotency="none",
+                owner_authority=False,
+                recipient_params=RecipientParameters(),
             )
         if not self.canonical_approval_preparers():
             return metadata
@@ -3288,6 +3304,28 @@ class CalendarModule(Module):
                 "_command_id": True,
                 "_command_digest": True,
             },
+            canonical_name="calendar_respond",
+            module_name="calendar",
+            group_name="core",
+            namespace="calendar.response",
+            llm_presentable=True,
+            load_posture="deferred",
+            effect_class="communicate",
+            output_trust="untrusted",
+            output_sensitivity="sensitive",
+            resource_params=("entry_id",),
+            safety_args=("entry_id", "response_status", "request_id", "send_updates"),
+            idempotency="key_required",
+            owner_authority=False,
+            recipient_params=RecipientParameters(
+                argument_names=("entry_id",),
+                undeterminable=True,
+                undeterminable_condition=(
+                    "Event attendees and inherited provider recipients require resolution."
+                ),
+            ),
+            read_stores=("calendar_events", "calendar_event_instances", "external:calendar"),
+            write_stores=("calendar_action_log", "calendar_events", "external:calendar"),
         )
         return metadata
 

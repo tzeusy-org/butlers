@@ -48,6 +48,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.telegram_spans import bot_in_reply_to_ref, bot_message_spans
 from butlers.conversation_identity import (
     telegram_bot_message_identity,
     telegram_bot_update_identity,
@@ -1905,6 +1906,21 @@ class TelegramBotConnector:
         }
         if attachments:
             payload["attachments"] = attachments
+        # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
+        # sender; the span is what starts the goal exposed at admission.
+        untrusted_spans = bot_message_spans(msg, normalized_text)
+        if untrusted_spans:
+            payload["untrusted_spans"] = untrusted_spans
+
+        event: dict[str, Any] = {
+            "external_event_id": update_id,
+            "external_conversation_id": external_conversation_id,
+            "reply_target_ref": reply_target_ref,
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
+        in_reply_to_ref = bot_in_reply_to_ref(msg)
+        if in_reply_to_ref is not None:
+            event["in_reply_to_ref"] = in_reply_to_ref
 
         # Build ingest.v1 envelope
         return {
@@ -1914,12 +1930,7 @@ class TelegramBotConnector:
                 "provider": self._config.provider,
                 "endpoint_identity": self._config.endpoint_identity,
             },
-            "event": {
-                "external_event_id": update_id,
-                "external_conversation_id": external_conversation_id,
-                "reply_target_ref": reply_target_ref,
-                "observed_at": datetime.now(UTC).isoformat(),
-            },
+            "event": event,
             "sender": {
                 "identity": sender_id,
             },

@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Slide-out chat panel for the butler detail page.
  *
@@ -55,11 +58,27 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [hasNewConversationIntent, setHasNewConversationIntent] = useState(false);
+  const hasResumedRef = useRef(false);
   // Set by a message-search jump-to-message result (bu-qaisp, parity with
   // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
   // has rendered (see the effect below).
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([butlerName, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => {
+    // Typing or restoring a draft chooses this new thread before a delayed
+    // discovery response can resume an old one. Clearing it keeps that intent.
+    if (activeConversationId === null && value.length > 0) {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
+    }
+    setComposer({ context: composerContext, value });
+  };
+  const draft = useDraft("chat.message", [butlerName, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), true, { message: "" });
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
 
   // Pricing is optional decoration: keep the existing null behavior while
   // loading or after an error, with a cache shared by both chat surfaces.
@@ -67,8 +86,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const pricingMap = pricingMapData ?? null;
 
   // Fetch conversations list
-  const { data: conversationsData, isLoading: isLoadingConversations } =
-    useConversations(butlerName);
+  const {
+    data: conversationsData,
+    isLoading: isLoadingConversations,
+    isError: isConversationsError,
+    refetch: refetchConversations,
+  } = useConversations(butlerName);
   const conversations: ConversationSummary[] = useMemo(
     () => conversationsData?.data ?? [],
     [conversationsData],
@@ -100,6 +123,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
@@ -112,6 +144,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // no-editable-field-guard behavior.
   function switchConversation(direction: 1 | -1) {
     if (conversations.length === 0) return;
+    draft.dismiss(() => {
+    hasResumedRef.current = true;
+    setHasNewConversationIntent(false);
     abandonCurrentStream();
     const idx = conversations.findIndex((c) => c.id === activeConversationId);
     if (direction === -1) {
@@ -121,6 +156,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       const next = idx < 0 || idx >= conversations.length - 1 ? 0 : idx + 1;
       setActiveConversationId(conversations[next].id);
     }
+    });
   }
 
   const conversationShortcuts = useMemo<ShortcutBinding[]>(
@@ -152,11 +188,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // Resume the most recent conversation ONCE per mount (== once per Sheet
   // open, since ChatContent unmounts entirely when the Sheet closes via the
   // `{open && <ChatContent />}` gate in ChatPanel below) — gated by
-  // hasResumedRef so a later "New conversation" click (which also sets
-  // activeConversationId to null) does not get immediately overridden back
-  // to the existing thread by this same effect. Mirrors FloatingChatWidget's
-  // identical guard.
-  const hasResumedRef = useRef(false);
+  // hasResumedRef so explicit New, typed/restored new-thread work and later
+  // selections cannot be overridden by delayed discovery or refresh results.
   useEffect(() => {
     if (hasResumedRef.current) return;
     if (conversations.length === 0) return;
@@ -182,6 +215,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     previousButlerNameRef.current = butlerName;
     abandonCurrentStream();
     hasResumedRef.current = false;
+    setHasNewConversationIntent(false);
     setActiveConversationId(null);
     resetTurnState();
   }, [butlerName, abandonCurrentStream, resetTurnState]);
@@ -198,17 +232,32 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     }
   }, [pendingScrollMessageId, visibleMessages.length]);
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      // Keep failed pre-acceptance bindings for the existing explicit Retry/message_id.
+      // Only onMessageAccepted consumes C; a retry must never capture newer input.
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
-    abandonCurrentStream();
+    draft.dismiss(() => {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
+      abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
+    });
   }
 
   function handleCheckAgain() {
@@ -225,6 +274,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       ? streaming.dispatchReceipt
       : undefined;
 
+  // No selected history is not proof of an empty thread while initial
+  // discovery is unknown (or its first row is about to auto-resume).
+  // Deliberately choosing New establishes a fresh composer independently.
+  const unresolvedDiscovery = activeConversationId === null && !hasNewConversationIntent &&
+    (conversationsData === undefined || isConversationsError || conversations.length > 0);
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar */}
@@ -232,10 +287,14 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         butlerName={butlerName}
         activeConversationId={activeConversationId}
         onSelectConversation={(id, messageId) => {
+          draft.dismiss(() => {
+          hasResumedRef.current = true;
+          setHasNewConversationIntent(false);
           abandonCurrentStream();
           setActiveConversationId(id);
           setPendingScrollMessageId(messageId ?? null);
           setSendError(null);
+          });
         }}
         onNewConversation={handleNewConversation}
       />
@@ -250,7 +309,22 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           routedButler={visibleDispatchReceipt?.routedButler}
         />
 
-        {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
+        {isConversationsError && (
+          <div>
+            <ConversationReadError
+              label="conversation discovery"
+              onRetry={() => void refetchConversations()}
+            />
+            {conversationsData && (
+              <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+                Showing cached conversations; this list may be out of date.
+              </p>
+            )}
+          </div>
+        )}
+
+        {(isLoadingConversations && unresolvedDiscovery) ||
+          (isLoadingMessages && activeConversationId && visibleMessages.length === 0) ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
@@ -258,7 +332,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
-            suppressEmptyState={isMessagesError}
+            suppressEmptyState={isMessagesError || unresolvedDiscovery}
           />
         )}
 
@@ -278,6 +352,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           />
         )}
 
+        <DraftNotice session={draft.session} />
         <MessageInput
           value={inputValue}
           onChange={setInputValue}
@@ -294,7 +369,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={isLoadingConversations}
+          disabled={isLoadingConversations || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,

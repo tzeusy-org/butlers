@@ -28,25 +28,26 @@ spec:
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Same command as the compose service (runtime needs dev extras).
-          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up{{ if .Values.butlersControl.enabled }} --exclude switchboard{{ end }}"]
           ports:
-            - {name: switchboard, containerPort: 41100}
+            - {name: daemon, containerPort: {{ if .Values.butlersControl.enabled }}41101{{ else }}41100{{ end }}}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
-            - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ .Values.butlersUp.maxGlobalSessions }}"}
+            - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
           readinessProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 5
           startupProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 5
             failureThreshold: 60
           livenessProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 15
             failureThreshold: 8
           resources:
@@ -83,6 +84,7 @@ spec:
   selector:
     {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 4 }}
   ports:
-    {{- range $p := untilStep 41100 41113 1 }}
+    {{- $first := ternary 41101 41100 .Values.butlersControl.enabled }}
+    {{- range $p := untilStep (int $first) 41113 1 }}
     - {name: p{{ $p }}, port: {{ $p }}, targetPort: {{ $p }}}
     {{- end }}

@@ -1045,3 +1045,29 @@ async def test_invitations_pagination_validation_and_honest_source_failures(app,
     assert len(unavailable["entries"]) == 3 and unavailable["issues_available"] is False
     assert unavailable["conflicts_available"] is False
     assert "calendar conflict scan" in unavailable["sources_degraded"]
+
+
+async def test_invitation_response_capability_belongs_to_physical_entry_owner(app):
+    # REQ-dashboard-api-069
+    # A newer event copy and the canonical source can belong to different schemas.
+    finance = _invitation_row(origin_ref="shared", instance_updated_at=_DAY)
+    messenger = _invitation_row(
+        origin_ref="shared", instance_updated_at=_DAY - timedelta(minutes=5)
+    )
+    app, physical_db = _build_app(
+        app, workspace_rows={"finance": [finance], "messenger": [messenger]}
+    )
+    physical_db.butlers_with_module.return_value = ["finance", "messenger"]
+    mismatched = (await _get_invitations(app)).json()["data"]["entries"]
+    assert len(mismatched) == 1
+    assert mismatched[0]["entry_id"] == str(finance["instance_id"])
+    assert mismatched[0]["butler_name"] == "finance"
+    assert mismatched[0]["response_configured"] is False
+    messenger["instance_updated_at"] = _DAY + timedelta(minutes=5)
+    matching = (await _get_invitations(app)).json()["data"]["entries"][0]
+    assert matching["entry_id"] == str(messenger["instance_id"])
+    assert matching["butler_name"] == "messenger" and matching["response_configured"] is True
+    messenger["writable"] = False
+    assert (await _get_invitations(app)).json()["data"]["entries"][0][
+        "response_configured"
+    ] is False

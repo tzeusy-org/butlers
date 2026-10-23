@@ -8,15 +8,10 @@ as its existing offline/no-external-frontend tokens. Its digest-pinned RepoDiges
 lock-bound cache labels, clean linked worktree, credential refusal, Compose,
 context and teardown contracts remain unchanged.
 
-The `Migration Chain Integrity (main)` workflow has one optional manual input,
-`offline-route-a-build-proof`, default false. A true input runs only the bounded
-recipe proof, while push and default manual dispatch keep the existing migration
-job and commands. The coordinator dispatches the proof against the published
-exact source SHA; source authors do not dispatch it or claim future results.
-If an image-size diagnostic input is present in a later serialized workflow,
-selecting both manual build modes fails before checkout or any build. The
-coordinator must preserve this refusal and make that diagnostic job skip when
-the offline proof input is true.
+The proof was dispatched through an `offline-route-a-build-proof` input on the
+`Migration Chain Integrity (main)` workflow. bu-29wkwj.1 deleted that workflow,
+which had no remaining caller, and the Route A scaffolding itself is scheduled
+for removal under bu-99t5s3.2. The steps below describe what the script checks.
 
 `scripts/prove_route_a_offline_builds.py` performs:
 

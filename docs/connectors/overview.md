@@ -89,6 +89,37 @@ Canonical dedupe key guidance per provider:
 - **Email:** RFC `Message-ID` + receiving mailbox identity
 - **API/MCP:** caller idempotency key or deterministic payload hash + source identity + bounded time window
 
+## Untrusted Spans and Channel Kind
+
+RFC 0038 D5 starts an owner goal exposed when the owner's message carries someone else's text.
+Connectors mark that text; goal admission (not built yet) reads the marks. Nothing on the current
+routing path reads them. Helpers live in `butlers.ingestion_spans`.
+
+- `payload.untrusted_spans`: `{kind, start, end, origin_identity?, origin_display_name?}` records,
+  with `kind` one of `forwarded`, `quoted` or `embedded`. `[start, end)` are Python `str` indices
+  into `normalized_text` after the contract strips its surrounding whitespace. A connector that
+  knows a message carries such text but cannot locate it marks the whole text. The contract turns
+  a span that does not fit into a whole-text span, and when a bearer scrub rewrites the text, each
+  kind collapses to one whole-text span. The forwarding owner stays `sender.identity`.
+- `event.in_reply_to_ref`: a provider reference to the replied-to message (`<chat_id>:<message_id>`
+  on Telegram). The replied-to text is not in `normalized_text`, so it is not marked; admission
+  resolves the reference, so a reply to the butler's own message is not exposed by the reply alone.
+- Channel kind is registered per connector, not set per envelope (`REQ-connector-base-spec-003`).
+  A device or telemetry feed passes `channel_kind=CHANNEL_KIND_FEED` to `ConnectorHeartbeat`, which
+  sends it as `capabilities.channel_kind`. Switchboard keeps it on the `connector_registry` row and
+  drops an unrecognised value, and admission resolves it with `registered_channel_kind(pool,
+  connector_type, endpoint_identity)`. An unregistered or undeclared connector is a message
+  channel. `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed
+  path.
+
+| Connector | What it marks |
+| --- | --- |
+| Telegram bot | A forward marks the whole text as `forwarded`, with the original author. `blockquote` entities become `quoted` spans. `external_reply` (a reply to another chat) marks the whole text as `quoted`. A same-chat reply sets `in_reply_to_ref`. |
+| Telegram user client | A forwarded message (`fwd_from`) marks its whole text, or its own line in a batch transcript. |
+| WhatsApp | A forward (the bridge's `content.is_forwarded`) marks its whole text, or its own line in a batch. WhatsApp names no original author. A quoted reply carries only `quoted_message_id`, so nothing is marked. |
+| Gmail (full tier) | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. The metadata tier is not marked. |
+| Home Assistant, ActivityWatch, OwnTracks, Steam, Google Health | Register `channel_kind = "feed"` on every heartbeat. |
+
 ## Checkpoint Persistence
 
 All connectors persist their resume cursor in the database via the `cursor_store` module (`butlers.connectors.cursor_store`). The canonical storage location is the `switchboard.connector_registry` table, keyed by `(connector_type, endpoint_identity)`.
@@ -205,7 +236,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   labels use
   the sentinel. Only "never connected" is non-fatal, via its own exception subclass
   (`SpotifyCredentialsUnconfiguredError`); every post-configuration fault stays loud. Env-var
-  connectors (telegram, discord, whatsapp, activitywatch) that fail `Config.from_env()` are a
+  connectors (telegram, whatsapp, activitywatch) that fail `Config.from_env()` are a
   deployment misconfiguration and should crash.
 - `switchboard.connector_registry` has two producers on one `(connector_type, endpoint_identity)`
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row

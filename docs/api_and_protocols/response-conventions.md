@@ -143,6 +143,12 @@ does not invent USD.
 
 ## Implementation Notes
 
+- Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested
+  wire models in `api/routers/ingestion_connectors.py`. Keep the existing derivation helpers as the
+  authority for liveness, operational roles and source availability. This route excludes unset
+  fields so registry failure retains only `connectors` and `connector_registry_available` in data,
+  while explicitly supplying `meta` preserves the existing empty outer metadata object. Do not
+  materialize secondary-source defaults as evidence when the primary registry read failed.
 - `GET /api/audit-log` treats `UndefinedTableError` on `dashboard_audit_log` as an empty page
   (`data=[]`, `total=0`), not a 500, because the dashboard can start against an unmigrated or
   offline switchboard schema.

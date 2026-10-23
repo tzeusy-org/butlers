@@ -85,7 +85,7 @@ def test_internal_envelope_passes_parse_ingest_envelope() -> None:
     """Internally built envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = _build_ingest_envelope(
         event_id="evt-3",

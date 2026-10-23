@@ -25,6 +25,7 @@ from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
     get_db_manager,
+    get_discovery_diagnostics,
     get_mcp_manager,
     get_pricing,
     init_db_manager,
@@ -72,6 +73,7 @@ from butlers.api.routers.data_ops import router as data_ops_router
 from butlers.api.routers.decisions import router as decisions_router
 from butlers.api.routers.delegation import router as delegation_router
 from butlers.api.routers.domain_events import router as domain_events_router
+from butlers.api.routers.entities import router as entities_router
 from butlers.api.routers.events import router as events_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
@@ -303,7 +305,9 @@ async def lifespan(app: FastAPI):
                     get_db_manager().pool("switchboard"),
                     butler_configs,
                     after_cycle=controller_after_cycle(
-                        get_db_manager().pool("switchboard"), butler_configs
+                        get_db_manager().pool("switchboard"),
+                        butler_configs,
+                        get_discovery_diagnostics().is_retired,
                     ),
                 ),
             )
@@ -796,6 +800,7 @@ def create_app(
     app.include_router(data_ops_router)
     app.include_router(decisions_router)
     app.include_router(delegation_router)
+    app.include_router(entities_router)
     app.include_router(domain_events_router)
     app.include_router(webhooks_router)
 

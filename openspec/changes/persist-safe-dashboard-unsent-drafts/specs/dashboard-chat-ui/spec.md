@@ -4,7 +4,7 @@
 
 The dashboard chat UI SHALL preserve non-empty unsent message text for both the butler-detail chat panel and the floating chat widget under the shared browser-draft contract. Draft identity SHALL follow the target butler and exact conversation, using a distinct new-conversation identity, so component unmounts and surface changes do not discard or misroute the owner's words.
 
-ID: REQ-dashboard-chat-ui-004
+ID: REQ-dashboard-chat-ui-014
 Source: heart-and-soul/vision.md § What Success Looks Like; design.md Decisions 1, 3, and 5
 Scope: v1-mandatory
 
@@ -45,7 +45,7 @@ Scope: v1-mandatory
 
 The chat composer SHALL allocate the existing immutable client `message_id` and, when browser persistence is available, persist it together with the exact immutable submitted content revision before issuing a send. Browser persistence failure SHALL NOT block the existing send beyond the shared 1-second bound, but SHALL disclose that reload recovery is unavailable. The composer SHALL clear only the submitted content revision after the durable conversation read model proves acceptance of the same `message_id`, regardless of unrelated storage-epoch compaction. Validation failure or proven rejection before durable acceptance SHALL retain the editable draft; transport interruption or any outcome that cannot be classified from durable evidence SHALL retain the bound attempt as unknown without text matching or automatic resend.
 
-ID: REQ-dashboard-chat-ui-005
+ID: REQ-dashboard-chat-ui-015
 Source: dashboard-chat-ui § Message Input Area; durable-dashboard-terminal-action-recovery REQ-dashboard-chat-ui-002 and REQ-dashboard-chat-ui-003; design.md Decisions 4 and 10
 Scope: v1-mandatory
 

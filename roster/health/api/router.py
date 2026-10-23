@@ -1778,6 +1778,16 @@ async def get_measurements_latest(
         predicate_list,
     )
 
+    from butlers.tools.health import owner_dominance
+
+    # An owner-logged value on the same owner-local day outranks a device reading.
+    rows = [
+        await owner_dominance.dominant_latest(
+            pool, r["predicate"], r, columns="predicate, valid_at, metadata"
+        )
+        for r in rows
+    ]
+
     result: dict[str, LatestMeasurementEntry | None] = {t: None for t in type_list}
     for r in rows:
         mtype = r["predicate"].removeprefix("measurement_")

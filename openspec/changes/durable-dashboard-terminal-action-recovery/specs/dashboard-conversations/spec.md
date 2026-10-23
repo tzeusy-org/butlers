@@ -58,16 +58,17 @@ Scope: v1-mandatory
   `created_at`, `updated_at`, `message_count`, `routed_butler`, and
   `latest_assistant_reply_at`
 
-#### Scenario: ConversationMessage model without a terminal action
+#### Scenario: ConversationMessage model
 
 - **WHEN** a message response is serialized for a message that did not initiate
   a dashboard bug-report or dead-letter action
 - **THEN** it SHALL include `id`, `conversation_id`, `role`, `content`,
   `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`,
-  `duration_ms`, `tool_calls`, `error`, `request_id`, and
-  `terminal_action: null`
+  `duration_ms`, `tool_calls`, `error`, `request_id`, `page_context`,
+  `captured_at`, and `terminal_action: null`
 - **AND** `dashboard_turn` SHALL be `null` unless the message has a durable
   dashboard-turn control record
+- **AND** `page_context`/`captured_at` are both `null` for assistant-role rows and for any user row sent without a page context
 
 #### Scenario: Freshly opened turn projects a targetless ingress state
 
@@ -149,6 +150,97 @@ Scope: v1-mandatory
 - **WHEN** a search result is serialized
 - **THEN** each entry SHALL include the ConversationSummary fields plus
   `snippet`, the matching message-content excerpt
+
+### Requirement: Conversation Reply Channel
+
+A routed butler session SHALL confirm its interpretation of a dashboard
+statement (or acknowledge a filed bug report, or answer a question) by
+calling the `conversation_reply` MCP tool, which persists an assistant-role
+message directly into the conversation it was routed from. The SSE poller
+MUST watch for this message rather than the routed session's raw completion
+(see the SSE Response Streaming requirement).
+
+For a durable terminal-action outcome, the persisted reply SHALL carry its stable child-effect idempotency key and SHALL not claim a report was filed until the corresponding durable QA receipt is complete.
+
+ID: REQ-dashboard-conversations-003
+Source: dashboard-conversations § Conversation Reply Channel; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-002; design.md Decision 4
+Scope: v1-mandatory
+
+#### Scenario: Conversation reply persists a normal confirm-loop message
+
+- **WHEN** a routed session calls `conversation_reply(conversation_id, message)`
+  for an existing conversation without a terminal-action child-effect key
+- **THEN** the system SHALL insert an assistant-role `public.dashboard_messages`
+  row with `content = message`, increment the conversation `message_count`, and
+  refresh `updated_at`
+- **AND** the tool SHALL return `{"status": "ok", "message_id": "...",
+  "conversation_id": "..."}`
+
+#### Scenario: Terminal action reply is retried
+
+- **WHEN** a terminal-lane worker calls
+  `conversation_reply(conversation_id, message, child_effect_idempotency_key)`
+  with the same conversation, message, and child-effect idempotency key after a
+  crash or retry
+- **THEN** the system SHALL return the existing assistant message as
+  `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
+  without inserting a second reply or incrementing the message count again
+
+#### Scenario: Terminal action reply rejects a changed payload for the same key
+
+- **WHEN** a terminal-lane worker calls `conversation_reply` with an existing
+  child-effect idempotency key but a different conversation or message payload
+- **THEN** the system SHALL insert no message and return a structured conflict
+- **AND** it SHALL preserve the original reply text and receipt rather than
+  silently changing owner-visible content
+
+#### Scenario: Conversation reply rejects an unknown conversation
+
+- **WHEN** `conversation_reply` references an unknown conversation ID
+- **THEN** it SHALL insert no message and return `{"status": "error",
+  "error": "..."}` without raising so the caller can correct its mistake
+
+#### Scenario: Conversation reply is available to every butler
+
+- **WHEN** any butler MCP server registers core tools
+- **THEN** it SHALL register `conversation_reply` regardless of core-group
+  configuration because any routable butler can own a dashboard conversation
+
+#### Scenario: conversation_reply persists the confirm-loop message
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message)` for a `conversation_id` that references an existing conversation
+- **THEN** an assistant-role row is inserted into `public.dashboard_messages` with `content = message`
+- **AND** the conversation's `message_count` is incremented and `updated_at` is refreshed
+- **AND** the tool returns `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
+
+#### Scenario: conversation_reply rejects an unknown conversation_id
+
+- **WHEN** `conversation_reply` is called with a `conversation_id` that does not reference an existing conversation
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` (never raises) so the calling model can see and correct its own mistake
+
+#### Scenario: conversation_reply is available to every butler
+
+- **WHEN** any butler's MCP server registers its core tools
+- **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
+
+#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
+- **THEN** the inserted message row's `sources` column SHALL persist the given list
+- **AND** the tool's success response SHALL be unaffected in shape otherwise
+
+#### Scenario: conversation_reply is unaffected when sources is omitted
+
+- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
+- **THEN** the inserted message row's `sources` column SHALL be NULL
+- **AND** behavior SHALL be identical to before `sources` existed
+
+#### Scenario: conversation_reply rejects empty or blank source names
+
+- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
 
 ## ADDED Requirements
 
@@ -317,101 +409,6 @@ Scope: v1-mandatory
 - **THEN** the stream SHALL not emit `dispatch_accepted`
 - **AND** it SHALL preserve the applicable existing Stop or error outcome rather
   than substituting route/progress language
-
-## MODIFIED Requirements
-
-### Requirement: Conversation Reply Channel
-
-A routed butler session SHALL confirm its interpretation of a dashboard
-statement (or acknowledge a filed bug report, or answer a question) by
-calling the `conversation_reply` MCP tool, which persists an assistant-role
-message directly into the conversation it was routed from. The SSE poller
-MUST watch for this message rather than the routed session's raw completion
-(see the SSE Response Streaming requirement).
-
-For a durable terminal-action outcome, the persisted reply SHALL carry its stable child-effect idempotency key and SHALL not claim a report was filed until the corresponding durable QA receipt is complete.
-
-ID: REQ-dashboard-conversations-003
-Source: dashboard-conversations § Conversation Reply Channel; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-002; design.md Decision 4
-Scope: v1-mandatory
-
-#### Scenario: Conversation reply persists a normal confirm-loop message
-
-- **WHEN** a routed session calls `conversation_reply(conversation_id, message)`
-  for an existing conversation without a terminal-action child-effect key
-- **THEN** the system SHALL insert an assistant-role `public.dashboard_messages`
-  row with `content = message`, increment the conversation `message_count`, and
-  refresh `updated_at`
-- **AND** the tool SHALL return `{"status": "ok", "message_id": "...",
-  "conversation_id": "..."}`
-
-#### Scenario: Terminal action reply is retried
-
-- **WHEN** a terminal-lane worker calls
-  `conversation_reply(conversation_id, message, child_effect_idempotency_key)`
-  with the same conversation, message, and child-effect idempotency key after a
-  crash or retry
-- **THEN** the system SHALL return the existing assistant message as
-  `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
-  without inserting a second reply or incrementing the message count again
-
-#### Scenario: Terminal action reply rejects a changed payload for the same key
-
-- **WHEN** a terminal-lane worker calls `conversation_reply` with an existing
-  child-effect idempotency key but a different conversation or message payload
-- **THEN** the system SHALL insert no message and return a structured conflict
-- **AND** it SHALL preserve the original reply text and receipt rather than
-  silently changing owner-visible content
-
-#### Scenario: Conversation reply rejects an unknown conversation
-
-- **WHEN** `conversation_reply` references an unknown conversation ID
-- **THEN** it SHALL insert no message and return `{"status": "error",
-  "error": "..."}` without raising so the caller can correct its mistake
-
-#### Scenario: Conversation reply is available to every butler
-
-- **WHEN** any butler MCP server registers core tools
-- **THEN** it SHALL register `conversation_reply` regardless of core-group
-  configuration because any routable butler can own a dashboard conversation
-
-#### Scenario: conversation_reply persists the confirm-loop message
-
-- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message)` for a `conversation_id` that references an existing conversation
-- **THEN** an assistant-role row is inserted into `public.dashboard_messages` with `content = message`
-- **AND** the conversation's `message_count` is incremented and `updated_at` is refreshed
-- **AND** the tool returns `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
-
-#### Scenario: conversation_reply rejects an unknown conversation_id
-
-- **WHEN** `conversation_reply` is called with a `conversation_id` that does not reference an existing conversation
-- **THEN** no message row is inserted
-- **AND** the tool returns `{"status": "error", "error": "..."}` (never raises) so the calling model can see and correct its own mistake
-
-#### Scenario: conversation_reply is available to every butler
-
-- **WHEN** any butler's MCP server registers its core tools
-- **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
-
-#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
-
-- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
-- **THEN** the inserted message row's `sources` column SHALL persist the given list
-- **AND** the tool's success response SHALL be unaffected in shape otherwise
-
-#### Scenario: conversation_reply is unaffected when sources is omitted
-
-- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
-- **THEN** the inserted message row's `sources` column SHALL be NULL
-- **AND** behavior SHALL be identical to before `sources` existed
-
-#### Scenario: conversation_reply rejects empty or blank source names
-
-- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
-- **THEN** no message row is inserted
-- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
-
-## ADDED Requirements
 
 ### Requirement: Dashboard Turn Cancellation API
 

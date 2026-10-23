@@ -68,20 +68,14 @@ restore those owners to blocking coverage.
   the run and job ids, the cause, and what removing the cause means.
 - **No automatic reruns, no raised timeouts, no weakened assertions** as a substitute. Each of those
   hides the next real regression in the same test.
-- **Quarantine through the registry, not by editing the test.** The condensation ledger guard
-  refuses marker, decorator and statement changes to existing tests and any `conftest.py` change
-  without a proof, so a `nightly` marker or a conftest skip cannot land without proof work anyway.
-  The registry touches no test file.
+- **Quarantine through the registry, not by editing the test.** The registry touches no test
+  file, so the quarantined test keeps its assertions, markers and fixtures exactly as they were,
+  and removing the entry restores it unchanged.
 - **Un-quarantine by fixing the cause.** The PR that removes the cause deletes the entry. Nothing
   else should bring a test back into the blocking lanes.
 
-The ctrace and distinct condensation owners remain registered under their
-original cost beads. Correcting canonical-path arc loss does not earn their
-original loaded hosted BOTH-mode exit criteria (proof <=30 s and item <=150 s).
-The paired owner remains registered as well; local correctness runs cannot
-replace those full cost and population measurements.
+Quarantine is temporary: every entry waits on the fix its bead owns.
 
 ## Related Pages
 
 - [Markers and Fixtures](markers-and-fixtures.md)
-- [Condensation Evidence](condensation-evidence.md)

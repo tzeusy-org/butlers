@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 /**
  * StateBrowser — table-based browser for butler key-value state entries.
  *
@@ -12,6 +14,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import type { StateEntry } from "@/api/types.ts";
 import { Button } from "@/components/ui/button";
@@ -41,9 +44,10 @@ import { Textarea } from "@/components/ui/textarea";
 // ---------------------------------------------------------------------------
 
 interface StateBrowserProps {
+  butlerName?: string;
   entries: StateEntry[];
   isLoading: boolean;
-  onEdit: (key: string, value: unknown) => void;
+  onEdit: (key: string, value: unknown) => void | Promise<unknown>;
   onDelete: (key: string) => void;
 }
 
@@ -96,6 +100,7 @@ function StateBrowserSkeleton() {
 // ---------------------------------------------------------------------------
 
 function EditStateDialog({
+  butlerName,
   open,
   onOpenChange,
   editKey,
@@ -106,11 +111,14 @@ function EditStateDialog({
   onOpenChange: (open: boolean) => void;
   editKey: string;
   editValue: string;
-  onSave: (key: string, value: string) => void;
+  butlerName?: string;
+  onSave: (key: string, value: string) => void | Promise<unknown>;
 }) {
   const [key, setKey] = useState(editKey);
   const [value, setValue] = useState(editValue);
   const [parseError, setParseError] = useState<string | null>(null);
+
+  const draft = useDraft("butler-state.edit", [butlerName ?? "", "edit", editKey], { key, value }, (v) => { setKey(v.key); setValue(v.value); }, open && !!butlerName, { key: editKey, value: editValue });
 
   // Reset when dialog opens with new values
   const handleOpenChange = (nextOpen: boolean) => {
@@ -119,23 +127,31 @@ function EditStateDialog({
       setValue(editValue);
       setParseError(null);
     }
-    onOpenChange(nextOpen);
+    if (!nextOpen) draft.dismiss(() => onOpenChange(false)); else onOpenChange(true);
   };
 
-  function handleSave() {
-    try {
-      JSON.parse(value);
-      setParseError(null);
-      onSave(key, value);
-      onOpenChange(false);
-    } catch {
+  async function handleSave() {
+    try { JSON.parse(value); } catch {
       setParseError("Invalid JSON. Please check the value and try again.");
+      return;
     }
+    setParseError(null);
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    try {
+      await onSave(key, value);
+      if (draft.current(submission)) toast.success(`State key "${key}" saved`);
+      await draft.submitted(submission, () => onOpenChange(false));
+    } catch {
+      if (draft.current(submission)) setParseError("Could not save the value. Your changes are still here. Try again.");
+    } finally { draft.finish(); }
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg">
+        <DraftNotice session={draft.session} />
         <DialogHeader>
           <DialogTitle>{editKey ? "Edit State" : "Set value"}</DialogTitle>
           <DialogDescription>
@@ -177,10 +193,10 @@ function EditStateDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => draft.dismiss(() => onOpenChange(false))}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={!key.trim() || !value.trim()}>
+          <Button onClick={handleSave} disabled={!key.trim() || !value.trim() || draft.session?.presentation.submitting || draft.session?.presentation.cleanup}>
             Save
           </Button>
         </DialogFooter>
@@ -237,6 +253,7 @@ function DeleteConfirmDialog({
 // ---------------------------------------------------------------------------
 
 export default function StateBrowser({
+  butlerName,
   entries,
   isLoading,
   onEdit,
@@ -280,7 +297,7 @@ export default function StateBrowser({
 
   function handleEditSave(key: string, rawValue: string) {
     const parsed = JSON.parse(rawValue) as unknown;
-    onEdit(key, parsed);
+    return onEdit(key, parsed);
   }
 
   function handleDeleteClick(key: string) {
@@ -381,6 +398,8 @@ export default function StateBrowser({
 
       {/* Edit dialog */}
       <EditStateDialog
+        key={`${butlerName}:${editKey}:${editDialogOpen}`}
+        butlerName={butlerName}
         open={editDialogOpen}
         onOpenChange={setEditDialogOpen}
         editKey={editKey}

@@ -345,6 +345,32 @@ class ModelAttentionObservation(BaseModel):
     episodes: dict[UUID, ModelAttentionEpisode] = Field(default_factory=dict)
 
 
+class AllowanceEntry(BaseModel):
+    """One catalog entry that shares a provider allowance account."""
+
+    id: UUID
+    alias: str
+
+
+class AllowanceAccount(BaseModel):
+    """Content-blind projection of one ``public.provider_allowance_states`` row."""
+
+    account_key: str
+    state: str
+    reset_at: datetime | None = None
+    reset_source: str
+    first_seen_at: datetime
+    updated_at: datetime
+    entries: list[AllowanceEntry] = Field(default_factory=list)
+
+
+class AllowanceObservation(BaseModel):
+    """Allowance state per account, distinct from a proven empty result."""
+
+    available: bool
+    accounts: list[AllowanceAccount] = Field(default_factory=list)
+
+
 class ModelAttentionReissueResult(BaseModel):
     """The one atomic successor result returned for an original episode."""
 
@@ -653,6 +679,60 @@ async def observe_model_attention(
     episodes = {row["catalog_entry_id"]: _attention_episode(row) for row in rows}
     return ApiResponse[ModelAttentionObservation](
         data=ModelAttentionObservation(available=True, episodes=episodes)
+    )
+
+
+@catalog_router.get("/allowance", response_model=ApiResponse[AllowanceObservation])
+async def observe_model_allowance(
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[AllowanceObservation]:
+    """Return every provider allowance account with the catalog entries on it.
+
+    Account membership is ``COALESCE(model_catalog.allowance_account, runtime_type)``. The
+    labels are non-secret grouping labels; no credentials or provider prose are exposed.
+    A read failure is a successful response with ``available=false`` so the Models tab
+    and the System verdict say "allowance unknown" rather than "all accounts available".
+    """
+    pool = _shared_pool(db)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT s.account_key, s.state, s.reset_at, s.reset_source,
+                   s.first_seen_at, s.updated_at,
+                   COALESCE(array_agg(c.id::text ORDER BY c.alias)
+                            FILTER (WHERE c.id IS NOT NULL), ARRAY[]::text[]) AS entry_ids,
+                   COALESCE(array_agg(c.alias ORDER BY c.alias)
+                            FILTER (WHERE c.id IS NOT NULL), ARRAY[]::text[]) AS entry_aliases
+            FROM public.provider_allowance_states s
+            LEFT JOIN public.model_catalog c
+                   ON COALESCE(c.allowance_account, c.runtime_type) = s.account_key
+            GROUP BY s.account_key, s.state, s.reset_at, s.reset_source,
+                     s.first_seen_at, s.updated_at
+            ORDER BY s.account_key
+            """
+        )
+    except Exception:
+        logger.warning("Models allowance observation unavailable")
+        return ApiResponse[AllowanceObservation](data=AllowanceObservation(available=False))
+
+    accounts = [
+        AllowanceAccount(
+            account_key=row["account_key"],
+            state=row["state"],
+            reset_at=row["reset_at"],
+            reset_source=row["reset_source"],
+            first_seen_at=row["first_seen_at"],
+            updated_at=row["updated_at"],
+            entries=[
+                AllowanceEntry(id=UUID(entry_id), alias=alias)
+                for entry_id, alias in zip(row["entry_ids"], row["entry_aliases"], strict=True)
+            ],
+        )
+        for row in rows
+    ]
+    return ApiResponse[AllowanceObservation](
+        data=AllowanceObservation(available=True, accounts=accounts)
     )
 
 
@@ -992,11 +1072,11 @@ async def run_verify_all_models(
     audit_actor: str = "owner",
     caller: str = DASHBOARD_CALLER,
 ) -> VerifyAllResult:
-    """Probe every enabled model in parallel through the signed control plane.
+    """Probe every enabled model through the signed control plane.
 
-    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``, matching the
-    coordinator's own global limit so a full sweep does not shed its own
-    requests.  Each entry's outcome falls into exactly one bucket:
+    Rows sharing a (runtime, allowance account) are probed serially; groups run in parallel,
+    bounded by ``_VERIFY_ALL_CONCURRENCY``, matching the coordinator's own global limit so a
+    full sweep does not shed its own requests.  Each entry's outcome falls into exactly one bucket:
 
     * ``ok`` --- the probe ran and the model answered;
     * ``failed`` --- the probe ran and the model did not;
@@ -1015,7 +1095,7 @@ async def run_verify_all_models(
     """
     rows = await pool.fetch(
         """
-        SELECT id
+        SELECT id, runtime_type, allowance_account
         FROM public.model_catalog
         WHERE enabled = true
         """
@@ -1028,11 +1108,26 @@ async def run_verify_all_models(
     client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    async def _verify_one(row: Any) -> ProbeResult:
-        async with sem:
-            return await client.probe(row["id"])
+    # Rows that draw on one allowance account are probed one after another, so a sweep never
+    # bursts a single account into a 429.  The account is the repo identity
+    # ``COALESCE(allowance_account, runtime_type)`` (``ALLOWANCE_ACCOUNT_KEY_SQL`` in
+    # ``core.model_routing``): a label reused across runtimes shares one allowance, and a row
+    # without a label belongs to the account named like its runtime.
+    groups: dict[Any, list[Any]] = {}
+    for row in rows:
+        account = _row_value(row, "allowance_account")
+        key = account if account is not None else _row_value(row, "runtime_type")
+        groups.setdefault(key, []).append(row)
 
-    results = await asyncio.gather(*[_verify_one(row) for row in rows])
+    async def _verify_group(group: list[Any]) -> list[ProbeResult]:
+        async with sem:
+            return [await client.probe(row["id"]) for row in group]
+
+    results = [
+        result
+        for group_results in await asyncio.gather(*[_verify_group(g) for g in groups.values()])
+        for result in group_results
+    ]
 
     completed = [result for result in results if result.status is ProbeStatus.COMPLETED]
     ok_count = sum(1 for result in completed if result.ok)

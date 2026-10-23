@@ -119,23 +119,24 @@ These diagnostics do not admit missing evidence, install weights or change test 
 Full-mode smoke may use exact successful child identities only. An uncovered item runs the
 original dedicated command. Derived release evidence names actual child commands, selector
 provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
-The owned daily/manual coverage workflow validates all eleven actual CoverageData databases,
-source population, tracing, digest and same-checkout/run/attempt/computed assignment before
-combination. It also validates coverage-pipeline PR changes with actual event provenance,
-full fresh inventory, all eleven covered children, independent execution reconciliation
-and real smoke fallback. Its always-running preflight/report gates refuse every failed or
-skipped prerequisite. Pipeline PRs upload authentic reports; only successful scheduled/manual
-main runs may update the badge. Reporting integrity remains separate from required
-check/guards/frontend verdicts.
+Coverage runs nightly, not per pull request (owner decision bu-w72da2 = A). The scheduled or
+manually dispatched nightly workflow freshly collects inventory, runs all eleven covered
+children, validates every actual CoverageData database, source population, tracing, digest and
+same-checkout/run/attempt/computed assignment before combination, and uploads the combined
+report as an artifact. Its always-running preflight/report gates refuse every failed or skipped
+prerequisite; only successful scheduled/manual main runs may update the badge. A change to the
+coverage pipeline is validated by dispatching the nightly workflow on its branch. Reporting
+integrity remains separate from required check/guards/frontend verdicts.
 Protected merge-group and ordinary PR shards use CI_COVERAGE=0 with the same complete
-selection, workers, markers, timeouts and execution receipts. The owned assurance workflow
-uses CI_COVERAGE=1; ordinary standalone calls retain covered defaults. Actual covered PR
-validation run 38672598762 established the replacement mechanism before this cadence change.
-It does not prove final-head queue success, queue speedup or the seven-minute goal.
+selection, workers, markers, timeouts and execution receipts. The nightly coverage jobs use
+CI_COVERAGE=1; ordinary standalone calls retain covered defaults.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
-actual test membership. Required frontend fails if guards or either child fails. Browser
+actual test membership. Required frontend fails if guards or either child fails. The
+Playwright browser job is required through `check`: every merge group and main push runs it,
+as does every pull request the route classifies as frontend (a change under `frontend/`,
+`.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
 reuses only the source/attempt/content-bound build and retains locked browser version,
 mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
@@ -191,6 +192,34 @@ The graduated commands and planner behavior live in
 [AGENTS.md](../../AGENTS.md#test-scope-policy) and the
 [testing spec](../../openspec/specs/testing/spec.md). The performance target
 does not weaken their escalation rules or the merge queue's full-tree gate.
+
+## Removing or Weakening Tests
+
+Test deletion is governed by review, not by a mechanical gate. There is no
+protected-test inventory, survivor ledger or deletion guard script; a reviewer
+enforces this rule on every pull request.
+
+- **Every test-changing PR states its delta.** The PR body carries
+  `Tests: +a ~m -d` (added, modified, deleted), measured from the PR's own
+  collection rather than estimated.
+- **Every removed check names its survivor or its reason.** Deleting, moving or
+  renaming a test, or weakening one in place (dropping an assertion, a
+  parameter case, a fixture or a marker), names the executing test that still
+  enforces that behavior at the PR head (`Survivor: <old> -> <new>`), or states
+  that the behavior itself is intentionally removed or changed by the same PR.
+- **Protected behavior always keeps a survivor.** Architecture, wire, privacy,
+  authorization, no-send, retry, idempotency and migration-outcome checks are
+  removed only with a named survivor, unless the governing requirement changes
+  in the same PR.
+- **Reviewers refuse** a missing `Tests:` line, a survivor that does not exist
+  or does not exercise the removed behavior, and a protected-check loss with
+  neither a survivor nor a requirement change.
+
+Matching names, smaller counts and deleted production paths are not survivors
+on their own; the reviewer checks what the survivor executes. A mock-call
+assertion (`assert_not_called`, `call_count`) often encodes a real contract such
+as idempotency, delivery cadence or a no-send boundary, so treat it as protected
+until shown otherwise. This rule does not change the per-lane test budget.
 
 ## Evidence Expectations
 

@@ -43,6 +43,7 @@ import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
 import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceLastVisitBanner";
+import { EntityDossierPanel } from "@/components/relationship/EntityDossierPanel";
 import { EntityVerbRail } from "@/components/relationship/EntityVerbRail";
 import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
@@ -3124,6 +3125,9 @@ export default function EntityDetailPage() {
               {/* Operator verbs — log-interaction, gift-idea, note. Every
                   chip writes a real fact (bu-6t8ix.4). */}
               <EntityVerbRail entityId={entityId} />
+
+              {/* Graph dossier — per-source receipts and known/withheld coverage */}
+              <EntityDossierPanel entityId={entityId} />
 
               {/* Gifts and loans — structured panels, hidden when empty */}
               <div className="grid gap-6 sm:grid-cols-2">

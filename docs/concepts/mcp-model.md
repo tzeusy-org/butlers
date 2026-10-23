@@ -75,8 +75,11 @@ The daemon owns one immutable catalog per startup generation. It is finalized af
 wrapping, so its model-visible input schemas and descriptions describe the same final definitions
 served by FastMCP. Catalog entries record canonical name, module, group, namespace,
 LLM-presentability, eager/deferred posture, sensitivity declarations, immutable definition values,
-and stable digests. The checked-in inventory is validated against an executable union of core,
-built-in module, and roster-module registrars, including their finite name/type/group/config gates.
+and stable digests. The checked-in inventory is validated against the executable core,
+built-in module, and roster-module provider union. Configuration-specific module tools may also
+supply complete declarations through the existing `ToolMeta` channel. The canonical catalog
+combines those declarations for the actual registered surface; executable gates cover both the
+provider union and configured roster variants, including conditional Calendar responses.
 
 An unclassified legacy tool remains presentable and eager for compatibility, while the catalog
 marks classification incomplete. Classification never adds a handler or grants call authority.
@@ -153,3 +156,76 @@ adopted OwnerAuth request-admission point: a later revocation may follow an alre
 operation. This is not custody currentness or cross-connection commit atomicity. Approval
 execution first binds the original stored tool/argument digest and executor task, then privately
 normalizes obsolete keywords; fact commit and terminal acknowledgment remain separate outcomes.
+
+
+## Authorization declarations (RFC 0038 D4)
+
+The existing immutable tool catalog carries authorization metadata for future
+broker evaluation. Current registrations, canonical `tools/list`, handler calls,
+approval wrappers and argument sensitivities keep their existing behavior. The
+metadata is dark: no adapter, broker or domain enforcement consumes it yet.
+
+Declare the provider union through `_declare` in
+`src/butlers/core/tool_presentation_inventory.py`, and conditional module tools through
+complete `ToolMeta` declarations. The final catalog binds
+`owner_domain` to the registering daemon's configuration and freezes that
+roster's existing parsed approval policy after wrapping. Module `ToolMeta`
+continues to supply explicit argument sensitivity booleans; an explicit false
+still overrides the approval heuristic. A supplied authorization value that
+conflicts with the inventory is refused rather than silently replaced.
+
+| Field | Declaration |
+| --- | --- |
+| `owner_domain` | Actual daemon owning the handler and data; never a model argument or module label. |
+| `effect_class` | `read`, `record`, `communicate`, `transact`, `actuate` or `administer`. |
+| `output_trust` | `trusted`, `untrusted` or `stamped`; all current declarations conservatively use `untrusted`. |
+| `output_sensitivity` | Whole-payload `ordinary` or `sensitive`; current declarations use `sensitive`. |
+| `resource_params` | Visible argument names selecting resources, excluding message content and display attributes. |
+| `safety_args` | Existing sensitive visible arguments an approval must pin. |
+| `approval_policy` | Immutable snapshot of the existing actual configured gate, including disabled/absent state. |
+| `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
+| `owner_authority` | Whether a write steers future sessions, such as an owner profile, preference or recovery policy. |
+| `recipient_params` | Frozen named selectors, unresolved inherited parties and the actual conditional owner default. |
+
+Recipient selectors and resources can overlap. Calendar attendees identify
+parties; `calendar_id` selects a calendar. Email `to` and `thread_id` select
+destinations; subject and body are content. HA resources are selected by
+`target`; `target` and `data` are safety-critical recipient-bearing arguments.
+Domain and service identify the existing service operation. All arguments
+outside resource and recipient selectors remain content-bearing by default;
+an fnmatch pattern on a content argument counts as free text. An inherited
+thread, shared folder or implicit service target remains undeterminable even
+when a named selector resolves to the owner.
+
+The recipient carrier's condition text describes a native branch, not an
+executable permission. Future broker evaluation must resolve each named party
+uniquely to the live, unmerged, undeleted owner entity, and independently resolve
+inherited parties. It may use the owner default only for the actual absent-party
+Telegram send/insight branch of `notify`; reminder scheduling forwards context
+and generates a send call, while reply/react and email have no blanket owner
+fallback. Unknown or inherited parties cannot be treated as owner communication.
+
+Drive currently registers seven tools and has no share handler. Existing file,
+folder and move writes can inherit shared-parent members, so their metadata is
+`communicate` with undeterminable recipients. Owner-decision tools and the
+private-custody namespace are never eligible for LLM presentation. `transact` is
+never grantable, including unexposed or park-only goals. Eligibility is an
+unconsumed value property, not authority to execute a call.
+
+`read_stores`, `write_stores` and the same inventory's `STORE_WRITERS` retain
+conservative native provenance. The behavior gate rejects a trusted read over a
+model-record, native, external or unknown writer, and checks that registered
+record writers declare their stores. Dynamic SQL, views, stored-function
+boundaries and missing lexical writer edges never establish trust. Current
+unknown provenance stays untrusted; declaring `stamped` needs a real item-stamp
+producer in a later implementation.
+
+Run the catalog gate for every actual roster and the existing synthetic
+provider/group/Boolean variants after approval wrapping. Keep every old
+registration and case, including response-disabled Calendar, and exercise
+response-enabled Calendar with its real owning gate and executor. Calendar's
+`_command_id`/`_command_digest` are private canonical bindings excluded from the
+model schema; `_write` is a sensitivity marker, not a visible parameter. Schema
+and description digests retain their definitions, while the generation digest
+also reflects authorization and policy identity. Repeated unchanged builds
+must agree and later mutations must not alter an already frozen generation.

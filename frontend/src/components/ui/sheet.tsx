@@ -1,11 +1,14 @@
+import { DraftDismissBoundary } from "./draft-dismiss"
 import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+function Sheet({ onOpenChange, ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  return <DraftDismissBoundary>{(dismiss) => <SheetPrimitive.Root data-slot="sheet" {...props} onOpenChange={(open) => {
+    if (open) onOpenChange?.(true); else dismiss(() => onOpenChange?.(false));
+  }} />}</DraftDismissBoundary>
 }
 
 function SheetPortal({

@@ -28,6 +28,7 @@ from butlers.core.control_plane_identity import (
     UnreadyDaemon,
     _effective_observer_interval_s,
     _next_observer_delay_s,
+    expected_from_roster,
     probe_once,
     run_shadow_cycle,
     run_shadow_observer_loop,
@@ -134,6 +135,35 @@ def _identity_payload(*, epoch: int = 7) -> dict:
         "route_contract": {"min": 1, "max": 1},
         "accepting_routes": True,
     }
+
+
+def test_expected_switchboard_identity_follows_the_canonical_switchboard_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KEY_ABSENT_STAGE: Switchboard answers from butlers-control, domains stay on butlers-up."""
+    configs = [
+        SimpleNamespace(name="switchboard", port=41100),
+        SimpleNamespace(name="health", port=41103),
+    ]
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    assert {target.name: target.url for target in expected_from_roster(configs)} == {
+        "switchboard": "http://butlers-control:41100/internal/control-plane/identity",
+        "health": "http://butlers-up:41103/internal/control-plane/identity",
+    }
+
+    # Without the stage destination every daemon keeps the shared BUTLERS_HOST rule.
+    monkeypatch.delenv("SWITCHBOARD_MCP_URL")
+    assert [target.url for target in expected_from_roster(configs)] == [
+        "http://butlers-up:41100/internal/control-plane/identity",
+        "http://butlers-up:41103/internal/control-plane/identity",
+    ]
+    monkeypatch.delenv("BUTLERS_HOST")
+    assert [target.host for target in expected_from_roster(configs)] == ["localhost", "localhost"]
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "not-an-http-endpoint")
+    with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
+        expected_from_roster(configs)
 
 
 def test_identity_verifier_rejects_untrusted_or_not_ready_facts():

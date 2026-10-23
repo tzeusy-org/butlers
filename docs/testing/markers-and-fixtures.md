@@ -215,7 +215,7 @@ Tests can use this to skip gracefully when Docker is not installed.
   corrupt, stale or mismatched inputs fail
   reporting before publication. Coverage reporting never changes required test verdicts.
 - Protected merge-group and ordinary PR heavy shards receive exact `CI_COVERAGE=0`;
-  the owned daily/manual and pipeline-PR coverage workflow receives `1`. The standalone
+  the nightly coverage jobs (scheduled or manual) receive `1`. The standalone
   runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
   enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
@@ -269,13 +269,14 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ### Owned coverage pipeline validation
 
-`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
-coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
+The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
+coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same fresh full inventory,
 five unit and six integration commands, complete execution reconciliation and
 smoke fallback before the strict CoverageData reader. Inventory, execution and
 coverage metadata preserve the actual event, checkout, run and attempt. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
-unknown. PR runs produce full report artifacts; only scheduled/manual main
+unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from
 the local setup composite, with existing finite job caps retained per row.
 

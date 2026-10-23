@@ -639,7 +639,7 @@ def test_set_role_blocks_private_restore_drill_ledger_for_every_runtime_role(pos
         assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_denial
 
 
-def test_connector_writer_role_enforcement(postgres_container):
+def test_connector_writer_role_enforcement(postgres_container, request):
     """SET ROLE connector_writer: can write connectors schema and public.ingestion_events.
 
     Verifies that connector_writer cannot write to a butler runtime schema.
@@ -649,9 +649,22 @@ def test_connector_writer_role_enforcement(postgres_container):
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
-    session_role = "connector_probe"
+    # Roles are cluster-level: dropping the per-test database leaves this one behind for the
+    # next test on the container (a stray `connector_probe` failed the goal-ledger isolation
+    # test by shard order, bu-28av8x.12). Use a unique name and drop it on teardown.
+    session_role = f"connector_probe_{uuid.uuid4().hex[:8]}"
 
     control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+
+    def _drop_probe_role() -> None:
+        engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"DROP ROLE IF EXISTS {session_role}"))
+        finally:
+            engine.dispose()
+
+    request.addfinalizer(_drop_probe_role)
     setup_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
     try:
         with setup_engine.connect() as conn:

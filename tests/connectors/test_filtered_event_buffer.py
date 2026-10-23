@@ -333,7 +333,7 @@ def test_reason_label_helpers_return_non_empty_str(make_label) -> None:
 
 def test_important_dropped_marker_is_stripped_before_replay() -> None:
     """The stored drop_context marker must not reach the replayed envelope (extra=forbid)."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     stored = FilteredEventBuffer.full_payload(
         channel="email",
@@ -597,7 +597,7 @@ def test_replay_splits_pre_split_conversation_identity(
     stored: dict, conversation_id: str, reply_target_ref: str | None
 ) -> None:
     """Replay gives stored envelopes the conversation key live ingress emits (bu-7exe4.2)."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     _sanitize_replay_payload(stored)
 
