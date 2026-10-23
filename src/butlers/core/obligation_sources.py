@@ -275,6 +275,27 @@ class ObligationSourceRepository:
         await self._guard()
         await self._lock(source_id)
 
+    async def lock_git_inventory(self) -> None:
+        """Serialize full owning Git reconciliation before command/source locks.
+
+        Relation identity is checked before discovery; no temporary shadow or
+        cross-schema shortcut may participate in a source inventory.
+        """
+        await self._guard()
+        row = await self.connection.fetchrow(
+            """SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname=$1 AND c.relname='scheduled_tasks' AND c.relkind IN ('r','p'))
+               AND NOT EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=pg_my_temp_schema()
+                   AND relname='scheduled_tasks') AS scheduled_relation""",
+            self.owner_domain,
+        )
+        if not row or not row["scheduled_relation"]:
+            raise SourceConflict("owning_schedule_relation_required")
+        await self.connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"obligation-git-inventory:{self.owner_domain}",
+        )
+
     async def read_command(self, command_id: UUID) -> tuple[str, DefinitionRevision] | None:
         """Lock a command before source/row locks; replay is not current authority.
 

@@ -187,7 +187,7 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
     tmp_path, monkeypatch, caplog
 ):
     from contextlib import ExitStack
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from butlers import lifecycle
     from butlers.config import load_config
@@ -219,6 +219,11 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
         assert order == ["sync", "finalized"]
         assert schedules[0] is config.schedules[0]
         assert local_catalog is registry
+        assert daemon.obligation_git_sources is not None
+        assert (
+            daemon.obligation_git_sources.definitions[0].declaration
+            is schedules[0].obligation.declaration
+        )
         result = actual(schedules, owner_domain=owner_domain, local_catalog=local_catalog)
         assert [i.code for i in result] == ["fleet_catalog_unavailable"]
         order.append("diagnostic")
@@ -244,6 +249,14 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
             if not name.startswith("mock_"):
                 stack.enter_context(value)
         stack.enter_context(patch.object(ButlerDaemon, "_finalize_tool_catalog", finalized))
+        from butlers.core.runtime_config import RuntimeConfig
+
+        stack.enter_context(
+            patch(
+                "butlers.core.runtime_config.RuntimeConfigAccessor.seed_if_empty",
+                new=AsyncMock(return_value=RuntimeConfig("health")),
+            )
+        )
         monkeypatch.setattr(lifecycle, "diagnose_loaded_schedules", diagnostic)
         monkeypatch.setattr(lifecycle, "diagnose_loaded_subscriptions", subscription_diagnostic)
         lifecycle.sync_schedules.side_effect = lambda *a, **k: order.append("sync")
@@ -739,3 +752,37 @@ async def test_job_diagnostics_use_actual_handler_semantics_and_refuse_false_cov
     assert "private-source" not in caplog.text
     assert "nonexistent" not in caplog.text
     assert "other__not_proven_here" not in caplog.text
+
+
+async def test_loaded_source_snapshot_binds_real_loader_registry_and_held_policy(tmp_path):
+    import hashlib
+    import json
+
+    from butlers.core.obligation_git_sources import capture_loaded_git_sources
+    from butlers.core.runtime_config import RuntimeConfig
+
+    config = _loaded_config(tmp_path)
+    registry = await _complete_core_catalog("health")
+    runtime = RuntimeConfig("health", catalog_read_sensitivity="sensitive")
+    snapshot = capture_loaded_git_sources(config, runtime, registry)
+    assert (
+        snapshot.source_sha256
+        == hashlib.sha256((tmp_path / "butler.toml").read_bytes()).hexdigest()
+    )
+    context = json.loads(snapshot.context_json)
+    assert context["catalog_scope"] == "local_registration"
+    assert context["registry_generation"] == registry.generation_digest
+    assert context["runtime_policy_scope"] == "held_effective"
+    assert context["runtime_policy"]["catalog_read_sensitivity"] == "sensitive"
+    assert snapshot.definitions[0].declaration is config.schedules[0].obligation.declaration
+    original = snapshot.digest
+    runtime2 = replace(runtime, catalog_read_sensitivity="normal")
+    assert capture_loaded_git_sources(config, runtime2, registry).digest != original
+    config.schedules[0].prompt = "changed after the strict loader"
+    with pytest.raises(DeclarationError, match="loaded_source_changed"):
+        capture_loaded_git_sources(config, runtime, registry)
+    assert snapshot.digest == original
+    with pytest.raises(DeclarationError, match="source_owner_mismatch"):
+        capture_loaded_git_sources(
+            _loaded_config(tmp_path), replace(runtime, butler_name="other"), registry
+        )

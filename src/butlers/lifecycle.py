@@ -497,6 +497,19 @@ async def run_startup(daemon: Any) -> None:
 
     # 14b.1. Snapshot only the final post-approval FastMCP definitions.
     final_tool_catalog = await daemon._finalize_tool_catalog()
+    # Freeze real source material only after final approval wrapping. This is
+    # local registration/held-policy provenance, not a verified fleet catalog
+    # or an admission-mode selector. OFF performs no obligation source IO.
+    from butlers.core.obligation_git_sources import capture_loaded_git_sources
+    from butlers.core.obligations import DeclarationError
+
+    daemon.obligation_git_sources = None
+    try:
+        daemon.obligation_git_sources = capture_loaded_git_sources(
+            daemon.config, effective_runtime, final_tool_catalog
+        )
+    except DeclarationError as exc:
+        logger.warning("Git obligation source material unavailable reason=%s", exc)
     diagnose_loaded_schedules(
         daemon.config.schedules,
         owner_domain=daemon.config.name,

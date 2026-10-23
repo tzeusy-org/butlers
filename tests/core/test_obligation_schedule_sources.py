@@ -1337,3 +1337,110 @@ async def test_runtime_toggle_binds_enabled_and_reconciles_without_replaying_new
     with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
         await scheduler.schedule_toggle(pool, task, **(kwargs | {"enabled": True}))
     assert (pool.connection.rows, pool.connection.definitions) == before
+
+
+@pytest.mark.asyncio
+async def test_full_loaded_git_reconciliation_uses_actual_inventory_and_tombstones(tmp_path):
+    from butlers.config import load_config
+    from butlers.core.obligation_git_sources import (
+        capture_loaded_git_sources,
+        reconcile_loaded_git_sources,
+    )
+    from butlers.core.runtime_config import RuntimeConfig
+    from tests.config.test_obligation_declarations import _loaded_config
+    from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
+
+    class InventoryConnection(RecordingConnection):
+        async def fetch(self, sql, *args):
+            if "FROM obligation_definitions" in sql:
+                self.calls.append(sql)
+                return [
+                    {"id": key}
+                    for key, value in self.definitions.items()
+                    if value["origin"] == "git" and value["state"] != "deleted"
+                ]
+            if "FROM" in sql and "scheduled_tasks" in sql:
+                self.calls.append(sql)
+                return [copy.deepcopy(row) for row in self.rows.values() if row["source"] == "toml"]
+            return await super().fetch(sql, *args)
+
+        async def execute(self, sql, *args):
+            if sql.lstrip().startswith("DELETE FROM") and "scheduled_tasks" in sql:
+                self.calls.append(sql)
+                del self.rows[args[0]]
+                return "DELETE 1"
+            if "INSERT INTO obligation_revisions" in sql and getattr(self, "fail_revision", False):
+                raise OSError("software commit-path failure")
+            return await super().execute(sql, *args)
+
+    pool = RecordingPool()
+    pool.connection = InventoryConnection()
+    registry = await _complete_core_catalog("health")
+    runtime = RuntimeConfig("health")
+    config = _loaded_config(tmp_path)
+    captured = capture_loaded_git_sources(config, runtime, registry)
+    first = await reconcile_loaded_git_sources(pool, captured)
+    (created,) = first
+    source = created.source_id
+    assert created.origin == "git" and created.creator is None
+    assert pool.connection.rows[source]["next_run_at"] is None
+    nominal = datetime(2027, 1, 2, tzinfo=UTC)
+    pool.connection.rows[source]["next_run_at"] = nominal
+    stable = copy.deepcopy((pool.connection.definitions, pool.connection.outbox))
+    assert await reconcile_loaded_git_sources(pool, captured) == first
+    assert (pool.connection.definitions, pool.connection.outbox) == stable
+    assert pool.connection.rows[source]["next_run_at"] == nominal
+    # Actual writer/repository SQL path rolls back row + revision together;
+    # this software collaborator is not PostgreSQL durability or lock proof.
+    path = tmp_path / "butler.toml"
+    path.write_text(path.read_text().replace("Inspect the fixture", "Updated fixture"))
+    updated = capture_loaded_git_sources(load_config(tmp_path), runtime, registry)
+    before = copy.deepcopy(
+        (pool.connection.rows, pool.connection.definitions, pool.connection.outbox)
+    )
+    pool.connection.fail_revision = True
+    with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+        await reconcile_loaded_git_sources(pool, updated)
+    assert (pool.connection.rows, pool.connection.definitions, pool.connection.outbox) == before
+    pool.connection.fail_revision = False
+    pool.connection.role = "butler_other_rw"
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await reconcile_loaded_git_sources(pool, updated)
+    assert (pool.connection.rows, pool.connection.definitions, pool.connection.outbox) == before
+    pool.connection.role = "butler_health_rw"
+    pool.connection.schedule_shadow = True
+    with pytest.raises(SourceConflict, match="owning_schedule_relation_required"):
+        await reconcile_loaded_git_sources(pool, updated)
+    assert (pool.connection.rows, pool.connection.definitions, pool.connection.outbox) == before
+    pool.connection.schedule_shadow = False
+    revised = await reconcile_loaded_git_sources(pool, updated)
+    assert revised[0].generation == 2
+    assert pool.connection.rows[source]["next_run_at"] == nominal
+
+    # The same strict load cannot lend its provenance to later mutable input.
+    config.schedules[0].prompt = "post-load change"
+    with pytest.raises(DeclarationError, match="loaded_source_changed"):
+        capture_loaded_git_sources(config, runtime, registry)
+
+    # Full, successfully loaded empty config authorizes Git removal only. It
+    # never sweeps runtime rows or treats an arbitrary selected subset as full.
+    runtime_row = uuid4()
+    pool.connection.rows[runtime_row] = schedule(name="manual") | {
+        "id": runtime_row,
+        "source": "db",
+    }
+    occurrence = uuid4()
+    pool.connection.occurrences[occurrence] = {
+        "source_id": source,
+        "revision": created.revision,
+        "state": "claimed",
+    }
+    (tmp_path / "butler.toml").write_text('[butler]\nname="health"\nport=9100\n')
+    empty = capture_loaded_git_sources(load_config(tmp_path), runtime, registry)
+    (deleted,) = await reconcile_loaded_git_sources(pool, empty)
+    assert deleted.state == "deleted" and deleted.source_id == source
+    assert source not in pool.connection.rows and runtime_row in pool.connection.rows
+    assert pool.connection.occurrences[occurrence]["state"] == "cancelled"
+    assert len(pool.connection.outbox) > len(stable[1])
+    assert await reconcile_loaded_git_sources(pool, empty) == ()
+    assert pool.connection.depth == 0

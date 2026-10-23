@@ -9,6 +9,8 @@ models. Nothing downstream re-validates or re-shapes them.
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 import os
 import re
 import tomllib
@@ -513,6 +515,28 @@ class ButlerConfig:
     # These declarations are read by the dashboard OAuth router to resolve the
     # scope-set for each provider as the union of all butler declarations.
     oauth: dict[str, list[str]] = field(default_factory=dict)
+    # Provenance of the exact single strict load, not caller/creator authority.
+    source_sha256: str | None = None
+    source_material_sha256: str | None = None
+
+
+def obligation_config_material_digest(config: ButlerConfig) -> str:
+    """Bind effective typed obligation inputs without retaining secret config.
+
+    This detects changes after load; it does not authenticate a Python caller,
+    Git commit, fleet publication, invocation or admission switch.
+    """
+    material = {
+        "owner": config.name,
+        "schema": config.db_schema,
+        "type": config.type.value,
+        "schedules": [spec.model_dump(mode="json") for spec in config.schedules],
+        "subscriptions": [spec.model_dump(mode="json") for spec in config.subscriptions],
+        "runtime_seed": config.runtime_seed.model_dump(mode="json"),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -1009,7 +1033,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     _validate_messenger_requirements(name, parsed.modules)
 
-    return ButlerConfig(
+    config = ButlerConfig(
         name=name,
         port=section.port,
         description=section.description,
@@ -1032,3 +1056,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         scheduler=scheduler,
         oauth={provider: cfg.scopes for provider, cfg in parsed.oauth.items()},
     )
+
+    config.source_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    config.source_material_sha256 = obligation_config_material_digest(config)
+    return config

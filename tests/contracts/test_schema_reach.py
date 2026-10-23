@@ -307,6 +307,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/obligation_git_sources.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0038-D5: own-domain Git scheduled-row reconciliation under exact owning role/schema/relation guards in one source transaction; no cross-domain schema access",
+    (
         "roster/chronicler/tests/_inline_ddl.py",
         '<dynamic:"{schema_name}".sessions>',
     ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",

@@ -429,3 +429,43 @@ mandatory before switching these jobs to goals. Direct dashboard model callers
 are not covered by the scheduled-job registry; their owner-goal conversion
 remains unfinished. The 102-schedule/19-family inventory, deterministic safety
 contracts, genuine PostgreSQL execution and hosted delivery obligations remain.
+
+### Held Git source factory and full owning reconciliation
+
+The strict loader now retains the hash of its exact TOML bytes and a hash of
+its effective typed obligation inputs. After the final approval-wrapped registry
+is built, real startup captures those inputs together with the held effective
+runtime policy and local registry generation. Mutating schedules or declarations
+after loading refuses the capture. No second TOML parse or runtime-policy query
+is used. The policy scope is explicitly `held_effective`, including existing
+legacy defaults/stale-cache semantics; the registry scope is explicitly
+`local_registration`. Neither is proof of current persisted policy, an
+immutable verified fleet publication, a D7 invocation, a creator grant, an
+admission mode or a complete invocation/system-prompt context.
+
+`reconcile_loaded_git_sources` is the owning full-inventory adapter. Unlike
+selected prepared sync, a complete held config explicitly removes absent Git
+scheduled rows and tombstones their source revisions, cancelling pending and
+claimed occurrences in the same transaction. It preserves runtime rows, source
+origins, existing nominal run slots and dormant new rows. A missing declaration,
+job conversion or unavailable local material cannot create a fresh active
+source. A dangling active source without its actual scheduled row refuses;
+absence alone does not prove deletion. The owning role, relation identity,
+full-inventory lock, command/source lock order and whole-transaction rollback
+remain mandatory.
+
+A source definition's `active` state describes available configuration material;
+it does not admit a goal or validate grants against a fleet catalog. Admission
+still requires its actual verified EvidenceProvider and CatalogProvider. Full
+reconciliation reads back current desired state; it does not masquerade as
+historical command replay. An unconfirmed commit remains unavailable until
+explicit current-state reconciliation, rather than a hash-based success claim.
+The existing selected-command replay contract is unchanged.
+
+Startup only captures this snapshot. Default OFF still performs no B2 source
+I/O and retains ordinary schedule sync/dispatch. Registering durable source
+reconciliation with an actual trusted mode/lifecycle selector, full runtime
+creator/cause/feed adapters, verified fleet publication, complete invocation
+context and genuine goal-runner handoff remain required full-issue work. The
+recording-connection controls are software evidence, not PostgreSQL role,
+concurrency, locking or commit-durability proof.
