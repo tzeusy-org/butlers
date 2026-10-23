@@ -171,19 +171,33 @@ async def verify_role(connection, domain: str) -> None:
         ],
     ):
         raise EvidenceRefused("catalog_unavailable")
-    if (
-        await connection.fetchval(
-            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
-            "WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity "
-            "AND c.relforcerowsecurity AND c.relname=ANY($1::text[])",
-            [
-                "capability_catalog_control",
-                "capability_catalog_members",
-                "capability_catalog_current",
-                "capability_catalog_history",
-            ],
-        )
-        != 4
+    # Match core275's maintenance contract: ordinary backups use the stable
+    # database owner; runtimes must remain non-owners subject to enabled RLS.
+    # Inspect actual catalog rows so missing/retargeted/disabled tables refuse.
+    tables = (
+        "capability_catalog_control",
+        "capability_catalog_members",
+        "capability_catalog_current",
+        "capability_catalog_history",
+        "capability_catalog_installations",
+    )
+    posture = await connection.fetch(
+        "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,"
+        "c.relowner=d.datdba AS database_owned,"
+        "pg_has_role(current_user,d.datdba,'MEMBER') AS owner_member "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "CROSS JOIN pg_database d WHERE n.nspname='public' AND c.relkind='r' "
+        "AND d.datname=current_database() AND c.relname=ANY($1::text[])",
+        tables,
+    )
+    if len(posture) != len(tables) or {row["relname"] for row in posture} != set(tables):
+        raise EvidenceRefused("catalog_unavailable")
+    if any(
+        row["relrowsecurity"] is not True
+        or row["relforcerowsecurity"] is not False
+        or row["database_owned"] is not True
+        or row["owner_member"] is not False
+        for row in posture
     ):
         raise EvidenceRefused("catalog_unavailable")
 

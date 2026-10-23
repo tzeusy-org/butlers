@@ -20,6 +20,7 @@ from butlers.core.catalog_publication import (
     digest,
     publication,
     start_catalog_publication,
+    verify_role,
 )
 from butlers.core.catalog_reader import DOMAINS, EXCLUSIONS, PublishedCatalogProvider
 from butlers.core.goal_admission import Evidence, EvidenceRefused, GoalAdmission, derive_admission
@@ -140,6 +141,19 @@ class Connection:
             "registrations": copy.deepcopy(list(self.store.current.values())),
         }
 
+    async def fetch(self, sql, *args):
+        self.calls.append((sql, args))
+        return [
+            {
+                "relname": name,
+                "relrowsecurity": True,
+                "relforcerowsecurity": False,
+                "database_owned": True,
+                "owner_member": False,
+            }
+            for name in args[0]
+        ]
+
     async def fetchval(self, sql, *args):
         self.calls.append((sql, args))
         if "pg_has_role" in sql:
@@ -214,6 +228,56 @@ class Pool:
     @asynccontextmanager
     async def acquire(self):
         yield self.connection
+
+
+async def test_publisher_accepts_maintenance_posture_and_refuses_runtime_bypass():
+    class RoleConnection(Connection):
+        role = {"name": "butler_health_rw", "rolsuper": False, "rolbypassrls": False}
+        changed = None
+
+        async def fetchrow(self, sql, *args):
+            if "FROM pg_roles" in sql:
+                return self.role
+            return await super().fetchrow(sql, *args)
+
+        async def fetchval(self, sql, *args):
+            if "SELECT count(*) FROM pg_class" in sql:
+                # Real core275 tables are ENABLED/non-FORCE. The former
+                # FORCE-only predicate therefore sees zero suitable tables.
+                return 0
+            return await super().fetchval(sql, *args)
+
+        async def fetch(self, sql, *args):
+            rows = await super().fetch(sql, *args)
+            if self.changed == "missing":
+                rows.pop()
+            elif self.changed:
+                field, value = self.changed
+                rows[0][field] = value
+            return rows
+
+    store = Store()
+    connection = RoleConnection(store, "health")
+    pool = Pool(store, "health")
+    pool.connection = connection
+    _, catalog = await registered_catalog()
+    await CatalogPublisher(pool, "health").publish(catalog)
+    assert store.current["health"]["live"]
+    for field, value in (("name", "butler_general_rw"), ("rolsuper", True), ("rolbypassrls", True)):
+        connection.role = {**RoleConnection.role, field: value}
+        with pytest.raises(EvidenceRefused, match="catalog_unavailable"):
+            await verify_role(connection, "health")
+    connection.role = RoleConnection.role
+    for changed in (
+        "missing",
+        ("database_owned", False),
+        ("owner_member", True),
+        ("relrowsecurity", False),
+        ("relforcerowsecurity", True),
+    ):
+        connection.changed = changed
+        with pytest.raises(EvidenceRefused, match="catalog_unavailable"):
+            await verify_role(connection, "health")
 
 
 async def complete_fleet():

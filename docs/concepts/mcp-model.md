@@ -248,7 +248,9 @@ owner stably owns all five catalog tables, independent of the migration executor
 RLS is non-FORCE so ordinary full `pg_dump` and restore retain every catalog row;
 no backup exclusion, security-definer or BYPASSRLS role is added. Runtime roles
 may neither own nor inherit/assume that trusted maintenance owner, and may not
-be superusers or bypass RLS. Immutable triggers remain mandatory. History is append-only;
+be superusers or bypass RLS. Publication checks the actual five table identities,
+stable database ownership, enabled/non-FORCE flags and absence of runtime membership
+in that owner; a missing table or changed posture refuses before publication. Immutable triggers remain mandatory. History is append-only;
 current registrations advance monotonically and cannot resurrect a retired or
 expired lease. A changed finalization republishes the real replacement.
 

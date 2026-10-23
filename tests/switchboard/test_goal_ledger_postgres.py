@@ -393,14 +393,53 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         await service.admit_submission(SourceRef("message", "unknown"), uuid4())
     ).reason == "source_evidence_unavailable"
 
+    async def committed_state():
+        # Separate owner acquisitions see committed rows, not a runtime's
+        # aborted transaction. The five legitimate refusals above stay bound.
+        return {
+            "goals": await owner.fetch("SELECT * FROM switchboard.goals ORDER BY id"),
+            "budgets": await owner.fetch("SELECT * FROM switchboard.budgets ORDER BY goal_id"),
+            "decisions": await owner.fetch(
+                "SELECT * FROM switchboard.admission_decisions ORDER BY id"
+            ),
+            "bindings": await owner.fetch(
+                "SELECT * FROM switchboard.admission_attempt_bindings ORDER BY attempt_id"
+            ),
+        }
+
+    before_failures = await committed_state()
+    assert len(before_failures["decisions"]) == len(before_failures["bindings"]) == 5
+
+    async def assert_rolled_back(source, attempt):
+        assert await committed_state() == before_failures
+        assert (
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.admission_attempt_bindings WHERE attempt_id=$1", attempt
+            )
+            is None
+        )
+        assert (
+            await owner.fetchrow(
+                "SELECT * FROM switchboard.admission_decisions WHERE attempt_id=$1", attempt
+            )
+            is None
+        )
+        assert (
+            await owner.fetchrow("SELECT * FROM switchboard.goals WHERE source_key=$1", source.key)
+            is None
+        )
+        assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
+
     class Broken(Sources):
         async def load(self, connection, source):
             await connection.execute("SELECT definitely_missing_goal_admission_function()")
 
+    broken_source, broken_attempt = SourceRef("message", "broken"), uuid4()
     with pytest.raises(AdmissionUnavailable):
         await GoalAdmission(runtime, Broken(), Catalogs()).admit_submission(
-            SourceRef("message", "broken"), uuid4()
+            broken_source, broken_attempt
         )
+    await assert_rolled_back(broken_source, broken_attempt)
     started = asyncio.Event()
 
     class Cancelled(Sources):
@@ -408,19 +447,24 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
             started.set()
             await asyncio.Event().wait()
 
+    cancelled_source, cancelled_attempt = SourceRef("message", "cancelled"), uuid4()
     task = asyncio.create_task(
         GoalAdmission(runtime, Cancelled(), Catalogs()).admit_submission(
-            SourceRef("message", "cancelled"), uuid4()
+            cancelled_source, cancelled_attempt
         )
     )
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    await assert_rolled_back(cancelled_source, cancelled_attempt)
     assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
     assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
+    privileged_source, privileged_attempt = SourceRef("message", "privileged"), uuid4()
     with pytest.raises(AdmissionUnavailable):
-        await admit(owner)  # No privileged migration-login fallback.
+        await admit(owner, source=privileged_source, attempt=privileged_attempt)
+        # No privileged migration-login fallback.
+    await assert_rolled_back(privileged_source, privileged_attempt)
     # A persistence failure after goal+budget INSERT must roll both back.
     await owner.execute("""
         CREATE FUNCTION switchboard.test_refuse_decision() RETURNS trigger LANGUAGE plpgsql AS
@@ -428,16 +472,18 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         CREATE TRIGGER test_refuse_decision BEFORE INSERT ON switchboard.admission_decisions
         FOR EACH ROW EXECUTE FUNCTION switchboard.test_refuse_decision()
     """)
+    decision_source, decision_attempt = SourceRef("message", "decision-failure"), uuid4()
     try:
         with pytest.raises(AdmissionUnavailable):
-            await admit(runtime)
+            await admit(runtime, source=decision_source, attempt=decision_attempt)
+        await assert_rolled_back(decision_source, decision_attempt)
         assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
         assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
     finally:
         await owner.execute(
             "DROP TRIGGER test_refuse_decision ON switchboard.admission_decisions; DROP FUNCTION switchboard.test_refuse_decision()"
         )
-    assert await owner.fetchval("SELECT count(*) FROM switchboard.admission_attempt_bindings") == 0
+    assert await committed_state() == before_failures
     # A failure at the new final binding INSERT must roll back the actual
     # earlier goal, budget and decision, not leave an apparently returned ID.
     await owner.execute("""
@@ -446,14 +492,22 @@ async def test_failure_and_cancellation_have_no_partial_success(ledger):
         CREATE TRIGGER test_refuse_binding BEFORE INSERT ON switchboard.admission_attempt_bindings
         FOR EACH ROW EXECUTE FUNCTION switchboard.test_refuse_binding()
     """)
+    binding_source, binding_attempt = SourceRef("message", "binding-failure"), uuid4()
     try:
         with pytest.raises(AdmissionUnavailable):
-            await admit(runtime)
+            await admit(runtime, source=binding_source, attempt=binding_attempt)
+        await assert_rolled_back(binding_source, binding_attempt)
         assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == 0
         assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == 0
-        assert await owner.fetchval("SELECT count(*) FROM switchboard.admission_decisions") == 0
         assert (
-            await owner.fetchval("SELECT count(*) FROM switchboard.admission_attempt_bindings") == 0
+            await owner.fetch("SELECT * FROM switchboard.admission_decisions ORDER BY id")
+            == before_failures["decisions"]
+        )
+        assert (
+            await owner.fetch(
+                "SELECT * FROM switchboard.admission_attempt_bindings ORDER BY attempt_id"
+            )
+            == before_failures["bindings"]
         )
     finally:
         await owner.execute(
