@@ -1,4 +1,4 @@
-"""Actual sw047->sw048/roles/races contracts: authored, NOT RUN locally.
+"""Actual delivered sw050->sw048/roles/races contracts: authored, NOT RUN locally.
 
 Owning cancellation/authenticated transport/approved replay are not implemented
 by this unit. Explicit domain controls below prove central SQL only.
@@ -957,7 +957,7 @@ async def test_real_owner_dump_and_actual_downgrade_preservation(postgres_contai
         )
         # Actual Alembic downgrade on an empty database, not captured SQL only.
         await asyncio.wait_for(
-            asyncio.to_thread(command.downgrade, config, "switchboard@sw_047"), timeout=30
+            asyncio.to_thread(command.downgrade, config, "switchboard@sw_050"), timeout=30
         )
         for table in _STOP_TABLES:
             assert await owner.fetchval("SELECT to_regclass($1)", "switchboard." + table) is None
@@ -998,7 +998,7 @@ async def test_real_owner_dump_and_actual_downgrade_preservation(postgres_contai
             before = await stop_schema_snapshot(owner)
             with pytest.raises(DBAPIError, match="Cannot discard Stop evidence"):
                 await asyncio.wait_for(
-                    asyncio.to_thread(command.downgrade, config, "switchboard@sw_047"), timeout=30
+                    asyncio.to_thread(command.downgrade, config, "switchboard@sw_050"), timeout=30
                 )
             assert await stop_schema_snapshot(owner) == before
         # Real pg_dump in the existing disposable PostgreSQL container, as the

@@ -81,7 +81,11 @@ async def registered_catalog(
                 resource_params=(),
                 selection_bound={},
                 safety_args=(),
-                approval_policy={"enabled": approval_enabled},
+                approval_policy={
+                    "mode": "default",
+                    "enabled": approval_enabled,
+                    "configured_gate": approval_enabled,
+                },
                 idempotency="none",
                 owner_authority=False,
                 recipient_params=RecipientParameters(),

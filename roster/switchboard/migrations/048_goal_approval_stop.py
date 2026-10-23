@@ -1,13 +1,13 @@
 """Durable central Stop and PARK identity, without owning-domain cancellation.
 
 Revision ID: sw_048
-Revises: sw_047
+Revises: sw_050 (delivered admission-attempt bindings)
 """
 
 from alembic import op
 
 revision = "sw_048"
-down_revision = "sw_047"
+down_revision = "sw_050"
 branch_labels = None
 depends_on = None
 
