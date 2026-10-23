@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -388,17 +389,17 @@ class TestThreadOverrideUpsertValidation:
     def test_force_mode_without_butler_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="force:")
 
     def test_unknown_mode_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="allow")
 
     def test_empty_mode_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="")

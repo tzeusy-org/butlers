@@ -8,6 +8,7 @@
 - [Markers and Fixtures](markers-and-fixtures.md) — pytest markers, shared fixtures, parallel execution
 - [Flaky-Test Quarantine](quarantine.md) — how flaky tests leave the blocking lanes, where they still run, how they come back
 - [Orphaned Test Containers](orphaned-testcontainers.md) — how pytest leaks Docker containers, how to tell a leak from a kept container, safe sweeping
+- [Standard Lint Tools](standard-lint-tools.md) — Ruff bug-class rules, the pinned gitleaks secret scan and actionlint, what `make lint` runs
 - [E2E Suite](e2e/README.md) — how to run the end-to-end suite and what each test file proves
 - [CI and Test Scope Policy](ci.md) — agent test ladder, gate verdicts, CI topology, CI guard predicates
 - [Test Traps](test-traps.md) — hard-won rules for writing, auditing and running tests

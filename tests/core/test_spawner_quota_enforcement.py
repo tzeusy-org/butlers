@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -61,6 +61,7 @@ class _MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -350,6 +351,7 @@ class TestSpawnerLedgerRecording:
 
         # Adapter crashes before returning usage → explicit unmeasurable attempt
         class _FailingUsageAdapter(_MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,

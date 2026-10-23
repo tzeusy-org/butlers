@@ -26,6 +26,8 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.unit
 
 
@@ -313,7 +315,7 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     class RegisteredBoundary(Exception):
         pass
 
-    roster_root = Path(__file__).resolve().parents[2] / "roster"
+    roster_root = _THIS_FILE.parents[2] / "roster"
     rosters = sorted(roster_root.glob("*/butler.toml"))
     assert len(rosters) == 13
     for toml_path in rosters:
@@ -345,12 +347,16 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
                 original_start = type(module).on_startup
                 original_register = type(module).register_tools
 
-                async def start_hook(self, *args, _original=original_start, **kwargs):
+                async def start_hook(
+                    self, *args, _original=original_start, started=started, **kwargs
+                ):
                     started.append(self.name)
                     if isinstance(self, SelfHealingModule):
                         await _original(self, *args, **kwargs)
 
-                async def registration(self, *args, _original=original_register, **kwargs):
+                async def registration(
+                    self, *args, _original=original_register, registered=registered, **kwargs
+                ):
                     registered.append(self.name)
                     if isinstance(self, SelfHealingModule):
                         await _original(self, *args, **kwargs)

@@ -92,6 +92,19 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# Bug-class rules (bu-28av8x.4): bugbear and async-correctness.
+extend-select = ["B", "ASYNC"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency/parameter markers are evaluated per request, not shared
+# mutable defaults; B008 stays enabled for every other call in a default.
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Header",
+  "fastapi.Query",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests use long descriptive docstrings and SQL literals; formatting keeps

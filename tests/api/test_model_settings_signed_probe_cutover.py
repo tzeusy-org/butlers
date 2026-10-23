@@ -33,6 +33,7 @@ signs or needs a signer at all.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -363,7 +364,7 @@ async def test_no_statement_in_the_module_writes_a_verification_column() -> None
 
     import butlers.api.routers.model_settings as module
 
-    tree = ast.parse(_Path(module.__file__).read_text(encoding="utf-8"))
+    tree = ast.parse(await asyncio.to_thread(_Path(module.__file__).read_text, encoding="utf-8"))
     assignments = [
         node.value.partition("RETURNING")[0]
         for node in ast.walk(tree)

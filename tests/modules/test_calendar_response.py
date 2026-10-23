@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -20,6 +21,8 @@ from butlers.modules.calendar_response import (
     CalendarResponseUncertainError,
     invitation_snapshot,
 )
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = pytest.mark.unit
 
@@ -542,7 +545,7 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
         with monkeypatch.context() as race:
             real_read = pool.fetchrow
 
-            async def missing_prelock(sql, *values):
+            async def missing_prelock(sql, *values, real_read=real_read):
                 if "idempotency_key" in sql:
                     return None
                 return await real_read(sql, *values)
@@ -641,7 +644,6 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
 async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(monkeypatch):
     # REQ-module-calendar-029: actual installed registry/startup, not a mocked
     # apply_approval_gates result. Missing gate and executor are planted refusals.
-    from pathlib import Path
     from types import SimpleNamespace
 
     from fastmcp import FastMCP
@@ -660,7 +662,7 @@ async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(
         mcp, {"provider": "google", "response_enabled": True}, db, "response-test"
     )
     approvals = ApprovalsModule()
-    daemon = ButlerDaemon(Path(__file__).resolve().parents[2] / "roster" / "messenger", db=db)
+    daemon = ButlerDaemon(_THIS_FILE.parents[2] / "roster" / "messenger", db=db)
     daemon.mcp = mcp
     daemon.config = SimpleNamespace(
         name="response-test",
@@ -698,7 +700,7 @@ async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(
     # the two actual server-configured response owners.
     from butlers.config import load_config
 
-    root = Path(__file__).resolve().parents[2]
+    root = _THIS_FILE.parents[2]
     for name in ("messenger", "relationship"):
         config = load_config(root / "roster" / name)
         assert config.modules["calendar"]["response_enabled"] is True

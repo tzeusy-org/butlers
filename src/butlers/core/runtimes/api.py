@@ -40,7 +40,7 @@ import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 import anthropic
 
@@ -178,6 +178,7 @@ class ApiAdapter(RuntimeAdapter):
             self._client_api_key = api_key
         return self._client
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -276,7 +277,7 @@ class ApiAdapter(RuntimeAdapter):
         tools: list[dict[str, Any]],
         env: dict[str, str],
         model: str | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109 - RuntimeAdapter keyword contract
     ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any] | None]:
         """Force tool-use with an explicit tool schema; no MCP, no subprocess.
 

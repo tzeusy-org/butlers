@@ -82,8 +82,10 @@ async def get_permissions_matrix(
     """Return the full permissions matrix across all butlers and permissions."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # All registered butlers (the "rows" of the matrix).
     try:
@@ -189,8 +191,10 @@ async def set_permission(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     now = datetime.now(UTC)
 

@@ -132,7 +132,7 @@ class TestConcreteModuleBoundaries:
         mod = _make_minimal_module()
         meta = mod.tool_metadata()
         assert isinstance(meta, dict)
-        for tool_name, tm in meta.items():
+        for _tool_name, tm in meta.items():
             assert "session_log" not in str(tm.arg_sensitivities)
 
 

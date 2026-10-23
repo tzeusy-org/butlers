@@ -23,7 +23,8 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
   `make test-ci-integration` reproduce its pytest populations from a **clean** worktree, one broad
   Docker-backed lane at a time.
 - **Scope names differ:** `make test-qg` is `tests/` minus the DB and migration suites; `make lint`
-  omits `roster/`. State the scope beside every number.
+  runs four-root Ruff, package-layer checks and pinned secret/workflow checks. State the scope
+  beside every number.
 - **Verdicts:** `pytest_gate.py` receipts need a positive terminator. A log with no summary line is
   `UNKNOWN`, never a pass; only exit 0 passes. Launch long runs detached.
 - **Removing or weakening a test** needs a `Tests: +a ~m -d` PR line and a named survivor

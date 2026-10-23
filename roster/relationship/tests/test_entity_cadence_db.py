@@ -18,6 +18,8 @@ from butlers.api.db import DatabaseManager
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -77,7 +79,7 @@ async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool)
 
     # Exercise the real route and SQL against migrated PostgreSQL. Owner auth
     # belongs to the mounted-app API suite; this case pins the row taxonomy.
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    router_path = _THIS_FILE.parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location("relationship_cadence_db_router", router_path)
     assert spec is not None and spec.loader is not None
     router_module = importlib.util.module_from_spec(spec)

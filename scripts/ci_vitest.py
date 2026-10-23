@@ -299,7 +299,8 @@ def same_json_value(observed, expected) -> bool:
         )
     if isinstance(expected, list):
         return len(observed) == len(expected) and all(
-            same_json_value(actual, required) for actual, required in zip(observed, expected)
+            same_json_value(actual, required)
+            for actual, required in zip(observed, expected, strict=False)
         )
     return observed == expected
 

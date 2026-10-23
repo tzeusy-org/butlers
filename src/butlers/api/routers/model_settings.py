@@ -539,11 +539,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 _ATTENTION_REASON_COPY = {
@@ -834,14 +834,14 @@ async def create_catalog_entry(
                 capabilities,
                 body.allowance_account,
             )
-        except asyncpg.UniqueViolationError:
+        except asyncpg.UniqueViolationError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=f"Catalog entry with alias '{body.alias}' already exists",
-            )
+            ) from exc
         except Exception as exc:
             logger.error("Failed to create catalog entry: %s", exc)
-            raise HTTPException(status_code=500, detail="Failed to create catalog entry")
+            raise HTTPException(status_code=500, detail="Failed to create catalog entry") from exc
 
         if row is None:
             raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -911,14 +911,14 @@ async def update_catalog_entry(
 
     try:
         row = await pool.fetchrow(sql, *params)
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Catalog entry with alias '{updates.get('alias')}' already exists",
-        )
+        ) from exc
     except Exception as exc:
         logger.error("Failed to update catalog entry %s: %s", entry_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to update catalog entry")
+        raise HTTPException(status_code=500, detail="Failed to update catalog entry") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
@@ -1267,11 +1267,11 @@ async def get_model_failures(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(
@@ -1368,11 +1368,11 @@ async def get_model_attempts(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(

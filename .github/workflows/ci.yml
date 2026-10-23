@@ -187,6 +187,9 @@ jobs:
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
+      - name: Install lint tools
+        run: make install-lint-tools
+
       - name: Lint
         id: lint
         if: ${{ !cancelled() }}

@@ -90,11 +90,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Education butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -671,8 +671,8 @@ async def update_mind_map_status(
         await mind_map_update_status(pool, mind_map_id, body.status)
     except MindMapLifecycleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}") from exc
 
     m = await mind_map_get(pool, mind_map_id)
 
@@ -1254,7 +1254,7 @@ async def submit_curriculum_request(
                 status_code=503,
                 detail="Curriculum request receipts are unavailable"
                 " — the education database is not migrated",
-            )
+            ) from exc
         raise
 
     if receipt is None:
@@ -1342,7 +1342,7 @@ async def get_curriculum_request(
         if isinstance(exc, asyncpg.DataError):
             raise HTTPException(
                 status_code=422, detail=f"Malformed curriculum request ID: {request_id}"
-            )
+            ) from exc
         raise
 
     if row is None:

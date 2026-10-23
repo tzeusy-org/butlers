@@ -831,11 +831,11 @@ async def list_butler_sessions(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     # Map bare day keys onto owner-timezone day boundaries (reuse this butler's
     # own pool to read the shared public general settings).
@@ -913,11 +913,11 @@ async def get_butler_session_kinds(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_SESSION_KINDS_SQL, window_days)
 
@@ -970,11 +970,11 @@ async def get_butler_daily_activity(
 
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_DAILY_ACTIVITY_SQL, window_days)
 
@@ -1030,11 +1030,11 @@ async def get_butler_hourly_activity(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_HOURLY_ACTIVITY_SQL, window_hours)
 
@@ -1095,11 +1095,11 @@ async def get_butler_latency_stats(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     row = await pool.fetchrow(_LATENCY_STATS_SQL, window_days)
 
@@ -1148,11 +1148,11 @@ async def get_butler_friction_summary(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     friction = await _friction_summary(pool, period)
     outcomes = await _sessions_summary(pool, period)

@@ -1647,7 +1647,7 @@ async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing
     instead of tearing down the bridge or polling on a fixed sleep."""
     connector = _connector_with_mocks()
 
-    async def _wait_until_connected(*, timeout: float) -> None:
+    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
         assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
         connector._running = False
@@ -1783,7 +1783,7 @@ async def test_sse_event_loop_retries_pending_identity_resolution_on_each_pass(
         get_status=AsyncMock(return_value={"state": "connected", "phone": "12025551234"}),
     )
 
-    async def _wait_until_connected(*, timeout: float) -> None:
+    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
         assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
 

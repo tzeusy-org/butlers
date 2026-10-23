@@ -65,11 +65,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="General butler database is not available",
-        )
+        ) from exc
 
 
 def _ordinary_only(endpoint):
@@ -79,11 +79,13 @@ def _ordinary_only(endpoint):
     async def wrapper(*args, **kwargs):
         try:
             return await endpoint(*args, **kwargs)
-        except GeneralSourceUnavailable:
-            raise HTTPException(status_code=503, detail=GeneralSourceUnavailable.MESSAGE)
+        except GeneralSourceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=GeneralSourceUnavailable.MESSAGE) from exc
         except asyncpg.PostgresError as exc:
             if is_unavailable_error(exc):
-                raise HTTPException(status_code=503, detail=GeneralSourceUnavailable.MESSAGE)
+                raise HTTPException(
+                    status_code=503, detail=GeneralSourceUnavailable.MESSAGE
+                ) from exc
             raise
 
     return wrapper

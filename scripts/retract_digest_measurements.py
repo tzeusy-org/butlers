@@ -142,7 +142,7 @@ async def _run(execute: bool, database_url: str) -> None:
         # Confirmation prompt before destructive write
         print(f"\n⚠️  RETRACTION: This will set validity='retracted' on {len(rows)} row(s).")
         print("Target: butlers-db-dev (the LIVE system). Retraction is reversible.")
-        confirm = input("Type 'yes' to proceed: ").strip()
+        confirm = (await asyncio.to_thread(input, "Type 'yes' to proceed: ")).strip()
         if confirm != "yes":
             print("Aborted.")
             return
