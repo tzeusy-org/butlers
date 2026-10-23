@@ -236,9 +236,11 @@ class Module(abc.ABC):
 
         The default does nothing.
         """
+        return None
 
     async def on_shutdown(self) -> None:
         """Called during butler shutdown.  The default does nothing."""
+        return None
 
     @property
     def credentials_env(self) -> list[str]:
@@ -250,6 +252,7 @@ class Module(abc.ABC):
 
         The default does nothing.  A failure is logged by the daemon and does not stop startup.
         """
+        return None
 
     def wire_audit_pool(self, audit_pool: Any) -> None:
         """Wire the switchboard audit pool for egress audit logging.
