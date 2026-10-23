@@ -248,7 +248,7 @@ async def list_timeline(
     before_ts: datetime | None = None
     before_id: UUID | None = None
     if before is not None:
-        before_ts, before_id = decode_cursor(before, (datetime, UUID))
+        before_ts, before_id = decode_cursor(before, (datetime, UUID), scope="timeline")
 
     trace_id = trace.strip() if trace is not None and trace.strip() else None
 
@@ -342,7 +342,7 @@ async def list_timeline(
 
     cursor: str | None = None
     if has_more and page:
-        cursor = encode_cursor((page[-1].timestamp, page[-1].id))
+        cursor = encode_cursor((page[-1].timestamp, page[-1].id), scope="timeline")
 
     heartbeat_events = [e for e in page if e.is_heartbeat]
     heartbeat_rollup = TimelineHeartbeatRollup(

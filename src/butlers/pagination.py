@@ -8,7 +8,8 @@ The cursor is the keyset position of the last row returned, as a tuple of
 ``datetime`` / ``UUID`` / ``str`` / ``int`` / ``float`` / ``bool`` / ``None`` values.
 The decoder hands back the same types it was given, so callers never re-parse.
 
-Token format: ``base64url(json({"v": 1, "k": [...]}))`` + ``"."`` + a short checksum.
+Token format: ``base64url(json({"v": 2, "s": receiver_scope, "k": [...]}))``
+followed by ``"."`` and a short checksum.
 The checksum is not authentication; a keyset position grants no access (every query
 stays scoped and binds the values as parameters). It makes a hand-edited or truncated
 token fail loudly instead of seeking to a wrong position.
@@ -22,12 +23,14 @@ import hashlib
 import hmac
 import json
 import math
+import re
+import types
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 #: Bump when the token layout changes; older tokens then fail with a 400.
-CURSOR_VERSION = 1
+CURSOR_VERSION = 2
 
 _CHECKSUM_BYTES = 4
 _TAG_DATETIME = "t"
@@ -70,35 +73,48 @@ def _unpack(raw: Any) -> CursorValue:
     raise ValueError("bad value")
 
 
-def encode_cursor(values: tuple[CursorValue, ...]) -> str:
+def encode_cursor(values: tuple[CursorValue, ...], *, scope: str) -> str:
     """Encode a keyset position into a URL-safe, versioned, checksummed token."""
-    payload = {"v": CURSOR_VERSION, "k": [_pack(v) for v in values]}
+    payload = {"v": CURSOR_VERSION, "s": scope, "k": [_pack(v) for v in values]}
     body = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()
     token = base64.urlsafe_b64encode(body).decode().rstrip("=")
     return f"{token}.{_checksum(body)}"
 
 
-def decode_cursor(cursor: str, shape: tuple[type, ...] | None = None) -> tuple[CursorValue, ...]:
+def decode_cursor(
+    cursor: str, shape: tuple[type | types.UnionType, ...] | None = None, *, scope: str
+) -> tuple[CursorValue, ...]:
     """Decode a token from :func:`encode_cursor`; raise :class:`InvalidCursorError` otherwise.
 
-    ``shape`` is the tuple of types the endpoint's keyset has. A well-formed cursor minted by
-    another endpoint then fails with the same 400 instead of seeking with the wrong values.
+    ``scope`` is fixed by the server receiver, never taken from the caller or token.
+    It distinguishes endpoints even when their keyset types match. ``shape`` checks
+    exact value types, including intentional union members, without bool/int coercion.
+    This scope is not authorization: every query retains its normal access controls.
     """
     try:
-        token, _, checksum = cursor.partition(".")
-        body = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.[0-9a-f]{8}", cursor):
+            raise ValueError("noncanonical cursor spelling")
+        token, checksum = cursor.split(".")
+        body = base64.b64decode(token + "=" * (-len(token) % 4), altchars=b"-_", validate=True)
+        if base64.urlsafe_b64encode(body).decode().rstrip("=") != token:
+            raise ValueError("noncanonical base64")
         if not hmac.compare_digest(checksum, _checksum(body)):
             raise ValueError("checksum mismatch")
         payload = json.loads(body)
         if not isinstance(payload, dict) or payload.get("v") != CURSOR_VERSION:
             raise ValueError("unsupported cursor version")
+        if payload.get("s") != scope:
+            raise ValueError("cursor belongs to another receiver")
         keys = payload["k"]
         if not isinstance(keys, list):
             raise ValueError("bad key list")
         values = tuple(_unpack(raw) for raw in keys)
         if shape is not None and (
             len(values) != len(shape)
-            or not all(isinstance(v, t) for v, t in zip(values, shape, strict=True))
+            or not all(
+                type(value) in (get_args(expected) or (expected,))
+                for value, expected in zip(values, shape, strict=True)
+            )
         ):
             raise ValueError("cursor does not match this endpoint")
         return values

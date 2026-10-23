@@ -481,7 +481,7 @@ async def ingestion_events_list(
         # offset so callers see a consistent opaque cursor interface.
         page_offset = 0
         if cursor is not None:
-            (page_offset,) = decode_cursor(cursor, (int,))
+            (page_offset,) = decode_cursor(cursor, (int,), scope="ingestion-events.cost")
             if page_offset < 0:
                 raise InvalidCursorError()
 
@@ -510,13 +510,15 @@ async def ingestion_events_list(
 
         next_cursor: str | None = None
         if has_more:
-            next_cursor = encode_cursor((page_offset + limit,))
+            next_cursor = encode_cursor((page_offset + limit,), scope="ingestion-events.cost")
 
         return {"items": items, "next_cursor": next_cursor}
 
     # ── default sort: keyset pagination on (received_at DESC, id DESC) ───────
     if cursor is not None:
-        cursor_received_at, cursor_id = decode_cursor(cursor, (datetime, UUID))
+        cursor_received_at, cursor_id = decode_cursor(
+            cursor, (datetime, UUID), scope="ingestion-events.recent"
+        )
         args.append(cursor_received_at)
         args.append(cursor_id)
         n_ra = len(args) - 1
@@ -560,7 +562,7 @@ async def ingestion_events_list(
             last_ra_dt = datetime.fromisoformat(last_ra)
         else:
             last_ra_dt = last_ra
-        next_cursor_out = encode_cursor((last_ra_dt, last_id_uuid))
+        next_cursor_out = encode_cursor((last_ra_dt, last_id_uuid), scope="ingestion-events.recent")
 
     return {"items": items, "next_cursor": next_cursor_out}
 

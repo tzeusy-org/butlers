@@ -357,7 +357,7 @@ async def test_ingestion_events_list_and_sessions() -> None:
     assert result3["next_cursor"] is not None
 
     # The next_cursor carries the last returned row's keyset position
-    _decoded_ra, decoded_id = decode_cursor(result3["next_cursor"])
+    _decoded_ra, decoded_id = decode_cursor(result3["next_cursor"], scope="ingestion-events.recent")
     assert str(decoded_id) == result3["items"][-1]["id"]
 
     # List: channel filter in SQL — single channel via channels list
@@ -559,12 +559,16 @@ async def test_cost_cursor_and_cost_sort() -> None:
     from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
 
     # sort=cost refuses a keyset cursor (wrong shape) and a negative offset
-    keyset_cursor = encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4()))
+    keyset_cursor = encode_cursor(
+        (datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4()), scope="ingestion-events.cost"
+    )
     with pytest.raises(InvalidCursorError):
         await ingestion_events_list(_FakePool(fetch_results=[]), sort="cost", cursor=keyset_cursor)
     with pytest.raises(InvalidCursorError):
         await ingestion_events_list(
-            _FakePool(fetch_results=[]), sort="cost", cursor=encode_cursor((-10,))
+            _FakePool(fetch_results=[]),
+            sort="cost",
+            cursor=encode_cursor((-10,), scope="ingestion-events.cost"),
         )
 
     # sort=cost: SQL uses ORDER BY cost_usd DESC NULLS LAST + OFFSET
@@ -585,10 +589,12 @@ async def test_cost_cursor_and_cost_sort() -> None:
     # sort=cost, limit+1 rows returned → cursor encodes offset=limit
     three = [_make_event_record(cost_usd=x) for x in [0.05, 0.02, 0.01]]
     result2 = await ingestion_events_list(_FakePool(fetch_results=three), sort="cost", limit=2)
-    assert decode_cursor(result2["next_cursor"]) == (2,)  # next offset = limit
+    assert decode_cursor(result2["next_cursor"], scope="ingestion-events.cost") == (
+        2,
+    )  # next offset = limit
 
     # sort=cost with cursor → offset sent to SQL
-    cursor_val = encode_cursor((20,))
+    cursor_val = encode_cursor((20,), scope="ingestion-events.cost")
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, sort="cost", cursor=cursor_val, limit=10)
     _, sql2, args2 = pool2.calls[0]
@@ -645,7 +651,9 @@ async def test_ingestion_events_list_q_search_coverage() -> None:
 
     from butlers.pagination import encode_cursor
 
-    cursor = encode_cursor((datetime(2026, 5, 1, tzinfo=UTC), uuid.uuid4()))
+    cursor = encode_cursor(
+        (datetime(2026, 5, 1, tzinfo=UTC), uuid.uuid4()), scope="ingestion-events.recent"
+    )
 
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, q="xyz", cursor=cursor, limit=5)

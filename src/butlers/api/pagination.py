@@ -6,6 +6,8 @@ preserves its public functions and translates only cursor errors to HTTP 400.
 
 from __future__ import annotations
 
+import types
+
 from fastapi import HTTPException
 from pydantic import BaseModel
 
@@ -24,10 +26,12 @@ class InvalidCursorError(HTTPException, _CursorError):
         HTTPException.__init__(self, status_code=400, detail=detail)
 
 
-def decode_cursor(cursor: str, shape: tuple[type, ...] | None = None) -> tuple[CursorValue, ...]:
+def decode_cursor(
+    cursor: str, shape: tuple[type | types.UnionType, ...] | None = None, *, scope: str
+) -> tuple[CursorValue, ...]:
     """Decode the shared opaque token, translating cursor failures to HTTP 400."""
     try:
-        return _decode_cursor(cursor, shape)
+        return _decode_cursor(cursor, shape, scope=scope)
     except _CursorError as exc:
         raise InvalidCursorError() from exc
 

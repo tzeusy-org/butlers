@@ -3186,6 +3186,24 @@ async def test_gaps_keyset_pages_merge_pools_newest_first(app, monkeypatch):
     ]
     assert {g["butler"] for g in first["items"]} == {"atlas", "memory"}
 
+    # A cursor minted by the real memory route must not seek the same-shaped
+    # ingestion keyset. The normal second/last memory pages above remain valid.
+    from butlers.api.routers.ingestion_events import _get_db_manager as ingestion_db
+
+    pool = AsyncMock()
+    db = MagicMock()
+    db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[ingestion_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/ingestion/events", params={"cursor": first["next_cursor"]}
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid cursor"
+    pool.fetch.assert_not_awaited()
+
 
 async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeypatch):
     _wire_gaps(

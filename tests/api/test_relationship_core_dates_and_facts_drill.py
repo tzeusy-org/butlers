@@ -214,7 +214,9 @@ class TestFactsDrillNarrativePagination:
         app, mock_pool = _facts_app(identity, narrative)
 
         # An opaque-but-valid cursor encodes (created_at, id).
-        cursor = encode_cursor((datetime(2026, 3, 1, tzinfo=UTC), uuid4()))
+        cursor = encode_cursor(
+            (datetime(2026, 3, 1, tzinfo=UTC), uuid4()), scope="relationship-facts"
+        )
         resp = await _get(
             app,
             f"/api/relationship/entities/{ENTITY_ID}/facts?store=all&limit=20&cursor={cursor}",

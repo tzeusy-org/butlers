@@ -562,7 +562,7 @@ async def message_search(
     cursor_message_id: str | None = None
     if cursor is not None:
         cursor_rank, cursor_created_at, cursor_message_id = decode_cursor(
-            cursor, (float, datetime, UUID)
+            cursor, (float, datetime, UUID), scope="message-search"
         )
 
     fetch_limit = limit + 1
@@ -634,7 +634,9 @@ async def message_search(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_cursor((last["rank"], last["created_at"], last["message_id"]))
+        next_cursor = encode_cursor(
+            (last["rank"], last["created_at"], last["message_id"]), scope="message-search"
+        )
 
     return {"items": items, "next_cursor": next_cursor}
 

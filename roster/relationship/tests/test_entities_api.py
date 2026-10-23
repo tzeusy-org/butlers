@@ -2055,7 +2055,7 @@ class TestEntityFacts:
         assert len(body["items"]) == 20
         assert body["next_cursor"] is not None
         # Cursor must decode to the (created_at, id) of the last returned row.
-        _created_at, last_id = decode_cursor(body["next_cursor"])
+        _created_at, last_id = decode_cursor(body["next_cursor"], scope="relationship-facts")
         assert str(last_id) == body["items"][-1]["id"]
 
         # Feeding the cursor back must add a keyset predicate bound to the values.

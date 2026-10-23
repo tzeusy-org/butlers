@@ -625,7 +625,11 @@ async def list_fleet_cases(
                 ),
             )
 
-    cursor_pos = decode_cursor(cursor, (datetime.datetime, str)) if cursor is not None else None
+    cursor_pos = (
+        decode_cursor(cursor, (datetime.datetime, str), scope="fleet-cases")
+        if cursor is not None
+        else None
+    )
 
     pool = _pool(db)
 
@@ -682,7 +686,7 @@ async def list_fleet_cases(
     next_cursor = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_cursor((last["updated_at"], str(last["id"])))
+        next_cursor = encode_cursor((last["updated_at"], str(last["id"])), scope="fleet-cases")
 
     return Page[FleetCaseSummary](items=data, next_cursor=next_cursor, limit=limit)
 

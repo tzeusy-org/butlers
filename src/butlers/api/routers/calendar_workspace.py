@@ -1250,7 +1250,11 @@ async def get_workspace(
     if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
         raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
 
-    cursor_pos = decode_cursor(cursor, (datetime, UUID)) if cursor is not None else None
+    cursor_pos = (
+        decode_cursor(cursor, (datetime, UUID), scope="calendar-workspace")
+        if cursor is not None
+        else None
+    )
 
     display_tz: ZoneInfo | None = None
     if timezone is not None:
@@ -1403,7 +1407,9 @@ async def get_workspace(
         last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
         last_instance_id = last_row.get("instance_id")
         if last_starts_at is not None and isinstance(last_instance_id, UUID):
-            next_cursor = encode_cursor((last_starts_at, last_instance_id))
+            next_cursor = encode_cursor(
+                (last_starts_at, last_instance_id), scope="calendar-workspace"
+            )
 
     # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
     # batch-join over calendar_event_entities → public.entities, keyed by
@@ -1479,7 +1485,7 @@ async def get_workspace_invitations(
     position = None
     if cursor is not None:
         starts_at, instance_id, *cursor_window = decode_cursor(
-            cursor, (datetime, UUID, str, str, str | None)
+            cursor, (datetime, UUID, str, str, str | None), scope="calendar-invitations"
         )
         if tuple(cursor_window) != window:
             raise InvalidCursorError()
@@ -1567,7 +1573,9 @@ async def get_workspace_invitations(
     next_cursor = None
     if has_more:
         last = invitation_read.rows[limit - 1]
-        next_cursor = encode_cursor((last["instance_starts_at"], last["instance_id"], *window))
+        next_cursor = encode_cursor(
+            (last["instance_starts_at"], last["instance_id"], *window), scope="calendar-invitations"
+        )
     return ApiResponse(
         data=CalendarInvitationsResponse(
             entries=entries,

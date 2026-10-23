@@ -201,7 +201,9 @@ async def test_list_cases_has_more_emits_next_cursor(app):
 # Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_cursor_round_trips_into_where_clause(app):
     app, mock_pool = _app_with_mock(app, fetch_rows=[])
-    cursor = encode_cursor((datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC), "some-id"))
+    cursor = encode_cursor(
+        (datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC), "some-id"), scope="fleet-cases"
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

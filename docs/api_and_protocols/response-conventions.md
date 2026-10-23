@@ -51,7 +51,10 @@ second envelope or a second codec.
   checksummed token over the last row's keyset values (`datetime`, `UUID`, `str`, numbers).
   `decode_cursor` returns the same types it was given and raises `InvalidCursorError`, a 400, for
   anything malformed, edited, from another codec version, or minted by an endpoint with a
-  different `shape`. Treat cursors as opaque; they are not stable across deployments that change
+  different receiver scope or exact `shape`. Each producer and receiver supplies a fixed
+  server-owned scope; caller query parameters cannot choose it. The shared decoder requires
+  canonical unpadded URL-safe base64 and exact scalar types (a boolean is not an integer offset).
+  The scoped token layout is version 2. Treat cursors as opaque; they are not stable across deployments that change
   the codec version, and a 400 means "start again from the first page". Before the shared codec,
   fleet cases, message search and ingestion `sort=cost` answered an invalid cursor with 422; they
   now answer 400 like every other cursor route, and cursors minted before the change are invalid.

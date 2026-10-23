@@ -1469,12 +1469,23 @@ async def test_sort_cost_forwarded_to_core(app):
 @pytest.mark.parametrize(
     ("sort", "cursor"),
     [
-        ("cost", encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), uuid4()))),
-        ("cost", encode_cursor((-10,))),
+        (
+            "cost",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.cost"
+            ),
+        ),
+        ("cost", encode_cursor((-10,), scope="ingestion-events.cost")),
         ("cost", "not-a-cursor"),
         ("recent", "not-a-cursor"),
-        ("recent", encode_cursor((10,))),
-        ("recent", encode_cursor((datetime(2026, 1, 1, tzinfo=UTC), uuid4())) + "x"),
+        ("recent", encode_cursor((10,), scope="ingestion-events.recent")),
+        (
+            "recent",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.recent"
+            )
+            + "x",
+        ),
     ],
     ids=[
         "cost-foreign",
@@ -1496,6 +1507,70 @@ async def test_sort_cost_invalid_cursor_returns_400(app, sort, cursor):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid cursor"
+
+
+@pytest.mark.parametrize(
+    ("sort", "cursor", "accepted"),
+    [
+        ("recent", encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent"), True),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="memory-gaps"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="calendar-workspace"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="relationship-facts"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="timeline"), False),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "!!!!.", 1
+            ),
+            False,
+        ),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "    .", 1
+            ),
+            False,
+        ),
+        ("cost", encode_cursor((True,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((False,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((0,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((40,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((100,), scope="ingestion-events.cost"), True),
+    ],
+    ids=[
+        "native-keyset",
+        "foreign-memory",
+        "foreign-calendar",
+        "foreign-facts",
+        "foreign-timeline",
+        "punctuation",
+        "whitespace",
+        "bool-true",
+        "bool-false",
+        "offset-zero",
+        "offset-forty",
+        "offset-hundred",
+    ],
+)
+async def test_list_cursor_receiver_spelling_and_scalar_controls(app, sort, cursor, accepted):
+    db = _app_with_mock_db(app)
+    pool = db.credential_shared_pool.return_value
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # A caller-supplied scope never selects the receiver's expected scope.
+        response = await client.get(
+            "/api/ingestion/events",
+            params={"sort": sort, "cursor": cursor, "scope": "memory-gaps", "limit": 2},
+        )
+    assert response.status_code == (200 if accepted else 400)
+    if accepted:
+        assert response.json()["items"] == []
+        assert response.json()["limit"] == 2
+        pool.fetch.assert_awaited_once()
+    else:
+        assert response.json()["detail"] == "Invalid cursor"
+        pool.fetch.assert_not_awaited()
 
 
 async def test_list_does_not_relabel_unrelated_value_errors_as_cursor_errors(app):

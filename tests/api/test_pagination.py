@@ -9,7 +9,13 @@ from uuid import UUID
 
 import pytest
 
-from butlers.api.pagination import InvalidCursorError, _checksum, decode_cursor, encode_cursor
+from butlers.api.pagination import (
+    CURSOR_VERSION,
+    InvalidCursorError,
+    _checksum,
+    decode_cursor,
+    encode_cursor,
+)
 from butlers.pagination import InvalidCursorError as CoreInvalidCursorError
 from butlers.pagination import decode_cursor as core_decode_cursor
 from butlers.pagination import encode_cursor as core_encode_cursor
@@ -18,10 +24,10 @@ pytestmark = pytest.mark.unit
 
 _TS = datetime(2026, 8, 1, 12, 30, 15, 250000, tzinfo=UTC)
 _ID = UUID("00000000-0000-4000-8000-000000000001")
-_GOOD = encode_cursor((_TS, _ID))
+_GOOD = encode_cursor((_TS, _ID), scope="test-receiver")
 
 
-def _resign(body: dict) -> str:
+def _resign(body: object) -> str:
     """A token for ``body`` with a valid checksum, so only its content is wrong."""
     raw = json.dumps(body, separators=(",", ":")).encode()
     token = base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -30,17 +36,24 @@ def _resign(body: dict) -> str:
 
 @pytest.mark.parametrize(
     "values",
-    [(_TS, _ID), (0.125, _TS, str(_ID)), (40,), ("text", None, True)],
-    ids=["datetime-uuid", "float-datetime-str", "offset", "scalars"],
+    [(_TS, _ID), (0.125, _TS, str(_ID)), (40,), ("text", None, True), (0,), (100,)],
+    ids=[
+        "datetime-uuid",
+        "float-datetime-str",
+        "offset",
+        "scalars",
+        "offset-zero",
+        "offset-hundred",
+    ],
 )
 def test_cursor_round_trips_values_with_their_types(values):
-    token = encode_cursor(values)
+    token = encode_cursor(values, scope="test-receiver")
 
     assert all(c.isalnum() or c in "-_." for c in token)
-    assert core_encode_cursor(values) == token
-    assert core_decode_cursor(token) == values
-    assert decode_cursor(token) == values
-    assert decode_cursor(token, tuple(type(v) for v in values)) == values
+    assert core_encode_cursor(values, scope="test-receiver") == token
+    assert core_decode_cursor(token, scope="test-receiver") == values
+    assert decode_cursor(token, scope="test-receiver") == values
+    assert decode_cursor(token, tuple(type(v) for v in values), scope="test-receiver") == values
 
 
 @pytest.mark.parametrize(
@@ -50,10 +63,16 @@ def test_cursor_round_trips_values_with_their_types(values):
         "",
         _GOOD[:-2],
         _GOOD.replace(".", "x.", 1),
-        _resign({"v": 2, "k": []}),
-        _resign({"v": 1, "k": [["t", "not-a-date"]]}),
-        _resign({"v": 1, "k": [["q", "x"]]}),
-        _resign({"v": 1}),
+        _resign({"v": CURSOR_VERSION + 1, "s": "test-receiver", "k": []}),
+        _resign({"v": CURSOR_VERSION, "s": "test-receiver", "k": [["t", "not-a-date"]]}),
+        _resign({"v": CURSOR_VERSION, "s": "test-receiver", "k": [["q", "x"]]}),
+        _resign({"v": CURSOR_VERSION, "s": "test-receiver"}),
+        _resign([]),
+        _GOOD.replace(".", "!!!!.", 1),
+        _GOOD.replace(".", "    .", 1),
+        _GOOD.replace(".", "=.", 1),
+        _GOOD + ".",
+        _resign({"v": CURSOR_VERSION, "s": "other-receiver", "k": []}),
     ],
     ids=[
         "garbage",
@@ -64,29 +83,66 @@ def test_cursor_round_trips_values_with_their_types(values):
         "bad-datetime",
         "unknown-tag",
         "no-keys",
+        "non-object-body",
+        "ignored-punctuation",
+        "ignored-whitespace",
+        "padded-spelling",
+        "extra-separator",
+        "foreign-receiver",
     ],
 )
 def test_cursor_rejects_tampering_with_a_400(bad):
     with pytest.raises(InvalidCursorError) as caught:
-        decode_cursor(bad)
+        decode_cursor(bad, scope="test-receiver")
 
     assert caught.value.status_code == 400
     assert isinstance(caught.value, ValueError)
     with pytest.raises(CoreInvalidCursorError) as core_caught:
-        core_decode_cursor(bad)
+        core_decode_cursor(bad, scope="test-receiver")
     assert isinstance(core_caught.value, ValueError)
     assert not hasattr(core_caught.value, "status_code")
 
 
 def test_cursor_from_another_endpoint_fails_the_shape_check():
     with pytest.raises(InvalidCursorError):
-        decode_cursor(_GOOD, (float, datetime, str))
+        decode_cursor(_GOOD, (float, datetime, str), scope="test-receiver")
     with pytest.raises(InvalidCursorError):
-        decode_cursor(_GOOD, (datetime, str))
+        decode_cursor(_GOOD, (datetime, str), scope="test-receiver")
     with pytest.raises(CoreInvalidCursorError):
-        core_decode_cursor(_GOOD, (float, datetime, str))
+        core_decode_cursor(_GOOD, (float, datetime, str), scope="test-receiver")
     with pytest.raises(CoreInvalidCursorError):
-        core_decode_cursor(_GOOD, (datetime, str))
+        core_decode_cursor(_GOOD, (datetime, str), scope="test-receiver")
+
+
+@pytest.mark.parametrize(
+    ("value", "shape", "accepted"),
+    [
+        (True, int, False),
+        (False, int, False),
+        (1, bool, False),
+        (1, float, False),
+        (0, int, True),
+        (40, int, True),
+        (100, int, True),
+        (0.125, float, True),
+        (True, bool, True),
+        (None, str | None, True),
+        ("UTC", str | None, True),
+    ],
+)
+def test_cursor_shapes_preserve_exact_scalar_and_union_types(value, shape, accepted):
+    token = encode_cursor((value,), scope="test-receiver")
+    for decoder, error in (
+        (decode_cursor, InvalidCursorError),
+        (core_decode_cursor, CoreInvalidCursorError),
+    ):
+        if accepted:
+            result = decoder(token, (shape,), scope="test-receiver")
+            assert result == (value,)
+            assert type(result[0]) is type(value)
+        else:
+            with pytest.raises(error):
+                decoder(token, (shape,), scope="test-receiver")
 
 
 # Route table: which envelope each paginated GET route returns. A new route must use

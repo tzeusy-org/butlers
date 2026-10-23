@@ -1601,7 +1601,7 @@ async def list_memory_gaps(
     rather than reading as an empty page.
     """
     statuses = ("open", "answerable") if status is None else (status,)
-    after = decode_cursor(cursor, (datetime, _uuid.UUID)) if cursor else None
+    after = decode_cursor(cursor, (datetime, _uuid.UUID), scope="memory-gaps") if cursor else None
 
     async def _query_pool(butler_name: str, pool: object) -> list[tuple[str, dict]]:
         gaps = await knowledge_gaps.list_gaps(
@@ -1628,7 +1628,7 @@ async def list_memory_gaps(
     next_cursor = None
     if len(merged) > limit and page:
         last = page[-1][1]
-        next_cursor = encode_cursor((last["asked_at"], last["id"]))
+        next_cursor = encode_cursor((last["asked_at"], last["id"]), scope="memory-gaps")
     return Page[MemoryGap](
         items=data,
         next_cursor=next_cursor,

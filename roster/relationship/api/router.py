@@ -5386,7 +5386,11 @@ async def list_entity_facts(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    keyset = decode_cursor(cursor, (datetime, UUID)) if cursor is not None else None
+    keyset = (
+        decode_cursor(cursor, (datetime, UUID), scope="relationship-facts")
+        if cursor is not None
+        else None
+    )
 
     # --- Identity store (relationship.entity_facts) -----------------------
     # Keyset over (created_at, id): page one row past the limit to detect more.
@@ -5435,7 +5439,7 @@ async def list_entity_facts(
     next_cursor: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_cursor((last["created_at"], last["id"]))
+        next_cursor = encode_cursor((last["created_at"], last["id"]), scope="relationship-facts")
 
     items = [
         EntityFactEntry(
