@@ -243,3 +243,34 @@ with exact persisted arguments, no edits and `create_rule=False`. An already
 approved command may recover through that same owning dispatch; its independent
 committed attempt fence prevents a repeated provider write. RFC 0023 recovery
 remains notification-only and retains its default-off authority boundary.
+
+
+### Goal approval storage and Stop fences (dark foundation)
+
+`approvals_019` adds schema-local `approval_goal_effects` and immutable
+`approval_goal_receipts`. Internal `OwningGoalApprovals` transactions first
+validate the exact runtime role, search path, RLS policies and installed trigger
+bodies/timing, then take the existing delivery-rollout lock and domain advisory
+serializer before the effect gate and pending-action row. Each operation has a
+five-second acquire-through-commit bound. The normal legacy admission SQL stays
+separate; incomplete goal lineage refuses rather than becoming a legacy call.
+
+PARK commits the actual pending action and both stable `parked`/`pending` receipt
+aliases together. It respects the real default-OFF delivery rollout and does not
+start a notifier. LOOKUP is read-only: a missing row is unknown, never proof of
+cancellation. CANCEL can commit a durable absent fence before PARK; late PARK
+then refuses. For an existing action it preserves negative decision history,
+fences future dispatch, and records cancellation in the same owning transaction.
+An existing dispatch witness is never converted into an undo claim. Owner
+decisions bind the approved digest to the actual locked stored arguments while
+retaining original-call identity and historical receipt versions.
+
+The internal lineage DTO and receipt digest grant no authority. This storage
+foundation does not enable a listener/profile, authenticate an owner, replace
+exact displayed-call checks, prove an external effect committed, or implement
+approved replay. Real owner-route integration waits for the separate refused-edit
+and legacy-approval fixes; private authenticated transport, stored snapshot and
+fresh revalidation, central authorization, local dispatch-witness production and
+positive Unit B execution remain required. PostgreSQL tests in
+`tests/integration/test_goal_approval_control.py` are authored for hosted
+execution; local software checks do not prove SQL, RLS, race or durability claims.

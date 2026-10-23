@@ -5833,3 +5833,31 @@ BEGIN
     END IF;
 END;
 $$;
+
+
+-- Owning approvals_019: ordinary broad bootstrap grants must not reopen
+-- immutable Stop/receipt state or allow runtime replacement of its guards.
+DO $$
+DECLARE s text; r text; t text; f text;
+BEGIN
+  FOR s IN SELECT nspname FROM pg_namespace
+           WHERE nspname NOT LIKE 'pg_%' AND nspname<>'information_schema' LOOP
+    r:='butler_'||s||'_rw';
+    IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname=r)
+       AND to_regclass(format('%I.approval_goal_effects',s)) IS NOT NULL THEN
+      FOREACH t IN ARRAY ARRAY['approval_goal_effects','approval_goal_receipts'] LOOP
+        EXECUTE format('REVOKE ALL ON %I.%I FROM PUBLIC',s,t);
+        EXECUTE format('REVOKE DELETE,TRUNCATE,TRIGGER,REFERENCES ON %I.%I FROM %I',s,t,r);
+        IF t='approval_goal_receipts' THEN
+          EXECUTE format('REVOKE UPDATE ON %I.%I FROM %I',s,t,r);
+        END IF;
+      END LOOP;
+      EXECUTE format('REVOKE TRIGGER ON %I.pending_actions FROM %I',s,r);
+      FOREACH f IN ARRAY ARRAY['guard_approval_goal_effect','guard_approval_goal_receipt',
+                               'guard_pending_goal_action','validate_approval_goal_final'] LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %I.%I() FROM PUBLIC',s,f);
+        EXECUTE format('REVOKE ALL ON FUNCTION %I.%I() FROM %I',s,f,r);
+      END LOOP;
+    END IF;
+  END LOOP;
+END $$;

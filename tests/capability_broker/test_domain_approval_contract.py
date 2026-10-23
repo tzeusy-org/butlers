@@ -27,6 +27,8 @@ class OwningStore:
 
     def __init__(self, *, migrated=True):
         self.rows = {}
+        self.gates = {}
+        self.receipts = {}
         self.queries = []
         self.migrated = migrated
         self.pause = None
@@ -34,15 +36,17 @@ class OwningStore:
 
     @asynccontextmanager
     async def transaction(self):
-        before = copy.deepcopy(self.rows)
+        before = copy.deepcopy((self.rows, self.gates, self.receipts))
         try:
             yield self
         except BaseException:
-            self.rows = before
+            self.rows, self.gates, self.receipts = before
             raise
 
     async def fetchval(self, sql, *args):
         self.queries.append(sql)
+        if any(catalog in sql for catalog in ("FROM pg_class", "FROM pg_proc", "pg_trigger")):
+            return True
         if "WHERE goal_id = $1 AND goal_effect_id = $2" in sql:
             if not self.migrated:
                 raise asyncpg.UndefinedColumnError("controlled_unmigrated_schema")
@@ -58,6 +62,17 @@ class OwningStore:
 
     async def fetchrow(self, sql, *args):
         self.queries.append(sql)
+        if "current_schema()" in sql and "current_user" in sql:
+            return {
+                "schema": "mail",
+                "role": "butler_mail_rw",
+                "unsafe": False,
+                "schemas": ["pg_catalog", "mail", "public"],
+            }
+        if "FROM approval_goal_effects" in sql:
+            return copy.deepcopy(self.gates.get(args[0]))
+        if "FROM approval_goal_receipts" in sql:
+            return copy.deepcopy(self.receipts.get(tuple(args)))
         if "FROM approval_delivery_rollout" in sql:
             self.entered.set()
             if self.pause is not None:
@@ -81,6 +96,43 @@ class OwningStore:
 
     async def execute(self, sql, *args):
         self.queries.append(sql)
+        if "pg_catalog.set_config" in sql:
+            return "SELECT 1"
+        if "INSERT INTO approval_goal_effects" in sql:
+            names = (
+                "effect_id",
+                "action_id",
+                "goal_id",
+                "owning_domain",
+                "capability",
+                "args_digest",
+                "phase",
+                "pending_action_id",
+                "stop_fenced",
+            )
+            self.gates[args[0]] = dict(zip(names, args, strict=True)) | {
+                "state_version": 1,
+                "dispatch_intent_id": None,
+                "approved_args_digest": None,
+            }
+            return "INSERT 0 1"
+        if "INSERT INTO approval_goal_receipts" in sql:
+            names = (
+                "receipt_id",
+                "effect_id",
+                "state_version",
+                "goal_id",
+                "owning_domain",
+                "action_id",
+                "capability",
+                "args_digest",
+                "outcome",
+                "pending_action_id",
+                "digest",
+            )
+            row = dict(zip(names, args, strict=True))
+            self.receipts[(row["effect_id"], row["state_version"], row["outcome"])] = row
+            return "INSERT 0 1"
         if "pg_advisory_xact_lock" in sql:
             return "SELECT 1"
         if "INSERT INTO pending_actions" in sql:
@@ -122,18 +174,20 @@ class DeliveryOwningStore(OwningStore):
 
     @asynccontextmanager
     async def transaction(self):
-        before = copy.deepcopy((self.rows, self.intents, self.presentations))
+        before = copy.deepcopy(
+            (self.rows, self.intents, self.presentations, self.gates, self.receipts)
+        )
         try:
             yield self
         except BaseException:
-            self.rows, self.intents, self.presentations = before
+            self.rows, self.intents, self.presentations, self.gates, self.receipts = before
             raise
 
     async def fetchval(self, sql, *args):
         if sql == "SELECT clock_timestamp()":
             return datetime.now(UTC)
         if sql == "SELECT current_schema()":
-            return "controlled_domain"
+            return "mail"
         if "SELECT count(*) FROM approval_delivery_intents" in sql:
             return len(self.intents)
         return await super().fetchval(sql, *args)
@@ -219,7 +273,7 @@ def lineage_for(args):
 
 def park(store, lineage, args, **changes):
     options = dict(
-        action_id=uuid4(),
+        action_id=lineage.goal_effect_id,
         tool_name="send",
         raw_args=args,
         lineage=lineage,

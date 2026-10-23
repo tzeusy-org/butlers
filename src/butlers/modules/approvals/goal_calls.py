@@ -14,7 +14,7 @@ from uuid import UUID
 
 from butlers.core.capability_json import arguments_digest, canonical_bytes, parse_arguments
 from butlers.modules.approvals.models import ActionStatus, GoalCallLineage, PendingAction
-from butlers.modules.approvals.park import ParkAdmission, park_pending_action
+from butlers.modules.approvals.park import ParkAdmission, ParkRequest
 
 
 async def park_goal_call(
@@ -44,19 +44,23 @@ async def park_goal_call(
         or lineage.goal_approved_args_digest is not None
     ):
         raise ValueError("goal_call_binding_mismatch")
-    return await park_pending_action(
-        owning_pool,
-        action_id=action_id,
-        tool_name=tool_name,
-        tool_args=snapshot,
-        agent_summary=agent_summary,
-        session_id=session_id,
-        requested_at=requested_at,
-        expires_at=expires_at,
-        origin_butler=origin_butler,
-        deduplication_key=deduplication_key,
-        goal_lineage=lineage,
+    from butlers.modules.approvals.goal_control import OwningGoalApprovals
+
+    admission, _receipt = await OwningGoalApprovals(owning_pool, origin_butler).park(
+        ParkRequest(
+            action_id=action_id,
+            tool_name=tool_name,
+            tool_args=snapshot,
+            agent_summary=agent_summary,
+            session_id=session_id,
+            requested_at=requested_at,
+            expires_at=expires_at,
+            origin_butler=origin_butler,
+            deduplication_key=deduplication_key,
+            goal_lineage=lineage,
+        )
     )
+    return admission
 
 
 @dataclass(frozen=True, slots=True)
