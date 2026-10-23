@@ -189,6 +189,102 @@ class RecordingPool:
         yield self.connection
 
 
+@pytest.mark.asyncio
+async def test_typed_sync_prepared_sources_bind_input_replay_and_atomic_batch(tmp_path):
+    from butlers.config import ScheduleSpec
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import GitScheduleSyncCommand
+    from tests.config.test_obligation_declarations import _loaded_config
+
+    spec = _loaded_config(tmp_path).schedules[0]
+    # This fixture supplies context, NOT a production policy/Git verifier.
+    prepared = replace(
+        definition(name=spec.name, cron=spec.cron, prompt=spec.prompt),
+        declaration=spec.obligation.declaration,
+    )
+    command = GitScheduleSyncCommand(uuid4(), prepared)
+    pool = RecordingPool()
+    (first,) = await scheduler.sync_schedules(pool, [spec], prepared_git_sources=(command,))
+    source = first.definition.source_id
+    assert pool.connection.rows[source]["prompt"] == spec.prompt
+    assert pool.connection.rows[source]["next_run_at"] is None
+    assert first.definition.declaration is spec.obligation.declaration
+    assert len(pool.connection.outbox) == 1 and pool.connection.depth == 0
+
+    # Bind submitted typed material BEFORE a historical command can return.
+    before = copy.deepcopy(pool.connection.calls)
+    for changed in (
+        spec.model_copy(update={"prompt": "contradictory submitted prompt"}),
+        spec.model_copy(
+            update={
+                "obligation": ScheduleSpec(
+                    name=spec.name, cron=spec.cron, prompt=spec.prompt
+                ).obligation
+            }
+        ),
+    ):
+        with pytest.raises(SourceConflict, match="git_sync_material_mismatch"):
+            await scheduler.sync_schedules(pool, [changed], prepared_git_sources=(command,))
+    assert pool.connection.calls == before
+    with pytest.raises(SourceConflict, match="git_sync_set_mismatch"):
+        await scheduler.sync_schedules(pool, [], prepared_git_sources=(command,))
+    assert pool.connection.calls == before
+
+    slot = datetime(2026, 1, 2, tzinfo=UTC)
+    pool.connection.rows[source]["next_run_at"] = slot
+    revised_spec = spec.model_copy(update={"prompt": "revised prompt"})
+    revised = replace(
+        prepared,
+        row_json=definition(name=spec.name, cron=spec.cron, prompt="revised prompt").row_json,
+    )
+    revision = GitScheduleSyncCommand(uuid4(), revised, source, first.definition.revision)
+    (current,) = await scheduler.sync_schedules(
+        pool, [revised_spec], prepared_git_sources=(revision,)
+    )
+    (replay,) = await scheduler.sync_schedules(pool, [spec], prepared_git_sources=(command,))
+    assert replay == first and current.definition.generation == 2
+    assert pool.connection.rows[source]["prompt"] == "revised prompt"
+    assert pool.connection.rows[source]["next_run_at"] == slot
+
+    missing = ScheduleSpec(name=spec.name, cron=spec.cron, prompt="revised prompt")
+    without_declaration = replace(revised, declaration=None)
+    pool.connection.occurrences[UUID(int=999)] = {
+        "source_id": source,
+        "revision": current.definition.revision,
+        "state": "claimed",
+    }
+    (disabled,) = await scheduler.sync_schedules(
+        pool,
+        [missing],
+        prepared_git_sources=(
+            GitScheduleSyncCommand(
+                uuid4(), without_declaration, source, current.definition.revision
+            ),
+        ),
+    )
+    assert disabled.definition.state == "disabled"
+    assert pool.connection.occurrences[UUID(int=999)]["state"] == "cancelled"
+    assert pool.connection.rows[source]["next_run_at"] == slot
+
+    # A real second repository refusal rolls back the first row/revision too.
+    other_spec = spec.model_copy(update={"name": "second"})
+    other = replace(
+        prepared,
+        row_json=definition(name="second", cron=spec.cron, prompt=spec.prompt).row_json,
+        context_json=None,
+    )
+    failed = RecordingPool()
+    with pytest.raises(SourceConflict, match="source_definition_unavailable"):
+        await scheduler.sync_schedules(
+            failed,
+            [spec, other_spec],
+            prepared_git_sources=(command, GitScheduleSyncCommand(uuid4(), other)),
+        )
+    assert not failed.connection.rows and not failed.connection.definitions
+    assert not failed.connection.commands and not failed.connection.outbox
+    assert failed.connection.depth == 0
+
+
 def test_material_is_closed_immutable_complete_and_missing_context_unavailable():
     from butlers.core.obligation_schedule_sources import compile_git_schedule_definition
 

@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
@@ -29,6 +29,12 @@ from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
 from butlers.core.obligations import project_loaded_schedule
+
+if TYPE_CHECKING:
+    from butlers.core.obligation_schedule_sources import (
+        GitScheduleSyncCommand,
+        StagedScheduleDefinition,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -647,7 +653,8 @@ async def sync_schedules(
     skills_dir: Path | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
     quiet_policy: dict[str, Any] | None = None,
-) -> None:
+    prepared_git_sources: tuple[GitScheduleSyncCommand, ...] | None = None,
+) -> tuple[StagedScheduleDefinition, ...] | None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
     - Insert new tasks with ``source='toml'``
@@ -681,7 +688,28 @@ async def sync_schedules(
     Emits one WARNING per prompt-mode schedule that notifies the owner but whose every
     firing in the next week falls inside the owner quiet window (the lint never rejects,
     and uncertain cases do not warn).
+
+    Internal ``prepared_git_sources`` selects a different, dormant persistence
+    path for exactly the submitted typed schedules. Every row/declaration is
+    bound before historical replay; writes share one owning transaction. This
+    path performs no implicit removal sweep or legacy fallback and cannot
+    authenticate the still-required production Git/context/catalog factory.
+    Omitting it preserves the ordinary OFF SQL and return value unchanged.
     """
+    if prepared_git_sources is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            bind_git_schedule_sync,
+            stage_git_schedule_sync,
+        )
+
+        owner_domain = bind_git_schedule_sync(schedules, prepared_git_sources)
+        return await run_source_transaction(
+            pool,
+            owner_domain,
+            lambda repository: stage_git_schedule_sync(repository, prepared_git_sources),
+        )
+
     # Determine whether the DB schema includes temporal intelligence columns.
     _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
 

@@ -238,6 +238,36 @@ B2 source IO, admission, reservation or suppression. Verified catalog/control,
 production config/sync source registration and context producers, final occurrence fences, runtime
 creator/cause and other source families remain full-issue implementation work.
 
+### Selected typed Git sync consumer
+
+The real `sync_schedules()` entrypoint now accepts an internal
+`prepared_git_sources` tuple. Before acquiring a connection or replaying any
+historical command, it binds every selected `ScheduleSpec` projection and its
+already-parsed declaration to exactly one `GitScheduleSyncCommand`. Duplicate
+names, commands, selected source IDs, mixed owning domains, an incomplete set or
+different row/declaration material refuse. Prepared values cannot add calendar
+linkage or other row fields that the typed Git schedule did not provide.
+
+This branch writes the selected scheduled rows, revisions, cancellation and
+reference outbox through one `run_source_transaction()`. All command locks are
+taken in UUID order before source locks in UUID order, then rows in name order.
+The existing revision adapter preserves actual nominal slots and keeps new rows
+dormant. Matching historical replay returns its original receipt without
+reverting a newer row; contradictory submitted material refuses before replay.
+Losing a declaration/context disables an existing source and cancels its pending
+or claimed occurrences. A new unavailable source refuses the entire batch.
+
+This is selected-source persistence, not full configuration reconciliation:
+omission does not mean deletion, and the branch performs no implicit removal
+sweep or legacy fallback. The production factory must still select and verify
+Git/context/catalog material and explicitly reconcile removed sources before it
+can register this path. No such factory, activation, dispatch replacement or
+creator authentication is inferred from these internal values. The ordinary
+call without `prepared_git_sources` retains its existing SQL, removal sweep and
+`None` result, including deterministic service jobs. Recording-connection
+controls establish software behavior only; genuine PostgreSQL transaction,
+role, concurrency and commit-loss proof remain required.
+
 ## Engineering context decision
 
 [decision] Keep QA's useful Diagnostic Context section, anonymize its contents

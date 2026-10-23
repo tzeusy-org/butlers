@@ -13,6 +13,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,7 +26,14 @@ from butlers.core.obligation_sources import (
     RuntimeCreationSnapshot,
     SourceConflict,
 )
-from butlers.core.obligations import DeclarationError, ObligationDeclaration
+from butlers.core.obligations import (
+    DeclarationError,
+    ObligationDeclaration,
+    project_loaded_schedule,
+)
+
+if TYPE_CHECKING:
+    from butlers.config import ScheduleSpec
 
 SCHEDULE_FIELDS = (
     "name",
@@ -316,6 +324,117 @@ class StagedScheduleDefinition:
 # Keep the earlier internal spelling import-compatible; runtime values no longer
 # pretend that their origin was Git.
 StagedGitScheduleDefinition = StagedScheduleDefinition
+
+
+@dataclass(frozen=True)
+class GitScheduleSyncCommand:
+    """Internal prepared write, never Git/context/catalog authentication.
+
+    A selected source set is explicit. Omission is not a deletion request or
+    proof that the full daemon configuration has been reconciled.
+    """
+
+    command_id: UUID
+    definition: GitScheduleDefinition
+    source_id: UUID | None = None
+    expected_revision: str | None = None
+
+    def __post_init__(self):
+        if (
+            not isinstance(self.command_id, UUID)
+            or type(self.definition) is not GitScheduleDefinition
+            or (self.source_id is not None and not isinstance(self.source_id, UUID))
+            or (
+                self.expected_revision is not None
+                and (
+                    self.source_id is None
+                    or type(self.expected_revision) is not str
+                    or not re.fullmatch(r"[0-9a-f]{64}", self.expected_revision)
+                )
+            )
+        ):
+            raise SourceConflict("invalid_git_sync_command")
+
+
+def bind_git_schedule_sync(
+    schedules: list[ScheduleSpec], commands: tuple[GitScheduleSyncCommand, ...]
+) -> str:
+    """Bind every selected typed input before IO or historical replay.
+
+    This is selected-source persistence, not a second TOML parser, automatic
+    deletion pass or the missing production policy/context factory. Fields
+    unavailable in ScheduleSpec cannot be smuggled in through a prepared value.
+    """
+    if (
+        type(commands) is not tuple
+        or not commands
+        or any(type(command) is not GitScheduleSyncCommand for command in commands)
+    ):
+        raise SourceConflict("invalid_git_sync_command")
+    names = [command.definition.schedule["name"] for command in commands]
+    owners = {command.definition.owner_domain for command in commands}
+    sources = [command.source_id for command in commands if command.source_id is not None]
+    if (
+        len(owners) != 1
+        or len(set(names)) != len(names)
+        or len({command.command_id for command in commands}) != len(commands)
+        or len(set(sources)) != len(sources)
+        or len(schedules) != len(commands)
+    ):
+        raise SourceConflict("git_sync_set_mismatch")
+    by_name = dict(zip(names, commands, strict=True))
+    seen = set()
+    for spec in schedules:
+        projection = project_loaded_schedule(spec)
+        name = projection["name"]
+        command = by_name.get(name)
+        if command is None or name in seen:
+            raise SourceConflict("git_sync_set_mismatch")
+        seen.add(name)
+        material = dict.fromkeys(SCHEDULE_FIELDS)
+        material.update(dict(projection.fields))
+        material.update(
+            enabled=True,
+            complexity=material["complexity"] or "workhorse",
+            timezone=material["timezone"] or "UTC",
+        )
+        if (
+            _row_material(material) != command.definition.row_json
+            or projection.declaration.declaration != command.definition.declaration
+        ):
+            raise SourceConflict("git_sync_material_mismatch")
+    return next(iter(owners))
+
+
+async def stage_git_schedule_sync(
+    repository: ObligationSourceRepository,
+    commands: tuple[GitScheduleSyncCommand, ...],
+) -> tuple[StagedScheduleDefinition, ...]:
+    """Stage a bound set in one owning TX, command -> source -> row order.
+
+    All command locks precede every source lock; both sets use stable ordering
+    so overlapping batches do not reverse the existing single-source order.
+    The scheduler validates the submitted typed material before entering here.
+    """
+    for command in sorted(commands, key=lambda value: value.command_id.int):
+        await repository.read_command(command.command_id)
+    for source_id in sorted(
+        (command.source_id for command in commands if command.source_id is not None),
+        key=lambda value: value.int,
+    ):
+        await repository.lock_source(source_id)
+    # Consistent name order also applies to newly inserted unique names. Return
+    # receipts in the caller's order without interpreting them as current authority.
+    results = {}
+    for command in sorted(commands, key=lambda value: value.definition.schedule["name"]):
+        results[command.command_id] = await stage_git_schedule_definition(
+            repository,
+            command_id=command.command_id,
+            definition=command.definition,
+            source_id=command.source_id,
+            expected_revision=command.expected_revision,
+        )
+    return tuple(results[command.command_id] for command in commands)
 
 
 async def _stage_schedule_definition(
