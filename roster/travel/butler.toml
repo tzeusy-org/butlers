@@ -81,9 +81,9 @@ If all documents are current, do not send a message.
 [butler.schedule.obligation]
 version = 1
 capabilities = [
-  { capability = "travel__list_trips" },
-  { capability = "travel__trip_summary" },
-  { capability = "travel__calendar_list_events" },
+  { capability = "travel__document_expiry_inventory" },
+  { capability = "travel__memory_fact_inventory" },
+  { capability = "travel__calendar_scan_reminder_events" },
   { capability = "travel__calendar_create_event" },
   { capability = "travel__notify" },
 ]

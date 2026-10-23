@@ -9,6 +9,9 @@ tools_required:
   - trip_summary
   - upcoming_travel
   - add_document
+  - document_expiry_inventory
+  - memory_fact_inventory
+  - calendar_scan_reminder_events
 ---
 
 # Travel Butler Tool Reference
@@ -211,3 +214,46 @@ memory_store_fact(
     tags=["travel-preference", "flight"]
 )
 ```
+
+
+## Bounded expiry reads
+
+`document_expiry_inventory()` takes no caller selectors. It reads all owning
+`travel.documents JOIN travel.trips` rows, all trip statuses/document types,
+inside one read-only repeatable-read snapshot. A five-second aggregate bound
+includes pool acquisition, query, projection and serialization. At most 1000
+rows are exposed; another row, invalid date/type, failure or output overflow
+returns incomplete/unavailable, not absence. The result contains `status`,
+`complete`, `coverage="owning_store"`, `as_of`, `items`, `unresolved_count`,
+`reason`; each item has `document_id,trip_id,type,expiry_date` (ISO date/null).
+There is no new passport type, write, blob or arbitrary metadata return.
+
+`memory_fact_inventory(predicate="passport_expiry", scope=None)` is registered
+by Memory for Travel; `scope` can only select `travel` or `global`, and omission
+means both. Tenant, local pool and held sensitivity are server-owned. The
+five-second overall bound includes the real accessor, acquisition and query;
+row/output limits and unresolved dates produce incomplete results. `items`
+contain `fact_id,subject,entity_id,scope,expiry_date,source_butler,
+content_authority,observed_at`. This deterministic read has no ranking or
+reference-count bump. It reports `authority_source="held_runtime_config"`
+and `coverage="authorized_scope"`; held normal (including compatibility
+fallback in the accessor) is valid, but missing/unknown authority is
+unavailable. TTL/stale/default-normal held data is not a fresh persisted
+configuration proof or authority to read hidden facts. Legacy Memory readers
+and their normal fallback remain unchanged.
+
+`calendar_scan_reminder_events(start_at, end_at, marker, calendar_id=None)`
+requires aware datetimes with end after start and one nonempty marker line of
+at most 256 characters. It resolves/validates the intended creation-role
+calendar, scans raw provider pages under one absolute 20-second budget,
+20 pages/5000 examined events, and bounds each streamed decoded page to
+262144 bytes before JSON parsing; compressed responses are refused before decoding. No model-managed paging or sync mutation.
+The output is bounded to 65536 serialized bytes. Exact marker line and exact
+interval define a match; `presence` is `present`, `absent` only on a complete
+clean terminal scan, or `unknown`. Preserve the returned explicit
+`calendar_id,start_at,end_at` for separately authorized creation. Unknown
+cursor/provider/error/cap/timeout is incomplete; external cancellation
+propagates after stream cleanup and yields no successful result. Existing
+providers without this optional private page capability remain constructible
+and return unsupported, not fake first-page completeness. This does not
+repair concurrent create uniqueness or uncertain write/replay outcomes.

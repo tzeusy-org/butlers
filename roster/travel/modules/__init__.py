@@ -12,7 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.core.tool_catalog import RecipientParameters
+from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,30 @@ class TravelModule(Module):
     @property
     def dependencies(self) -> list[str]:
         return []
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        return {
+            "document_expiry_inventory": ToolMeta(
+                arg_sensitivities={},
+                canonical_name="document_expiry_inventory",
+                module_name="travel",
+                group_name="travel",
+                namespace="travel.travel",
+                llm_presentable=True,
+                load_posture="deferred",
+                effect_class="read",
+                output_trust="untrusted",
+                output_sensitivity="sensitive",
+                resource_params=(),
+                safety_args=(),
+                idempotency="none",
+                owner_authority=False,
+                recipient_params=RecipientParameters(),
+                read_stores=("travel.documents", "travel.trips"),
+                write_stores=(),
+                unknown_output_source=True,
+            )
+        }
 
     def migration_revisions(self) -> str | None:
         return None  # travel tables already exist via separate migrations

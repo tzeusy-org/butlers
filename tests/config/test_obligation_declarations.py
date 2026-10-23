@@ -364,9 +364,9 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
         "travel": {
             "upcoming-travel-check": {"upcoming_travel", "notify"},
             "trip-document-expiry": {
-                "list_trips",
-                "trip_summary",
-                "calendar_list_events",
+                "document_expiry_inventory",
+                "memory_fact_inventory",
+                "calendar_scan_reminder_events",
                 "calendar_create_event",
                 "notify",
             },

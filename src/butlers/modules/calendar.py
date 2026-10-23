@@ -2006,6 +2006,18 @@ class CalendarProvider(abc.ABC):
         """Return events in a time window."""
         ...
 
+    async def _reminder_event_page(
+        self,
+        *,
+        calendar_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_token: str | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Read one byte-bounded page for the owning aggregate scan, if supported."""
+        raise NotImplementedError("reminder_scan_unsupported")
+
     @abc.abstractmethod
     async def get_event(self, *, calendar_id: str, event_id: str) -> CalendarEvent | None:
         """Fetch a single event by id."""
@@ -2542,6 +2554,74 @@ class _GoogleProvider(CalendarProvider):
             if event is not None:
                 events.append(event)
         return events
+
+    async def _reminder_event_page(
+        self,
+        *,
+        calendar_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_token: str | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Stream through the configured client before parsing untrusted JSON.
+
+        The caller owns the one absolute scan deadline. A single refresh on 401
+        retains it; redirects, eager response reads and stateful sync are absent.
+        """
+        params: dict[str, Any] = {
+            "singleEvents": True,
+            "showDeleted": False,
+            "orderBy": "startTime",
+            "maxResults": 250,
+            "timeMin": _google_rfc3339(start_at),
+            "timeMax": _google_rfc3339(end_at),
+        }
+        if page_token is not None:
+            params["pageToken"] = page_token
+        url = f"{GOOGLE_CALENDAR_API_BASE_URL}/calendars/{quote(calendar_id, safe='')}/events"
+        for refresh in (False, True):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            token = await self._oauth.get_access_token(force_refresh=refresh)
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError
+            async with self._http_client.stream(
+                "GET",
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"},
+                timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
+                follow_redirects=False,
+            ) as response:
+                if response.status_code == 401 and not refresh:
+                    continue
+                if response.status_code != 200:
+                    raise ValueError("provider_unavailable")
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    # Avoid decompression allocating an unbounded chunk before
+                    # the consumer can enforce its decoded-byte budget.
+                    raise ValueError("unsupported_encoding")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > 262144:
+                        raise ValueError("page_byte_limit")
+                    body.extend(chunk)
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError
+                payload = json.loads(body)
+                if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                    raise ValueError("malformed_page")
+                if len(payload["items"]) > 250:
+                    raise ValueError("page_event_limit")
+                next_token = payload.get("nextPageToken")
+                if next_token is not None and (
+                    not isinstance(next_token, str) or not next_token or len(next_token) > 4096
+                ):
+                    raise ValueError("malformed_cursor")
+                return payload
+        raise ValueError("provider_unavailable")
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> CalendarEvent | None:
         normalized_event_id = event_id.strip()
@@ -3273,7 +3353,28 @@ class CalendarModule(Module):
         # Conditional registrations declare their complete descriptive metadata
         # through the same module channel as argument sensitivities. The daemon
         # binds the actual owner and configured approval policy after registration.
-        metadata: dict[str, ToolMeta] = {}
+        metadata: dict[str, ToolMeta] = {
+            "calendar_scan_reminder_events": ToolMeta(
+                arg_sensitivities={},
+                canonical_name="calendar_scan_reminder_events",
+                module_name="calendar",
+                group_name="core",
+                namespace="calendar.core",
+                llm_presentable=True,
+                load_posture="deferred",
+                effect_class="read",
+                output_trust="untrusted",
+                output_sensitivity="sensitive",
+                resource_params=("calendar_id",),
+                safety_args=(),
+                idempotency="none",
+                owner_authority=False,
+                recipient_params=RecipientParameters(),
+                read_stores=("external:calendar",),
+                write_stores=(),
+                unknown_output_source=True,
+            )
+        }
         if self._butler_name in RESPONSE_FENCE_OWNERS:
             metadata["calendar_response_fence_status"] = ToolMeta(
                 arg_sensitivities={"request": True},
@@ -3508,6 +3609,132 @@ class CalendarModule(Module):
                 "calendar_id": resolved_calendar_id,
                 "events": [module._event_to_payload(event) for event in events],
             }
+
+        @_tool("core")
+        async def calendar_scan_reminder_events(
+            start_at: datetime,
+            end_at: datetime,
+            marker: str,
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Scan one intended creation calendar for an exact reminder marker.
+
+            Only complete + absent permits an absence inference. Reuse the
+            returned explicit calendar/window for any separately approved create;
+            presence does not establish the rest of the calendar is exhausted.
+            """
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 20
+            result: dict[str, Any] = {
+                "complete": False,
+                "presence": "unknown",
+                "reason": "target_unavailable",
+                "calendar_id": None,
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "matches": [],
+                "examined": 0,
+            }
+            if (
+                start_at.tzinfo is None
+                or end_at.tzinfo is None
+                or end_at <= start_at
+                or not marker
+                or len(marker) > 256
+                or "\n" in marker
+                or "\r" in marker
+            ):
+                return {**result, "reason": "invalid_query"}
+            try:
+                async with asyncio.timeout_at(deadline):
+                    # Ordinary read defaults differ from creation defaults. This
+                    # scan binds the latter once and requires actual discovery.
+                    try:
+                        target = module._resolve_calendar_id(calendar_id, for_create=True)
+                    except (ValueError, RuntimeError):
+                        return result
+                    known = set(module._all_provider_calendar_ids)
+                    if not module._provider_calendar_discovery_completed or target not in known:
+                        return result
+                    result["calendar_id"] = target
+                    provider = module._require_provider()
+                    page_token = None
+                    seen: set[str] = set()
+                    seen_events: set[str] = set()
+                    result["reason"] = "page_limit"
+                    for _ in range(20):
+                        page = await provider._reminder_event_page(
+                            calendar_id=target,
+                            start_at=start_at,
+                            end_at=end_at,
+                            page_token=page_token,
+                            deadline=deadline,
+                        )
+                        items = page.get("items")
+                        if not isinstance(items, list) or len(items) > 250:
+                            raise ValueError("malformed_page")
+                        for item in items:
+                            result["examined"] += 1
+                            if result["examined"] > 5000 or not isinstance(item, dict):
+                                raise ValueError("invalid_event")
+                            event = _google_event_to_calendar_event(
+                                item,
+                                fallback_timezone=module._config.timezone,
+                            )
+                            if event is None or event.event_id in seen_events:
+                                raise ValueError("invalid_event")
+                            seen_events.add(event.event_id)
+                            if event.end_at <= event.start_at:
+                                raise ValueError("invalid_event")
+                            description = item.get("description", "")
+                            if not isinstance(description, str):
+                                raise ValueError("invalid_event")
+                            if (
+                                marker in description.splitlines()
+                                and event.start_at == start_at
+                                and event.end_at == end_at
+                            ):
+                                result["matches"].append({"event_id": event.event_id})
+                                result["presence"] = "present"
+                        next_token = page.get("nextPageToken")
+                        if next_token is None:
+                            result.update(complete=True, reason="exhausted")
+                            if result["presence"] != "present":
+                                result["presence"] = "absent"
+                            break
+                        if (
+                            not isinstance(next_token, str)
+                            or not next_token
+                            or len(next_token) > 4096
+                            or next_token in seen
+                        ):
+                            raise ValueError("invalid_cursor")
+                        seen.add(next_token)
+                        page_token = next_token
+                    # Bound the actual whole output and include synchronous
+                    # parsing/projection/serialization in the aggregate deadline.
+                    if len(json.dumps(result).encode()) > 65536:
+                        result.update(
+                            complete=False,
+                            reason="output_limit",
+                            matches=[],
+                            presence="unknown",
+                        )
+                    if loop.time() >= deadline:
+                        raise TimeoutError
+            except TimeoutError:
+                result.update(complete=False, reason="timeout")
+            except asyncio.CancelledError:
+                # The streaming context has already closed. Never swallow the
+                # caller's cancellation or convert it into a successful absence.
+                raise
+            except NotImplementedError:
+                result.update(complete=False, reason="provider_unsupported")
+            except Exception:
+                result.update(complete=False, reason="scan_unavailable")
+            if not result["complete"] and result["presence"] != "present":
+                result["presence"] = "unknown"
+            return result
 
         @_tool("core")
         async def calendar_find_free_slots(

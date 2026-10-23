@@ -708,6 +708,32 @@ Scope: v1-mandatory
 - **THEN** construction follows the existing synchronized cache and asynchronous acquisition boundary
 - **AND** a still-running worker is not falsely declared cancelled or duplicated merely because its waiter stopped
 
+### Requirement: Bounded authorized passport fact inventory
+
+Memory SHALL expose `memory_fact_inventory(predicate="passport_expiry", scope=None)`
+for the Travel runtime, using only its server-authorized local pool, shared
+ tenant and Travel/global scope intersection. Sensitivity SHALL come once from
+its real DB-owned runtime accessor's HELD snapshot. A known held normal ceiling,
+including accessor TTL/stale/default-normal compatibility, is valid; it MUST NOT
+be described as a fresh stored row/current refresh or global/hidden absence.
+Missing/failed accessor, unusable/unknown ceiling or pool SHALL return unavailable.
+The caller SHALL NOT supply a tenant, schema, ceiling or owner authority.
+
+#### Scenario: Deterministic current visible dates
+
+- **WHEN** Travel inventories canonical passport dates
+- **THEN** SQL tenant/scope/sensitivity/subject/temporal/provenance predicates SHALL precede the cursor limit in one read-only repeatable-read snapshot
+- **AND** ranked top-k search and reference/lifecycle bumps SHALL NOT substitute for this read
+- **AND** complete SHALL mean only exhaustion of that authorized eligible scope, never all physical passports or upstream completeness
+- **AND** invalid/conflicting dates SHALL remain explicitly unresolved and content authority SHALL remain attributed
+
+#### Scenario: Finite incomplete read
+
+- **WHEN** the five-second aggregate budget (accessor/acquisition/query/projection/serialization), 1000-row exposure or bounded serialized output cannot complete
+- **THEN** the result SHALL be incomplete/unavailable and SHALL NOT attest absence
+- **AND** cancellation SHALL release its owned transaction/connection and propagate
+- **AND** existing legacy readers, held-authority fallback and content-authority contracts SHALL remain unchanged
+
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.
 - Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).

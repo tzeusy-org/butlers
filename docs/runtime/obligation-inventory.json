@@ -932,7 +932,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "upcoming-travel-check",
       "dispatch_mode": "prompt",
@@ -943,7 +943,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "trip-document-expiry",
       "dispatch_mode": "prompt",
@@ -954,7 +954,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "insight-scan",
       "dispatch_mode": "job",
@@ -964,7 +964,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "flight-status-check",
       "dispatch_mode": "job",
@@ -974,7 +974,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "destination-outlook",
       "dispatch_mode": "job",
@@ -984,7 +984,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -994,7 +994,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -1004,7 +1004,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "calendar_prep_contribution",
       "dispatch_mode": "job",
@@ -1014,7 +1014,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "context_producer_travel",
       "dispatch_mode": "job",
@@ -1024,7 +1024,7 @@
     },
     {
       "path": "roster/travel/butler.toml",
-      "source_sha256": "55f4017ad1529f89883b24cf0dcae3716d9752d606f52a6e1ff1d8e53ab9da1c",
+      "source_sha256": "864fdf905ae56074285d5678ff03edd78391d9ea5cc402623e3d20f1e404d5bf",
       "butler": "travel",
       "name": "context_producer_commuting_eta",
       "dispatch_mode": "job",
