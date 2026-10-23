@@ -586,10 +586,14 @@ async def _stage_schedule_definition(
             slot_column = ",next_run_at" if runtime else ""
             slot_value = f",${len(values) + 1}" if runtime else ""
             extras = [next_run_at] if runtime else []
-            if runtime and family == "deadline":
+            if family == "deadline":
                 slot_column += ",deadline_status,fired_thresholds,depends_on"
-                slot_value += f",'pending','[]'::jsonb,${len(values) + 2}"
-                extras.append(list(definition.dependencies))
+                slot_value += ",'pending','[]'::jsonb"
+                if runtime:
+                    slot_value += f",${len(values) + 2}"
+                    extras.append(list(definition.dependencies))
+                else:
+                    slot_value += ",'[]'::jsonb"
             row = await connection.fetchrow(
                 f"INSERT INTO {table} ({columns},source{slot_column}) "
                 f"VALUES ({markers},'{row_source}'{slot_value}) RETURNING id,source,{columns}",

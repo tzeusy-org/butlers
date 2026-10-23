@@ -467,16 +467,21 @@ class GitScheduleRuntime:
             definition, row = await self._locked(repository, selected)
             if any(row[key] != selected[key] for key in ("fired_thresholds", "deadline_status")):
                 return None
+            # Older Git rows may predate explicit progress initialization.
+            # Normalize only for validation; the raw locked/selected value
+            # remains the CAS preimage, so NULL and [] are not interchangeable.
+            fired_before = [] if row["fired_thresholds"] is None else row["fired_thresholds"]
             if (
                 row["task_type"] != "deadline"
+                or type(fired_before) is not list
                 or threshold not in row["alert_thresholds"]
-                or threshold in row["fired_thresholds"]
-                or fired != [*row["fired_thresholds"], threshold]
+                or threshold in fired_before
+                or fired != [*fired_before, threshold]
                 or threshold
                 != find_unfired_threshold(
                     days_remaining=(row["target_date"] - run_at.date()).days,
                     alert_thresholds=row["alert_thresholds"],
-                    fired_thresholds=row["fired_thresholds"],
+                    fired_thresholds=fired_before,
                 )
                 or status
                 != compute_next_deadline_status(
@@ -488,7 +493,7 @@ class GitScheduleRuntime:
             recorded = await repository.connection.fetchrow(
                 f"UPDATE {table} SET deadline_status=$2,fired_thresholds=$3,"
                 "last_run_at=$4,updated_at=now() WHERE id=$1 AND enabled=true "
-                "AND target_date=$5 AND fired_thresholds=$6 "
+                "AND target_date=$5 AND fired_thresholds IS NOT DISTINCT FROM $6 "
                 "AND deadline_status IS NOT DISTINCT FROM $7 RETURNING id",
                 row["id"],
                 status,

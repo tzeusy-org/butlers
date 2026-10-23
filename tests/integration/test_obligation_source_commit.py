@@ -1056,6 +1056,11 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
         deadline = await observer.fetchrow(
             "SELECT * FROM health.scheduled_tasks WHERE name=$1", name + "-deadline"
         )
+    assert (deadline["deadline_status"], deadline["fired_thresholds"], deadline["depends_on"]) == (
+        "pending",
+        [],
+        [],
+    )
     threshold = deadline["alert_thresholds"][0]
     submission = await runtime.record_deadline(
         pool,
@@ -1263,7 +1268,7 @@ async def test_migrated_stamped_schema_without_baseline_keeps_local_owner_and_ac
     import asyncpg
 
     from alembic import command
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
     from butlers.testing.migration import create_migration_db, migration_db_name
 
     ordinary_url = await asyncio.to_thread(
@@ -1277,6 +1282,7 @@ async def test_migrated_stamped_schema_without_baseline_keeps_local_owner_and_ac
     before = await asyncpg.connect(ordinary_url, timeout=5)
     try:
         assert await before.fetchval("SELECT to_regclass('health.scheduled_tasks')") is None
+        # pinned-revision: shared predecessor stamp deliberately has no local foundation tables.
         assert await before.fetchval("SELECT version_num FROM health.alembic_version") == "core_254"
     finally:
         await before.close(timeout=5)
@@ -1333,9 +1339,8 @@ async def test_migrated_stamped_schema_without_baseline_keeps_local_owner_and_ac
                     "health." + table,
                     privilege,
                 )
-        assert (
-            await connection.fetchval("SELECT version_num FROM health.alembic_version")
-            == "core_274"
-        )
+        assert await connection.fetchval(
+            "SELECT version_num FROM health.alembic_version"
+        ) == get_chain_head("core")
     finally:
         await connection.close(timeout=5)

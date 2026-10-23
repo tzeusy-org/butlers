@@ -64,6 +64,27 @@ class OccurrenceConnection(RecordingConnection):
         return None
 
     async def fetchrow(self, sql, *args):
+        if sql.lstrip().startswith("INSERT") and "scheduled_tasks" in sql:
+            result = await super().fetchrow(sql, *args)
+            row = self.rows[result["id"]]
+            columns = sql.split("(", 1)[1].split(")", 1)[0].split(",")
+            values = sql.split("VALUES (", 1)[1].split(") RETURNING", 1)[0].split(",")
+            supplied = dict(zip(columns, values, strict=True))
+            # core_043 leaves omitted progress columns NULL. Interpret only
+            # these closed INSERT literals/bindings, never invent defaults.
+            for field in ("deadline_status", "fired_thresholds", "depends_on"):
+                value = supplied.get(field)
+                if value is None:
+                    row[field] = None
+                elif value == "'pending'":
+                    row[field] = "pending"
+                elif value == "'[]'::jsonb":
+                    row[field] = []
+                elif value.startswith("$"):
+                    row[field] = copy.deepcopy(args[int(value[1:]) - 1])
+                else:
+                    raise AssertionError("unsupported progress INSERT expression")
+            return copy.deepcopy(row)
         if "INSERT INTO obligation_occurrences" in sql:
             self.calls.append(sql)
             for row in self.occurrences.values():
@@ -114,6 +135,14 @@ class OccurrenceConnection(RecordingConnection):
                 row.update(deadline_status=args[1], enabled=False)
                 return {"id": args[0]}
             if "fired_thresholds" in sql:
+                if getattr(self, "lose_deadline_cas", False):
+                    return None
+                # PostgreSQL '=' with a NULL operand is not true. A Python
+                # None == None comparison would hide a broken SQL preimage.
+                if (row["fired_thresholds"] is None or args[5] is None) and (
+                    "fired_thresholds IS NOT DISTINCT FROM $6" not in sql
+                ):
+                    return None
                 if (row["target_date"], row["fired_thresholds"], row["deadline_status"]) != args[
                     4:
                 ]:
@@ -147,7 +176,7 @@ class OccurrenceConnection(RecordingConnection):
         return await super().execute(sql, *args)
 
 
-async def runtime_fixture(tmp_path, *, deadline=False, target=None):
+async def runtime_fixture(tmp_path, *, deadline=False, target=None, initialize_progress=True):
     from butlers.config import load_config
     from butlers.core.obligation_git_sources import (
         capture_loaded_git_sources,
@@ -203,12 +232,9 @@ async def runtime_fixture(tmp_path, *, deadline=False, target=None):
     )
     (source,) = pool.connection.rows
     row = pool.connection.rows[source]
-    row.update(
-        next_run_at=NOW - timedelta(minutes=1),
-        fired_thresholds=[],
-        deadline_status="pending",
-        depends_on=[],
-    )
+    row["next_run_at"] = NOW - timedelta(minutes=1)
+    if initialize_progress:
+        row.update(fired_thresholds=[], deadline_status="pending", depends_on=[])
     return pool, runtime, source
 
 
@@ -282,6 +308,97 @@ async def test_deadline_failed_dispatch_stays_unfired_then_commits_same_threshol
     ) == (1, 0)
     assert row["enabled"] is False and row["deadline_status"] == "expired"
     assert successful.await_count == 1
+
+
+@pytest.mark.parametrize("legacy_null", [False, True], ids=["fresh-git", "legacy-null"])
+async def test_actual_git_deadline_progress_initialization_and_raw_null_cas(tmp_path, legacy_null):
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_sources import SourceConflict
+
+    pool, runtime, source = await runtime_fixture(
+        tmp_path, deadline=True, initialize_progress=False
+    )
+    connection = pool.connection
+    initial = copy.deepcopy(connection.rows[source])
+    if legacy_null:
+        connection.rows[source].update(deadline_status=None, fired_thresholds=None, depends_on=None)
+    selected = copy.deepcopy(connection.rows[source])
+    threshold = selected["alert_thresholds"][0]
+
+    if legacy_null:
+        # Empty progress and pending status have the same normalized meaning
+        # as NULL, but are different raw observations of the locked row.
+        for field, newer in (("fired_thresholds", []), ("deadline_status", "pending")):
+            connection.rows[source][field] = newer
+            assert (
+                await runtime.record_deadline(
+                    pool,
+                    selected,
+                    threshold=threshold,
+                    status="alerted",
+                    fired=[threshold],
+                    run_at=NOW,
+                )
+                is None
+            )
+            assert connection.occurrences == {}
+            connection.rows[source][field] = None
+    for candidate, status, fired in (
+        ({"days_before": 1, "severity": "info"}, "alerted", [threshold]),
+        (threshold, "escalated", [threshold]),
+        (threshold, "alerted", []),
+    ):
+        with pytest.raises(SourceConflict, match="invalid_deadline_threshold"):
+            await runtime.record_deadline(
+                pool, selected, threshold=candidate, status=status, fired=fired, run_at=NOW
+            )
+    connection.lose_deadline_cas = True
+    assert (
+        await runtime.record_deadline(
+            pool, selected, threshold=threshold, status="alerted", fired=[threshold], run_at=NOW
+        )
+        is None
+    )
+    connection.lose_deadline_cas = False
+    before = copy.deepcopy((connection.rows, connection.occurrences, connection.outbox))
+    connection.fail_outbox = True
+    with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+        await runtime.record_deadline(
+            pool, selected, threshold=threshold, status="alerted", fired=[threshold], run_at=NOW
+        )
+    connection.fail_outbox = False
+    assert (connection.rows, connection.occurrences, connection.outbox) == before
+
+    # This is the actual typed-config -> owning INSERT -> recording consumer.
+    # No fixture assignment supplies [] for the new Git deadline.
+    submission = await runtime.record_deadline(
+        pool, selected, threshold=threshold, status="alerted", fired=[threshold], run_at=NOW
+    )
+    assert submission is not None
+    assert (initial["deadline_status"], initial["fired_thresholds"], initial["depends_on"]) == (
+        "pending",
+        [],
+        [],
+    )
+    assert await runtime.read_committed_submission(pool, submission) == submission
+    assert connection.rows[source]["fired_thresholds"] == [threshold]
+    assert connection.rows[source]["deadline_status"] == "alerted"
+    assert connection.depth == 0 and len(connection.occurrences) == 1
+
+    # A stale raw NULL must not be equated with a newly persisted empty list,
+    # and a successful first record cannot be replayed into another occurrence.
+    assert (
+        await runtime.record_deadline(
+            pool, selected, threshold=threshold, status="alerted", fired=[threshold], run_at=NOW
+        )
+        is None
+    )
+    current = copy.deepcopy(connection.rows[source])
+    with pytest.raises(SourceConflict, match="invalid_deadline_threshold"):
+        await runtime.record_deadline(
+            pool, current, threshold=threshold, status="alerted", fired=[threshold], run_at=NOW
+        )
+    assert len(connection.occurrences) == 1
 
 
 async def test_source_cas_failure_rolls_back_and_changed_material_never_claims(tmp_path):
