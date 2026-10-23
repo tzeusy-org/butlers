@@ -326,6 +326,7 @@ criteria and dry-run controls before applying it to a database.
 | Script | Caller | Why it stays |
 | --- | --- | --- |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
+| [`recover_chronicler_day_close_cache.py`](recover_chronicler_day_close_cache.py) | operators, per [`chronicler-day-close-recovery.md`](../docs/operations/chronicler-day-close-recovery.md), after separate operational authorization | Plans bounded day-close cache recovery; applying the reviewed plan requires separate authorization. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | operators, per the active `repair-whatsapp-identity-reconciliation` change (tasks 6.3 and 6.4) | Content-blind WhatsApp entity reconciliation pass. Delete when that change archives. |
 | [`scrub_filtered_event_previews.py`](scrub_filtered_event_previews.py) | operators, per [connectors overview](../docs/connectors/overview.md) | Scrubs preview text from filtered-event buffers; imported by two connector tests. |
 
