@@ -14,19 +14,48 @@ const TERM_MS = 110_000
 const KILL_MS = 120_000
 const BACKOFF_MS = 10_000
 const TOTAL_MS = 720_000
-const DEPS = { script: 'set -euo pipefail; "$1" install-deps chromium', termMs: DEPS_TERM_MS, killMs: DEPS_KILL_MS }
+const CLEANUP_MS = 2_000
+const depsSupervisor = path.join(frontendRoot, 'scripts/install-playwright-deps.py')
 const BROWSER = {
   script: 'set -euo pipefail; "$1" install chromium ${3:+"$3"}; node "$2" --verify-browser',
   termMs: TERM_MS,
   killMs: KILL_MS,
 }
 let activeGroup
+let activeDeps
+let cleanupFailed = false
 let expired = false
 
 // Linux CI: detached children lead a process group, including ordinary descendants.
 // Clear the group even when its shell exits before a TERM-resistant installer.
 function signalGroup(signal) {
-  signalPid(activeGroup, signal)
+  return signalPid(activeGroup, signal)
+}
+
+function dependencyAttempt() {
+  return new Promise(resolve => {
+    // The privileged supervisor creates, signals and reaps its own private
+    // install group. Closing stdin also cancels it if this parent exits.
+    const child = spawn('sudo', ['-n', '--', 'python3', depsSupervisor,
+      String(DEPS_TERM_MS), String(DEPS_KILL_MS), process.execPath, cli,
+    ], { stdio: ['pipe', 'inherit', 'inherit'] })
+    activeDeps = child
+    child.stdin.on('error', () => {}) // An early supervisor exit may close the pipe.
+    child.once('error', () => { cleanupFailed = true })
+    child.once('close', code => {
+      activeDeps = undefined
+      // A signal, launch failure or cleanup refusal cannot authorize a retry.
+      if (code === null || code === 125 || code === 126 || code === 127) cleanupFailed = true
+      resolve(code === 0 && !expired)
+    })
+  })
+}
+
+function cancel() {
+  expired = true
+  activeDeps?.stdin.end()
+  signalGroup('SIGKILL')
+  process.exitCode = 1
 }
 
 function attempt(phase, force) {
@@ -42,8 +71,8 @@ function attempt(phase, force) {
       settled = true
       clearTimeout(term)
       clearTimeout(kill)
-      signalGroup('SIGKILL')
-      activeGroup = undefined
+      if (!signalGroup('SIGKILL')) cleanupFailed = true
+      if (!cleanupFailed) activeGroup = undefined
       resolve(success && !expired)
     }
     const term = setTimeout(() => {
@@ -59,37 +88,43 @@ function attempt(phase, force) {
   })
 }
 
-const total = setTimeout(() => {
-  expired = true
-  signalGroup('SIGKILL')
+// Reserve the final two seconds for the privileged supervisor's cleanup.
+const total = setTimeout(cancel, TOTAL_MS - CLEANUP_MS)
+const hardLimit = setTimeout(() => {
+  cancel()
   process.exit(1)
 }, TOTAL_MS)
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
-    signalGroup('SIGKILL')
-    process.exit(1)
+    cancel()
   })
 }
-process.once('exit', () => signalGroup('SIGKILL'))
+process.once('exit', () => {
+  activeDeps?.stdin.end()
+  signalGroup('SIGKILL')
+})
 try {
   const backoff = () => new Promise(resolve => setTimeout(resolve, BACKOFF_MS))
   let depsInstalled = false
-  for (let index = 0; index < 2 && !expired; index += 1) {
-    if (await attempt(DEPS, false)) {
+  for (let index = 0; index < 2 && !expired && !cleanupFailed; index += 1) {
+    if (await dependencyAttempt()) {
       depsInstalled = true
       break
     }
-    if (index < 1 && !expired) await backoff()
+    if (index < 1 && !expired && !cleanupFailed) await backoff()
   }
   let installed = false
-  for (let index = 0; depsInstalled && index < 3 && !expired; index += 1) {
+  for (let index = 0; depsInstalled && index < 3 && !expired && !cleanupFailed; index += 1) {
     if (await attempt(BROWSER, index > 0)) {
       installed = true
       break
     }
-    if (index < 2 && !expired) await backoff()
+    if (index < 2 && !expired && !cleanupFailed) await backoff()
   }
-  if (!depsInstalled) {
+  if (cleanupFailed) {
+    console.error('Playwright cleanup could not be confirmed; refusing retry')
+    process.exitCode = 1
+  } else if (!depsInstalled) {
     console.error('Playwright OS dependency installation failed after two bounded attempts')
     process.exitCode = 1
   } else if (!installed) {
@@ -98,5 +133,6 @@ try {
   }
 } finally {
   clearTimeout(total)
+  clearTimeout(hardLimit)
   signalGroup('SIGKILL')
 }

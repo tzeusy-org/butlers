@@ -499,6 +499,8 @@ def _exercise_browser_installer(root: Path) -> None:
         ("stall", 4, 0, 1),
         ("deps-exhaust", 2, 0, 1),
         ("deps-stall", 2, 0, 1),
+        ("deps-cleanup-denied", 1, 0, 1),
+        ("deps-cancel", 1, 0, 1),
     ]:
         directory = root / mode
         scripts = directory / "scripts"
@@ -507,6 +509,18 @@ def _exercise_browser_installer(root: Path) -> None:
         cli.parent.mkdir(parents=True)
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
         shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
+        supervisor = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+        if mode == "deps-cleanup-denied":
+            # Real lifecycle, with only the OS signalling boundary denied. The
+            # still-running dependency pair must never race another attempt.
+            supervisor = supervisor.replace(
+                "os.killpg(group, sig)",
+                "(_ for _ in ()).throw(PermissionError('synthetic EPERM'))",
+            )
+        (scripts / "install-playwright-deps.py").write_text(supervisor)
+        sudo = directory / "sudo"
+        sudo.write_text('#!/bin/sh\n[ "$1" = -n ] && shift\n[ "$1" = -- ] && shift\nexec "$@"\n')
+        sudo.chmod(0o755)
         (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
         ledger = directory / "ledger.json"
         ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
@@ -523,7 +537,18 @@ if Path(sys.argv[0]).name == "node":
     sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
 data["calls"].append(sys.argv[1:])
 deps = sys.argv[1] == "install-deps"
-if mode == ("deps-stall" if deps else "stall"):
+if deps:
+    for prior_pid in data["pids"]:
+        prior = Path(f"/proc/{prior_pid}/stat")
+        if prior.exists() and prior.read_text().split()[2] != "Z":
+            data.setdefault("overlap", []).append(prior_pid)
+if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-cleanup-denied", "deps-cancel"}):
+    if mode == "deps-cleanup-denied":
+        # Surviving processes must not keep the harness capture pipes open.
+        sink = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(sink, 1)
+        os.dup2(sink, 2)
+        os.close(sink)
     signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
     child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
     child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
@@ -533,6 +558,7 @@ if mode == ("deps-stall" if deps else "stall"):
     child.stdout.close()
     data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
     p.write_text(json.dumps(data))
+    (p.parent / "stall-ready").touch()
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
@@ -554,16 +580,26 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
         )
         env["PATH"] = str(directory) + os.pathsep + os.environ["PATH"]
         try:
-            result = subprocess.run(
-                [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=20,
-            )
+            command = [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")]
+            if mode == "deps-cancel":
+                process = subprocess.Popen(
+                    command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                deadline = time.monotonic() + 5
+                while not (directory / "stall-ready").exists():
+                    assert time.monotonic() < deadline, "dependency cancellation never became ready"
+                    time.sleep(0.02)
+                process.terminate()
+                stdout, stderr = process.communicate(timeout=10)
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            else:
+                result = subprocess.run(
+                    command, env=env, text=True, capture_output=True, timeout=20
+                )
             data = json.loads(ledger.read_text())
             assert result.returncode == expected_exit, (mode, data, result.stderr)
             assert len(data["calls"]) == expected_calls, (mode, data)
+            assert not data.get("overlap"), (mode, data)
             assert data["probes"] == expected_probes, (mode, data)
             assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
             deps_calls = [args for args in data["calls"] if args[0] == "install-deps"]
@@ -574,6 +610,8 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                 assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
+            if mode == "deps-cleanup-denied":
+                assert "cleanup could not be confirmed" in result.stderr
             if mode in {"stall", "deps-stall"}:
                 ready_pids = [pid for pair in data["ready"] for pid in pair.get("pids", [])]
                 stalled_calls = 3 if mode == "stall" else 2
@@ -584,9 +622,16 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                     )
             for pid in data["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
-                assert not stat.exists() or stat.read_text().split()[2] == "Z", (
-                    f"ordinary installer descendant{pid} survived watchdog"
-                )
+                if mode == "deps-cleanup-denied":
+                    assert stat.exists() and stat.read_text().split()[2] != "Z", (
+                        "denied cleanup control never reached a surviving dependency"
+                    )
+                elif mode.startswith("deps-"):
+                    assert not stat.exists(), f"dependency descendant {pid} was not reaped"
+                else:
+                    assert not stat.exists() or stat.read_text().split()[2] == "Z", (
+                        f"ordinary installer descendant {pid} survived watchdog"
+                    )
         finally:
             for pid in json.loads(ledger.read_text())["pids"]:
                 stat = Path(f"/proc/{pid}/stat")

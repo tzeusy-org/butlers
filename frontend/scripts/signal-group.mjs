@@ -1,13 +1,13 @@
-// Signal a detached child's whole process group.
-//
-// ESRCH: the group is already gone. EPERM: the group still holds a process we may not
-// signal (the root-owned apt that `playwright install-deps` runs under sudo). Neither is
-// an installer failure, so neither may crash the caller before it can retry or report.
+// Signal only the detached group owned by this installer. A denied signal
+// must not crash the caller, but cannot authorize forgetting ownership/retry.
 export function signalGroup(group, signal, kill = process.kill) {
-  if (group === undefined) return
+  if (group === undefined) return true
   try {
     kill(-group, signal)
+    return true
   } catch (error) {
-    if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error
+    if (error.code === 'ESRCH') return true
+    if (error.code === 'EPERM') return false
+    throw error
   }
 }

@@ -238,14 +238,18 @@ Tests can use this to skip gracefully when Docker is not installed.
   locked Playwright version. Cache failure is advisory; installation is mandatory on hits
   and misses and always installs the OS dependencies first, as their own bounded
   `install-deps` phase (apt under sudo; two attempts, 150/160 s) so a slow apt cannot consume
-  the browser download's 110/120 s deadline. A group signal that hits the root-owned apt
-  (`EPERM`) is tolerated like `ESRCH`. The installed-version reader checks all
+  the browser download's 110/120 s deadline. The deps supervisor runs under noninteractive
+  sudo, starts apt in its own process group, and terminates and reaps that group's members
+  before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
+  unproven cleanup fails closed without starting another attempt. `EPERM` never crashes
+  the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
   Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
   and three force repair; test retries are unchanged.
-  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
-  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
-  ordinary descendants even when their shell exits first; these bounds do not establish
+  The installer has a 720-second outer budget: two dependency attempts (TERM150/KILL160,
+  up to two seconds each for cleanup, one ten-second backoff), then three browser attempts
+  (TERM110/KILL120, two ten-second backoffs). It cleans ordinary descendants even when
+  their shell exits first; these bounds do not establish
   containment of deliberately detached hostile processes. Local synthetic install controls
   prove the supervisor, not actual OS-package installation or hosted cache behavior.
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and

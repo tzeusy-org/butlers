@@ -11,11 +11,10 @@ it('signals the negated process group', () => {
   expect(calls).toEqual([[-4242, 'SIGKILL']])
 })
 
-// ESRCH: the group is already gone. EPERM: a root-owned apt (sudo) is in the group; the
-// installer must still reach its retry/backoff path instead of crashing.
-it('tolerates a gone group and an unsignalable root-owned member', () => {
-  expect(() => signalGroup(4242, 'SIGKILL', failing('ESRCH'))).not.toThrow()
-  expect(() => signalGroup(4242, 'SIGKILL', failing('EPERM'))).not.toThrow()
+// ESRCH confirms absence; EPERM must retain cleanup ownership and forbid retry.
+it('distinguishes a gone group from an unsignalable member', () => {
+  expect(signalGroup(4242, 'SIGKILL', failing('ESRCH'))).toBe(true)
+  expect(signalGroup(4242, 'SIGKILL', failing('EPERM'))).toBe(false)
 })
 
 it('still surfaces other failures and ignores an unset group', () => {
