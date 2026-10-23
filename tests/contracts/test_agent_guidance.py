@@ -1,8 +1,9 @@
-"""AGENTS.md and CLAUDE.md stay small and point only at paths that exist (bu-99t5s3.1)."""
+"""Agent guidance stays usable and dossier data stays outside Git (bu-99t5s3.1)."""
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -44,3 +45,10 @@ def test_guidance_file_cites_only_existing_paths(name: str) -> None:
     assert paths, f"{name}: path extraction found nothing, the check is blind"
     dead = sorted(p for p in paths if not (ROOT / p).exists())
     assert not dead, f"{name} cites paths that do not exist: {dead}"
+
+
+def test_dossier_data_json_is_not_tracked() -> None:
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "--", "docs/redesigns/*-data.json"], cwd=ROOT, text=True
+    ).splitlines()
+    assert not tracked, f"Dossier data JSON belongs outside Git; tracked paths: {tracked}"

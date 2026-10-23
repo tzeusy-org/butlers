@@ -14,8 +14,8 @@ path as provenance:
    promotion the brief remains as the cited *source of intent* behind that spec.
 2. **Pursuit / audit dossiers** — dated, point-in-time UI-maturity audits from
    the `butler-relentless-jarvis-pursuit` skill. Each `<date>-*-pursuit.md` has
-   a machine-queryable `-data.json` sibling (in the tree for the two newest runs, in
-   git history for older ones). These are historical snapshots:
+   structured findings in Beads and may link a published artifact report. Historical runs
+   also have JSON evidence recoverable through pinned Git-history pointers. Dossiers are snapshots:
    each board describes only its audit cohort and timestamp; later runs may
    recheck different scopes;
    findings are tracked as beads, not by editing the dossier.
@@ -56,12 +56,16 @@ change `add-connector-oauth-scope-surface`:
 The cumulative record across runs (north star stated once, run index, tier history, ranked moves by run) is [pursuit-ledger.md](pursuit-ledger.md); read it before any per-run dossier.
 
 Point-in-time UI-maturity audits, listed by run. A newer date is not live
-verification or proof that an earlier finding is resolved. A run's structured `-data.json` is not kept in the tree; its dossier names the commit to read it from, e.g.
-`git show <sha>:docs/redesigns/<date>-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="<key>")'`.
+verification or proof that an earlier finding is resolved. New runs keep their structured
+observations and readiness packets in Beads, with artifact report and published evidence references
+in the Markdown dossier. Local harvest and state files remain gitignored for resume; they are
+not reader-facing evidence links.
 
-Retention: no `-data.json` stays in the tree (bu-99t5s3.1); every dossier names the pinned commit to read it from (`git show <sha>:docs/redesigns/<file> | jq …`).
-Harvest and state working files are gitignored. The cap and pruning rule live in the
-`butler-relentless-jarvis-pursuit` skill (Phase 4).
+Retention: no `*-data.json` is tracked here, including the newest run (bu-99t5s3.1). Existing
+historical JSON references remain pinned to commits that contain them, for example
+`git show <sha>:docs/redesigns/<date>-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="<key>")'`.
+A new run does not commit JSON to create such a pointer. The output and Markdown-retention rules
+live in the [JARVIS pursuit skill, Phase 4](../../.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/SKILL.md#phase-4--deliverables).
 
 | Run | Dossier |
 |---|---|
@@ -96,13 +100,13 @@ Harvest and state working files are gitignored. The cap and pruning rule live in
   concise successor mapping, move remaining binding clauses into their canonical
   spec, and update live citers before deleting the redundant body. Historical
   provenance belongs in Git or a dated evidence record, not a second live contract.
-- **Dossiers** are appended by `butler-relentless-jarvis-pursuit`, one dated pair
-  per run. Its output contract (Phase 4, Deliverables) now includes appending the new run's
-  row to the table above as part of the same commit that adds the dossier pair — see
-  `.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/SKILL.md`.
+- **Dossiers** are appended as one dated Markdown file per run, with the index row in the same
+  commit. The [JARVIS pursuit skill](../../.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/SKILL.md#phase-4--deliverables)
+  owns the output contract: structured Beads observations and published artifact references,
+  gitignored resume files, and preserved historical pointers; no tracked dossier data JSON.
 
 Retain briefs while a live spec incorporates their clauses, prototypes while an
-acceptance check compares against them, and dated audit pairs while later audits
+acceptance check compares against them, and dated audit dossiers while later audits
 use their cohort evidence. A finding or proposed move does not become an approved
 requirement merely because it appears in a dossier. Implementation and release
 status belong in Beads and current verification receipts.
