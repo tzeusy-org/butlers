@@ -231,14 +231,30 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
+
+Source: RFC 0038 D3 and D18; bu-13itjw legacy credential isolation
+Scope: v1-mandatory
 
 ID: REQ-core-spawner-010
 
 #### Scenario: Only declared credentials are passed
-- **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
-- **AND** other host environment variables are excluded
+- **WHEN** the spawner builds a normal runtime environment
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **AND** undeclared module channel credentials and other host environment variables are excluded
+- **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Explicitly declared channel variable
+- **WHEN** an operator declares a module channel variable in `[butler.env]`
+- **THEN** the variable is resolved by the normal declared-variable path
+- **AND** owner-auth and administrative database variables remain withheld
+
+#### Scenario: Empty runtime environment
+- **WHEN** the spawner supplies an empty environment mapping
+- **THEN** the runtime adapter preserves that explicit mapping rather than inheriting the daemon environment
+- **AND** invocation-local MCP configuration variables MAY be added without inheriting unrelated host variables
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 The Codex adapter SHALL perform live Codex device-auth reconciliation before

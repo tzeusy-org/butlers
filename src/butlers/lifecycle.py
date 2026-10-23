@@ -108,7 +108,6 @@ class StartupState:
     migration_schema: str | None = None
     credential_store: Any = None
     effective_runtime: Any = None
-    active_module_creds: dict[str, list[str]] = field(default_factory=dict)
     started_modules: list[Any] = field(default_factory=list)
 
 
@@ -299,14 +298,6 @@ async def _startup_credential_store(daemon: Any, state: StartupState) -> None:
         )
         logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
     daemon._cascade_module_failures()
-
-    # Filter module_creds to exclude failed modules for spawner.
-    state.active_module_creds = {
-        k: v
-        for k, v in state.module_creds.items()
-        if k.split(".")[0] not in daemon._module_statuses
-        or daemon._module_statuses[k.split(".")[0]].status == "active"
-    }
 
 
 async def _startup_blob_storage(daemon: Any, state: StartupState) -> None:
@@ -546,7 +537,6 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
         config=daemon.config,
         config_dir=daemon.config_dir,
         pool=state.pool,
-        module_credentials_env=state.active_module_creds,
         runtime=runtime,
         audit_pool=audit_pool,
         credential_store=state.credential_store,
