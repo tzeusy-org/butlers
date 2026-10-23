@@ -731,6 +731,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/core/obligation_schedule_sources.py",
+        '<dynamic:"{repository.owner_domain}".scheduled_tasks>',
+    ): "dynamic-local:RFC-0038-D5: quoted owning scheduled_tasks selector after validated ObligationSourceRepository transaction/current-schema/exact-role guard; source and row locks remain on that same connection, not a cross-domain SQL exception",
+    (
+        "src/butlers/core/obligation_schedule_sources.py",
+        "<dynamic:{table}>",
+    ): "dynamic-local:RFC-0038-D5: table is only the quoted validated owning-domain scheduled_tasks relation on the guarded repository connection; same-transaction source/row persistence and tombstone readback, not caller-selected or cross-domain SQL",
+    (
         "src/butlers/core/runtime_config.py",
         "<dynamic:{self._schema}.runtime_config>",
     ): "dynamic-local: configured runtime schema; source ownership is dynamic; baseline ownership justification, not a foreign-schema exception or cleanup authorization",

@@ -275,3 +275,52 @@ owner preference/policy records. Its feed skill does not
 invoke an HA service or scene. A separately authorized owner action retains the
 existing physical-risk and approval rules; a feed/preference is not that action.
 No caller-supplied creator UUID, grant or exposure is accepted by this format.
+
+
+## Runtime schedule and deadline owning writer
+
+The internal `schedule_create` persistence path now accepts a frozen
+`RuntimeScheduleDefinition` plus a durable command UUID. The existing MCP tool
+schema exposes neither field. Its ordinary OFF call still issues the same legacy
+row insert and does no source IO. A future authenticated D7 adapter must select
+both values from the actual invocation; neither a Python value, a fact token,
+a caller-supplied context nor a creator UUID authenticates that invocation.
+
+The source branch compares every normalized row field against the actual create
+arguments before touching the pool. Cron and deadline creation then use one owning
+transaction to insert the real scheduled row, its immutable creator/grant/exposure
+snapshot, revision and reference-only outbox. Deadline dependency IDs participate
+in the material digest and are inserted with the pending deadline and empty fired
+thresholds. The real deadline validation/defaults and its ordinary callers remain
+unchanged. A replay retains the command UUID and returns its historical row ID;
+it does not reset the due slot or establish current source authority. Different
+material, missing policy context, a wider ceiling, wrong owning role, or a failed
+source write cannot become a successful creation. Software recording controls
+prove these call paths and rollback branches, not PostgreSQL durability or role
+security.
+
+The corresponding internal `schedule_update` branch requires the expected
+source revision and original creator snapshot. It locks command, source and
+actual row before running the existing row mutation on that same connection.
+Submitted values use the ordinary update normalizers before command reconciliation;
+replay must match the selected historical definition without reading or mutating
+a newer row. The actual first-call resulting row must match that definition. Row mutation,
+source revision and cancellation of pending/claimed attempts commit together;
+already-cancelled occurrences and immutable revision/command evidence remain
+historical. The closed occurrence states are pending, claimed and cancelled;
+these software controls do not establish a committed goal or dispatch outcome. Delete uses the same ordering,
+checks the entire selected row and retains an immutable deleted source revision
+after removing the row. A failed revision write rolls the row deletion back.
+Exact command replay returns the historical result without mutating a newer row
+or resurrecting a deleted one. Neither replay nor a missing row proves current
+authority. These internal parameters remain absent from public MCP schemas.
+
+This is an owning persistence adapter, not the missing authenticated creator
+producer, current-context reader, cutover route, or control-plane publisher.
+Public update/delete/toggle and deadline mutation, generated Education/chain/wake
+producers and model-backed caller adapters still require their actual
+source-revision and creator/cause integration. Legacy OFF mutators do not acquire
+a second source lock or promise a global fence; a future source consumer must
+revalidate actual current row material. Nothing in this path enables admissions
+or replaces current dispatch. Real source+row PostgreSQL concurrency/rollback/
+readback evidence and the full original M6 obligations remain required.

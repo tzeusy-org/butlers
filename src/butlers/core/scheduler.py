@@ -2681,6 +2681,8 @@ async def schedule_create(
     lead_time_days: int | None = None,
     alert_thresholds: list[dict[str, Any]] | None = None,
     depends_on: list[str] | None = None,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Create a runtime scheduled task.
 
@@ -2717,6 +2719,9 @@ async def schedule_create(
     if task_type not in ("cron", "deadline"):
         raise ValueError(f"task_type must be 'cron' or 'deadline' (got {task_type!r})")
 
+    if obligation_definition is None and obligation_command_id is not None:
+        raise ValueError("source_definition_required")
+
     # --- Deadline branch: delegate to deadline_create -----------------------
     if task_type == "deadline":
         from datetime import date as _date
@@ -2747,6 +2752,14 @@ async def schedule_create(
             lead_time_days=lead_time_days,
             alert_thresholds=alert_thresholds,
             depends_on=depends_on,
+            **(
+                {
+                    "obligation_definition": obligation_definition,
+                    "obligation_command_id": obligation_command_id,
+                }
+                if obligation_definition is not None
+                else {}
+            ),
         )
 
     # --- Cron branch --------------------------------------------------------
@@ -2787,6 +2800,62 @@ async def schedule_create(
         stagger_key=stagger_key,
         max_stagger_seconds=max_stagger_seconds,
     )
+    if obligation_definition is not None:
+        # Internal source input is deliberately absent from the MCP tool's
+        # caller schema. This is a persistence/ceiling boundary, NOT D7 auth.
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            stage_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if type(obligation_definition) is not RuntimeScheduleDefinition:
+            raise SourceConflict("creator_snapshot_required")
+        if not isinstance(obligation_command_id, uuid.UUID):
+            raise SourceConflict("invalid_source_command")
+        actual_material = {
+            "name": name,
+            "cron": cron,
+            "dispatch_mode": dispatch_mode,
+            "prompt": prompt,
+            "job_name": job_name,
+            "job_args": job_args,
+            "complexity": complexity,
+            "enabled": True,
+            "timezone": timezone,
+            "continuity": False,
+            "max_token_budget": None,
+            "task_type": "cron",
+            "target_date": None,
+            "lead_time_days": None,
+            "alert_thresholds": None,
+            "start_at": start_at,
+            "end_at": end_at,
+            "until_at": until_at,
+            "display_title": display_title,
+            "description": description,
+            "location": location,
+            "calendar_event_id": calendar_event_id,
+        }
+        if obligation_definition.schedule != actual_material:
+            raise SourceConflict("schedule_material_mismatch")
+
+        async def create_source(repository):
+            return await stage_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                definition=obligation_definition,
+                next_run_at=next_run_at,
+            )
+
+        result = await run_source_transaction(
+            pool,
+            obligation_definition.owner_domain,
+            create_source,
+        )
+        return result.definition.source_id
+
     try:
         task_id: uuid.UUID = await pool.fetchval(
             """
@@ -2839,57 +2908,9 @@ async def schedule_create(
     return task_id
 
 
-async def schedule_update(
-    pool: asyncpg.Pool,
-    task_id: uuid.UUID,
-    *,
-    stagger_key: str | None = None,
-    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
-    **fields,
-) -> None:
-    """Update fields on a scheduled task.
-
-    Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
-    ``job_name``, ``job_args``, ``complexity``, ``enabled``, ``timezone``,
-    ``start_at``, ``end_at``, ``until_at``, ``display_title``, ``description``,
-    ``location``, and ``calendar_event_id``.
-    If ``cron`` is updated, recomputes ``next_run_at``.
-    If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
-    If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
-
-    Args:
-        pool: asyncpg connection pool.
-        task_id: UUID of the task to update.
-        **fields: Field names and new values.
-
-    Raises:
-        ValueError: If ``task_id`` is not found or if an invalid field is provided,
-            or if the new cron expression is invalid.
-    """
-    allowed = {
-        "name",
-        "cron",
-        "dispatch_mode",
-        "prompt",
-        "job_name",
-        "job_args",
-        "complexity",
-        "enabled",
-        "timezone",
-        "start_at",
-        "end_at",
-        "until_at",
-        "display_title",
-        "description",
-        "location",
-        "calendar_event_id",
-    }
-    invalid = set(fields.keys()) - allowed
-    if invalid:
-        raise ValueError(f"Invalid fields: {invalid}")
-    if not fields:
-        return
-
+def _normalize_schedule_update_values(fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate row-independent values before any scheduled-row lookup."""
+    fields = dict(fields)
     # Validate cron if provided
     if "cron" in fields and not croniter.is_valid(fields["cron"]):
         raise ValueError(f"Invalid cron expression: {fields['cron']!r}")
@@ -2903,20 +2924,18 @@ async def schedule_update(
             fields["complexity"],
             context="schedule_update",
         )
-    # Check task exists and fetch current state
-    existing = await pool.fetchrow(
-        """
-        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args,
-               complexity, timezone, start_at, end_at, until_at, display_title,
-               calendar_event_id
-        FROM scheduled_tasks
-        WHERE id = $1
-        """,
-        task_id,
-    )
-    if existing is None:
-        raise ValueError(f"Task {task_id} not found")
+    return fields
 
+
+def _normalize_schedule_update_fields(
+    fields: dict[str, Any], existing: Any, task_id: uuid.UUID
+) -> dict[str, Any]:
+    """Normalize a partial update against supplied owning row material.
+
+    Source replay uses the selected historical target, never a newer live row.
+    Ordinary updates supply their existing row and keep the same normalizers.
+    """
+    fields = dict(fields)
     projection_fields = {
         "timezone",
         "start_at",
@@ -2990,6 +3009,127 @@ async def schedule_update(
         normalized_fields["prompt"] = prompt
         normalized_fields["job_name"] = job_name
         normalized_fields["job_args"] = job_args
+
+    return normalized_fields
+
+
+async def schedule_update(
+    pool: asyncpg.Pool,
+    task_id: uuid.UUID,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
+    obligation_expected_revision: str | None = None,
+    **fields,
+) -> None:
+    """Update fields on a scheduled task.
+
+    Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
+    ``job_name``, ``job_args``, ``complexity``, ``enabled``, ``timezone``,
+    ``start_at``, ``end_at``, ``until_at``, ``display_title``, ``description``,
+    ``location``, and ``calendar_event_id``.
+    If ``cron`` is updated, recomputes ``next_run_at``.
+    If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
+    If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
+
+    Args:
+        pool: asyncpg connection pool.
+        task_id: UUID of the task to update.
+        **fields: Field names and new values.
+
+    Raises:
+        ValueError: If ``task_id`` is not found or if an invalid field is provided,
+            or if the new cron expression is invalid.
+    """
+    allowed = {
+        "name",
+        "cron",
+        "dispatch_mode",
+        "prompt",
+        "job_name",
+        "job_args",
+        "complexity",
+        "enabled",
+        "timezone",
+        "start_at",
+        "end_at",
+        "until_at",
+        "display_title",
+        "description",
+        "location",
+        "calendar_event_id",
+    }
+    invalid = set(fields.keys()) - allowed
+    if invalid:
+        raise ValueError(f"Invalid fields: {invalid}")
+    if obligation_definition is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            revise_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if type(obligation_definition) is not RuntimeScheduleDefinition:
+            raise SourceConflict("creator_snapshot_required")
+        if not isinstance(obligation_command_id, uuid.UUID) or not isinstance(
+            obligation_expected_revision, str
+        ):
+            raise SourceConflict("source_command_required")
+
+        # Normalize every submitted request before a command can reconcile.
+        # The selected target is stable even if a later command changed the row.
+        submitted_fields = _normalize_schedule_update_fields(
+            _normalize_schedule_update_values(fields), obligation_definition.schedule, task_id
+        )
+
+        async def update_source(repository):
+            async def mutate_row(connection):
+                await schedule_update(
+                    connection,
+                    task_id,
+                    stagger_key=stagger_key,
+                    max_stagger_seconds=max_stagger_seconds,
+                    **fields,
+                )
+
+            return await revise_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                source_id=task_id,
+                expected_revision=obligation_expected_revision,
+                definition=obligation_definition,
+                submitted_fields=submitted_fields,
+                mutate_row=mutate_row,
+            )
+
+        await run_source_transaction(pool, obligation_definition.owner_domain, update_source)
+        return
+    if obligation_command_id is not None or obligation_expected_revision is not None:
+        from butlers.core.obligation_sources import SourceConflict
+
+        raise SourceConflict("source_definition_required")
+    if not fields:
+        return
+
+    fields = _normalize_schedule_update_values(fields)
+    # Check task exists and fetch current state
+    existing = await pool.fetchrow(
+        """
+        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args,
+               complexity, timezone, start_at, end_at, until_at, display_title,
+               calendar_event_id
+        FROM scheduled_tasks
+        WHERE id = $1
+        """,
+        task_id,
+    )
+    if existing is None:
+        raise ValueError(f"Task {task_id} not found")
+
+    normalized_fields = _normalize_schedule_update_fields(fields, existing, task_id)
 
     # Build dynamic UPDATE with all fields including next_run_at if cron changed
     set_clauses = []
@@ -3171,7 +3311,14 @@ async def schedule_toggle(
             }
 
 
-async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
+async def schedule_delete(
+    pool: asyncpg.Pool,
+    task_id: uuid.UUID,
+    *,
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
+    obligation_expected_revision: str | None = None,
+) -> None:
     """Delete a runtime scheduled task.
 
     TOML-sourced tasks cannot be deleted — they are managed via config sync.
@@ -3183,6 +3330,40 @@ async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
     Raises:
         ValueError: If the task is ``source='toml'`` or if ``task_id`` is not found.
     """
+    if obligation_definition is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            delete_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if type(obligation_definition) is not RuntimeScheduleDefinition:
+            raise SourceConflict("creator_snapshot_required")
+        if not isinstance(obligation_command_id, uuid.UUID) or not isinstance(
+            obligation_expected_revision, str
+        ):
+            raise SourceConflict("source_command_required")
+
+        async def delete_source(repository):
+            async def delete_row(connection):
+                await schedule_delete(connection, task_id)
+
+            return await delete_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                source_id=task_id,
+                expected_revision=obligation_expected_revision,
+                definition=obligation_definition,
+                delete_row=delete_row,
+            )
+
+        await run_source_transaction(pool, obligation_definition.owner_domain, delete_source)
+        return
+    if obligation_command_id is not None or obligation_expected_revision is not None:
+        from butlers.core.obligation_sources import SourceConflict
+
+        raise SourceConflict("source_definition_required")
     row = await pool.fetchrow("SELECT source FROM scheduled_tasks WHERE id = $1", task_id)
     if row is None:
         raise ValueError(f"Task {task_id} not found")

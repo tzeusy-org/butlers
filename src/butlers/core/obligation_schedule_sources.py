@@ -1,16 +1,17 @@
 """Dormant owning scheduled-row/source writer (RFC0038 D5).
 
-No production caller is registered. Values here authenticate neither Git input,
-context, catalog nor a creator. A future trusted owning config/context adapter
-must supply actual normalized material; no caller-provided digest is accepted.
-Current OFF sync/tick never import this module or perform its database IO.
+The internal schedule_create source branch persists actual runtime row/source
+material together. Its authenticated D7 input producer is not delivered here.
+Values authenticate neither Git input, context, catalog nor a creator. Current
+ordinary OFF create/sync/tick paths never perform this module's database IO.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,6 +22,7 @@ from butlers.core.goal_admission import digest
 from butlers.core.obligation_sources import (
     DefinitionRevision,
     ObligationSourceRepository,
+    RuntimeCreationSnapshot,
     SourceConflict,
 )
 from butlers.core.obligations import DeclarationError, ObligationDeclaration
@@ -236,20 +238,83 @@ def compile_git_schedule_definition(
 
 
 @dataclass(frozen=True)
-class StagedGitScheduleDefinition:
+class RuntimeScheduleDefinition(GitScheduleDefinition):
+    """Server-selected creation material; a value NEVER verifies an invocation.
+
+    The MCP scheduling schema cannot construct/pass this internal argument.
+    The real D7 verifier must eventually supply the immutable creation facts.
+    Owning-row persistence and ceiling checks here do not stand in for it.
+    """
+
+    creator: RuntimeCreationSnapshot
+    dependencies: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        super().__post_init__()
+        if type(self.creator) is not RuntimeCreationSnapshot or self.declaration is None:
+            raise DeclarationError("creator_snapshot_required")
+        self.creator.check(self.declaration)
+        if type(self.dependencies) is not tuple or len(set(self.dependencies)) != len(
+            self.dependencies
+        ):
+            raise DeclarationError("invalid_deadline_dependencies")
+        for value in self.dependencies:
+            if type(value) is not str:
+                raise DeclarationError("invalid_deadline_dependencies")
+            try:
+                if str(UUID(value)) != value:
+                    raise ValueError
+            except ValueError:
+                raise DeclarationError("invalid_deadline_dependencies") from None
+        if self.schedule["task_type"] != "deadline" and self.dependencies:
+            raise DeclarationError("invalid_deadline_dependencies")
+
+    @property
+    def material_digest(self) -> str:
+        return digest({"schedule": super().material_digest, "depends_on": self.dependencies})
+
+
+def compile_runtime_schedule_definition(
+    *,
+    owner_domain: str,
+    normalized_schedule: dict,
+    declaration: ObligationDeclaration,
+    context_material: dict | None,
+    creator: RuntimeCreationSnapshot,
+    depends_on: tuple[str, ...] = (),
+) -> RuntimeScheduleDefinition:
+    """Freeze actual selected material, rejecting rather than clipping widening."""
+    return RuntimeScheduleDefinition(
+        owner_domain,
+        _row_material(normalized_schedule),
+        declaration,
+        _json(context_material) if context_material is not None else None,
+        creator,
+        depends_on,
+    )
+
+
+@dataclass(frozen=True)
+class StagedScheduleDefinition:
     """Historical replay or staged result; commit/release and later fences remain."""
 
     definition: DefinitionRevision
 
 
-async def stage_git_schedule_definition(
+# Keep the earlier internal spelling import-compatible; runtime values no longer
+# pretend that their origin was Git.
+StagedGitScheduleDefinition = StagedScheduleDefinition
+
+
+async def _stage_schedule_definition(
     repository: ObligationSourceRepository,
     *,
     command_id: UUID,
     expected_revision: str | None,
-    definition: GitScheduleDefinition,
+    definition: GitScheduleDefinition | RuntimeScheduleDefinition,
     source_id: UUID | None = None,
-) -> StagedGitScheduleDefinition:
+    next_run_at: datetime | None = None,
+) -> StagedScheduleDefinition:
     """Write actual schedule + source revision/cancel/outbox in ONE owning TX.
 
     A savepoint prevents partial scheduled-row changes if a caller catches a
@@ -258,7 +323,7 @@ async def stage_git_schedule_definition(
     the missing current-config/scheduler/cutover registration.
     """
     if (
-        type(definition) is not GitScheduleDefinition
+        type(definition) not in (GitScheduleDefinition, RuntimeScheduleDefinition)
         or definition.owner_domain != repository.owner_domain
     ):
         raise SourceConflict("source_owner_mismatch")
@@ -268,6 +333,16 @@ async def stage_git_schedule_definition(
         type(expected_revision) is not str or not re.fullmatch(r"[0-9a-f]{64}", expected_revision)
     ):
         raise SourceConflict("source_revision_conflict")
+    runtime = type(definition) is RuntimeScheduleDefinition
+    origin, row_source = ("runtime", "db") if runtime else ("git", "toml")
+    creator = definition.creator if runtime else None
+    if (
+        runtime
+        and source_id is None
+        and definition.schedule["task_type"] == "cron"
+        and (not isinstance(next_run_at, datetime) or next_run_at.utcoffset() is None)
+    ):
+        raise SourceConflict("nominal_schedule_slot_required")
     connection = repository.connection
     if not connection.is_in_transaction():
         raise SourceConflict("owning_transaction_required")
@@ -291,7 +366,8 @@ async def stage_git_schedule_definition(
                 or (source_id is not None and source_id != old_result.source_id)
                 or old_result.material_digest != definition.material_digest
                 or old_result.family != family
-                or old_result.origin != "git"
+                or old_result.origin != origin
+                or old_result.creator != creator
                 or old_result.state != state
                 or (
                     definition.declaration is not None
@@ -299,7 +375,7 @@ async def stage_git_schedule_definition(
                 )
             ):
                 raise SourceConflict("command_binding_conflict")
-            return StagedGitScheduleDefinition(old_result)
+            return StagedScheduleDefinition(old_result)
         columns = ",".join(SCHEDULE_FIELDS)
         table = f'"{repository.owner_domain}".scheduled_tasks'
         old = None
@@ -308,14 +384,18 @@ async def stage_git_schedule_definition(
             row = await connection.fetchrow(
                 f"SELECT id,source,{columns} FROM {table} WHERE id=$1 FOR UPDATE", source_id
             )
-            if row is None or row["source"] != "toml":
-                raise SourceConflict("git_schedule_required")
+            if row is None or row["source"] != row_source:
+                raise SourceConflict(
+                    "runtime_schedule_required" if runtime else "git_schedule_required"
+                )
             old = await repository.read(source_id)
         if (old is None and expected_revision is not None) or (
             old is not None and (expected_revision != old.revision or old.state == "deleted")
         ):
             raise SourceConflict("source_revision_conflict")
-        if old is not None and (old.origin != "git" or old.family != family):
+        if old is not None and (
+            old.origin != origin or old.family != family or old.creator != creator
+        ):
             raise SourceConflict("creation_binding_immutable")
         if old is None and not definition.available:
             raise SourceConflict("source_definition_unavailable")
@@ -338,13 +418,21 @@ async def stage_git_schedule_definition(
                 digest([expected_revision, old.encode()]),
                 old.encode(),
             )
-            return StagedGitScheduleDefinition(old)
+            return StagedScheduleDefinition(old)
         if source_id is None:
             markers = ",".join(f"${index}" for index in range(1, len(values) + 1))
+            slot_column = ",next_run_at" if runtime else ""
+            slot_value = f",${len(values) + 1}" if runtime else ""
+            extras = [next_run_at] if runtime else []
+            if runtime and family == "deadline":
+                slot_column += ",deadline_status,fired_thresholds,depends_on"
+                slot_value += f",'pending','[]'::jsonb,${len(values) + 2}"
+                extras.append(list(definition.dependencies))
             row = await connection.fetchrow(
-                f"INSERT INTO {table} ({columns},source) VALUES ({markers},'toml') "
-                f"RETURNING id,source,{columns}",
+                f"INSERT INTO {table} ({columns},source{slot_column}) "
+                f"VALUES ({markers},'{row_source}'{slot_value}) RETURNING id,source,{columns}",
                 *values,
+                *extras,
             )
             source_id = row["id"]
             await repository.lock_source(source_id)
@@ -365,8 +453,192 @@ async def stage_git_schedule_definition(
             old.generation + 1 if old else 1,
             definition.material_digest,
             definition.declaration or old.declaration,
-            "git",
+            origin,
+            creator=creator,
             state=state,
         )
         result = await repository.revise(command_id, value, expected_revision=expected_revision)
-        return StagedGitScheduleDefinition(result)
+        return StagedScheduleDefinition(result)
+
+
+async def stage_git_schedule_definition(
+    repository: ObligationSourceRepository,
+    *,
+    command_id: UUID,
+    expected_revision: str | None,
+    definition: GitScheduleDefinition,
+    source_id: UUID | None = None,
+) -> StagedScheduleDefinition:
+    if type(definition) is not GitScheduleDefinition:
+        raise SourceConflict("source_owner_mismatch")
+    return await _stage_schedule_definition(
+        repository,
+        command_id=command_id,
+        expected_revision=expected_revision,
+        definition=definition,
+        source_id=source_id,
+    )
+
+
+async def stage_runtime_schedule_definition(
+    repository: ObligationSourceRepository,
+    *,
+    command_id: UUID,
+    definition: RuntimeScheduleDefinition,
+    next_run_at: datetime,
+) -> StagedScheduleDefinition:
+    """Stage the real new runtime row and source atomically, never activate a goal.
+
+    This creation-only entrypoint cannot revise a caller-selected existing row
+    or replace its original creator snapshot. Reconciliation retains command ID.
+    """
+    if type(definition) is not RuntimeScheduleDefinition:
+        raise SourceConflict("creator_snapshot_required")
+    return await _stage_schedule_definition(
+        repository,
+        command_id=command_id,
+        expected_revision=None,
+        definition=definition,
+        next_run_at=next_run_at,
+    )
+
+
+async def revise_runtime_schedule_definition(
+    repository: ObligationSourceRepository,
+    *,
+    command_id: UUID,
+    source_id: UUID,
+    expected_revision: str,
+    definition: RuntimeScheduleDefinition,
+    submitted_fields: dict,
+    mutate_row: Callable[[object], Awaitable[None]],
+) -> StagedScheduleDefinition:
+    """Run the existing row mutator under the source/row locks, then revise.
+
+    This is an internal owning adapter, not an authenticated request boundary.
+    The callback must use only this connection; no second pool or network call
+    belongs under these locks. A mismatch rolls the entire row mutation back.
+    Exact command reconciliation never reexecutes the callback.
+    """
+    if type(definition) is not RuntimeScheduleDefinition:
+        raise SourceConflict("creator_snapshot_required")
+    if definition.owner_domain != repository.owner_domain:
+        raise SourceConflict("source_owner_mismatch")
+    connection = repository.connection
+    async with connection.transaction():
+        previous = await repository.read_command(command_id)
+        if previous is not None:
+            # Validate the actual normalized request, not just its prepared
+            # definition. Do not rerun a mutation against a newer live row.
+            if _row_material(definition.schedule | submitted_fields) != definition.row_json:
+                raise SourceConflict("schedule_material_mismatch")
+        if previous is None:
+            await repository.lock_source(source_id)
+            old = await repository.read(source_id)
+            if (
+                old is None
+                or old.revision != expected_revision
+                or old.state == "deleted"
+                or old.origin != "runtime"
+                or old.creator != definition.creator
+            ):
+                raise SourceConflict("creation_binding_immutable")
+            # The row lock precedes all existing row-validation and update SQL.
+            row = await connection.fetchrow(
+                f"SELECT id,source,depends_on,{','.join(SCHEDULE_FIELDS)} FROM "
+                f'"{repository.owner_domain}".scheduled_tasks WHERE id=$1 FOR UPDATE',
+                source_id,
+            )
+            if row is None or row["source"] != "db":
+                raise SourceConflict("runtime_schedule_required")
+            if (
+                old.family == "deadline"
+                and tuple(row["depends_on"] or ()) != definition.dependencies
+            ):
+                raise SourceConflict("schedule_material_mismatch")
+            await mutate_row(connection)
+            row = await connection.fetchrow(
+                f"SELECT id,source,{','.join(SCHEDULE_FIELDS)} FROM "
+                f'"{repository.owner_domain}".scheduled_tasks WHERE id=$1 FOR UPDATE',
+                source_id,
+            )
+            if (
+                row is None
+                or _row_material({key: row[key] for key in SCHEDULE_FIELDS}) != definition.row_json
+            ):
+                raise SourceConflict("schedule_material_mismatch")
+        return await _stage_schedule_definition(
+            repository,
+            command_id=command_id,
+            source_id=source_id,
+            expected_revision=expected_revision,
+            definition=definition,
+        )
+
+
+async def delete_runtime_schedule_definition(
+    repository: ObligationSourceRepository,
+    *,
+    command_id: UUID,
+    source_id: UUID,
+    expected_revision: str,
+    definition: RuntimeScheduleDefinition,
+    delete_row: Callable[[object], Awaitable[None]],
+) -> StagedScheduleDefinition:
+    """Delete the actual row and retain its immutable source tombstone together.
+
+    Only an exact historical delete command can reconcile a missing row. No
+    lookup absence is turned into a successful deletion or creation authority.
+    """
+    if type(definition) is not RuntimeScheduleDefinition:
+        raise SourceConflict("creator_snapshot_required")
+    if definition.owner_domain != repository.owner_domain:
+        raise SourceConflict("source_owner_mismatch")
+    connection = repository.connection
+    async with connection.transaction():
+        previous = await repository.read_command(command_id)
+        if previous is not None:
+            request, result = previous
+            if (
+                result.source_id != source_id
+                or result.state != "deleted"
+                or result.origin != "runtime"
+                or result.creator != definition.creator
+                or result.material_digest != definition.material_digest
+                or request != digest([expected_revision, result.encode()])
+            ):
+                raise SourceConflict("command_binding_conflict")
+            return StagedScheduleDefinition(result)
+        await repository.lock_source(source_id)
+        old = await repository.read(source_id)
+        if (
+            old is None
+            or old.revision != expected_revision
+            or old.state == "deleted"
+            or old.origin != "runtime"
+            or old.creator != definition.creator
+            or old.material_digest != definition.material_digest
+        ):
+            raise SourceConflict("source_revision_conflict")
+        table = f'"{repository.owner_domain}".scheduled_tasks'
+        row = await connection.fetchrow(
+            f"SELECT id,source,depends_on,{','.join(SCHEDULE_FIELDS)} FROM {table} "
+            "WHERE id=$1 FOR UPDATE",
+            source_id,
+        )
+        if (
+            row is None
+            or row["source"] != "db"
+            or _row_material({key: row[key] for key in SCHEDULE_FIELDS}) != definition.row_json
+            or (
+                old.family == "deadline"
+                and tuple(row["depends_on"] or ()) != definition.dependencies
+            )
+        ):
+            raise SourceConflict("schedule_material_mismatch")
+        await delete_row(connection)
+        if await connection.fetchrow(f"SELECT id FROM {table} WHERE id=$1", source_id) is not None:
+            raise SourceConflict("schedule_delete_unconfirmed")
+        value = replace(old, generation=old.generation + 1, state="deleted")
+        result = await repository.revise(command_id, value, expected_revision=expected_revision)
+        return StagedScheduleDefinition(result)

@@ -78,6 +78,8 @@ async def deadline_create(
     alert_thresholds: list[dict[str, Any]],
     depends_on: list[str] | None = None,
     deadline_status: str = "pending",
+    obligation_definition: object = None,
+    obligation_command_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Create a new deadline task in scheduled_tasks.
 
@@ -130,6 +132,64 @@ async def deadline_create(
     # Daily cron — the deadline evaluation pass in tick() handles actual dispatch
     cron = "0 0 * * *"
     next_run_at = datetime.now(UTC)
+
+    if obligation_definition is not None:
+        from butlers.core.obligation_admission import run_source_transaction
+        from butlers.core.obligation_schedule_sources import (
+            RuntimeScheduleDefinition,
+            stage_runtime_schedule_definition,
+        )
+        from butlers.core.obligation_sources import SourceConflict
+
+        if type(obligation_definition) is not RuntimeScheduleDefinition:
+            raise SourceConflict("creator_snapshot_required")
+        if not isinstance(obligation_command_id, uuid.UUID):
+            raise SourceConflict("invalid_source_command")
+        actual_material = {
+            "name": name.strip(),
+            "cron": cron,
+            "dispatch_mode": "prompt",
+            "prompt": prompt.strip(),
+            "job_name": None,
+            "job_args": None,
+            "complexity": "workhorse",
+            "enabled": True,
+            "timezone": "UTC",
+            "continuity": False,
+            "max_token_budget": None,
+            "task_type": "deadline",
+            "target_date": target_date,
+            "lead_time_days": lead_time_days,
+            "alert_thresholds": alert_thresholds,
+            "start_at": None,
+            "end_at": None,
+            "until_at": None,
+            "display_title": None,
+            "description": None,
+            "location": None,
+            "calendar_event_id": None,
+        }
+        if (
+            obligation_definition.schedule != actual_material
+            or obligation_definition.dependencies != tuple(depends_on or [])
+            or deadline_status != "pending"
+        ):
+            raise SourceConflict("schedule_material_mismatch")
+
+        async def create_source(repository):
+            return await stage_runtime_schedule_definition(
+                repository,
+                command_id=obligation_command_id,
+                definition=obligation_definition,
+                next_run_at=next_run_at,
+            )
+
+        result = await run_source_transaction(
+            pool, obligation_definition.owner_domain, create_source
+        )
+        return result.definition.source_id
+    if obligation_command_id is not None:
+        raise ValueError("source_definition_required")
 
     try:
         task_id: uuid.UUID = await pool.fetchval(

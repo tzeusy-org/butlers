@@ -8,6 +8,7 @@ import copy
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -591,3 +592,474 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
                 assert original.digest != candidate.digest
             else:
                 assert original.digest == candidate.digest
+
+
+class RuntimeConnection(RecordingConnection):
+    async def execute(self, sql, *args):
+        if sql.startswith("DELETE FROM scheduled_tasks"):
+            self.calls.append(sql)
+            assert self.depth >= 2
+            self.rows.pop(args[0])
+            return "DELETE 1"
+        if sql.startswith("UPDATE scheduled_tasks SET"):
+            import re
+
+            self.calls.append(sql)
+            assert self.depth >= 2
+            row = self.rows[args[0]]
+            for name, index in re.findall(r"(\w+) = \$(\d+)", sql.split("WHERE")[0]):
+                row[name] = args[int(index) - 1]
+            return "UPDATE 1"
+        return await super().execute(sql, *args)
+
+    async def fetchrow(self, sql, *args):
+        if sql.lstrip().startswith("INSERT") and "scheduled_tasks" in sql and "'db'" in sql:
+            from butlers.core.obligation_schedule_sources import SCHEDULE_FIELDS
+
+            row = dict(zip(SCHEDULE_FIELDS, args[: len(SCHEDULE_FIELDS)], strict=True))
+            slot = args[len(SCHEDULE_FIELDS)]
+            assert slot.utcoffset() is not None
+            row |= {"id": uuid4(), "source": "db", "next_run_at": slot}
+            if row["task_type"] == "deadline":
+                assert "deadline_status,fired_thresholds,depends_on" in sql
+                row |= {
+                    "deadline_status": "pending",
+                    "fired_thresholds": [],
+                    "depends_on": args[-1],
+                }
+            self.rows[row["id"]] = row
+            return copy.deepcopy(row)
+        return await super().fetchrow(sql, *args)
+
+
+async def test_runtime_create_binds_actual_row_creator_and_command_without_changing_off_calls(
+    monkeypatch,
+):
+    """Actual schedule_create path stages one row/source TX, not a creator verifier."""
+    from butlers.core import obligation_admission, scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+
+    # Ordinary legacy creation does not consult or write source infrastructure.
+
+    old_transaction = obligation_admission.run_source_transaction
+    monkeypatch.setattr(
+        obligation_admission,
+        "run_source_transaction",
+        AsyncMock(side_effect=AssertionError),
+    )
+    ordinary_pool = AsyncMock()
+    ordinary_pool.fetchval.return_value = UUID(int=899)
+    assert await scheduler.schedule_create(
+        ordinary_pool,
+        name="legacy",
+        cron="0 9 * * *",
+        prompt="legacy prompt",
+    ) == UUID(int=899)
+    assert ordinary_pool.fetchval.await_count == 1
+    assert "INSERT INTO scheduled_tasks" in ordinary_pool.fetchval.call_args.args[0]
+    monkeypatch.setattr(obligation_admission, "run_source_transaction", old_transaction)
+
+    creator = RuntimeCreationSnapshot(UUID(int=900), (Grant("health__read"),), True)
+    prepared = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=schedule(name="runtime-source", timezone="UTC"),
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"server_selected_policy": "software fixture, not authentication"},
+        creator=creator,
+    )
+
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    task_id = await scheduler.schedule_create(
+        pool,
+        name="runtime-source",
+        cron="0 9 * * *",
+        prompt="fixture prompt",
+        obligation_definition=prepared,
+        obligation_command_id=UUID(int=901),
+    )
+    assert len(pool.connection.rows) == len(pool.connection.definitions) == 1
+    assert task_id in pool.connection.rows
+    body = pool.connection.definitions[task_id]
+    assert body["origin"] == "runtime"
+    assert body["creator"]["exposed"] is True
+    assert body["creator"]["invocation_id"] == str(creator.invocation_id)
+    assert pool.connection.depth == 0
+    # Exact command replay returns its old result, without duplicating the row.
+    assert (
+        await scheduler.schedule_create(
+            pool,
+            name="runtime-source",
+            cron="0 9 * * *",
+            prompt="fixture prompt",
+            obligation_definition=prepared,
+            obligation_command_id=UUID(int=901),
+        )
+        == task_id
+    )
+    assert len(pool.connection.rows) == len(pool.connection.definitions) == 1
+    before = copy.deepcopy(pool.connection.rows)
+    with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+        await scheduler.schedule_create(
+            pool,
+            name="runtime-source",
+            cron="0 9 * * *",
+            prompt="changed payload",
+            obligation_definition=prepared,
+            obligation_command_id=UUID(int=902),
+        )
+    assert pool.connection.rows == before
+    # No trusted creation context is invented from a valid declaration.
+    unavailable = replace(prepared, context_json=None)
+    with pytest.raises(SourceConflict, match="source_definition_unavailable"):
+        await scheduler.schedule_create(
+            pool,
+            name="runtime-source",
+            cron="0 9 * * *",
+            prompt="fixture prompt",
+            obligation_definition=unavailable,
+            obligation_command_id=UUID(int=903),
+        )
+    assert pool.connection.rows == before
+    # Actual connection identity, not owner_domain in the value, controls SQL.
+    pool.connection.role = "butler_general_rw"
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await scheduler.schedule_create(
+            pool,
+            name="runtime-source",
+            cron="0 9 * * *",
+            prompt="fixture prompt",
+            obligation_definition=prepared,
+            obligation_command_id=UUID(int=904),
+        )
+    assert pool.connection.rows == before
+    pool.connection.role = "butler_health_rw"
+    # A source/revision write failure rolls back the *real adapter's* row too.
+    actual_execute = pool.connection.execute
+
+    async def fail_revision(sql, *args):
+        if "INSERT INTO obligation_revisions" in sql:
+            raise RuntimeError("controlled revision failure")
+        return await actual_execute(sql, *args)
+
+    pool.connection.execute = fail_revision
+    with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+        await scheduler.schedule_create(
+            pool,
+            name="runtime-source",
+            cron="0 9 * * *",
+            prompt="fixture prompt",
+            obligation_definition=prepared,
+            obligation_command_id=UUID(int=905),
+        )
+    assert pool.connection.rows == before and pool.connection.depth == 0
+    pool.connection.execute = actual_execute
+    with pytest.raises(DeclarationError, match="creator_ceiling_exceeded"):
+        compile_runtime_schedule_definition(
+            owner_domain="health",
+            normalized_schedule=schedule(),
+            declaration=ObligationDeclaration((Grant("health__write"),)),
+            context_material={"selected": "context"},
+            creator=creator,
+        )
+
+
+async def test_runtime_deadline_actual_create_preserves_dependencies_and_creation_exposure():
+    """The real deadline branch retains dependency material in its source identity."""
+    from datetime import date
+
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+
+    dependency = str(UUID(int=920))
+    creator = RuntimeCreationSnapshot(UUID(int=921), (Grant("health__read"),), True)
+    material = schedule(
+        name="deadline-source",
+        cron="0 0 * * *",
+        task_type="deadline",
+        target_date=date(2099, 1, 1),
+        lead_time_days=7,
+        alert_thresholds=[{"days_before": 3, "severity": "info"}],
+    )
+    prepared = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=material,
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"selected": "fixture context, not authentication"},
+        creator=creator,
+        depends_on=(dependency,),
+    )
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    kwargs = {
+        "name": material["name"],
+        "task_type": "deadline",
+        "prompt": material["prompt"],
+        "target_date": material["target_date"],
+        "lead_time_days": material["lead_time_days"],
+        "alert_thresholds": material["alert_thresholds"],
+        "depends_on": [dependency],
+        "obligation_definition": prepared,
+        "obligation_command_id": UUID(int=922),
+    }
+    task_id = await scheduler.schedule_create(pool, **kwargs)
+    row = pool.connection.rows[task_id]
+    assert row["depends_on"] == [dependency]
+    assert row["deadline_status"] == "pending" and row["fired_thresholds"] == []
+    assert row["target_date"] == date(2099, 1, 1)
+    body = pool.connection.definitions[task_id]
+    assert body["family"] == "deadline" and body["creator"]["exposed"] is True
+    assert await scheduler.schedule_create(pool, **kwargs) == task_id
+    assert len(pool.connection.rows) == 1
+    before = copy.deepcopy(pool.connection.rows)
+    for changes in ({"depends_on": []}, {"prompt": "another deadline"}):
+        with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+            await scheduler.schedule_create(pool, **(kwargs | changes))
+        assert pool.connection.rows == before
+    different_dependency = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=material,
+        declaration=prepared.declaration,
+        context_material={"selected": "fixture context, not authentication"},
+        creator=creator,
+    )
+    assert different_dependency.material_digest != prepared.material_digest
+
+
+async def test_runtime_update_revises_actual_locked_row_and_invalidates_only_unsettled_work():
+    """Actual scheduler normalizers execute inside the same owning source TX."""
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+
+    # OFF value validation stays before any row/source IO after extraction.
+    ordinary = AsyncMock()
+    with pytest.raises(ValueError, match="Invalid cron"):
+        await scheduler.schedule_update(ordinary, UUID(int=939), cron="invalid cron")
+    ordinary.fetchrow.assert_not_awaited()
+    ordinary.execute.assert_not_awaited()
+
+    creator = RuntimeCreationSnapshot(UUID(int=940), (Grant("health__read"),), True)
+    initial = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=schedule(name="editable"),
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"selected": "fixture context, not authentication"},
+        creator=creator,
+    )
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    task_id = await scheduler.schedule_create(
+        pool,
+        name="editable",
+        cron="0 9 * * *",
+        prompt="fixture prompt",
+        obligation_definition=initial,
+        obligation_command_id=UUID(int=941),
+    )
+    revision = pool.connection.definitions[task_id]["revision"]
+    for index, state in enumerate(("pending", "claimed", "cancelled"), 942):
+        pool.connection.occurrences[UUID(int=index)] = {
+            "id": UUID(int=index),
+            "source_id": task_id,
+            "revision": revision,
+            "source_key": f"{index:064x}",
+            "source_kind": "occurrence",
+            "source_ref": str(task_id),
+            "occurrence": f"fixture-slot-{index}",
+            "state": state,
+            "claim_token": UUID(int=index + 1000) if state == "claimed" else None,
+            "created_at": datetime(2026, 10, 1, tzinfo=UTC),
+        }
+    history = copy.deepcopy(pool.connection.occurrences[UUID(int=944)])
+    prior_evidence = copy.deepcopy(
+        (pool.connection.revisions, pool.connection.commands, pool.connection.outbox)
+    )
+    changed = replace(
+        initial, row_json=initial.row_json.replace("fixture prompt", "revised prompt")
+    )
+    kwargs = dict(
+        prompt="revised prompt",
+        obligation_definition=changed,
+        obligation_command_id=UUID(int=945),
+        obligation_expected_revision=revision,
+    )
+    assert await scheduler.schedule_update(pool, task_id, **kwargs) is None
+    assert pool.connection.rows[task_id]["prompt"] == "revised prompt"
+    body = pool.connection.definitions[task_id]
+    assert body["generation"] == 2 and body["revision"] != revision
+    assert body["creator"]["exposed"] is True
+    assert body["creator"]["invocation_id"] == str(creator.invocation_id)
+    assert [row["state"] for row in pool.connection.occurrences.values()] == [
+        "cancelled",
+        "cancelled",
+        "cancelled",
+    ]
+    assert pool.connection.occurrences[UUID(int=944)] == history
+    assert all(pool.connection.revisions[k] == v for k, v in prior_evidence[0].items())
+    assert all(pool.connection.commands[k] == v for k, v in prior_evidence[1].items())
+    assert pool.connection.outbox[: len(prior_evidence[2])] == prior_evidence[2]
+    # Historical command reconciliation must never execute its mutation again.
+    pool.connection.rows[task_id]["prompt"] = "later independent write"
+    assert await scheduler.schedule_update(pool, task_id, **kwargs) is None
+    assert pool.connection.rows[task_id]["prompt"] == "later independent write"
+    # Both actual submitted requests must be refused before historical success.
+    # Accumulate both outcomes so a RED receipt exercises both bypasses.
+    before_replay = copy.deepcopy(
+        (pool.connection.rows, pool.connection.definitions, pool.connection.commands)
+    )
+    refused = []
+    for replay_fields, error in (
+        ({"prompt": "different payload"}, SourceConflict),
+        ({"cron": "invalid cron"}, ValueError),
+        ({"dispatch_mode": "invalid mode"}, ValueError),
+        ({"complexity": "invalid complexity"}, ValueError),
+        ({"timezone": None}, ValueError),
+        ({"description": "different metadata"}, SourceConflict),
+    ):
+        try:
+            await scheduler.schedule_update(pool, task_id, **(kwargs | replay_fields))
+        except error:
+            refused.append(True)
+        else:
+            refused.append(False)
+        assert (
+            pool.connection.rows,
+            pool.connection.definitions,
+            pool.connection.commands,
+        ) == before_replay
+    assert refused == [True] * 6
+    # Equivalent normalized partial semantics still reconcile without SQL writes.
+    assert (
+        await scheduler.schedule_update(pool, task_id, **(kwargs | {"timezone": " UTC "})) is None
+    )
+    assert (
+        pool.connection.rows,
+        pool.connection.definitions,
+        pool.connection.commands,
+    ) == before_replay
+    pool.connection.rows[task_id]["prompt"] = "revised prompt"
+    before = copy.deepcopy((pool.connection.rows, pool.connection.definitions))
+    with pytest.raises(SourceConflict, match="creation_binding_immutable"):
+        await scheduler.schedule_update(
+            pool, task_id, **(kwargs | {"obligation_command_id": UUID(int=946)})
+        )
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    # Validation happens on the real normalizer's output; mismatched intent rolls
+    # back its SQL row update, not merely a source metadata write.
+    writes_before = sum(
+        sql.startswith("UPDATE scheduled_tasks SET") for sql in pool.connection.calls
+    )
+    with pytest.raises(SourceConflict, match="schedule_material_mismatch"):
+        await scheduler.schedule_update(
+            pool,
+            task_id,
+            **(
+                kwargs
+                | {
+                    "prompt": "not the selected source material",
+                    "obligation_command_id": UUID(int=947),
+                    "obligation_expected_revision": body["revision"],
+                }
+            ),
+        )
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    assert (
+        sum(sql.startswith("UPDATE scheduled_tasks SET") for sql in pool.connection.calls)
+        == writes_before + 1
+    )
+    assert pool.connection.depth == 0
+
+
+async def test_runtime_delete_tombstones_real_row_and_reconciles_only_original_delete():
+    """Deletion cancels live attempts atomically; absence alone is not a receipt."""
+    from butlers.core import scheduler
+    from butlers.core.obligation_schedule_sources import compile_runtime_schedule_definition
+
+    creator = RuntimeCreationSnapshot(UUID(int=960), (Grant("health__read"),), True)
+    selected = compile_runtime_schedule_definition(
+        owner_domain="health",
+        normalized_schedule=schedule(name="deletable"),
+        declaration=ObligationDeclaration((Grant("health__read"),)),
+        context_material={"selected": "fixture context, not authentication"},
+        creator=creator,
+    )
+    pool = RecordingPool()
+    pool.connection = RuntimeConnection()
+    task_id = await scheduler.schedule_create(
+        pool,
+        name="deletable",
+        cron="0 9 * * *",
+        prompt="fixture prompt",
+        obligation_definition=selected,
+        obligation_command_id=UUID(int=961),
+    )
+    revision = pool.connection.definitions[task_id]["revision"]
+    for index, state in enumerate(("pending", "claimed", "cancelled"), 962):
+        pool.connection.occurrences[UUID(int=index)] = {
+            "id": UUID(int=index),
+            "source_id": task_id,
+            "revision": revision,
+            "source_key": f"{index:064x}",
+            "source_kind": "occurrence",
+            "source_ref": str(task_id),
+            "occurrence": f"fixture-slot-{index}",
+            "state": state,
+            "claim_token": UUID(int=index + 1000) if state == "claimed" else None,
+            "created_at": datetime(2026, 10, 1, tzinfo=UTC),
+        }
+    history = copy.deepcopy(pool.connection.occurrences[UUID(int=964)])
+    prior_evidence = copy.deepcopy(
+        (pool.connection.revisions, pool.connection.commands, pool.connection.outbox)
+    )
+    kwargs = dict(
+        obligation_definition=selected,
+        obligation_command_id=UUID(int=965),
+        obligation_expected_revision=revision,
+    )
+    # A source write failure after the actual DELETE restores that row too.
+    before = copy.deepcopy((pool.connection.rows, pool.connection.definitions))
+    execute = pool.connection.execute
+
+    async def reject_revision(sql, *args):
+        if "INSERT INTO obligation_revisions" in sql:
+            raise RuntimeError("controlled revision failure")
+        return await execute(sql, *args)
+
+    pool.connection.execute = reject_revision
+    with pytest.raises(SourceUnavailable, match="source_transaction_unconfirmed"):
+        await scheduler.schedule_delete(pool, task_id, **kwargs)
+    assert (pool.connection.rows, pool.connection.definitions) == before
+    pool.connection.execute = execute
+    assert await scheduler.schedule_delete(pool, task_id, **kwargs) is None
+    assert task_id not in pool.connection.rows
+    body = pool.connection.definitions[task_id]
+    assert body["state"] == "deleted" and body["generation"] == 2
+    assert body["creator"]["exposed"] is True
+    assert [row["state"] for row in pool.connection.occurrences.values()] == [
+        "cancelled",
+        "cancelled",
+        "cancelled",
+    ]
+    assert pool.connection.occurrences[UUID(int=964)] == history
+    assert all(pool.connection.revisions[k] == v for k, v in prior_evidence[0].items())
+    assert all(pool.connection.commands[k] == v for k, v in prior_evidence[1].items())
+    assert pool.connection.outbox[: len(prior_evidence[2])] == prior_evidence[2]
+    assert await scheduler.schedule_delete(pool, task_id, **kwargs) is None
+    with pytest.raises(SourceConflict, match="source_revision_conflict"):
+        await scheduler.schedule_delete(
+            pool, task_id, **(kwargs | {"obligation_command_id": UUID(int=966)})
+        )
+    # A creation replay is historical, not resurrection of the deleted row.
+    assert (
+        await scheduler.schedule_create(
+            pool,
+            name="deletable",
+            cron="0 9 * * *",
+            prompt="fixture prompt",
+            obligation_definition=selected,
+            obligation_command_id=UUID(int=961),
+        )
+        == task_id
+    )
+    assert task_id not in pool.connection.rows and body["state"] == "deleted"
+    assert pool.connection.depth == 0
