@@ -39,6 +39,10 @@ previously sent message's text and removing its inline keyboard
 
 ### Requirement: Inline Approval Buttons
 
+ID: REQ-module-telegram-001
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1
+Scope: v1-mandatory
+
 The module SHALL support sending an approval-request message with an inline
 keyboard so the owner can approve or reject a pending action directly from the
 notification. Buttons carry single-purpose signed callback tokens bound to the

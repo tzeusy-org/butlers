@@ -59,6 +59,10 @@ MUST NOT use runtime coercion for invalid or legacy-shaped evidence.
 
 ### Requirement: Approval-Request Push on Park
 
+ID: REQ-module-approvals-006
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1
+Scope: v1-mandatory
+
 When the gate parks a pending action, the module SHALL emit exactly one
 deterministic, templated owner notification through the standard delivery plane
 (`notify.v1` envelope with `intent = "approval_request"`), rendering the exact

@@ -4,6 +4,10 @@
 
 ### Requirement: Approval-Request Delivery Intent
 
+ID: REQ-core-notify-035
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1
+Scope: v1-mandatory
+
 The `notify.v1` envelope SHALL support `intent = "approval_request"` for
 owner-targeted approval notifications originated by daemon infrastructure (the
 approvals gate park path). The envelope carries an `actions` payload listing
