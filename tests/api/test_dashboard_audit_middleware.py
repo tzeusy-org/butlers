@@ -453,9 +453,23 @@ class TestInferButler:
         assert _infer_butler("/api/health") == "dashboard"
 
 
+_CALLBACK_ID = "12345678-1234-5678-1234-567812345678"
+_CALLBACK_SECRET = "synthetic-retired-callback-secret"
+_CALLBACK_CREDENTIAL = "synthetic-callback-credential"
+
+
+def _callback_headers():
+    return {"X-Butlers-Approval-Callback-Token": _CALLBACK_CREDENTIAL}
+
+
+def _callback_token():
+    return f"dsk1:{_CALLBACK_ID}:0:0123456789abcdef"
+
+
 @pytest.fixture
 def callback_privacy(monkeypatch, caplog):
     import logging
+    from types import SimpleNamespace
 
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.metrics import NoOpMeterProvider
@@ -463,7 +477,9 @@ def callback_privacy(monkeypatch, caplog):
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from tests.api.test_decisions import _callback_app
+    from butlers.api.app import create_app
+    from butlers.credential_store import CredentialStore
+    from tests.api.auth_helpers import _DomainOwnerState
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -483,8 +499,14 @@ def callback_privacy(monkeypatch, caplog):
     monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
     caplog.set_level(logging.DEBUG)
     logging.getLogger("callback_privacy_control").warning("callback-capture-live-control")
-    fixture = _callback_app(monkeypatch)
-    fixture.connection.fetchval = AsyncMock(return_value=1)
+    connection = SimpleNamespace(fetchval=AsyncMock(return_value=1), fetchrow=AsyncMock())
+    resolve = AsyncMock()
+    monkeypatch.setattr(CredentialStore, "resolve", resolve)
+    db = SimpleNamespace(pool=lambda name: connection)
+    app = create_app(api_key="synthetic-owner-key")
+    app.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    app.state.approval_callback_connector_token = _CALLBACK_CREDENTIAL
+    fixture = SimpleNamespace(app=app, db=db, connection=connection, resolve=resolve)
     fixture.exporter = exporter
     monkeypatch.setattr("butlers.api.dashboard_audit_middleware.get_db_manager", lambda: fixture.db)
     try:
@@ -522,7 +544,7 @@ def _assert_callback_private(fixture, response, caplog, *private):
     prompt_segment = summary["path"].rstrip("/").split("/")[-2]
     if len(prompt_segment) == 36:
         assert summary["path_params"] == {"param_0": prompt_segment}
-    assert summary["body"] == {"redacted": "decision_callback"}
+    assert summary["body"] == {"redacted": "unmatched_route"}
     assert summary["response_status"] == response.status_code
     assert str(row[6]) == response.headers["x-trace-id"] == summary["trace_id"]
     assert row[7]["user_context"]["principal"] == "owner"
@@ -539,14 +561,6 @@ def _assert_callback_private(fixture, response, caplog, *private):
 
 async def test_choose_validation_and_audit_never_expose_body(callback_privacy, caplog):
     import json
-
-    from tests.api.test_decisions import (
-        _CALLBACK_CREDENTIAL,
-        _CALLBACK_ID,
-        _CALLBACK_SECRET,
-        _callback_headers,
-        _callback_token,
-    )
 
     fixture = callback_privacy
     token = _callback_token()
@@ -572,18 +586,15 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
     ) as client:
-        for body, status in bodies:
+        for body, _retired_status in bodies:
             before = len(_callback_audits(fixture))
             response = await client.post(
                 f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
                 content=body,
-                headers={**_callback_headers(), "Content-Type": "application/json"},
+                headers={"X-API-Key": "synthetic-owner-key", "Content-Type": "application/json"},
             )
-            assert response.status_code == status
-            if status != 200:
-                assert response.json()["detail"] == (
-                    "invalid_callback_token" if status == 403 else "invalid_callback_request"
-                )
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
             assert len(_callback_audits(fixture)) == before + 1
             _assert_callback_private(
                 fixture,
@@ -599,15 +610,14 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
             json=good,
             headers={"X-API-Key": "synthetic-owner-key"},
         )
-        assert invalid_path.status_code == 422
-        assert invalid_path.json() == {"detail": "invalid_callback_request"}
+        assert invalid_path.status_code == 404
+        assert invalid_path.json() == {"detail": "Not Found"}
         _assert_callback_private(
             fixture, invalid_path, caplog, token, token[-12:], _CALLBACK_SECRET
         )
 
 
 async def test_choose_trailing_slash_audit_retains_metadata_only(callback_privacy, caplog):
-    from tests.api.test_decisions import _CALLBACK_ID, _callback_headers, _callback_token
 
     fixture = callback_privacy
     token = _callback_token()
@@ -633,13 +643,6 @@ async def test_choose_trailing_slash_audit_retains_metadata_only(callback_privac
 async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
     callback_privacy, caplog
 ):
-    from tests.api.test_decisions import (
-        _CALLBACK_CREDENTIAL,
-        _CALLBACK_ID,
-        _CALLBACK_SECRET,
-        _callback_headers,
-        _callback_token,
-    )
 
     fixture = callback_privacy
     token = _callback_token()
@@ -647,23 +650,16 @@ async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
     ) as client:
-        for where, status in [(fixture.credential_row, 503), (fixture.recorded, 500)]:
+        for where in (fixture.resolve, fixture.connection.fetchrow):
             where.side_effect = RuntimeError(private)
             response = await client.post(
                 f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
                 json={"option_index": 0, "token": token},
-                headers=_callback_headers(),
+                headers={"X-API-Key": "synthetic-owner-key"},
             )
-            assert response.status_code == status
-            if status == 500:
-                assert response.json() == {
-                    "error": {
-                        "code": "INTERNAL_ERROR",
-                        "message": "Internal server error",
-                        "butler": None,
-                        "details": None,
-                    }
-                }
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
+            where.assert_not_awaited()
             _assert_callback_private(
                 fixture,
                 response,
@@ -673,4 +669,3 @@ async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
                 _CALLBACK_SECRET,
                 _CALLBACK_CREDENTIAL,
             )
-            where.side_effect = None

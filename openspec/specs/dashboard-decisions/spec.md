@@ -3,22 +3,25 @@
 ## Purpose
 
 Owner decision bu-g2zuv2 = A (2026-10-21) removes engineering tracker tooling
-from the personal-assistant product. This first slice retires frontend entry
-points and the Helm bridge. Backend endpoints, jobs and stored intent history
-remain pending later removal and a deployment-safe migration.
+from the personal-assistant product. Frontend entry points, the Helm bridge and the backend readers and writers
+are retired in source. Stored intent history remains until the removal is
+actually deployed and a separately reviewed deployment-safe migration runs.
 
 ## Requirements
 
 ### Requirement: Engineering Tracker Product Entry Points Retired
 
 ID: REQ-dashboard-decisions-002
-Source: owner decision bu-g2zuv2 = A; bu-99t5s3.6 steps 1-2
-Scope: Dashboard navigation, routing, data queries and Helm bridge retirement
+Source: owner decision bu-g2zuv2 = A; bu-99t5s3.6 steps 1-3
+Scope: Dashboard, API, jobs, transports and tracker bridge source retirement
 
 The dashboard SHALL NOT expose Decision Desk or bead-detail pages, navigation,
 palette entries, chords, prefetches or digest badge queries. Engineering
 choices remain in `bd` or an owner session. The Helm chart SHALL NOT run the
-tracker bridge or mount its export into runtime pods. Removing the bridge
+tracker bridge or mount its export into runtime pods. Compose and deployment
+helpers SHALL NOT materialize or mount tracker exports. The API SHALL NOT
+register decision or bead-detail operations; jobs, schedule configuration and
+Telegram transports SHALL NOT read, offer or apply engineering decisions. Removing the bridge
 MUST preserve the existing effective runtime-to-tracker network confinement.
 Approvals, their callbacks, QA and owner authentication SHALL retain their
 existing product behavior and authorization boundaries.
@@ -37,8 +40,17 @@ existing product behavior and authorization boundaries.
 - **AND** all runtime pods remain denied the configured tracker IPv4 addresses
 - **AND** missing tracker CIDRs refuse rendering rather than relax isolation
 
-#### Scenario: Partial retirement does not claim data removal
+#### Scenario: Retired backend and callback destinations have no product authority
 
-- **WHEN** only this first retirement slice has landed
-- **THEN** backend/API and historical data retirement remain pending
-- **AND** no table drop or change to the engineering decision-bead convention is implied
+- **WHEN** the API registry and Switchboard schedule configuration are built
+- **THEN** no engineering decision or bead-detail operation or job is registered
+- **AND** approval callbacks and their owner and credential checks remain unchanged
+- **AND** stale decision callbacks cannot choose an option or enter ingestion
+- **AND** unmatched API request audit bodies omit raw bearer payloads, including malformed and truncated JSON
+
+#### Scenario: Source retirement does not claim data removal
+
+- **WHEN** the source retirement has landed without its deployment
+- **THEN** stored intent and prompt tables and migration ancestry remain intact
+- **AND** a later drop requires removal to be deployed and all old readers and writers stopped
+- **AND** the engineering decision-bead convention and local linter remain available

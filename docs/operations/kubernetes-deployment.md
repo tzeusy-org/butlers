@@ -50,7 +50,7 @@ Not ported (compose remains the only path for these):
 ## Engineering tracker isolation
 
 Owner decision bu-g2zuv2 = A (2026-10-21) retires the Decision Desk and beads
-projection from the product. This first slice removes the Helm exporter,
+projection from the product. The Helm retirement removes the exporter,
 applier CronJob, export PVC declaration, tracker ExternalSecret declaration,
 runtime mounts and bridge image build. Legacy `beadsExport` values cannot
 re-enable them. No live resource or credential operation is performed by a
@@ -66,14 +66,13 @@ the existing environment posture (dev true, production false).
 The existing IPv4-only and complete-address preconditions still apply; this
 configuration is not evidence of a live network probe or a production rollout.
 
-The frontend Decision Desk and bead pages are retired. Backend endpoints,
-Switchboard jobs/TOML and stored decision history remain until the later
-retirement slice. Helm no longer provides their snapshot; retained reads can
-report unavailable. Compose's existing export plumbing is unchanged in this
-slice. No table drop is included: readers/writers must be removed and actually
-stopped before a later destructive migration. Reverting this slice restores
-its chart/UI source, but does not promise to restore resources or historical
-data removed by a future separately reviewed migration.
+The frontend pages, backend endpoints, Switchboard jobs/TOML, Telegram decision
+transport and Compose/deploy export plumbing are retired in source. Stored
+intent and prompt history remains. No table drop is included: code removal
+must be deployed and every old reader and writer actually stopped before a
+later separately reviewed destructive migration. Rolling back source does not
+promise to restore historical data removed by that later migration. No live
+resource or credential action is part of source retirement.
 
 ## Ingress
 

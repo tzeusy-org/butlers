@@ -1,4 +1,8 @@
-"""REQ-owner-decision-desk-002: supersession preserves catalog and choice history."""
+"""Historical sw_046 supersession preserves catalog and choice history.
+
+The former owner-decision-desk requirement002 is withdrawn with product source;
+this migration and its full storage/rollback assertions remain until later DDL.
+"""
 
 from __future__ import annotations
 

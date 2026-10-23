@@ -141,6 +141,15 @@ def test_notify_v1_valid_request() -> None:
     assert request.delivery.intent == "send"
     assert request.delivery.channel == "telegram"
 
+    retired = _valid_notify_payload()
+    retired["delivery"]["intent"] = "decision_request"
+    with pytest.raises(ValidationError) as exc_info:
+        parse_notify_request(retired)
+    assert any(
+        error["loc"] == ("delivery", "intent") and error["type"] == "literal_error"
+        for error in exc_info.value.errors()
+    )
+
 
 def test_route_v1_valid_request_via_contract_parser() -> None:
     envelope = parse_route_envelope(_valid_route_payload())

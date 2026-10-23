@@ -89,12 +89,7 @@ def callback_timestamp(value: datetime) -> str:
 
 
 def sign_callback_payload(payload: str, *, secret: str | bytes) -> str:
-    """Return the 16-hex HMAC-SHA256 signature every one-tap callback token uses.
-
-    Shared with ``butlers.core.decision_callbacks`` (``dsk1`` Decision Desk
-    tokens), whose payloads carry their own prefix so the two token families
-    can never verify as each other under the one Tier-1 secret.
-    """
+    """Return the 16-hex HMAC-SHA256 signature bound to the callback prefix."""
     digest = hmac.new(_secret_bytes(secret), payload.encode(), hashlib.sha256).hexdigest()
     return digest[:_SIGNATURE_HEX_LENGTH]
 
