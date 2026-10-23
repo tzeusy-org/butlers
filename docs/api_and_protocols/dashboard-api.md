@@ -99,7 +99,9 @@ Butler-specific API routes live in `roster/{butler}/api/router.py` and are auto-
 3. Validates that the module exports a `router` variable that is an `APIRouter` instance.
 4. Returns a sorted list of `(butler_name, router_module)` tuples.
 
-Dynamic routers are mounted **after** static core routers to prevent shadowing fixed API paths (e.g., `/api/oauth/*`). No `__init__.py` is needed in the `api/` directory. DB dependencies are auto-wired via `wire_db_dependencies()`.
+Dynamic routers are mounted **after** static core routers to prevent shadowing fixed API paths (e.g., `/api/oauth/*`). No `__init__.py` is needed in the `api/` directory. One ordered registry (`api/router_registry.py`) supplies core exports, including secondary/hidden routers, followed by these sorted roster modules. Direct health routes and the final SPA mount remain explicit.
+
+Declare `db: Db` from `butlers.api.deps` for the shared manager dependency; override `get_db` in tests. `get_db_manager()` remains the same public singleton accessor. Existing best-effort reads use `OptionalDb`/`get_db_optional`, preserving their uninitialized-manager fallback. Pool startup/shutdown and the separate QA credential-status binding remain in the lifespan. Pricing and shared-credential pool selectors remain separate dependencies.
 
 ### Adding a Butler Router
 
