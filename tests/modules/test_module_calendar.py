@@ -2047,60 +2047,6 @@ class TestHomeCalendarResolution:
         assert provider.delete_calls
         assert provider.delete_calls[0]["calendar_id"] == self.PRIMARY
 
-    async def test_add_attendees_targets_butler_event_home_calendar(self):
-        """End-to-end: calendar_add_attendees resolves the event's home calendar.
-
-        Attendee mutation operates on an existing event by id, so it must use
-        the home-calendar resolver too: a butler event living on the Butlers
-        calendar is patched there, not on the default-target/primary.
-        """
-        existing = _make_event(
-            event_id="evt-1", title="BUTLER: Standup", butler_generated=True, butler_name="general"
-        )
-
-        class _AddScopedDouble(_ScopedProviderDouble):
-            async def add_attendees(
-                self, *, calendar_id, event_id, attendees, optional=False, send_updates="none"
-            ):
-                self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
-                return self._event
-
-        provider = _AddScopedDouble(home_calendar_id=self.BUTLERS, event=existing)
-        mod, mcp = await self._register_tool_module(provider)
-        result = await mcp.tools["calendar_add_attendees"](
-            event_id="evt-1", attendees=["guest@example.com"]
-        )
-
-        assert result["status"] == "updated"
-        assert provider.update_calls
-        assert provider.update_calls[0]["calendar_id"] == self.BUTLERS
-
-    async def test_remove_attendees_targets_primary_for_user_event(self):
-        """End-to-end: calendar_remove_attendees falls back to primary for a user event.
-
-        The user event lives on primary (the fail-open fallback); the resolver
-        does not locate it on the Butlers calendar during search and the
-        attendee removal is issued against primary in place.
-        """
-        existing = _make_event(event_id="evt-9", title="Dentist")
-
-        class _RemoveScopedDouble(_ScopedProviderDouble):
-            async def remove_attendees(
-                self, *, calendar_id, event_id, attendees, send_updates="none"
-            ):
-                self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
-                return self._event
-
-        provider = _RemoveScopedDouble(home_calendar_id=self.PRIMARY, event=existing)
-        mod, mcp = await self._register_tool_module(provider)
-        result = await mcp.tools["calendar_remove_attendees"](
-            event_id="evt-9", attendees=["guest@example.com"]
-        )
-
-        assert result["status"] == "updated"
-        assert provider.update_calls
-        assert provider.update_calls[0]["calendar_id"] == self.PRIMARY
-
 
 # ---------------------------------------------------------------------------
 # Error hierarchy

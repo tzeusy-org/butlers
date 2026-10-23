@@ -16,7 +16,7 @@ Key capabilities:
 - **Conflict detection** -- pre-write overlap checking with configurable policies (suggest alternatives, fail, or allow with approval gate).
 - **Butler-managed events** -- dedicated subcalendar for butler-generated schedules and reminders, tagged with `BUTLER:` prefix.
 - **Polling-based sync** -- periodic sync from the provider with local projection for fast dashboard queries.
-- **Attendee management** -- RSVP tracking, add/remove attendees.
+- **Attendee data** -- retain provider attendee/RSVP details on events and attendee fields on event create/update. Standalone attendee add/remove tools are retired.
 - **Approval integration** -- overlap overrides and high-impact actions (e.g., cancelling events with external attendees) route through the approvals module.
 
 Source: `src/butlers/modules/calendar.py`.
@@ -56,7 +56,7 @@ When `calendar_id` is not explicitly configured, the module auto-discovers or cr
 Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar.py`); read
 it for the current names and signatures. The families:
 
-- **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`, attendee add/remove) -- read and
+- **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`) -- read and
   write provider events; every create/update runs through the conflict engine below. Instance
   tools edit or delete one occurrence of a recurring event.
 - **Butler-managed events** (`calendar_*_butler_event`) -- schedules and reminders the butler owns,
@@ -67,6 +67,10 @@ it for the current names and signatures. The families:
   `calendar_propose_event` (stages a pending proposal for review without writing to the provider).
 - **Calendar and sync management** -- list calendars, set the primary calendar, check sync
   status, and force a sync cycle.
+
+The retired `attendees` group registers no tools, even when explicitly listed. Default and empty
+group configurations still expose every retained group. Approval-bound invitation responses and
+their historical-owner fence retain their existing registration and authority contracts.
 
 ## Conflict Detection
 
@@ -155,7 +159,7 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   only (the quick-add confirmation). The `dashboard-*` OpenSpec specs list that route and
   `/butler-events`, `projection_freshness` and `request_id`. Every calendar MCP write tool,
   including the provider update/delete and recurrence-scope tools, stays registered for
-  butlers and chat.
+  butlers and chat except the separately retired standalone attendee add/remove tools.
 - `src/butlers/modules/calendar.py::_normalize_recurrence()` rejects any rule containing `\n` or
   `\r` (iCalendar injection) and
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
