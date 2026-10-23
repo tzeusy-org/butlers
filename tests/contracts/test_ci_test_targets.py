@@ -944,6 +944,109 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                     os.kill(pid, 9)
     if only_mode is None:
         _exercise_apt_recovery(root / "source-policy")
+        _exercise_ubuntu_apt_reader(root / "actual-ubuntu-reader")
+
+
+def _exercise_ubuntu_apt_reader(root: Path) -> None:
+    """CI-only actual Ubuntu reader; no acquisition/install or host config writes.
+
+    Local dispatch forbids host apt. Do not silently replace this boundary with
+    the fixture reader above. The existing hosted owner node must execute it.
+    This does not claim an actual `_apt` identity read or signed transport.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    release = Path("/usr/lib/os-release").read_text()
+    assert 'VERSION_ID="24.04"' in release and "ID=ubuntu" in release, (
+        "actual APT-reader control requires the named Ubuntu24 environment"
+    )
+    assert Path("/usr/bin/apt-config").is_file() and Path("/usr/bin/apt-get").is_file()
+    apt, platform, _ = _installer_apt_fixture(root)
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+    copied = root / "supervisor.py"
+    copied.write_text(
+        source.replace('Path("/etc/apt")', f"Path({str(apt)!r})")
+        .replace('Path("/usr/lib/os-release")', f"Path({str(platform)!r})")
+        .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+    )
+    namespace = runpy.run_path(str(copied))
+    overlay = root / "owned"
+    overlay.mkdir(mode=0o700)
+    namespace["prepare_recovery"](overlay)
+    original_sources = {p: p.read_bytes() for p in apt.rglob("*") if p.is_file()}
+    fragments = root / "apt.conf.d"
+    fragments.mkdir()
+    main = root / "empty.conf"
+    main.write_text("")
+    for name in ("state", "state/lists", "state/lists/partial", "cache", "cache/archives"):
+        (root / name).mkdir(exist_ok=True)
+    status = root / "state/status"
+    status.write_text("")
+    # Both reader environments use the same private ordinary configuration,
+    # state/cache and normal fragment/main loading. Recovery changes only the
+    # two source paths; no host preferences, state, hooks or cache are touched.
+    ordinary = (
+        f'Dir::Etc::parts "{fragments}";\nDir::Etc::main "{main}";\n'
+        f'Dir::State "{root / "state"}";\nDir::State::status "{status}";\n'
+        f'Dir::Cache "{root / "cache"}";\n'
+    )
+    baseline = root / "baseline.conf"
+    baseline.write_text(
+        ordinary + f'Dir::Etc::sourcelist "{apt / "sources.list"}";\n'
+        f'Dir::Etc::sourceparts "{apt / "sources.list.d"}";\n'
+    )
+    recovery = overlay / "private/apt.conf"
+    recovery.write_text(ordinary + recovery.read_text())
+    (fragments / "10ordinary").write_text('Acquire::Retries "0";\n')
+    environment = {**os.environ, "APT_CONFIG": str(baseline)}
+    # Run the actual recovery admission function in a disposable interpreter;
+    # its final exec is replaced only after both real readers have admitted.
+    probe = (
+        "import os,runpy,sys\n"
+        "def admitted(*args): raise SystemExit(0)\n"
+        "os.execvpe=admitted\n"
+        "m=runpy.run_path(sys.argv[1])\n"
+        "m['recovery_child'](__import__('pathlib').Path(sys.argv[2]),'/not/executed')\n"
+    )
+
+    def admit() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", probe, str(copied), str(overlay)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert admit().returncode == 0, "actual reader rejected positive private configuration"
+    recovered = {**environment, "APT_CONFIG": str(recovery)}
+    # --print-uris enumerates source targets INSTEAD of fetching/installing.
+    # All potentially written state/cache paths are disposable fixture paths.
+    parsed = subprocess.run(
+        ["/usr/bin/apt-get", "--print-uris", "update"],
+        env=recovered,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert parsed.returncode == 0, "actual APT source parser refused private deb822 fixture"
+    assert f"mirror+file:{overlay / 'mirrors.txt'}" in parsed.stdout
+    assert "packages.example.invalid" in parsed.stdout, "third-party source disappeared"
+    assert "mirror+file:/etc/apt/apt-mirrors.txt" not in parsed.stdout
+    later = fragments / "99source-override"
+    later.write_text('Dir::Etc::sourceparts "/unrecognized-later-sourceparts";\n')
+    assert admit().returncode != 0, "actual later-fragment override escaped recovery admission"
+    later.write_text('Binary::apt-get::Dir::Etc::sourceparts "/unrecognized-binary-path";\n')
+    assert admit().returncode != 0, "actual binary override escaped recovery admission"
+    later.unlink()
+    assert admit().returncode == 0, "negative control poisoned positive companion"
+    assert {p: p.read_bytes() for p in original_sources} == original_sources
+    assert status.read_bytes() == b"", "reader proof changed fixture dpkg state"
+    # Actual sandbox-identity access remains separate: these are only mode
+    # assertions and must not be reported as an `_apt` execution receipt.
+    assert (overlay / "mirrors.txt").stat().st_mode & 0o777 == 0o644
+    assert (overlay / "private").stat().st_mode & 0o777 == 0o700
+    print("actual Ubuntu24 APT config/source reader and later/binary negatives executed")
 
 
 def test_vitest_concurrent_failure_terminates_both_owned_groups(tmp_path: Path) -> None:
