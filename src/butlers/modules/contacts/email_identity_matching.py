@@ -1,17 +1,13 @@
 """Shared matching/heuristics for email sender -> entity identity resolution.
 
-Backing logic for two features (bu-qeaou):
+Backing logic for the email identity enrichment job (bu-qeaou):
+``roster/relationship/jobs/relationship_jobs.py::run_email_identity_enrichment``
+— a scheduled deterministic job that proposes entity creation/linking for
+recurring human email correspondents, surfaced through the approvals queue
+(``pending_actions``). Never writes a fact directly. (The one-shot operator
+backfill that shared this logic was retired in bu-99t5s3.2; recover it from git.)
 
-1. ``roster/relationship/jobs/relationship_jobs.py::run_email_identity_enrichment``
-   — a scheduled deterministic job that proposes entity creation/linking for
-   recurring human email correspondents, surfaced through the approvals queue
-   (``pending_actions``). Never writes a fact directly.
-2. ``scripts/backfill_email_identity_facts.py`` — an operator-run backfill that
-   links already-ingested email senders to entities that already exist under a
-   matching name, writing ``has-email`` facts via the normal central-writer
-   path (``relationship_assert_fact``), for unambiguous exact matches only.
-
-Both consumers read ONLY ``public.ingestion_events`` (never
+The job reads ONLY ``public.ingestion_events`` (never
 ``switchboard.message_inbox`` — that table lives in the Switchboard butler's
 own schema and is not reachable from another butler's schema-scoped DB role;
 see CLAUDE.md's "Database Isolation" section).
@@ -291,11 +287,11 @@ def _row_get(row: Any, key: str) -> Any:
 def choose_display_name(stored: str | None, address: str) -> str:
     """Prefer a stored display name; fall back to the local-part heuristic.
 
-    Single decision point shared by the enrichment job and the backfill script
-    (bu-vs9cr): use the real captured name when present, otherwise derive one
-    from the address local-part. ``stored`` is expected to already be
-    junk-guarded (as produced by :func:`fetch_email_sender_stats`); a falsy
-    value routes to :func:`derive_display_name_from_address`.
+    Single decision point for the enrichment job (bu-vs9cr): use the real captured
+    name when present, otherwise derive one from the address local-part. ``stored``
+    is expected to already be junk-guarded (as produced by
+    :func:`fetch_email_sender_stats`); a falsy value routes to
+    :func:`derive_display_name_from_address`.
     """
     if stored:
         return stored

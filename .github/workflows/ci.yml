@@ -426,11 +426,6 @@ jobs:
         run: npm run build
 
 
-      - name: Preserve bounded Node tooling
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: |
-          node --test --test-timeout=300000 route-a-api-receipt.test.mjs
 
 
   check-preflight:

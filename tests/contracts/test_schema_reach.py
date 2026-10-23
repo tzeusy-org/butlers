@@ -951,14 +951,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
     (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.entity_predicate_registry",
-    ): "burn-down: existing relationship.entity_predicate_registry coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.facts",
-    ): "burn-down: existing relationship.facts coupling; route through owning service or make local schema authority explicit",
-    (
         "src/butlers/testing/migration.py",
         "<dynamic:{_quote_ident(schema)}.alembic_version>",
     ): "dynamic-local: validated target schema migration-version table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
