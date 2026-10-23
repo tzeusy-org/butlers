@@ -43,16 +43,6 @@ class InsightBrokerModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return InsightBrokerConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # insight tables are created via the shared Alembic migration for
-        # public.insight_candidates / insight_settings / insight_cooldowns /
-        # insight_engagement — no separate branch label needed here.
-        return None
-
     async def on_startup(
         self,
         config: Any,

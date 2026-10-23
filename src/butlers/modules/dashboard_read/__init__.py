@@ -41,15 +41,6 @@ class DashboardReadModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return DashboardReadModuleConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # The two fleet views + grants live in roster/concierge/migrations,
-        # which is the butler-owned "concierge" chain, not a module chain.
-        return None
-
     def _get_pool(self) -> Any:
         if self._db is None:
             raise RuntimeError("DashboardReadModule not initialised — no DB available")

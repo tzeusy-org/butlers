@@ -64,13 +64,6 @@ class HealthModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return HealthModuleConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # health tables already exist via separate migrations
-
     def on_all_modules_ready(self, module_map: dict[str, Any]) -> None:
         """Wire CalendarModule after all modules have registered their tools."""
         calendar_mod = module_map.get("calendar")

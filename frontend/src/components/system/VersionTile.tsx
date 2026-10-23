@@ -13,6 +13,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useInstanceFacts } from "@/hooks/use-system"
@@ -38,22 +39,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Version</TileTitle>
-        <TileDescription>Software version</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="version-tile-error" className="text-destructive text-sm">
-          Could not load version info.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // VersionTile
 // ---------------------------------------------------------------------------
@@ -66,12 +51,20 @@ function TileError() {
  * so started_at is a close proxy.
  */
 export function VersionTile() {
-  const { data: response, isPending, isError } = useInstanceFacts()
+  const q = useInstanceFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Version" description="Software version"
+      errorMessage="Could not load version info." errorTestId="version-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <VersionContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function VersionContent({ response }: {
+  response: NonNullable<ReturnType<typeof useInstanceFacts>["data"]>
+}) {
+  const facts = response.data
 
   return (
     <Tile>
@@ -84,10 +77,10 @@ export function VersionTile() {
           <div>
             <dt className="text-muted-foreground text-xs">Package version</dt>
             <dd className="font-mono text-lg font-semibold tabular-nums">
-              {facts?.version || "unknown"}
+              {facts.version || "unknown"}
             </dd>
           </div>
-          {facts?.started_at && (
+          {facts.started_at && (
             <div>
               <dt className="text-muted-foreground text-xs">Last deploy</dt>
               <dd>

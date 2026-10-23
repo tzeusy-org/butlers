@@ -17,12 +17,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     """Register all relationship MCP tools as closures over *module*."""
 
     from butlers.core.tool_call_capture import get_current_runtime_session_id
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr

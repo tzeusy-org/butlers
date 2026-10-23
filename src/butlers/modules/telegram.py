@@ -206,10 +206,6 @@ class TelegramModule(Module):
         return TelegramConfig
 
     @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    @property
     def credentials_env(self) -> list[str]:
         """Environment variables required by this module."""
         envs: list[str] = []
@@ -217,9 +213,6 @@ class TelegramModule(Module):
             envs.append(self._config.bot.token_env)
         # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
-
-    def migration_revisions(self) -> str | None:
-        return None  # No custom tables needed
 
     def _get_bot_token(self) -> str:
         """Resolve Telegram bot token from startup-cached credentials.

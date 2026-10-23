@@ -122,14 +122,6 @@ class WhatsAppModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return WhatsAppConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        """No custom tables — bridge manages sessions, connector manages messages."""
-        return None
-
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register WhatsApp MCP tools.
 
@@ -191,10 +183,6 @@ class WhatsAppModule(Module):
                 self._config.bridge_socket,
                 self._config.send_enabled,
             )
-
-    async def on_shutdown(self) -> None:
-        """No-op: this module owns no bridge subprocess to tear down."""
-        return None
 
     # ------------------------------------------------------------------
     # Implementation helpers

@@ -70,13 +70,6 @@ class FinanceModule(Module):
     def config_schema(self) -> type[BaseModel]:
         return FinanceModuleConfig
 
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # finance tables already exist via separate migrations
-
     async def on_startup(
         self,
         config: Any,

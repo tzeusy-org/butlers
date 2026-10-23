@@ -143,6 +143,8 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   compare-and-set
   writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
   expire a still-pending action whose `expires_at` has passed instead of acting on it.
+  Dashboard approve-with-edits restores the locked original arguments on a refused decision
+  before committing, preserving an expiry transition without persisting the refused edit.
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
