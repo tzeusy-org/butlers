@@ -27,6 +27,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -152,10 +153,10 @@ def _load_chronicler_router():
 
 def _make_app_no_dispatch(pool: AsyncMock) -> Any:
     """App with no dispatch function wired (returns 503 for explain)."""
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     db = _mock_db(pool)
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     # _get_day_close_dispatch_fn left as-is → returns None
     return app
 
@@ -165,7 +166,7 @@ def _make_app_with_dispatch(pool: AsyncMock, dispatch_fn: Any) -> Any:
     chronicler_mod = _load_chronicler_router()
     db = _mock_db(pool)
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[chronicler_mod._get_day_close_dispatch_fn] = lambda: dispatch_fn
     return app
 

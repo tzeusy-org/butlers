@@ -17,8 +17,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 
 
 def _audit_row(
@@ -281,7 +280,7 @@ def _build_app(
 
     mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 
@@ -627,7 +626,7 @@ def _build_paginating_app(app, *, rows: list[dict]):
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db
 
@@ -762,7 +761,7 @@ async def test_workspace_editable_facet_filters_server_side(app):
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
 
     async with httpx.AsyncClient(
@@ -1859,7 +1858,7 @@ def _build_audit_app(
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db
 

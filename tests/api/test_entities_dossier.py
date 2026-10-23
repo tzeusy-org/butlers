@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 
-from butlers.api.routers.entities import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -100,7 +100,7 @@ class _DB:
 
 async def _get(app, pool: _Pool, entity: uuid.UUID = _ENTITY, **kwargs: Any) -> httpx.Response:
     db = _DB(pool, **kwargs)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -189,7 +189,7 @@ async def test_the_receipt_limit_is_reported_and_counts_stay_true(app):
     edges = [_edge(subject=_ENTITY, obj=_FRIEND, predicate=f"p{i}") for i in range(3)]
     pool = _Pool(edges=edges)
     db = _DB(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

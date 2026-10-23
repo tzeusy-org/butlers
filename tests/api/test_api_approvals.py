@@ -20,11 +20,10 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers.approvals import (
     _clear_table_cache,
     _find_named_approvals_pools,
-    _get_db_manager,
     _row_to_autonomy_suggestion,
 )
 from butlers.modules.approvals.park import park_prepared_action
@@ -119,7 +118,7 @@ def _app_with_mock_db(
         mock_db.pool.side_effect = KeyError("No pool")
         mock_db.butler_names = []
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -170,7 +169,7 @@ def _app_with_two_butlers(app, *, home_rows=None, general_rows=None, fetchval_re
     mock_db.butler_names = ["home", "general"]
     mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -324,7 +323,7 @@ def _app_with_partial_metrics_source(app, *, failed_family: str):
     db_mgr = MagicMock(spec=DatabaseManager)
     db_mgr.butler_names = ["general", "home"]
     db_mgr.pool = MagicMock(side_effect=lambda name: pools[name])
-    app.dependency_overrides[_get_db_manager] = lambda: db_mgr
+    app.dependency_overrides[get_db] = lambda: db_mgr
     return app
 
 
@@ -505,7 +504,7 @@ def _app_with_one_healthy_one_raising_butler(app, *, healthy_rows=None):
     mock_db.butler_names = ["general", "home"]
     mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -645,7 +644,7 @@ def _app_with_one_healthy_one_catalog_probe_failing_butler(app, *, healthy_rows=
     mock_db.butler_names = ["general", "home"]
     mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -779,7 +778,7 @@ async def test_list_approvals_flat_stalled_filter_and_count_are_whole_population
     db_mgr = MagicMock(spec=DatabaseManager)
     db_mgr.butler_names = ["general"]
     db_mgr.pool = MagicMock(return_value=pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db_mgr
+    app.dependency_overrides[get_db] = lambda: db_mgr
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -1089,7 +1088,7 @@ def _rules_app_with_capture(app, *, rows, butler_name="general"):
     mock_db.butler_names = [butler_name]
     mock_db.pool.return_value = mock_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -1179,7 +1178,7 @@ def _rules_app_with_two_butlers(app, *, home_rows=None, general_rows=None):
     mock_db.butler_names = ["home", "general"]
     mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -1365,7 +1364,6 @@ def _make_pending_row(*, tool_name="send_email", status="pending"):
 )
 async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
     """POST /api/approvals/{id}/defer validates 1 ≤ hours ≤ 168."""
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1435,7 +1433,7 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
 
     monkeypatch.setattr(audit_router, "append", fake_append)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     async with httpx.AsyncClient(
@@ -1457,7 +1455,6 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
 
 async def test_defer_expired_pending_action_expires_instead_of_extending(app):
     """POST /api/approvals/{id}/defer cannot revive an expired pending approval."""
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1512,7 +1509,7 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     async with httpx.AsyncClient(
@@ -1532,7 +1529,6 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
 
 async def test_policy_round_trip(app, monkeypatch):
     """GET /api/approvals/policy returns 200; PUT persists and returns updated policy."""
-    from butlers.api.routers.approvals import _get_db_manager
 
     policy_row = {
         "id": 1,
@@ -1582,7 +1578,7 @@ async def test_policy_round_trip(app, monkeypatch):
 
     monkeypatch.setattr(audit_router, "append", fake_append)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     async with httpx.AsyncClient(
@@ -1631,7 +1627,6 @@ async def test_approve_audits_action(app):
     from unittest.mock import patch
 
     import butlers.api.routers.audit as audit_router
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1686,7 +1681,7 @@ async def test_approve_audits_action(app):
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     audit_calls = []
@@ -1731,7 +1726,6 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     from unittest.mock import patch
 
     import butlers.api.routers.audit as audit_router
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1790,7 +1784,7 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     mock_mcp.butler_names = []
     mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
@@ -1830,7 +1824,6 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
 
     import butlers.api.routers.audit as audit_router
     import butlers.modules.approvals.operations as approvals_ops
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1900,7 +1893,7 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
     mock_mcp.butler_names = ["general"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
@@ -1935,7 +1928,6 @@ async def test_deny_audits_action(app):
     from unittest.mock import patch
 
     import butlers.api.routers.audit as audit_router
-    from butlers.api.routers.approvals import _get_db_manager
 
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
@@ -1988,7 +1980,7 @@ async def test_deny_audits_action(app):
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
     audit_calls = []
@@ -2108,7 +2100,7 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
     # its emitted INSERT into the real HTTP read/projection seams. This is not
     # PostgreSQL execution; the migrated producer companion owns that evidence.
     _, conn = _app_with_mock_db(app, fetchval_return=1)
-    pool = app.dependency_overrides[_get_db_manager]().pool("general")
+    pool = app.dependency_overrides[get_db]().pool("general")
     admission = await park_prepared_action(
         pool,
         action_id=row["id"],
@@ -2159,7 +2151,7 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
                     assert item["delivery"] is None
     conn.execute.assert_not_awaited()
     # Spec: REQ-dashboard-visibility-004; qualified dossiers repeat complete unique source lookup.
-    db = app.dependency_overrides[_get_db_manager]()
+    db = app.dependency_overrides[get_db]()
     own_pool = db.pool.return_value
     # _app_with_mock_db's acquisition context owns the existing connection.
     async with own_pool.acquire() as own:
@@ -2502,7 +2494,7 @@ async def test_detail_resolves_target_contact_from_entity_id(app):
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["general"]
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -2599,7 +2591,7 @@ async def test_detail_resolves_referenced_entities_from_tool_args(app):
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["general"]
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
@@ -3267,7 +3259,7 @@ def _rules_app(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["home", "general"]
     mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.core.general_settings import (
     GENERAL_MEASUREMENT_SYSTEM,
@@ -20,11 +21,6 @@ from butlers.core.general_settings import (
 )
 
 router = APIRouter(prefix="/api/settings/general", tags=["general-settings"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 class GeneralSettingsResponse(BaseModel):
@@ -93,7 +89,8 @@ def _shared_pool(db: DatabaseManager):
 
 @router.get("", response_model=ApiResponse[GeneralSettingsResponse])
 async def get_general_settings(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[GeneralSettingsResponse]:
     settings = await load_general_settings(_shared_pool(db))
     return ApiResponse[GeneralSettingsResponse](data=GeneralSettingsResponse(**settings))
@@ -102,7 +99,8 @@ async def get_general_settings(
 @router.put("", response_model=ApiResponse[GeneralSettingsResponse])
 async def update_general_settings(
     body: GeneralSettingsUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[GeneralSettingsResponse]:
     settings = await save_general_settings(
         _shared_pool(db),

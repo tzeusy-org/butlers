@@ -21,9 +21,9 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models.timeline import (
     TimelineAttentionItem,
     TimelineAttentionMeta,
@@ -110,11 +110,6 @@ def _availability(expected: int, healthy: int) -> str:
     if healthy == 0:
         return "unavailable"
     return "partial"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +208,8 @@ async def list_timeline(
     ),
     since: datetime | None = Query(None, description="Inclusive UTC minute interval bound"),
     until: datetime | None = Query(None, description="Exclusive UTC minute interval bound"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineResponse:
     """Return a cursor-paginated cross-butler event stream.
 
@@ -370,7 +366,8 @@ async def timeline_histogram(
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     event_type: list[str] | None = Query(None, description="Filter by event type(s)"),
     trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineHistogramResponse:
     """Return content-blind, server-counted minute density for a bounded interval."""
     validated_since, validated_until = _validate_interval(since, until, required=True)
@@ -454,7 +451,8 @@ async def timeline_histogram(
 async def timeline_attention(
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineAttentionResponse:
     """Return recent records that are currently marked failed.
 

@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers import approvals
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.api.routers import calendar_workspace as workspace
 from butlers.modules.calendar_response import _digest
 
@@ -134,7 +133,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
         yield connection
 
     pool.acquire = acquire_review
-    app.dependency_overrides[approvals._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -162,7 +161,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             final_kind = "healthy"
             assert (await review_client.get(review_url)).status_code == 200
     finally:
-        app.dependency_overrides.pop(approvals._get_db_manager, None)
+        app.dependency_overrides.pop(get_db, None)
     pool.fetchrow = old_reader
     db.fan_out_with_status.return_value = (
         {"messenger": [{"id": entry_id}], "relationship": []},
@@ -194,7 +193,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
     decision.side_effect = decide
     monkeypatch.setattr(workspace, "_call_mcp_tool", call)
     monkeypatch.setattr("butlers.api.routers.approvals.approve_owning_action", decision)
-    app.dependency_overrides[workspace._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp
     try:
         async with httpx.AsyncClient(
@@ -261,7 +260,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             assert payload.get("inverse_claim")
 
     finally:
-        app.dependency_overrides.pop(workspace._get_db_manager, None)
+        app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_mcp_manager, None)
 
 
@@ -314,7 +313,7 @@ async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
     mcp = SimpleNamespace(
         get_client=AsyncMock(side_effect=AssertionError("read must not dispatch"))
     )
-    app.dependency_overrides[workspace._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp
     try:
         async with httpx.AsyncClient(
@@ -367,5 +366,5 @@ async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
             assert (await client.get(url)).status_code == 409
             mcp.get_client.assert_not_awaited()
     finally:
-        app.dependency_overrides.pop(workspace._get_db_manager, None)
+        app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_mcp_manager, None)

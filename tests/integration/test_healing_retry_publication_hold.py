@@ -16,8 +16,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
+from butlers.api.deps import get_db, get_mcp_manager
+from butlers.api.routers.healing import _get_dispatch_fn
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
 from butlers.core.qa.publication.state import (
     begin_operation,
@@ -92,7 +92,7 @@ class _Client:
         db = MagicMock(spec=DatabaseManager)
         db.credential_shared_pool.return_value = pool
         self.app = create_app()
-        self.app.dependency_overrides[_get_db_manager] = lambda: db
+        self.app.dependency_overrides[get_db] = lambda: db
         self.app.dependency_overrides[get_mcp_manager] = lambda: self.mcp
         self.app.dependency_overrides[_get_dispatch_fn] = lambda: self.dispatch
 

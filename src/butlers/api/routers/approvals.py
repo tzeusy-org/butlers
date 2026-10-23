@@ -32,7 +32,7 @@ from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -148,11 +148,6 @@ def emit_approvals_event(
 
 # Cache mapping (butler_name, table_name) -> has_table to avoid repeated system catalog queries
 _TABLE_CACHE: dict[tuple[str, str], bool] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _clear_table_cache():
@@ -870,7 +865,8 @@ async def list_actions(
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
     origin: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination.
 
@@ -999,7 +995,8 @@ async def list_executed_actions(
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List executed actions for audit review.
 
@@ -1102,7 +1099,8 @@ async def list_executed_actions(
 @router.get("/actions/{action_id}")
 async def get_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Get details for a single pending action."""
 
@@ -1145,7 +1143,8 @@ async def get_action(
 async def approve_action(
     action_id: str,
     request: Annotated[ApprovalActionApproveRequest, _optional_body(ApprovalActionApproveRequest)],
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and dispatch it for execution."""
@@ -1454,7 +1453,8 @@ def _raise_retry_dispatch_failure(outcome: _DispatchOutcome) -> None:
 @router.post("/actions/{action_id}/retry")
 async def retry_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved action that was not yet executed."""
@@ -1512,7 +1512,8 @@ async def retry_action(
 async def reject_action(
     action_id: str,
     request: Annotated[ApprovalActionRejectRequest, _optional_body(ApprovalActionRejectRequest)],
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
     try:
@@ -1556,7 +1557,8 @@ async def reject_action(
 
 @router.post("/actions/expire-stale")
 async def expire_stale_actions(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ExpireStaleActionsResponse]:
     """Mark expired actions that are past their expires_at timestamp."""
     target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
@@ -1611,7 +1613,8 @@ async def expire_stale_actions(
 @router.post("/rules")
 async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Create a new standing approval rule in the named butler's schema.
 
@@ -1665,7 +1668,8 @@ async def create_rule(
 @router.post("/rules/from-action")
 async def create_rule_from_action(
     request: ApprovalRuleFromActionRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Create a standing rule from a pending action."""
     try:
@@ -1706,7 +1710,8 @@ async def list_rules(
     tool_name: str | None = Query(default=None),
     active: bool | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalRule]:
     """List standing approval rules with filtering and pagination.
 
@@ -1789,7 +1794,8 @@ async def list_rules(
 
 @router.get("/gated-tools")
 async def list_gated_tools(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalGatedTool]]:
     """List every configured approval gate with its active narrowing rules.
 
@@ -1861,7 +1867,8 @@ async def list_gated_tools(
 @router.get("/rules/{rule_id}")
 async def get_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Get details for a single standing approval rule."""
 
@@ -1894,7 +1901,8 @@ async def get_rule(
 @router.post("/rules/{rule_id}/revoke")
 async def revoke_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Revoke (deactivate) a standing approval rule."""
     try:
@@ -1950,7 +1958,8 @@ async def revoke_rule(
 @router.get("/rules/suggestions/{action_id}")
 async def get_rule_suggestions(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[RuleConstraintSuggestion]:
     """Preview suggested constraints for creating a rule from a pending action."""
 
@@ -1993,7 +2002,8 @@ async def get_rule_suggestions(
 
 @router.get("/metrics")
 async def get_metrics(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalMetrics]:
     """Get aggregate metrics for the approvals dashboard.
 
@@ -2314,7 +2324,8 @@ async def list_approvals_flat(
         default="all", description="waiting|decided|stalled|all"
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Flat list of approvals — GET /api/approvals?state=waiting|decided|stalled|all.
 
@@ -2401,7 +2412,8 @@ async def list_approvals_flat(
 async def list_approvals_history(
     since: str | None = Query(default=None, description="ISO 8601 timestamp"),
     limit: int = Query(default=30, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Decided approvals history — GET /api/approvals/history?since=.
 
@@ -2465,7 +2477,8 @@ async def list_approvals_history(
 
 @router.get("/policy")
 async def get_approvals_policy(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Read the quiet-hours policy singleton — GET /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2494,7 +2507,8 @@ async def get_approvals_policy(
 @router.put("/policy")
 async def update_approvals_policy(
     request: ApprovalsPolicyUpdate = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Update the Owner Attention Policy singleton — PUT /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2540,7 +2554,8 @@ async def update_approvals_policy(
 @router.get("/unroutable", response_model=ApiResponse[list[UnroutableAttentionItem]])
 async def list_unroutable_attention(
     limit: int = Query(default=50, ge=1, le=200),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[UnroutableAttentionItem]]:
     """List replayable dashboard routing failures on the Command surface."""
     pool = _switchboard_pool(db_mgr)
@@ -2577,7 +2592,8 @@ async def list_unroutable_attention(
 )
 async def retry_unroutable_attention(
     dead_letter_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[UnroutableRetryResult]:
     """Re-enqueue one dashboard dead-letter with its existing lineage."""
     try:
@@ -2682,7 +2698,8 @@ async def list_suggestions(
     suggestion_type: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[AutonomySuggestion]:
     """List autonomy suggestions with filtering and pagination.
 
@@ -2749,7 +2766,8 @@ async def list_suggestions(
 @router.post("/suggestions/{suggestion_id}/confirm")
 async def confirm_suggestion(
     suggestion_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Confirm an autonomy suggestion, creating a standing approval rule.
 
@@ -2896,7 +2914,8 @@ async def dismiss_suggestion(
     request: Annotated[
         AutonomySuggestionDismissRequest, _optional_body(AutonomySuggestionDismissRequest)
     ],
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Dismiss an autonomy suggestion with an optional reason and cooldown.
 
@@ -2980,7 +2999,8 @@ async def dismiss_suggestion(
 async def get_approval_detail(
     action_id: str,
     review_source: str | None = None,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalDetail]:
     """Full dossier for one approval — GET /api/approvals/{id}."""
     try:
@@ -3067,7 +3087,8 @@ async def approve_approval(
     action_id: str,
     http_request: Request,
     request: Annotated[ApprovalApproveRequest, _optional_body(ApprovalApproveRequest)],
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
@@ -3324,7 +3345,8 @@ async def deny_approval(
     action_id: str,
     http_request: Request,
     request: Annotated[ApprovalDenyRequest, _optional_body(ApprovalDenyRequest)],
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
@@ -3405,7 +3427,8 @@ async def deny_approval(
 async def defer_approval(
     action_id: str,
     request: ApprovalDeferRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Defer an approval by extending its expiry — POST /api/approvals/{id}/defer {hours: int}.
 
@@ -3494,7 +3517,8 @@ async def defer_approval(
 @router.post("/{action_id}/retry")
 async def retry_approval(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved-but-un-run action — POST /api/approvals/{id}/retry.
@@ -3566,7 +3590,8 @@ async def retry_approval(
 async def abandon_approval(
     action_id: str,
     request: ApprovalAbandonRequest,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Durably abandon one approved, unexecuted action from the dashboard only."""
     try:

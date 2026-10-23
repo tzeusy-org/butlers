@@ -15,10 +15,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError
-from butlers.api.routers.memory import _get_db_manager, router
+from butlers.api.routers.memory import router
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +64,7 @@ def _build(*, unavailable: bool = False):
     app.state.owner_auth_service = SimpleNamespace(authorize=AsyncMock(side_effect=authorize))
     app.add_middleware(OwnerAuthMiddleware, config=CONFIG)
     app.include_router(router)
-    app.dependency_overrides[_get_db_manager] = lambda: _ForbiddenDB()
+    app.dependency_overrides[get_db] = lambda: _ForbiddenDB()
     return app, calls
 
 

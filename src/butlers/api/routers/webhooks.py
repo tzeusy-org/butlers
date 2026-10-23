@@ -52,10 +52,10 @@ import uuid
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.core.crypto import aes_gcm
@@ -83,11 +83,6 @@ _WEBHOOK_PROJECTION = (
     "id, endpoint, events, enabled, secret_prefix, last_test_at, last_test_ok, "
     "retry_policy, created_at, updated_at"
 )
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +430,8 @@ def dispatch_event(
 
 @router.get("", response_model=ApiResponse[list[WebhookRow]])
 async def list_webhooks(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[WebhookRow]]:
     """Return all webhook registrations ordered by created_at DESC."""
     try:
@@ -459,7 +455,8 @@ async def list_webhooks(
 @router.post("", response_model=ApiResponse[WebhookWithSecret], status_code=201)
 async def create_webhook(
     body: WebhookCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookWithSecret]:
     """Create a new webhook registration with a server-generated signing secret.
 
@@ -519,7 +516,8 @@ async def create_webhook(
 @router.get("/{webhook_id}", response_model=ApiResponse[WebhookRow])
 async def get_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookRow]:
     """Return one webhook registration by ID."""
     try:
@@ -548,7 +546,8 @@ async def get_webhook(
 async def update_webhook(
     webhook_id: uuid.UUID,
     body: WebhookUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookWithSecret]:
     """Update one webhook registration (partial update — only supplied fields change).
 
@@ -647,7 +646,8 @@ class WebhookDeleteResponse(BaseModel):
 @router.delete("/{webhook_id}", response_model=ApiResponse[WebhookDeleteResponse])
 async def delete_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookDeleteResponse]:
     """Delete a webhook registration."""
     try:
@@ -685,7 +685,8 @@ async def delete_webhook(
 @router.post("/{webhook_id}/test", response_model=ApiResponse[WebhookTestResult])
 async def test_webhook(
     webhook_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WebhookTestResult]:
     """Synthesize a ``webhook.test`` event and fire it at the registered endpoint.
 

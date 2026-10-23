@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.sessions import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -49,7 +49,7 @@ def _make_app_with_rows(butler_name: str, rows: list[MagicMock]) -> object:
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -59,7 +59,7 @@ def _make_app_missing_butler() -> object:
     mock_db.pool.side_effect = KeyError("No pool for butler: atlas")
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 

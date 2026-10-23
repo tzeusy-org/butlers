@@ -50,12 +50,13 @@ import logging
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db, get_db
 from butlers.api.models import ApiMeta, ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.models.decision import (
     ChooseDecisionPromptRequest,
@@ -90,11 +91,6 @@ _INTENT_SOURCE = "decision_intents"
 _ERROR_STATUS = {"unavailable": 503, "invalid": 422, "conflict": 409}
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _switchboard_pool(db: DatabaseManager) -> asyncpg.Pool:
     try:
         return db.pool("switchboard")
@@ -108,7 +104,7 @@ def _optional_switchboard_pool(request: Request) -> asyncpg.Pool | None:
     ``GET /api/decisions`` predates intents and must keep answering from the
     export alone; an unwired or failing DB degrades only the ``intent`` field.
     """
-    provider = request.app.dependency_overrides.get(_get_db_manager, _get_db_manager)
+    provider = request.app.dependency_overrides.get(get_db, get_db)
     try:
         return provider().pool("switchboard")
     except (RuntimeError, KeyError):
@@ -261,7 +257,8 @@ async def choose_decision_prompt(
     body: ChooseDecisionPromptRequest,
     http_request: Request,
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DecisionIntentSummary]:
     """Record the Telegram one-tap choice at ``option_index`` of a prompt.
 
@@ -305,7 +302,8 @@ router.add_api_route(
 @router.get("/prompts/{prompt_id}", response_model=ApiResponse[DecisionPromptDetail])
 async def get_decision_prompt(
     prompt_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DecisionPromptDetail]:
     """Prompt snapshot the connector verifies a ``dsk1`` callback against."""
     pool = _switchboard_pool(db)
@@ -328,7 +326,8 @@ async def get_decision_prompt(
 async def record_intent(
     bead_id: str,
     body: RecordDecisionIntentRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DecisionIntentSummary]:
     """Record the owner's choice for one open decision. Applied later by the tracker bridge."""
     try:

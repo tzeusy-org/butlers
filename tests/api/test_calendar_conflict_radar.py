@@ -22,8 +22,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     detect_conflict_issues,
@@ -288,7 +287,7 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None, workspace_failed
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db
 

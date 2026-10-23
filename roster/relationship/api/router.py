@@ -26,6 +26,7 @@ from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_mcp_manager,
 )
@@ -165,11 +166,6 @@ async def merge_entity_pair(pool, *, source_entity_id: UUID, target_entity_id: U
     return await merge(
         pool, source_entity_id=source_entity_id, target_entity_id=target_entity_id, **kwargs
     )
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -445,7 +441,8 @@ def _first_ef_value(
 
 @router.get("/owner/setup-status", response_model=OwnerSetupStatus)
 async def get_owner_setup_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OwnerSetupStatus:
     """Return the owner entity id, or ``None`` before an owner exists.
 
@@ -473,7 +470,8 @@ async def get_owner_setup_status(
 
 @router.get("/owner/entity-info", response_model=OwnerEntityInfoResponse)
 async def get_owner_entity_info(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OwnerEntityInfoResponse:
     """Return all entity_info entries for the owner entity.
 
@@ -539,7 +537,8 @@ async def get_owner_entity_info(
 async def list_groups(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupListResponse:
     """List all groups with member counts and assigned labels, paginated."""
     pool = _pool(db)
@@ -612,7 +611,8 @@ async def list_groups(
 @router.get("/groups/{group_id}", response_model=Group)
 async def get_group(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Group:
     """Get a group with its member count."""
     pool = _pool(db)
@@ -674,7 +674,8 @@ async def get_group(
 @router.get("/groups/{group_id}/members", response_model=GroupMembersResponse)
 async def get_group_members(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupMembersResponse:
     """Return the member entities of a group, for the Circles lens roster.
 
@@ -727,7 +728,8 @@ async def get_group_members(
 
 @router.get("/labels", response_model=list[Label])
 async def list_labels(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[Label]:
     """List all labels."""
     pool = _pool(db)
@@ -743,7 +745,8 @@ async def list_labels(
 @router.post("/labels", response_model=CreateLabelResponse, status_code=201)
 async def create_label(
     body: CreateLabelRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CreateLabelResponse:
     """Create a new label (name must be unique)."""
     pool = _pool(db)
@@ -775,7 +778,8 @@ async def create_label(
 @router.get("/groups/{group_id}/labels", response_model=GroupLabelsResponse)
 async def get_group_labels(
     group_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GroupLabelsResponse:
     """List all labels assigned to a group."""
     pool = _pool(db)
@@ -815,7 +819,8 @@ async def get_group_labels(
 async def assign_group_label(
     group_id: UUID,
     label_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AssignGroupLabelResponse:
     """Assign a label to a group (idempotent — safe to call if already assigned)."""
     pool = _pool(db)
@@ -854,7 +859,8 @@ async def assign_group_label(
 async def remove_group_label(
     group_id: UUID,
     label_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RemoveGroupLabelResponse:
     """Remove a label from a group."""
     pool = _pool(db)
@@ -875,7 +881,8 @@ async def remove_group_label(
 @router.get("/upcoming-dates", response_model=list[UpcomingDate])
 async def list_upcoming_dates(
     days: int = Query(30, ge=1, le=365, description="Look-ahead window in days"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[UpcomingDate]:
     """List upcoming important dates within the next N days (default 30).
 
@@ -960,7 +967,8 @@ _SCORE_PREDICATE = 30
 async def search_entities(
     q: str = Query(..., description="Search string (required)"),
     limit: int = Query(_ENTITY_SEARCH_DEFAULT_LIMIT, ge=1, le=_ENTITY_SEARCH_MAX_LIMIT),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SearchResponse:
     """Search entities using deterministic rule-based ranking.
 
@@ -1228,7 +1236,8 @@ async def list_entities(
     ),
     limit: int = Query(_ENTITY_LIST_DEFAULT_LIMIT, ge=1, le=_ENTITY_LIST_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityListResponse:
     """List entities from ``public.entities`` with optional filter chips and pagination.
 
@@ -1522,7 +1531,8 @@ async def list_entities(
 @router.post("/entities", response_model=EntitySummary, status_code=201)
 async def promote_entity(
     body: PromoteEntityRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntitySummary:
     """Promote an unidentified entity placeholder to a canonical entity, or create a new one.
 
@@ -1926,7 +1936,8 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
 async def get_entities_queue(
     limit: int = Query(_QUEUE_DEFAULT_LIMIT, ge=1, le=_QUEUE_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> QueueResponse:
     """Return the curation queue — entities needing operator attention.
 
@@ -2194,7 +2205,8 @@ async def get_entities_queue(
 async def dismiss_queue_entity(
     body: DismissQueueRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DismissQueueResponse:
     """Dismiss a single entity from the curation queue.
 
@@ -2292,7 +2304,8 @@ async def get_entities_concentration(
             "(or ``'knows'`` when no relational data exists)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConcentrationResponse:
     """Return a balance-sheet of weight aggregation for a relational predicate.
 
@@ -2556,7 +2569,8 @@ async def get_entities_concentration(
 @router.get("/entities/{entity_id}", response_model=EntityDetail)
 async def get_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityDetail:
     """Get full entity detail including entity_info entries and state classification.
 
@@ -2646,7 +2660,8 @@ async def get_entity(
 async def create_entity_info(
     entity_id: UUID,
     request: CreateEntityInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CreateEntityInfoResponse:
     """Add an entity_info entry to an entity."""
     if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
@@ -2726,7 +2741,8 @@ async def patch_entity_info(
     entity_id: UUID,
     info_id: UUID,
     request: UpdateEntityInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityInfoEntry:
     """Update an entity_info entry (type, value, label, is_primary)."""
     if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
@@ -2823,7 +2839,8 @@ async def patch_entity_info(
 async def delete_entity_info(
     entity_id: UUID,
     info_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a single entity_info entry."""
     pool = _pool(db)
@@ -2852,7 +2869,8 @@ async def reveal_entity_secret(
     entity_id: UUID,
     info_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured entity_info entry.
 
@@ -2993,7 +3011,8 @@ async def list_entity_notes(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityNote]:
     """List contact_note facts for an entity, ordered by valid_at DESC.
 
@@ -3089,7 +3108,8 @@ def _invalid_input_response(code: str, exc: ValueError) -> HTTPException:
 async def create_entity_note(
     entity_id: UUID,
     body: CreateEntityNoteRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityNote:
     """Record a note for an entity.
 
@@ -3145,7 +3165,8 @@ async def list_entity_interactions(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityInteraction]:
     """List interaction facts for an entity (all interaction_* subtypes), ordered by valid_at DESC.
 
@@ -3208,7 +3229,8 @@ async def list_entity_interactions(
 async def create_entity_interaction(
     entity_id: UUID,
     body: CreateEntityInteractionRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityInteraction:
     """Log an interaction with an entity.
 
@@ -3274,7 +3296,8 @@ async def list_entity_gifts(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityGift]:
     """List gift facts for an entity, ordered by created_at DESC.
 
@@ -3332,7 +3355,8 @@ async def list_entity_gifts(
 async def create_entity_gift(
     entity_id: UUID,
     body: CreateEntityGiftRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityGift:
     """Capture a gift idea for an entity.
 
@@ -3388,7 +3412,8 @@ async def list_entity_loans(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityLoan]:
     """List loan facts for an entity, ordered by created_at DESC.
 
@@ -3471,7 +3496,8 @@ async def list_entity_timeline(
     entity_id: UUID,
     limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityTimelineItem]:
     """Unified timeline for an entity across all six predicate families.
 
@@ -3535,7 +3561,8 @@ async def get_entity_cadence(
     entity_id: UUID,
     window_days: int = Query(_CADENCE_DEFAULT_WINDOW_DAYS, ge=1, le=365),
     limit: int = Query(_CADENCE_DEFAULT_LIMIT, ge=1, le=_CADENCE_MAX_LIMIT),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityCadenceResponse:
     """Return evidence for the interaction count in one rolling window.
 
@@ -3588,7 +3615,8 @@ async def get_entity_cadence(
 @router.get("/entities/{entity_id}/linked-contacts", response_model=list[LinkedContactSummary])
 async def list_entity_linked_contacts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[LinkedContactSummary]:
     """List all contacts whose entity_id matches the given entity UUID.
 
@@ -3776,7 +3804,8 @@ async def list_entity_linked_contacts(
 async def list_entity_message_threads(
     entity_id: UUID,
     limit: int = Query(20, ge=1, le=100),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[MessageThreadSummary]:
     """Aggregate message activity for an entity, grouped by channel + thread.
 
@@ -3914,7 +3943,8 @@ async def list_entity_message_threads(
 )
 async def list_entity_important_dates(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[EntityImportantDate]:
     """Return all important_dates for the entity's linked contacts.
 
@@ -3993,7 +4023,8 @@ async def list_entity_important_dates(
 async def patch_entity_dunbar_tier(
     entity_id: UUID,
     body: DunbarTierOverrideRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DunbarTierOverrideResponse:
     """Pin or clear an entity's Dunbar tier.
 
@@ -4127,7 +4158,8 @@ async def get_plex_halo(
         le=60,
         description="Max satellites returned per entity type arc (top-N by last_seen).",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> HaloResponse:
     """Return the owner Plex's dimension halo: non-person entities by type.
 
@@ -4277,7 +4309,8 @@ async def list_entity_neighbours(
         description="When rank is set, max neighbours returned per predicate group "
         "(top-N by weight). Groups above this carry a remainder count.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NeighboursResponse:
     """Return relational triples grouped by predicate for both directions.
 
@@ -4593,7 +4626,8 @@ def _row_to_contact_fact(r: Any) -> Any:
 )
 async def list_entity_contacts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ContactsResponse:
     """List active contact-fact triples for an entity.
 
@@ -4681,7 +4715,8 @@ async def add_entity_contact(
     entity_id: UUID,
     body: AddContactRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AddContactResponse:
     """Add (or update) a contact-fact triple for an entity.
 
@@ -4805,7 +4840,8 @@ async def delete_entity_contact(
     entity_id: UUID,
     predicate: str,
     value_hash: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeleteContactResponse:
     """Retract (soft-delete) an active contact-fact triple.
 
@@ -4871,7 +4907,8 @@ async def verify_entity_contact(
     entity_id: UUID,
     predicate: str,
     value_hash: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MarkContactVerifiedResponse:
     """Mark an active contact-fact triple as owner-verified.
 
@@ -4944,7 +4981,8 @@ async def update_entity_contact(
     value_hash: str,
     body: UpdateContactRequest,
     fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> UpdateContactResponse:
     """Edit-in-place a contact-fact triple: retract old value, assert new value.
 
@@ -5185,7 +5223,8 @@ async def update_entity_contact(
 async def set_entity_preferred_channel(
     entity_id: UUID,
     body: SetPreferredChannelRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SetPreferredChannelResponse:
     """Set the entity's preferred outbound channel via the ``prefers-channel`` fact.
 
@@ -5232,7 +5271,8 @@ async def set_entity_preferred_channel(
 )
 async def clear_entity_preferred_channel(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ClearPreferredChannelResponse:
     """Clear the entity's preferred channel by retracting any active ``prefers-channel`` fact.
 
@@ -5339,7 +5379,8 @@ async def list_entity_facts(
         None,
         description="Opaque keyset cursor from a prior response's next_cursor.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Page[EntityFactEntry]:
     """Drill endpoint: fact-level read for an entity with full provenance.
 
@@ -5575,7 +5616,8 @@ async def _assert_owner_role(pool) -> JSONResponse | None:
 @router.post("/entities/{entity_id}/archive", status_code=204)
 async def archive_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Soft-archive an entity by setting ``metadata->>'archived' = 'true'``.
 
@@ -5619,7 +5661,8 @@ async def archive_entity(
 @router.delete("/entities/{entity_id}", status_code=204)
 async def forget_entity(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Forget (hard-delete with tombstone) an entity.
 
@@ -5733,7 +5776,8 @@ async def forget_entity(
 @router.get("/contacts/overdue", response_model=OverdueContactsResponse)
 async def get_overdue_contacts(
     days: int | None = Query(None, ge=1),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> OverdueContactsResponse:
     """Return only measurable overdue contacts and honest aggregate availability.
 
@@ -5780,7 +5824,8 @@ async def get_overdue_contacts(
 
 @router.get("/meeting-debriefs/pending", response_model=PendingDebriefsResponse)
 async def get_pending_meeting_debriefs(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PendingDebriefsResponse:
     """Return what ``meeting_debrief_pending`` returns: same items, order and posture filter.
 
@@ -5809,7 +5854,8 @@ async def get_pending_meeting_debriefs(
 
 @router.get("/dunbar/ranking", response_model=DunbarRankingResponse)
 async def get_dunbar_ranking(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DunbarRankingResponse:
     """Return the current Dunbar tier ranking for all listed, entity-linked contacts.
 
@@ -5974,7 +6020,8 @@ async def get_dunbar_ranking(
 async def merge_entities(
     entity_id: UUID,
     body: MergeEntitiesRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MergeEntitiesResponse:
     """Merge two entities into one, rewiring all relationship.entity_facts triples atomically.
 
@@ -6375,7 +6422,8 @@ async def _write_merge_review(
 @router.post("/entities/compare", response_model=CompareResponse)
 async def compare_entities(
     body: CompareRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CompareResponse:
     """Structural diff of two entities — the merge-review compare view.
 
@@ -6426,7 +6474,8 @@ async def compare_entities(
 @router.post("/entities/dismiss-pair", response_model=DismissPairResponse)
 async def dismiss_pair(
     body: DismissPairRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DismissPairResponse:
     """Dismiss a compared pair — writes a ``merge_reviews`` row (outcome=dismissed).
 
@@ -6793,7 +6842,8 @@ async def get_entity_activity(
         description="When true (and bins=daily), return only {bins:[...]} and omit "
         "the merged stream.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> ActivityResponse | ActivityBinsResponse:
     """Return a merged activity stream for the given entity.
@@ -6905,7 +6955,8 @@ async def get_entity_activity(
 @router.post("/entities/{entity_id}/view-mark", response_model=ViewMarkResponse)
 async def mark_entity_view(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ViewMarkResponse | JSONResponse:
     """Upsert the owner's "last viewed" mark for an entity.
 
@@ -6973,7 +7024,8 @@ async def _fetch_narrative_delta_facts(pool, entity_id: UUID, marked_at: datetim
 @router.get("/entities/{entity_id}/delta-facts", response_model=DeltaFactsResponse)
 async def get_entity_delta_facts(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeltaFactsResponse | JSONResponse:
     """Return facts changed since the entity's view mark (delta-since-last-visit).
 
@@ -7156,7 +7208,8 @@ def _next_occurrence(month: int, day: int, today: date) -> date | None:
 @router.get("/entities/{entity_id}/core-dates", response_model=CoreDatesResponse)
 async def get_entity_core_dates(
     entity_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CoreDatesResponse | JSONResponse:
     """Return the entity's date-kind facts with their next occurrence.
 
@@ -7245,7 +7298,7 @@ async def get_entity_core_dates(
 
 
 @router.get("/entities/{entity_id}/identity-candidates")
-async def list_identity_candidates(entity_id: UUID, db: DatabaseManager = Depends(_get_db_manager)):
+async def list_identity_candidates(entity_id: UUID, *, db: Db):
     """Protected review surface, never used for reachability or delivery."""
     from butlers.core.fact_authority import current_fact_write_context
     from butlers.tools.relationship.fact_identity_decisions import (
@@ -7275,7 +7328,8 @@ async def owner_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,
     decision: Literal["adopt", "reject"],
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ):
     """Admit the exact owner action and commit all domain effects or none."""
     from butlers.tools.relationship.fact_identity_decisions import (
@@ -7315,7 +7369,8 @@ async def owner_identity_fact_decision(
 async def read_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ):
     """Read an exact committed receipt under fresh request admission; never resend."""
     from butlers.core.fact_authority import current_fact_write_context

@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.pagination import encode_cursor
 
 pytestmark = pytest.mark.unit
@@ -36,7 +37,7 @@ def _get_db_dep():
         module = importlib.util.module_from_spec(spec)
         sys.modules[_MODULE_NAME] = module
         spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+    return get_db
 
 
 def _make_row(data: dict):

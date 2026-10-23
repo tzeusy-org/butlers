@@ -46,6 +46,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -216,9 +217,8 @@ def _wire_app(mock_pool: AsyncMock) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()
-    router_module = _relationship_router_module(app)
-    if hasattr(router_module, "_get_db_manager"):
-        app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    _relationship_router_module(app)
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
