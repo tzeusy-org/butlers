@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
+import pytest_asyncio
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine
@@ -52,7 +53,7 @@ async def runtime_pool(url, domain):
         yield pool
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def fleet(publication_url):
     async with asyncpg.create_pool(
         publication_url, init=register_jsonb_codec, min_size=1, max_size=2
@@ -178,6 +179,29 @@ async def test_real_replacement_concurrency_retirement_and_stale_refusal(publica
             live_second = await second.resolve(connection)
         assert live_first != live_second
         stale, current = (second, first) if live_first else (first, second)
+        # Exercise a same-boot next revision as a real UPDATE, after the two
+        # fresh boots have already exercised replacement of an existing row.
+        before = await fleet.fetchrow(
+            "SELECT epoch,created_at FROM public.capability_catalog_current WHERE domain='health'"
+        )
+        history_count = await fleet.fetchval(
+            "SELECT count(*) FROM public.capability_catalog_history WHERE domain='health'"
+        )
+        previous_revision = current.revision
+        await current.publish(catalog)
+        after = await fleet.fetchrow(
+            "SELECT epoch,created_at,revision_id FROM public.capability_catalog_current "
+            "WHERE domain='health'"
+        )
+        assert after["epoch"] == before["epoch"] + 1
+        assert after["created_at"] == before["created_at"]
+        assert after["revision_id"] == current.revision != previous_revision
+        assert (
+            await fleet.fetchval(
+                "SELECT count(*) FROM public.capability_catalog_history WHERE domain='health'"
+            )
+            == history_count + 1
+        )
         await stale.retire()
         with pytest.raises(EvidenceRefused):
             await stale.renew()

@@ -192,13 +192,21 @@ def upgrade() -> None:
             INSERT INTO public.capability_catalog_history
                 (domain,epoch,instance_id,revision_id,body,body_digest,authorization_digest)
             VALUES(p_domain,next_epoch,p_instance,p_revision,p_body,p_digest,p_authorization);
-            INSERT INTO public.capability_catalog_current
-                (domain,epoch,instance_id,revision_id,active,expires_at)
-            VALUES(p_domain,next_epoch,p_instance,p_revision,true,
-                   clock_timestamp()+make_interval(secs=>p_lease))
-            ON CONFLICT(domain) DO UPDATE SET epoch=EXCLUDED.epoch,
-                instance_id=EXCLUDED.instance_id,revision_id=EXCLUDED.revision_id,
-                active=true,expires_at=EXCLUDED.expires_at,updated_at=clock_timestamp();
+            -- BEFORE INSERT enforces epoch one before conflict resolution.
+            -- The serializer and locked prior row make these separate writes
+            -- safe while preserving the distinct INSERT and UPDATE guards.
+            IF prior.domain IS NULL THEN
+                INSERT INTO public.capability_catalog_current
+                    (domain,epoch,instance_id,revision_id,active,expires_at)
+                VALUES(p_domain,next_epoch,p_instance,p_revision,true,
+                       clock_timestamp()+make_interval(secs=>p_lease));
+            ELSE
+                UPDATE public.capability_catalog_current
+                    SET epoch=next_epoch,instance_id=p_instance,revision_id=p_revision,
+                        active=true,expires_at=clock_timestamp()+make_interval(secs=>p_lease),
+                        updated_at=clock_timestamp()
+                    WHERE domain=p_domain;
+            END IF;
         END $$;
         CREATE OR REPLACE FUNCTION public.renew_capability_catalog(
             p_domain TEXT,p_instance UUID,p_revision UUID,p_lease INTEGER
