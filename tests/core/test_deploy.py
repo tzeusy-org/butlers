@@ -1138,7 +1138,14 @@ def test_key_absent_control_workload_and_session_network_contract():
     assert render("dev", "--set", "butlersUp.maxGlobalSessions=1").returncode != 0
     for invalid in ("0", "-1", "4.5", "invalid"):
         assert render("dev", "--set", f"butlersUp.maxGlobalSessions={invalid}").returncode != 0
-    prod = render("prod")
+    prod = render("prod", "--set", "butlersControl.enabled=false")
     assert prod.returncode == 0, prod.stderr
     prod_docs = [doc for doc in yaml.safe_load_all(prod.stdout) if doc]
     assert not any(doc["metadata"]["name"] == "butlers-control" for doc in prod_docs)
+    prod_domains = next(
+        doc
+        for doc in prod_docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "butlers-up"
+    )
+    prod_container = prod_domains["spec"]["template"]["spec"]["containers"][0]
+    assert "SWITCHBOARD_MCP_URL" not in {item["name"] for item in prod_container["env"]}
