@@ -647,6 +647,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry",
+    ): "sanctioned:REQ-infrastructure-reliability-002: Dashboard-owned deterministic deadman reads its existing Switchboard pool's registry names/TTLs to require complete fleet coverage; no other domain or write authority",
+    (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned:REQ-infrastructure-reliability-002: same Dashboard controller reads receiver boot/policy/readiness facts through its existing Switchboard pool; missing facts refuse, no new role/grant or domain reach",
+    (
         "src/butlers/core/control_plane_identity.py",
         "switchboard.butler_registry",
     ): "burn-down: existing switchboard.butler_registry coupling; route through owning service or make local schema authority explicit",
