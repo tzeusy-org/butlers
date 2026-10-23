@@ -683,6 +683,11 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         action = PendingAction.from_row(row)
+        if action.goal_lineage() is not None:
+            # A stored owner decision does not authorize a new goal dispatch.
+            # The broker replay producer must re-check Stop and commit both
+            # dispatch witnesses; ordinary retry must not call the tool first.
+            return {"error": "Goal approvals require authenticated broker replay"}
         # Executed actions are pure replays. Do this before checking for an
         # executor so a restarted daemon can still return the persisted result
         # without ever re-running an irreversible tool such as entity merge.

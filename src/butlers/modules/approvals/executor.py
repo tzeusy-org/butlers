@@ -213,12 +213,28 @@ async def execute_approved_action(
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
                     "SELECT status, execution_result, session_id, decided_by, origin, "
-                    "tool_name, tool_args "
+                    "tool_name, tool_args, "
+                    "to_jsonb(pending_actions)->>'goal_id' AS goal_id, "
+                    "to_jsonb(pending_actions)->>'goal_origin' AS goal_origin "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
                 if existing_row is None:
                     return ExecutionResult(success=False, error=f"Action not found: {action_id}")
+
+                # The ordinary executor holds its row lock across the tool. A
+                # goal call instead needs central Stop serialization and an
+                # owning dispatch witness before that lock is released. Never
+                # let a stored owner approval substitute for that protocol.
+                # JSON projection keeps ordinary pre-lineage schemas usable;
+                # it reads the actual locked tuple, not caller metadata.
+                if existing_row.get("goal_id") is not None or existing_row.get(
+                    "goal_origin"
+                ) not in (None, "legacy"):
+                    return ExecutionResult(
+                        success=False,
+                        error="Goal approvals require authenticated broker replay",
+                    )
 
                 existing_status = existing_row["status"]
                 if existing_status == ActionStatus.EXECUTED.value:

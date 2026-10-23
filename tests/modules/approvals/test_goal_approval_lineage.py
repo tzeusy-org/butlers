@@ -423,3 +423,60 @@ async def test_event_refusal_rolls_back_action_delivery_and_membership_together(
         await cancel(store)
     assert (store.row, store.presentations, store.eligible) == before
     assert store.events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["module", "executor"])
+async def test_goal_approval_never_falls_through_ordinary_effect_executor(entry):
+    """An owner decision is not central stopped-goal/dispatch authorization."""
+    from butlers.modules.approvals.executor import execute_approved_action
+
+    effect = uuid4()
+    row = action_row(
+        id=effect,
+        goal_effect_id=effect,
+        status="approved",
+        goal_approved_args_digest=arguments_digest({"message": "controlled"}),
+        decided_by="controlled-owner",
+    )
+
+    class DispatchStore(DeliveryStore):
+        async def fetchrow(self, sql, *args):
+            if "FROM pending_actions WHERE id = $1" in sql:
+                assert args == (effect,)
+                return copy.deepcopy(self.row)
+            return await super().fetchrow(sql, *args)
+
+        async def execute(self, sql, *args):
+            if sql.startswith("UPDATE pending_actions SET status"):
+                self.row.update(status=args[0], execution_result=args[1])
+                return "UPDATE 1"
+            return await super().execute(sql, *args)
+
+    store = DispatchStore(row)
+    calls = []
+
+    async def tool(**arguments):
+        calls.append(arguments)
+        return {"sent": True}
+
+    before = copy.deepcopy(store.row)
+    if entry == "module":
+        module = ApprovalsModule()
+        module._db = store
+
+        async def dispatch(name, arguments):
+            assert name == row["tool_name"]
+            return await tool(**arguments)
+
+        module.set_tool_executor(dispatch)
+        outcome = await module._dispatch_approved_action_by_id(str(effect))
+        error = outcome.get("error", "")
+    else:
+        outcome = await execute_approved_action(
+            store, effect, row["tool_name"], row["tool_args"], tool
+        )
+        error = outcome.error or ""
+    assert calls == [], "Goal approval bypassed central Stop and dispatch authorization"
+    assert "goal" in error.lower() and "replay" in error.lower()
+    assert store.row == before and store.events == []
