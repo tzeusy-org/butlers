@@ -334,11 +334,38 @@ def test_make_lint_is_the_ci_lint_step_and_runs_every_standard_tool() -> None:
         assert target in recipe.group(1)
 
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
-    steps = [step.get("name") for step in workflow["jobs"]["guards"]["steps"]]
-    lint = next(s for s in workflow["jobs"]["guards"]["steps"] if s.get("name") == "Lint")
+    guard_steps = workflow["jobs"]["guards"]["steps"]
+    steps = [step.get("name") for step in guard_steps]
+    lint = next(s for s in guard_steps if s.get("name") == "Lint")
     assert lint["run"] == "make lint"
-    assert steps.index("Install dependencies") < steps.index("Install lint tools")
+    # Python repair now belongs to the composite. The later frontend npm ci step
+    # also has the name "Install dependencies", so bind setup by its actual action.
+    setups = [
+        index
+        for index, step in enumerate(guard_steps)
+        if step.get("uses") == "./.github/actions/ci-python-environment"
+    ]
+    assert len(setups) == 1
+    setup = guard_steps[setups[0]]
+    assert "if" not in setup
+    assert setup.get("continue-on-error", False) is False
+    assert setups[0] < steps.index("Install lint tools")
     assert steps.index("Install lint tools") < steps.index("Lint")
+
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+    )
+    assert action["runs"]["using"] == "composite"
+    repairs = [
+        step
+        for step in action["runs"]["steps"]
+        if step.get("run") == "python3 scripts/ci_environment.py prepare"
+    ]
+    assert len(repairs) == 1
+    repair = repairs[0]
+    assert repair["shell"] == "bash"
+    assert "if" not in repair
+    assert repair.get("continue-on-error", False) is False
 
 
 def test_every_secret_allowance_is_rule_scoped_to_exact_paths(
