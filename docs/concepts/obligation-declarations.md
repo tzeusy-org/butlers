@@ -591,3 +591,28 @@ entrypoints, not a switch of Insight synthesis into the goal runner: selected
 candidate input binding, genuine D7 source/cause transport, and the separately
 owned runner remain required before that cutover. The deterministic delivery
 pipeline and its existing model fallback continue unchanged in dark mode.
+
+### Migration caller and test-observer boundaries
+
+`core_274` anchors its five owning tables and three immutable-trigger functions
+to the existing, qualified `scheduled_tasks` migration owner. A managed-bootstrap
+re-upgrade therefore preserves the ordinary migration identity rather than making
+its caller the permanent owner. It explicitly converges the same own-schema and
+public runtime table privileges as bootstrap, regardless of creator default ACLs.
+It adds no runtime role membership, TEMP permission or statistics-reading grant.
+The existing ordinary-login migration round-trip schema oracle remains unchanged;
+a separate real-Postgres control checks owner identities, individual effective
+privileges and ordinary metadata from a fresh connection after re-creation.
+
+The shadow-table attack uses fixture administration to create the shadow, then
+switches that same transaction to the real owning runtime before the relation
+check. The concurrent claim control uses a separate authorized fixture observer
+for the exact blocked and blocking backend PIDs; both claim actors retain their
+runtime role. These are test setup and observation privileges, not production
+source or creator authority. Corrected PostgreSQL bodies require hosted execution.
+
+The scheduler also passes its one evaluation date to both deadline date helpers.
+Threshold selection and durable expiry therefore use the same injected instant,
+including at midnight. Existing direct helper callers that omit `as_of` retain
+their current-UTC-date behavior; neither clock exemptions nor test-only result
+substitution are needed.

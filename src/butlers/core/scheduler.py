@@ -1364,6 +1364,7 @@ async def _tick_deadline_pass(
         new_status, should_disable = compute_expiry_transition(
             current_status=current_status,
             target_date=target_date,
+            as_of=now.date(),
         )
         if should_disable:
             if source_runtime is not None and source_runtime.supports(row):
@@ -1397,7 +1398,7 @@ async def _tick_deadline_pass(
                 continue
 
         # Step 3: compute days remaining and look for unfired threshold
-        days_remaining = compute_days_remaining(target_date=target_date)
+        days_remaining = compute_days_remaining(target_date=target_date, as_of=now.date())
         threshold = find_unfired_threshold(
             days_remaining=days_remaining,
             alert_thresholds=alert_thresholds,

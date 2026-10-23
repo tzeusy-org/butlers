@@ -615,7 +615,7 @@ async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_
         )
         # batch_name is composed solely from the generated UUID of this test map.
         await owner.execute(
-            f"CREATE TRIGGER {trigger} BEFORE UPDATE ON education.scheduled_tasks "
+            f"CREATE TRIGGER {trigger} BEFORE UPDATE ON public.scheduled_tasks "
             f"FOR EACH ROW EXECUTE FUNCTION education.{function}('{batch_name}')"
         )
         with pytest.raises(asyncpg.CheckViolationError, match="controlled_review_batch_refusal"):
@@ -639,7 +639,7 @@ async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_
             assert {row["name"] for row in names} == {*old_names, batch_name}
     finally:
         try:
-            await owner.execute(f"DROP TRIGGER IF EXISTS {trigger} ON education.scheduled_tasks")
+            await owner.execute(f"DROP TRIGGER IF EXISTS {trigger} ON public.scheduled_tasks")
             await owner.execute(f"DROP FUNCTION IF EXISTS education.{function}()")
         finally:
             await owner.close(timeout=5)

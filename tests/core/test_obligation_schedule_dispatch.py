@@ -16,6 +16,8 @@ from tests.core.test_obligation_schedule_sources import RecordingConnection, Rec
 
 pytestmark = pytest.mark.unit
 
+NOW = datetime(2026, 6, 15, 12, tzinfo=UTC)
+
 
 class OccurrenceConnection(RecordingConnection):
     """Rollback-aware SQL collaborator, never locking/durability evidence."""
@@ -161,9 +163,7 @@ async def runtime_fixture(tmp_path, *, deadline=False, target=None):
         )
         text = text.replace(
             "[butler.schedule.obligation]",
-            'task_type="deadline"\ntarget_date="'
-            + (target or datetime.now(UTC).date()).isoformat()
-            + '"\n'
+            'task_type="deadline"\ntarget_date="' + (target or NOW.date()).isoformat() + '"\n'
             'lead_time_days=7\nalert_thresholds=[{days_before=0,severity="info"}]\n'
             "[butler.schedule.obligation]",
         )
@@ -201,7 +201,7 @@ async def runtime_fixture(tmp_path, *, deadline=False, target=None):
     (source,) = pool.connection.rows
     row = pool.connection.rows[source]
     row.update(
-        next_run_at=datetime.now(UTC) - timedelta(minutes=1),
+        next_run_at=NOW - timedelta(minutes=1),
         fired_thresholds=[],
         deadline_status="pending",
         depends_on=[],
@@ -260,19 +260,24 @@ async def test_deadline_failed_dispatch_stays_unfired_then_commits_same_threshol
     pool.execute = pool.connection.execute
     row = pool.connection.rows[source]
     failed = AsyncMock(side_effect=RuntimeError("closed dispatch fault"))
-    assert await _tick_deadline_pass(
-        pool, failed, now=datetime.now(UTC), source_runtime=runtime
-    ) == (1, 0)
+    assert await _tick_deadline_pass(pool, failed, now=NOW, source_runtime=runtime) == (1, 0)
     assert row["fired_thresholds"] == [] and pool.connection.occurrences == {}
     successful = AsyncMock(return_value={"status": "ok"})
-    assert await _tick_deadline_pass(
-        pool, successful, now=datetime.now(UTC), source_runtime=runtime
-    ) == (1, 1)
+    assert await _tick_deadline_pass(pool, successful, now=NOW, source_runtime=runtime) == (1, 1)
     assert row["fired_thresholds"] == row["alert_thresholds"]
     assert len(pool.connection.occurrences) == 1 and pool.connection.depth == 0
+    assert await _tick_deadline_pass(pool, successful, now=NOW, source_runtime=runtime) == (1, 0)
+    assert successful.await_count == 1
+    # The same pass clock governs threshold evaluation and durable expiry, even
+    # across midnight; these calls use the real temporal helpers without patches.
     assert await _tick_deadline_pass(
-        pool, successful, now=datetime.now(UTC), source_runtime=runtime
+        pool, successful, now=NOW.replace(hour=23, minute=59), source_runtime=runtime
     ) == (1, 0)
+    assert row["enabled"] and row["deadline_status"] != "expired"
+    assert await _tick_deadline_pass(
+        pool, successful, now=NOW.replace(hour=0) + timedelta(days=1), source_runtime=runtime
+    ) == (1, 0)
+    assert row["enabled"] is False and row["deadline_status"] == "expired"
     assert successful.await_count == 1
 
 
@@ -349,7 +354,7 @@ async def test_deadline_expiry_cancels_prior_claimed_occurrence_in_same_transact
     from butlers.core.scheduler import _tick_deadline_pass
 
     pool, runtime, source = await runtime_fixture(
-        tmp_path, deadline=True, target=datetime.now(UTC).date() - timedelta(days=1)
+        tmp_path, deadline=True, target=NOW.date() - timedelta(days=1)
     )
     pool.fetch = pool.connection.fetch
     pool.fetchval = pool.connection.fetchval
@@ -363,9 +368,7 @@ async def test_deadline_expiry_cancels_prior_claimed_occurrence_in_same_transact
         "claim_token": uuid4(),
     }
     dispatch = AsyncMock()
-    assert await _tick_deadline_pass(
-        pool, dispatch, now=datetime.now(UTC), source_runtime=runtime
-    ) == (1, 0)
+    assert await _tick_deadline_pass(pool, dispatch, now=NOW, source_runtime=runtime) == (1, 0)
     dispatch.assert_not_awaited()
     assert pool.connection.rows[source]["enabled"] is False
     assert pool.connection.rows[source]["deadline_status"] == "expired"
@@ -517,7 +520,7 @@ async def test_committed_source_payload_is_read_back_from_registered_owning_mate
             threshold=threshold,
             status="alerted",
             fired=[threshold],
-            run_at=datetime.now(UTC),
+            run_at=NOW,
         )
     else:
         claim = await runtime.claim_cron(
@@ -694,7 +697,7 @@ async def test_actual_insight_job_registration_stages_nominal_model_obligation(
     runtime = await start_schedule_sources(pool, snapshot, mode="dark")
     source = next(key for key, row in pool.connection.rows.items() if row["job_name"] == job_name)
     row = pool.connection.rows[source]
-    nominal = datetime.now(UTC) - timedelta(minutes=1)
+    nominal = NOW - timedelta(minutes=1)
     row.update(next_run_at=nominal, fired_thresholds=[], deadline_status="pending", depends_on=[])
     pool.fetch = pool.connection.fetch
     pool.fetchval = pool.connection.fetchval

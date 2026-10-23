@@ -164,6 +164,48 @@ def upgrade() -> None:
         ON obligation_occurrences FOR EACH ROW EXECUTE FUNCTION obligation_occurrence_guard()
     """)
 
+    # A managed bootstrap re-upgrade has a different caller from ordinary Alembic.
+    # Keep these owning objects with the existing baseline migration owner and
+    # explicitly replay the same runtime ACLs, independent of creator defaults.
+    op.execute("""
+        DO $$ DECLARE
+            owner_name name;
+            domain text;
+            role_name text;
+            table_name text;
+            function_name text;
+            own_schema text := current_schema();
+            domains text[] := ARRAY['chronicler','concierge','education','finance','general',
+                'health','home','lifestyle','messenger','qa','relationship','switchboard','travel'];
+        BEGIN
+            SELECT pg_get_userbyid(c.relowner) INTO STRICT owner_name
+              FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+             WHERE n.nspname=own_schema AND c.relname='scheduled_tasks' AND c.relkind='r';
+            FOREACH table_name IN ARRAY ARRAY['obligation_definitions','obligation_revisions',
+                'obligation_source_commands','obligation_occurrences','obligation_source_outbox']
+            LOOP
+                EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',own_schema,table_name,owner_name);
+                FOREACH domain IN ARRAY domains LOOP
+                    role_name := 'butler_' || domain || '_rw';
+                    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+                        IF own_schema=domain THEN
+                            EXECUTE format('GRANT SELECT,INSERT,UPDATE,DELETE,TRIGGER,REFERENCES '
+                                'ON TABLE %I.%I TO %I',own_schema,table_name,role_name);
+                        ELSIF own_schema='public' THEN
+                            EXECUTE format('GRANT SELECT,INSERT,UPDATE,DELETE '
+                                'ON TABLE %I.%I TO %I',own_schema,table_name,role_name);
+                        END IF;
+                    END IF;
+                END LOOP;
+            END LOOP;
+            FOREACH function_name IN ARRAY ARRAY['obligation_evidence_immutable',
+                'obligation_definition_guard','obligation_occurrence_guard'] LOOP
+                EXECUTE format('ALTER FUNCTION %I.%I() OWNER TO %I',
+                    own_schema,function_name,owner_name);
+            END LOOP;
+        END $$
+    """)
+
 
 def downgrade() -> None:
     op.execute("""

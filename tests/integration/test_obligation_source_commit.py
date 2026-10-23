@@ -56,9 +56,11 @@ def test_material_revision_binds_creation_and_refuses_widening():
 async def owning_sources(postgres_container):
     """Actual core-only migration/bootstrap and production per-schema roles."""
     import asyncio
+    from contextlib import asynccontextmanager
     from types import SimpleNamespace
     from urllib.parse import urlparse
 
+    import asyncpg
     import psycopg2
 
     from butlers.db import Database
@@ -94,6 +96,20 @@ async def owning_sources(postgres_container):
                 cursor.execute(init_db_sql_for_dbapi())
 
     await asyncio.to_thread(bootstrap_again)
+
+    @asynccontextmanager
+    async def administrator():
+        # Separate disposable-fixture authority, never a runtime role grant.
+        from butlers.db import register_jsonb_codec
+
+        url = urlparse(migration_bootstrap_db_url(postgres_container, name))
+        connection = await asyncpg.connect(url._replace(scheme="postgresql").geturl(), timeout=5)
+        try:
+            await register_jsonb_codec(connection)
+            yield connection
+        finally:
+            await connection.close(timeout=5)
+
     databases = {}
     try:
         for owner in ("health", "general", "switchboard"):
@@ -115,6 +131,7 @@ async def owning_sources(postgres_container):
             pool=databases["health"].pool,
             peer=databases["general"].pool,
             switchboard=databases["switchboard"].pool,
+            administrator=administrator,
         )
     finally:
         for db in databases.values():
@@ -575,6 +592,8 @@ async def test_migrated_schedule_revision_race_cancel_and_role_shadow_refusals(o
     import asyncio
     from uuid import uuid4
 
+    import asyncpg
+
     from butlers.core.obligation_admission import run_source_transaction
     from butlers.core.obligation_schedule_sources import stage_git_schedule_definition
     from butlers.core.obligation_sources import ObligationSourceRepository, SourceConflict
@@ -643,7 +662,15 @@ async def test_migrated_schedule_revision_race_cancel_and_role_shadow_refusals(o
             "SELECT state FROM health.obligation_occurrences WHERE id=ANY($1::uuid[])", occurrences
         )
         assert len(states) == 2 and all(row["state"] == "cancelled" for row in states)
+        # The runtime must not acquire TEMP authority just to construct this attack.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with conn.transaction():
+                await conn.execute("CREATE TEMP TABLE scheduled_tasks (id uuid) ON COMMIT DROP")
+    async with owning_sources.administrator() as conn, conn.transaction():
         await conn.execute("CREATE TEMP TABLE scheduled_tasks (id uuid) ON COMMIT DROP")
+        await conn.execute("SET LOCAL ROLE butler_health_rw")
+        await conn.execute("SET LOCAL search_path TO health,public")
+        assert await conn.fetchval("SELECT current_user") == "butler_health_rw"
         with pytest.raises(SourceConflict, match="owning_schedule_relation_required"):
             await stage_git_schedule_definition(
                 ObligationSourceRepository(conn, "health"),
@@ -908,41 +935,44 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
 
     monkeypatch.setattr(GitScheduleRuntime, "_capture", gated_capture)
     next_slot = nominal + timedelta(days=1)
-    actors = []
-    try:
-        actors.append(
-            asyncio.create_task(
-                runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+    async with owning_sources.administrator() as monitor:
+        actors = []
+        try:
+            actors.append(
+                asyncio.create_task(
+                    runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+                )
             )
-        )
-        await asyncio.wait_for(entered.wait(), 10)
-        actors.append(
-            asyncio.create_task(
-                runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+            await asyncio.wait_for(entered.wait(), 10)
+            actors.append(
+                asyncio.create_task(
+                    runtime.claim_cron(ActorPool(), selected, next_run_at=next_slot, disable=False)
+                )
             )
-        )
-        await asyncio.wait_for(second_acquired.wait(), 10)
-        assert actor_pids[0] != actor_pids[1]
-        async with pool.acquire() as observer:
+            await asyncio.wait_for(second_acquired.wait(), 10)
+            assert actor_pids[0] != actor_pids[1]
+            assert len(actor_pids) == 2
             async with asyncio.timeout(10):
-                while not await observer.fetchval(
+                while not await monitor.fetchval(
                     "SELECT wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%' "
-                    "FROM pg_stat_activity WHERE pid=$1",
+                    "AND $2=ANY(pg_blocking_pids(pid)) "
+                    "FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()",
                     actor_pids[1],
+                    actor_pids[0],
                 ):
                     await asyncio.sleep(0.01)
-        release.set()
-        first, second = await asyncio.wait_for(asyncio.gather(*actors), 10)
-        assert first.submission is not None and second is None
-        assert first.submission.obligation.created_exposed is False
-        assert first.submission.obligation.digest == first.submission.definition.revision
-    finally:
-        release.set()
-        for actor in actors:
-            if not actor.done():
-                actor.cancel()
-        await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 10)
-        monkeypatch.setattr(GitScheduleRuntime, "_capture", capture)
+            release.set()
+            first, second = await asyncio.wait_for(asyncio.gather(*actors), 10)
+            assert first.submission is not None and second is None
+            assert first.submission.obligation.created_exposed is False
+            assert first.submission.obligation.digest == first.submission.definition.revision
+        finally:
+            release.set()
+            for actor in actors:
+                if not actor.done():
+                    actor.cancel()
+            await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 10)
+            monkeypatch.setattr(GitScheduleRuntime, "_capture", capture)
     async with pool.acquire() as observer:
         actual = await observer.fetchrow(
             "SELECT source_key,claim_token FROM obligation_occurrences WHERE id=$1",
@@ -1113,3 +1143,97 @@ async def test_actual_insight_model_job_commits_source_and_closed_payload(owning
             )
             == 1
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_creator_acl_converges_after_bootstrap_round_trip(postgres_container):
+    """Real ordinary-login metadata and ACLs survive a different DDL creator."""
+    import asyncio
+    from urllib.parse import urlparse
+
+    import asyncpg
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.testing.migration import (
+        create_migration_db,
+        migration_bootstrap_db_url,
+        migration_db_name,
+    )
+
+    name = migration_db_name()
+    ordinary_url = await asyncio.to_thread(create_migration_db, postgres_container, name)
+    await run_migrations(ordinary_url, chain="core")
+    tables = [
+        "obligation_definitions",
+        "obligation_revisions",
+        "obligation_source_commands",
+        "obligation_occurrences",
+        "obligation_source_outbox",
+    ]
+    functions = [
+        "obligation_evidence_immutable",
+        "obligation_definition_guard",
+        "obligation_occurrence_guard",
+    ]
+
+    async def ordinary_metadata():
+        connection = await asyncpg.connect(ordinary_url, timeout=5)
+        try:
+            assert (
+                await connection.fetchval("SELECT current_user") == urlparse(ordinary_url).username
+            )
+            anchor = await connection.fetchval(
+                "SELECT relowner FROM pg_class WHERE oid='public.scheduled_tasks'::regclass"
+            )
+            owners = await connection.fetch(
+                "SELECT relname,relowner FROM pg_class c JOIN pg_namespace n "
+                "ON n.oid=c.relnamespace WHERE n.nspname='public' AND relname=ANY($1::text[])",
+                tables,
+            )
+            assert len(owners) == 5 and all(row["relowner"] == anchor for row in owners)
+            function_owners = await connection.fetch(
+                "SELECT proowner FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname='public' AND proname=ANY($1::text[])",
+                functions,
+            )
+            assert len(function_owners) == 3 and all(
+                row["proowner"] == anchor for row in function_owners
+            )
+            # Separate effective permission checks: a comma-list would mean ANY.
+            for role in ("butler_health_rw", "butler_general_rw", "butler_switchboard_rw"):
+                for table in tables:
+                    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                        assert await connection.fetchval(
+                            "SELECT has_table_privilege($1,$2,$3)",
+                            role,
+                            "public." + table,
+                            privilege,
+                        )
+            columns = await connection.fetch(
+                "SELECT table_name,column_name,data_type,is_nullable FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=ANY($1::text[]) "
+                "ORDER BY table_name,ordinal_position",
+                tables,
+            )
+            assert {row["table_name"] for row in columns} == set(tables)
+            assert not await connection.fetchval(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user"
+            )
+            return [tuple(row) for row in columns]
+        finally:
+            await connection.close(timeout=5)
+
+    before = await ordinary_metadata()
+    bootstrap = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, name), chains=["core"]
+    )
+
+    def round_trip():
+        command.downgrade(bootstrap, "core@-1")
+        command.upgrade(bootstrap, "core@head")
+
+    await asyncio.to_thread(round_trip)
+    # A NEW ordinary connection observes the committed privileged re-creation.
+    assert await ordinary_metadata() == before
