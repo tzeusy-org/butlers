@@ -364,7 +364,7 @@ only from `action`, `target`, and `failure_category`, and SHALL NOT be derived
 from the row's `error`, `note`, or `metadata` at read time.
 
 `failure_category` SHALL hold only a member of
-`butlers.api.models.audit.PROBE_FAILURE_VOCABULARY` — `not_set`, `expired`,
+`butlers.core.audit.PROBE_FAILURE_VOCABULARY` — `not_set`, `expired`,
 `rejected`, `rate_limited`, `provider_error`, `malformed`, `unverified`,
 `other` — or `NULL`. It SHALL NEVER hold a raw probe-status token, a provider
 HTTP status code, a provider string, or any audit free text. The value is
