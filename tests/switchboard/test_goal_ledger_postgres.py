@@ -17,6 +17,7 @@ from butlers.core.goal_admission import (
     Obligation,
     SourceRef,
 )
+from tests.polling import poll_until
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     admit,
@@ -85,17 +86,20 @@ async def test_attempt_and_source_contention_preserves_canonical_binding(ledger,
                 asyncio.create_task(admit(runtime, source=s, attempt=a))
                 for s, a in zip(sources, attempts, strict=True)
             ]
+
             # Observe both real SQL waiters, not merely scheduled Python tasks.
-            async with asyncio.timeout(5):
-                while (
-                    await owner.fetchval(  # noqa: ASYNC110 - external SQL lock wait has no event
+            async def both_admissions_wait_on_lock():
+                return (
+                    await owner.fetchval(
                         "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
                         "AND wait_event='advisory' AND $1=ANY(pg_blocking_pids(pid))",
                         pid,
                     )
-                    < 2
-                ):
-                    await asyncio.sleep(0.02)
+                    >= 2
+                )
+
+            async with asyncio.timeout(5):
+                await poll_until(both_admissions_wait_on_lock, interval_s=0.02)
         outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
         if same_source:
             assert outcomes == [canonical, canonical]
