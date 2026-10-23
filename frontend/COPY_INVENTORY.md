@@ -4465,7 +4465,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Backups
 - Backup recency and reachability
-- Could not load backup facts.
 - Run failed
 - Stale
 - Healthy
@@ -4477,7 +4476,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Restore drill
 - No drill yet
 - Passed
-- if (isError) return
 - Backup status unavailable.
 - Backup source is unreachable or not configured.
 - Status
@@ -4500,8 +4498,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Database Size
 - PostgreSQL disk footprint
-- Could not load database size.
-- if (isError) return
 - Total size
 - Largest schemas (top 5)
 
@@ -4509,9 +4505,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Deployment
 - What's actually serving right now
-- Could not load deployment status.
 - 0: red clause "serving
-- if (isError) return
 - No deployment recorded yet.
 - up to date with origin/main
 - Commits-behind-origin/main check unavailable.
@@ -4525,8 +4519,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Migration Drift
 - Codebase vs. deployed schema state
-- Could not load migration drift status.
-- if (isError) return
 - Drift check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 - In sync
@@ -4536,7 +4528,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Data Egress
 - External services that received data
-- Could not load egress catalog.
 - Owner only -- sign in as the owner to view.
 - No external egress recorded yet.
 - Last seen
@@ -4545,8 +4536,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Insight Delivery
 - Proactive insight pipeline state
-- Could not load insight delivery state.
-- if (isError) return
 - Queued
 - Delivered
 - Failed
@@ -4556,8 +4545,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Security Posture
 - Auth and secrets configuration
-- Could not load security posture.
-- if (isError) return
 - Owner authentication
 - Export secret
 - Infra credentials
@@ -4601,8 +4588,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Definer search-path check unavailable. This is not a clean bill of health.
 - Stored Functions
 - Deployed bodies vs. init-db.sql
-- Could not load stored-function drift status.
-- if (isError) return
 - Stored-function check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 
@@ -4622,8 +4607,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Uptime
 - Process uptime
-- Could not load uptime info.
-- if (isError) return
 - Running for
 - Started
 
@@ -4631,8 +4614,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Version
 - Software version
-- Could not load version info.
-- if (isError) return
 - Package version
 - Last deploy
 
@@ -4848,6 +4829,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ui/query-boundary.tsx`
 
+- Retry
+- Refreshing
+- Offline. Showing last confirmed result.
+
+## `frontend/src/components/ui/query-tile.tsx`
+
+- extends Omit
 - Retry
 
 ## `frontend/src/components/ui/range-toggle.tsx`
