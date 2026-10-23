@@ -569,6 +569,12 @@ async def run_startup(daemon: Any) -> None:
         daemon._boot_registration_task = asyncio.create_task(
             daemon._retry_boot_registration(), name=f"boot-register-{daemon.config.name}"
         )
+    # Publish only the actual final wrapped registry after startup completed.
+    # The administrative D4 control defaults OFF; no ingress is enabled here.
+    from butlers.core.catalog_publication import start_catalog_publication
+
+    if registered:
+        await start_catalog_publication(daemon, pool)
     daemon._started_at = time.monotonic()
 
     failed_count = sum(1 for s in daemon._module_statuses.values() if s.status != "active")
@@ -610,6 +616,34 @@ async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
 
 
 async def run_shutdown(daemon: Any) -> None:
+    """Retain shutdown across caller cancellation when publication owns resources.
+
+    Retirement has its existing single five-second absolute bound. Subsequent
+    existing owners retain their own bounds; repeated cancellation never starts
+    another retirement or abandons their cleanup. Propagate cancellation after
+    the retained lifetime settles, even if retirement also fails.
+    """
+    task = getattr(daemon, "_catalog_shutdown_task", None)
+    if task is None:
+        if getattr(daemon, "_catalog_publication", None) is None:
+            await _run_shutdown(daemon)
+            return
+        task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
+        daemon._catalog_shutdown_task = task
+    interrupted = False
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                interrupted = True
+        task.result()
+    finally:
+        if interrupted:
+            raise asyncio.CancelledError
+
+
+async def _run_shutdown(daemon: Any) -> None:
     """Execute the graceful shutdown sequence.
 
     This is the implementation body of :meth:`ButlerDaemon.shutdown`.  It is
@@ -640,6 +674,25 @@ async def run_shutdown(daemon: Any) -> None:
         except asyncio.CancelledError:
             pass
         daemon._boot_registration_task = None
+
+    # Retire only this boot's registration before stopping its real registry.
+    from butlers.core.catalog_publication import close_catalog_publication
+
+    retirement_error = None
+    try:
+        await close_catalog_publication(daemon)
+    except BaseException as exc:
+        retirement_error = exc
+
+    try:
+        await _shutdown_resources(daemon)
+    finally:
+        if retirement_error is not None:
+            raise retirement_error
+
+
+async def _shutdown_resources(daemon: Any) -> None:
+    """Existing resource teardown, also reached after catalog close refusal."""
 
     # 1. Stop MCP server
     if daemon._server is not None:
