@@ -151,7 +151,7 @@ class Capability:
 
 @dataclass(frozen=True)
 class CatalogView:
-    """Pinned immutable view; actual final-registry publication is a later owner."""
+    """Pinned immutable admission projection of the verified fleet publication."""
 
     digest: str
     capabilities: tuple[Capability, ...]
@@ -170,7 +170,8 @@ class CatalogProvider(Protocol):
         """Return a verified current immutable publication or raise EvidenceRefused.
 
         The publisher owns completeness, exclusions and freshness verification.
-        This dark slice provides no production catalog publisher/adapter.
+        The default production adapter is PublishedCatalogProvider; explicit
+        protocol implementations remain useful for isolated decision tests.
         """
         ...
 
@@ -338,7 +339,13 @@ class AdmissionResult:
 
 
 class GoalAdmission:
-    def __init__(self, pool: asyncpg.Pool, evidence: EvidenceProvider, catalog: CatalogProvider):
+    def __init__(
+        self, pool: asyncpg.Pool, evidence: EvidenceProvider, catalog: CatalogProvider | None = None
+    ):
+        if catalog is None:
+            from butlers.core.catalog_reader import PublishedCatalogProvider
+
+            catalog = PublishedCatalogProvider()
         self.pool, self.evidence, self.catalog = pool, evidence, catalog
 
     async def admit_submission(self, source: SourceRef, attempt_id: UUID) -> AdmissionResult:

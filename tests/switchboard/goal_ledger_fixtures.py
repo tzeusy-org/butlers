@@ -11,7 +11,15 @@ from butlers.core.goal_admission import GoalAdmission, SourceRef, digest
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 
-TABLES = ("goals", "invocations", "effects", "budgets", "admission_decisions", "goal_inbox")
+TABLES = (
+    "goals",
+    "invocations",
+    "effects",
+    "budgets",
+    "admission_decisions",
+    "goal_inbox",
+    "admission_attempt_bindings",
+)
 
 
 @pytest.fixture(scope="module")

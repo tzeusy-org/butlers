@@ -700,6 +700,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_attempt_bindings",
+    ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
+    (
+        "src/butlers/core/goal_ledger.py",
         "switchboard.admission_decisions",
     ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
     (
