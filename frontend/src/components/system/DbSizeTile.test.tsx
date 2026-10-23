@@ -32,7 +32,13 @@ let mockResult: HookResult = { isPending: false }
 
 vi.mock("@/hooks/use-system", () => ({
   useInstanceFacts: () => ({ isPending: false }),
-  useDatabaseFacts: () => mockResult,
+  useDatabaseFacts: () => ({
+    ...mockResult,
+    status: mockResult.isPending ? "pending" : mockResult.isError ? "error" : "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
+  }),
 }))
 
 // ---------------------------------------------------------------------------

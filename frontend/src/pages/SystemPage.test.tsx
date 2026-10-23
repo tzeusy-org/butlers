@@ -201,12 +201,20 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useInstanceFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isLoading: true,
     error: null,
   } as AnyMock);
 
   vi.mocked(useDatabaseFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isLoading: true,
     isError: false,
@@ -214,12 +222,20 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useBackupFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isLoading: true,
     error: null,
   } as AnyMock);
 
   vi.mocked(useEgressFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isLoading: true,
     isError: false,
@@ -228,6 +244,10 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useHealthPosture).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isPending: true,
     isError: false,
@@ -235,6 +255,10 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useInsightDeliveryState).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isPending: true,
     isError: false,
@@ -242,6 +266,10 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useDriftFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isPending: true,
     isError: false,
@@ -249,6 +277,10 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isPending: true,
     isError: false,
@@ -256,6 +288,10 @@ function setAllLoading() {
   } as AnyMock);
 
   vi.mocked(useDeploymentFacts).mockReturnValue({
+    status: "pending",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: undefined,
     isPending: true,
     isError: false,
@@ -275,12 +311,20 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useInstanceFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { data: { version: "1.0.0", uptime_seconds: 3600, started_at: "2026-01-01T00:00:00Z" }, meta: {} },
     isLoading: false,
     error: null,
   } as AnyMock);
 
   vi.mocked(useDatabaseFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { data: { total_size_bytes: 1024, schemas: [], largest_tables: [], growth_rate_bytes_per_day: null }, meta: {} },
     isLoading: false,
     isError: false,
@@ -288,6 +332,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useBackupFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: {
       data: {
         last_backup_at: "2026-01-01T00:00:00Z",
@@ -305,6 +353,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useEgressFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { data: { actors: [{ actor_id: "anthropic.claude", display_name: "Anthropic Claude API", last_seen_at: "2026-01-01T00:00:00Z", total_calls: 5, data_types: ["session_prompt"] }], catalog_covers_from: null }, meta: {} },
     isLoading: false,
     isError: false,
@@ -313,6 +365,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useHealthPosture).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
     isPending: false,
     isError: false,
@@ -320,6 +376,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useInsightDeliveryState).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { data: { queued: 2, delivered: 5, failed: 0, last_delivery_at: "2026-06-17T10:00:00Z" }, meta: {} },
     isPending: false,
     isError: false,
@@ -327,6 +387,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useDriftFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: {
       data: {
         checked_at: "2026-06-17T10:00:00Z",
@@ -344,6 +408,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: {
       data: {
         checked_at: "2026-06-17T10:00:00Z",
@@ -361,6 +429,10 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useDeploymentFacts).mockReturnValue({
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: {
       data: {
         current: {
@@ -497,6 +569,10 @@ describe("SystemPage -- egress 403 handling", () => {
   it("renders 'Owner only' indicator when egress returns 403", () => {
     const forbidden403 = new ApiError("forbidden", "Owner contact not found", 403);
     vi.mocked(useEgressFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       error: forbidden403,
@@ -513,6 +589,10 @@ describe("SystemPage -- egress 403 handling", () => {
   it("does not crash or show generic error for 403 on egress", () => {
     const forbidden403 = new ApiError("forbidden", "Owner contact not found", 403);
     vi.mocked(useEgressFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       error: forbidden403,
@@ -536,6 +616,10 @@ describe("SystemPage -- backup source unreachable", () => {
 
   it("renders 'Backup status unavailable' when backup_source_reachable is false", () => {
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: { data: { last_backup_at: null, last_backup_size_bytes: null, backup_source_reachable: false, backup_history: [] }, meta: {} },
       isLoading: false,
       error: null,
@@ -547,6 +631,10 @@ describe("SystemPage -- backup source unreachable", () => {
 
   it("keeps sibling tiles rendered when the backup tile degrades", () => {
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isPending: false,
       isError: true,
@@ -702,6 +790,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("keeps the verdict loading while database facts load", () => {
     setAllSuccess();
     vi.mocked(useDatabaseFacts).mockReturnValue({
+      status: "pending",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: true,
       isError: false,
@@ -716,6 +808,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("names unavailable database facts instead of rendering all-clear", () => {
     setAllSuccess();
     vi.mocked(useDatabaseFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       isError: true,
@@ -730,6 +826,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("keeps the verdict loading while the egress catalog loads", () => {
     setAllSuccess();
     vi.mocked(useEgressFacts).mockReturnValue({
+      status: "pending",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: true,
       isError: false,
@@ -745,6 +845,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("names unavailable egress catalog on a non-forbidden error", () => {
     setAllSuccess();
     vi.mocked(useEgressFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       isError: true,
@@ -760,6 +864,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("keeps owner-only egress denial settled and non-failing", () => {
     setAllSuccess();
     vi.mocked(useEgressFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       isError: true,
@@ -786,6 +894,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a failed-insights problem instead of staying silent", () => {
     setAllSuccess();
     vi.mocked(useInsightDeliveryState).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: { data: { queued: 0, delivered: 5, failed: 3, last_delivery_at: null }, meta: {} },
       isPending: false,
       isError: false,
@@ -799,6 +911,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces backup source unreachable as a problem", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: { data: { last_backup_at: null, last_backup_size_bytes: null, backup_source_reachable: false, backup_history: [] }, meta: {} },
       isLoading: false,
       error: null,
@@ -811,6 +927,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a corrupt backup artifact instead of a falsely confident all-clear (bu-9r3hd.5)", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -835,6 +955,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a stale backup as a problem (bu-9r3hd.5)", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -858,6 +982,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a failed restore drill as a problem (bu-9r3hd.5)", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -885,6 +1013,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a never-run restore drill as a problem rather than a fabricated all-clear (bu-9r3hd.5)", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -912,6 +1044,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     // "Instance healthy: ... backed up 3h ago" the morning after it died.
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -945,6 +1081,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     // here would be noise, not honesty.
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           last_backup_at: "2026-01-01T00:00:00Z",
@@ -997,6 +1137,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces instance.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
     setAllSuccess();
     vi.mocked(useInstanceFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       isError: true,
@@ -1011,6 +1155,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces backups.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
     setAllSuccess();
     vi.mocked(useBackupFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isLoading: false,
       isError: true,
@@ -1025,6 +1173,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces insights.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
     setAllSuccess();
     vi.mocked(useInsightDeliveryState).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isPending: false,
       isError: true,
@@ -1039,6 +1191,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a failed deploy instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
     setAllSuccess();
     vi.mocked(useDeploymentFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           current: {
@@ -1068,6 +1224,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces a bind-mounted worktree boot as a red problem", () => {
     setAllSuccess();
     vi.mocked(useDeploymentFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           current: {
@@ -1101,6 +1261,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces N commits behind origin/main as a problem (bu-hmdqz.1)", () => {
     setAllSuccess();
     vi.mocked(useDeploymentFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           current: {
@@ -1130,6 +1294,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces an unavailable commits-behind check instead of silence (bu-hmdqz.1)", () => {
     setAllSuccess();
     vi.mocked(useDeploymentFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: {
         data: {
           current: {
@@ -1159,6 +1327,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces deployments.isError instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
     setAllSuccess();
     vi.mocked(useDeploymentFacts).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isPending: false,
       isError: true,
@@ -1173,6 +1345,10 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("surfaces posture.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
     setAllSuccess();
     vi.mocked(useHealthPosture).mockReturnValue({
+      status: "error",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
       data: undefined,
       isPending: false,
       isError: true,
