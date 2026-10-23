@@ -1013,6 +1013,13 @@ Scope: v1-mandatory
 - **THEN** the mandatory guard and required verdict fail before scan success is credited
 - **AND** no raw body, matched link or provider error is printed
 
+#### Scenario: Bounded metadata retries retain mandatory refusal
+- **WHEN** the fixed-PR metadata subprocess fails before a successful validated read
+- **THEN** at most three attempts use 30-second caps and 2/5-second backoffs within one 97-second monotonic retry budget
+- **AND** invalid successful metadata or local I/O errors refuse immediately without retry or stale fallback
+- **AND** title/body/digest-receipt outputs are removed before reading and after completed failure with categorical diagnostics only
+- **AND** the workflow's separate GNU TERM100/KILL+3 command envelope preserves nonzero refusal and completed-failure cleanup; incomplete execution remains UNKNOWN/non-pass
+
 #### Scenario: Existing metadata surfaces and permissions survive
 - **WHEN** the current PR guard scans title/body and trigger-bound commits with best-effort review comments
 - **THEN** title, non-trailer commit and comment positives remain detectable with exact terminal commit trailer exemption
