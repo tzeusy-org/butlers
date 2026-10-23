@@ -162,6 +162,54 @@ def diagnose_loaded_schedules(
     )
 
 
+def diagnose_loaded_job_schedules(
+    schedules: Sequence[ScheduleSpec],
+    *,
+    owner_domain: str,
+    local_catalog: ToolCatalog,
+    job_handlers: Mapping[str, object],
+) -> tuple[DeclarationIssue, ...]:
+    """Consume the dispatcher's actual handlers after final tool registration.
+
+    Job mode is not a model exemption. Known model-backed handlers undergo the
+    SAME parsed declaration/local-catalog checks as prompts. Unknown handlers
+    remain unclassified; neither a familiar name nor an absent direct model
+    call proves a closed deterministic graph. Explicit safety/context handlers
+    stay service-plane jobs, without an admission or model dependency.
+
+    This dark diagnostic changes no dispatch and authenticates no creator,
+    source, fleet publication or cause. Even valid local model-job declarations
+    retain fleet_catalog_unavailable until the real publisher/handoff exists.
+    """
+    from butlers.scheduled_jobs import classify_schedule_job
+
+    issues = []
+    model_values = []
+    for index, spec in enumerate(schedules):
+        if spec.dispatch_mode != "job":
+            continue
+        handler = job_handlers.get(spec.job_name)
+        if handler is None:
+            code = "unregistered_job"
+        else:
+            classification = classify_schedule_job(handler)
+            if classification == "model_backed":
+                model_values.append((index, spec.obligation))
+                continue
+            if classification == "deterministic":
+                continue
+            code = "job_semantics_unclassified"
+        issue = DeclarationIssue(index, code)
+        issues.append(issue)
+        logger.warning("Obligation declaration index=%d reason=%s", issue.index, issue.code)
+    issues.extend(
+        _diagnose_loaded_declarations(
+            model_values, owner_domain=owner_domain, local_catalog=local_catalog
+        )
+    )
+    return tuple(sorted(issues, key=lambda issue: issue.index))
+
+
 def diagnose_loaded_subscriptions(
     subscriptions: Sequence[SubscriptionSpec], *, owner_domain: str, local_catalog: ToolCatalog
 ) -> tuple[DeclarationIssue, ...]:

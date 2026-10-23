@@ -569,3 +569,173 @@ def test_subscription_identity_shape_and_declaration_have_distinct_failure_polic
         )
     )
     assert load_config(tmp_path).subscriptions[0].source == "travel.trip_booked"
+
+
+async def test_actual_startup_diagnoses_registered_model_jobs_after_final_catalog(
+    tmp_path, monkeypatch, caplog
+):
+    """Job mode must not hide model-backed work from the real startup consumer."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from butlers import lifecycle
+    from butlers.config import load_config
+    from butlers.daemon import ButlerDaemon
+    from tests.daemon.test_daemon import _make_registry, _patch_infra
+
+    (tmp_path / "butler.toml").write_text(
+        '[butler]\nname="switchboard"\nport=9100\n'
+        '[[butler.schedule]]\nname="private-daily"\ncron="0 9 * * *"\n'
+        'dispatch_mode="job"\njob_name="insight_delivery_cycle"\n'
+        '[[butler.schedule]]\nname="private-urgent"\ncron="0 * * * *"\n'
+        'dispatch_mode="job"\njob_name="insight_urgent_subcycle"\n'
+        "[butler.schedule.obligation]\nversion=1\ncapabilities=[]\n"
+        '[[butler.schedule]]\nname="private-untraced"\ncron="0 1 * * *"\n'
+        'dispatch_mode="job"\njob_name="memory_episode_cleanup"\n'
+    )
+    config = load_config(tmp_path)
+    registry = await _complete_core_catalog("switchboard")
+    order = []
+
+    async def finalized(self):
+        order.append("finalized")
+        self._tool_catalog = registry
+        return registry
+
+    class Observed(Exception):
+        pass
+
+    actual = lifecycle.diagnose_loaded_job_schedules
+
+    def diagnostic(schedules, *, owner_domain, local_catalog, job_handlers):
+        assert order == ["finalized"]
+        assert all(a is b for a, b in zip(schedules, config.schedules, strict=True))
+        assert local_catalog is registry
+        # These are the exact handlers the background dispatcher will select,
+        # not a catalog assembled by this test from desired capability names.
+        from butlers.background import _deterministic_jobs_for_butler
+
+        assert job_handlers is _deterministic_jobs_for_butler("switchboard")
+        result = actual(
+            schedules,
+            owner_domain=owner_domain,
+            local_catalog=local_catalog,
+            job_handlers=job_handlers,
+        )
+        assert [(i.index, i.code) for i in result] == [
+            (0, "missing_declaration"),
+            (1, "fleet_catalog_unavailable"),
+            (2, "job_semantics_unclassified"),
+        ]
+        order.append("job_diagnostic")
+        raise Observed
+
+    monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
+    with ExitStack() as stack:
+        for name, value in _patch_infra().items():
+            if not name.startswith("mock_"):
+                stack.enter_context(value)
+        stack.enter_context(patch.object(ButlerDaemon, "_finalize_tool_catalog", finalized))
+        monkeypatch.setattr(lifecycle, "diagnose_loaded_job_schedules", diagnostic)
+        daemon = ButlerDaemon(tmp_path, registry=_make_registry())
+        daemon.config = config
+        with pytest.raises(Observed):
+            await daemon.start()
+    assert order == ["finalized", "job_diagnostic"]
+    assert "private-" not in caplog.text
+    assert "insight_delivery_cycle" not in caplog.text
+
+
+async def test_job_diagnostics_use_actual_handler_semantics_and_refuse_false_coverage(caplog):
+    """Known model paths need declarations; names/untraced jobs prove nothing."""
+    from butlers.config import ScheduleSpec
+    from butlers.core.obligation_catalog import diagnose_loaded_job_schedules
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    registry = get_deterministic_schedule_job_registry()
+    catalog = await _complete_core_catalog("switchboard")
+
+    def spec(job, declaration=None):
+        return ScheduleSpec(
+            name="private-source",
+            cron="0 1 * * *",
+            dispatch_mode="job",
+            job_name=job,
+            obligation=declaration,
+        )
+
+    for domain, job in [
+        ("switchboard", "insight_delivery_cycle"),
+        ("switchboard", "insight_urgent_subcycle"),
+        ("chronicler", "chronicler_narrate_daily"),
+        ("health", "memory_consolidation"),
+    ]:
+        assert [
+            i.code
+            for i in diagnose_loaded_job_schedules(
+                [spec(job)],
+                owner_domain=domain,
+                local_catalog=catalog,
+                job_handlers=registry[domain],
+            )
+        ] == ["missing_declaration"]
+
+    job = "insight_delivery_cycle"
+    for declaration, expected in [
+        ({"version": True, "capabilities": []}, "invalid_declaration"),
+        (
+            {"version": 1, "capabilities": [{"capability": "switchboard__nonexistent"}]},
+            "unknown_capability",
+        ),
+        (
+            {"version": 1, "capabilities": [{"capability": "other__not_proven_here"}]},
+            "fleet_catalog_unavailable",
+        ),
+    ]:
+        assert [
+            i.code
+            for i in diagnose_loaded_job_schedules(
+                [spec(job, declaration)],
+                owner_domain="switchboard",
+                local_catalog=catalog,
+                job_handlers=registry["switchboard"],
+            )
+        ] == [expected]
+
+    # The same public names pointing at different functions lose their semantic
+    # claim. No default of "job means deterministic" and no forged model grant.
+    assert [
+        i.code
+        for i in diagnose_loaded_job_schedules(
+            [spec(job), spec("missing")],
+            owner_domain="switchboard",
+            local_catalog=catalog,
+            job_handlers={job: registry["switchboard"]["memory_episode_cleanup"]},
+        )
+    ] == ["job_semantics_unclassified", "unregistered_job"]
+    for domain, job in [
+        ("home", "home_safety_sentinel"),
+        ("home", "context_producer_home_presence"),
+        ("travel", "context_producer_commuting_eta"),
+    ]:
+        assert (
+            diagnose_loaded_job_schedules(
+                [spec(job)],
+                owner_domain=domain,
+                local_catalog=catalog,
+                job_handlers=registry[domain],
+            )
+            == ()
+        )
+        assert [
+            i.code
+            for i in diagnose_loaded_job_schedules(
+                [spec(job)],
+                owner_domain=domain,
+                local_catalog=catalog,
+                job_handlers={job: registry["switchboard"]["insight_delivery_cycle"]},
+            )
+        ] == ["missing_declaration"]
+    assert "private-source" not in caplog.text
+    assert "nonexistent" not in caplog.text
+    assert "other__not_proven_here" not in caplog.text

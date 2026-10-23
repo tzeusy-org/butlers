@@ -22,6 +22,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from butlers.background import _deterministic_jobs_for_butler
 from butlers.catalogue_bootstrap import upsert_provider_feature_catalogue
 from butlers.config import (
     ButlerType,
@@ -32,6 +33,7 @@ from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.obligation_catalog import (
+    diagnose_loaded_job_schedules,
     diagnose_loaded_schedules,
     diagnose_loaded_subscriptions,
 )
@@ -504,6 +506,13 @@ async def run_startup(daemon: Any) -> None:
         daemon.config.subscriptions,
         owner_domain=daemon.config.name,
         local_catalog=final_tool_catalog,
+    )
+
+    diagnose_loaded_job_schedules(
+        daemon.config.schedules,
+        owner_domain=daemon.config.name,
+        local_catalog=final_tool_catalog,
+        job_handlers=_deterministic_jobs_for_butler(daemon.config.name),
     )
 
     # 14c. Wire calendar overlap-approval enqueuer when both modules are loaded

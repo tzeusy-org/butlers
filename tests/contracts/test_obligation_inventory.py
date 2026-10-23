@@ -50,3 +50,20 @@ def test_committed_inventory_matches_all_roster_schedules_and_named_source_bound
             row["dispatch_mode"] == "job" and row["job_name"] == entry["job_name"]
             for row in inventory["schedules"]
         )
+
+    # The committed model-job list must cover the actual registry, including
+    # wrappers hidden behind job mode. Unknown jobs are not declared safe here.
+    from butlers.scheduled_jobs import (
+        classify_schedule_job,
+        get_deterministic_schedule_job_registry,
+    )
+
+    registered_model_wrappers = {
+        handler.__name__
+        for jobs in get_deterministic_schedule_job_registry().values()
+        for handler in jobs.values()
+        if classify_schedule_job(handler) == "model_backed"
+    }
+    assert registered_model_wrappers == {
+        entry["symbol"] for entry in inventory["known_model_backed_job_wrappers"]
+    }

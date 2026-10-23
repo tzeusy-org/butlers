@@ -366,3 +366,36 @@ The authored PostgreSQL successor induces a real batch-update SQL refusal and
 checks rollback independently; its concurrent requests wait behind a held map
 row until both actual lock waits are observed. No database execution or forced
 contention proof is earned by authoring or collecting that test.
+
+
+### Named jobs are not automatically deterministic
+
+Startup now inspects actual job handlers selected by the background dispatcher,
+using the same final post-approval tool catalog as prompt/subscription checks.
+The two Insight delivery handlers can reach cluster synthesis, Chronicler daily
+narration can invoke its model, and Memory consolidation can launch a reasoning
+session. Their loaded job schedules therefore undergo declaration diagnostics;
+`dispatch_mode = "job"` is not an exemption. Missing/invalid declarations and
+unknown owning-domain capabilities are reported with closed reason codes and
+schedule indices, never names, arguments or source content. Valid local values
+still report `fleet_catalog_unavailable`; no local projection becomes a verified
+fleet catalog, creator, cause or admitted goal.
+
+The source inventory's known model-backed wrapper list is checked against the
+actual registered handlers by its existing single inventory guard. The two
+current Insight roster rows remain explicitly missing model-job declarations:
+this increment discovers and consumes the gap rather than inventing their full
+capability graph. Memory consolidation's goal conversion remains separately
+owned by `bu-vbdug9.2`. No schedule, cron, prompt, module or dispatch behavior
+changes. Presence, commuting-ETA and Home safety handlers retain explicit
+service-plane classification; unknown transitive graphs stay unclassified.
+Replacing any of these handlers loses its old classification rather than
+inheriting authority from the job's name.
+
+These checks are dark startup diagnostics only. Actual model-call replacement,
+complete source declarations, server-owned context/creator and cause producers,
+authenticated catalog publication and the real runner/result handoff remain
+mandatory before switching these jobs to goals. Direct dashboard model callers
+are not covered by the scheduled-job registry; their owner-goal conversion
+remains unfinished. The 102-schedule/19-family inventory, deterministic safety
+contracts, genuine PostgreSQL execution and hosted delivery obligations remain.

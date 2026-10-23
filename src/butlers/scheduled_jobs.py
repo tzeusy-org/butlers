@@ -14,7 +14,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 
@@ -2295,6 +2295,38 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_retention_pruner_job_handlers("qa"),
         },
     }
+
+
+def classify_schedule_job(
+    handler: object,
+) -> Literal["model_backed", "deterministic", "unclassified"]:
+    """Classify only traced entrypoints, never a job name or dispatch mode.
+
+    The legacy registry name is retained for compatibility. Some handlers reach
+    model-backed owner-facing synthesis or a session, so membership alone does
+    not prove a deterministic service-plane job. Unknown transitive closures
+    remain explicitly unclassified. This value grants no source/goal authority.
+    """
+    if any(
+        handler is known
+        for known in (
+            _run_switchboard_insight_delivery_cycle_job,
+            _run_switchboard_insight_urgent_subcycle_job,
+            _run_chronicler_narrate_daily_job,
+            _run_memory_consolidation_job,
+        )
+    ):
+        return "model_backed"
+    if any(
+        handler is known
+        for known in (
+            _run_home_safety_sentinel_job,
+            _run_context_producer_home_presence_job,
+            _run_context_producer_commuting_eta_job,
+        )
+    ):
+        return "deterministic"
+    return "unclassified"
 
 
 def get_deterministic_schedule_job_registry() -> dict[

@@ -827,8 +827,8 @@
       "name": "insight-delivery-cycle",
       "dispatch_mode": "job",
       "job_name": "insight_delivery_cycle",
-      "declaration_status": "not_inferred_from_job_mode",
-      "classification": "unchanged_job_pending_closed_call_graph_review"
+      "declaration_status": "missing_model_job_declaration",
+      "classification": "model_obligation_pending_adapter_allocation"
     },
     {
       "path": "roster/switchboard/butler.toml",
@@ -837,8 +837,8 @@
       "name": "insight-urgent-subcycle",
       "dispatch_mode": "job",
       "job_name": "insight_urgent_subcycle",
-      "declaration_status": "not_inferred_from_job_mode",
-      "classification": "unchanged_job_pending_closed_call_graph_review"
+      "declaration_status": "missing_model_job_declaration",
+      "classification": "model_obligation_pending_adapter_allocation"
     },
     {
       "path": "roster/switchboard/butler.toml",
@@ -1192,6 +1192,27 @@
       "target": "butlers.chronicler.jobs.run_narrate_daily",
       "classification": "model_obligation_pending_adapter_allocation",
       "reason": "Job-mode alone is insufficient: this wrapper reaches model-backed narration."
+    },
+    {
+      "path": "src/butlers/scheduled_jobs.py",
+      "symbol": "_run_switchboard_insight_delivery_cycle_job",
+      "target": "butlers.tools.switchboard.insight.broker.delivery_cycle",
+      "classification": "model_obligation_pending_adapter_allocation",
+      "reason": "Daily delivery may reach cluster synthesis before owner delivery; job mode is not deterministic proof."
+    },
+    {
+      "path": "src/butlers/scheduled_jobs.py",
+      "symbol": "_run_switchboard_insight_urgent_subcycle_job",
+      "target": "butlers.tools.switchboard.insight.broker.delivery_cycle",
+      "classification": "model_obligation_pending_adapter_allocation",
+      "reason": "Urgent delivery reaches the same optional synthesis path; urgent_only does not exempt it."
+    },
+    {
+      "path": "src/butlers/scheduled_jobs.py",
+      "symbol": "_run_memory_consolidation_job",
+      "target": "butlers.core.memory_hooks.consolidate_memory",
+      "classification": "model_obligation_pending_adapter_allocation",
+      "reason": "Memory consolidation may launch a reasoning session; its production goal adapter is separately owned by bu-vbdug9.2."
     }
   ],
   "status": "PHASE_A_SOURCE_CENSUS_ONLY; remaining declarations, repositories, production adapters and exhaustive transitive review stay owned by bu-o9qax4."
