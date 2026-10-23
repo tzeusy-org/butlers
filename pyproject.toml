@@ -76,6 +76,7 @@ dev = [
     "pytest-cov>=7.0.0",
     "moto[s3,server]>=5.0.0",
     "pytest-timeout>=2.4.0",
+    "import-linter>=2.15",
 ]
 
 [project.scripts]
@@ -201,3 +202,46 @@ source = ["src/butlers"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+
+# Package layering (about/craft-and-care/interfaces-and-dependencies.md). Direct imports only
+# (allow_indirect_imports): these state "must not import", the way the AST tests they replace did.
+# Roster butlers are not importable packages (they load by path), so a core -> roster rule is not
+# expressible here; the loader slice of bu-m0vjeb.4 covers that edge.
+[tool.importlinter]
+root_package = "butlers"
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "core does not import api, connectors or modules"
+type = "forbidden"
+source_modules = ["butlers.core"]
+forbidden_modules = ["butlers.api", "butlers.connectors", "butlers.modules"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "core_tools does not import modules"
+type = "forbidden"
+source_modules = ["butlers.core_tools"]
+forbidden_modules = ["butlers.modules"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "connectors and modules do not import api"
+type = "forbidden"
+source_modules = ["butlers.connectors", "butlers.modules"]
+forbidden_modules = ["butlers.api"]
+allow_indirect_imports = true
+# Baseline: existing violations, to only shrink. Move the shared read-model and
+# conversation helpers below api, then delete the entry.
+ignore_imports = [
+    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.insights_v1",
+    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.sessions_v1",
+    "butlers.modules.pipeline -> butlers.api.conversations",
+]
+
+[[tool.importlinter.contracts]]
+name = "modules do not import the spawner"
+type = "forbidden"
+source_modules = ["butlers.modules"]
+forbidden_modules = ["butlers.core.spawner"]
+allow_indirect_imports = true

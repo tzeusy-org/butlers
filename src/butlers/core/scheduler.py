@@ -1111,9 +1111,7 @@ async def ensure_module_default_schedule(
                     "owner_schema to recover a TOML-owned schedule"
                 )
 
-            # Import lazily so normal scheduler use does not load the API
-            # router layer unless a recovery actually transitions a row.
-            from butlers.api.routers.audit import append as append_audit
+            from butlers.core.audit import append as append_audit
 
             await append_audit(
                 connection,

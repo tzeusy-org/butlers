@@ -46,9 +46,9 @@ from butlers.api.audit_grouping import (
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_mcp_manager
-from butlers.api.models.audit import PROBE_FAILURE_VOCABULARY
 from butlers.api.routers import audit as audit_router
 from butlers.api.routers import issues as issues_module
+from butlers.core.audit import PROBE_FAILURE_VOCABULARY
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app

@@ -72,7 +72,8 @@ class TestContactsConfig:
         config = ContactsConfig(provider="google")
         assert config.provider == "google"
         assert config.include_other_contacts is False
-        assert config.sync.enabled is True
+        # Only the owning butler (Relationship) opts in; a new butler never silently syncs.
+        assert config.sync.enabled is False
         assert config.sync.interval_minutes == 15
 
     def test_legacy_provider_creates_providers_list(self) -> None:
@@ -554,7 +555,9 @@ async def test_contacts_startup_poll_and_sync_now_share_full_finalizer(monkeypat
     await module.register_tools(
         mcp, {"provider": "telegram"}, SimpleNamespace(pool=object()), "general"
     )
-    await module.on_startup({"provider": "telegram"}, SimpleNamespace(pool=object()))
+    await module.on_startup(
+        {"provider": "telegram", "sync": {"enabled": True}}, SimpleNamespace(pool=object())
+    )
     runtime = module._runtimes["telegram"]
     engine = runtime._sync_engine
     original_sync = engine.sync

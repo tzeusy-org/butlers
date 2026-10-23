@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from butlers.connectors.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
 from butlers.ingestion_spans import (
     CHANNEL_KIND_CAPABILITY,
     CHANNEL_KIND_MESSAGE,

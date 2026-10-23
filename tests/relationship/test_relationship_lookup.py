@@ -525,8 +525,8 @@ def test_mcp_tool_docstring_states_constraints():
 # scope is BOTH:
 #   - roster/*/butler.toml          — the [[butler.schedule]] seed definitions
 #   - roster/*/.agents/skills/**/SKILL.md — the *bodies* of scheduled prompts
-#       (e.g. relationship-maintenance, upcoming-dates), which a scheduled
-#       session reads and could be told to call relationship_lookup from.
+#       (e.g. reconnect-planner), which a scheduled session reads and could
+#       be told to call relationship_lookup from.
 # A skill instructing a scheduled session to call the lookup is exactly the
 # bypass the empty allowlist must reject, so both globs are scanned.
 # ---------------------------------------------------------------------------
@@ -576,10 +576,9 @@ def test_schedule_scan_globs_cover_butler_toml_and_skill_prompts():
     assert any(p.name == "SKILL.md" for p in paths), (
         "schedule scan must cover roster scheduled-prompt SKILL.md bodies"
     )
-    # The relationship butler's scheduled-prompt skills must be in scope.
+    # The relationship butler's session-loaded skills must be in scope.
     rels = {str(p.relative_to(_REPO_ROOT)) for p in paths}
-    assert "roster/relationship/.agents/skills/relationship-maintenance/SKILL.md" in rels
-    assert "roster/relationship/.agents/skills/upcoming-dates/SKILL.md" in rels
+    assert "roster/relationship/.agents/skills/reconnect-planner/SKILL.md" in rels
 
 
 def test_schedule_scan_catches_lookup_literal_in_a_skill_prompt(tmp_path, monkeypatch):

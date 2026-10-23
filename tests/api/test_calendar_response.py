@@ -1,4 +1,4 @@
-# Spec: REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-dashboard-api-069
 """Authenticated response admission and exact same-owner decision composition."""
 
 from __future__ import annotations
@@ -28,26 +28,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
         response_status="accepted",
         send_updates="none",
     )
-    # Invoke the actual owner-read consumer: an ordinary action cannot shadow
-    # a response command with the same UUID in another source schema.
     from fastapi import HTTPException
-
-    duplicate_db = SimpleNamespace(
-        butlers_with_module=lambda module: ["relationship", "messenger"],
-        fan_out_with_status=AsyncMock(
-            return_value=(
-                {
-                    "relationship": [{"id": command_id, "action_type": "workspace_user_create"}],
-                    "messenger": [{"id": command_id, "action_type": "workspace_user_respond"}],
-                },
-                [],
-            )
-        ),
-    )
-    with pytest.raises(HTTPException) as duplicate:
-        await workspace._find_action_owner(duplicate_db, command_id)
-    assert duplicate.value.status_code == 409
-    assert duplicate.value.detail == "calendar_action_owner_ambiguous"
 
     command = {"owner": "messenger", "arguments": arguments}
     payload = {
@@ -229,7 +210,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             assert response.status_code == 200
             data = response.json()["data"]
             assert data["status"] == "applied" and data["projection_available"] is False
-            assert data["undo_available"] is True and data["source_butler"] == "messenger"
+            assert data["source_butler"] == "messenger"
             assert data["command_id"] == str(command_id) and data["approval_id"] == str(command_id)
             assert decision.await_count == 1
             invoked = call.call_args.args
@@ -277,7 +258,6 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             concurrent_inverse_claim = True
             late_claim = await client.post("/api/calendar/workspace/respond", json=arguments)
             assert late_claim.status_code == 200
-            assert late_claim.json()["data"]["undo_available"] is False
             assert payload.get("inverse_claim")
 
     finally:
@@ -286,8 +266,8 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
 
 
 async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
-    # REQ-dashboard-api-069, REQ-dashboard-api-070: recovery is a durable read,
-    # including when the undo reply was lost after committing its reservation.
+    # REQ-dashboard-api-069: recovery is a durable read,
+    # including when an inverse claim was already committed.
     original_id, inverse_id = uuid.uuid4(), uuid.uuid4()
     rows = {}
     pending = {}
@@ -346,12 +326,10 @@ async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
             data = response.json()["data"]
             assert data["command_id"] == str(inverse_id) and data["approval_id"] == str(inverse_id)
             assert data["source_butler"] == "messenger" and data["status"] == "approved"
-            assert data["undo_available"] is False
             original = await client.get(
                 f"/api/calendar/workspace/responses/{original_id}?source_butler=messenger"
             )
             assert original.json()["data"]["command_id"] == str(original_id)
-            assert original.json()["data"]["undo_available"] is False
             pending[inverse_id]["status"] = "expired"
             expired = (await client.get(url)).json()["data"]
             assert (
@@ -365,7 +343,7 @@ async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
             assert (await client.get(url)).json()["data"]["status"] == "uncertain"
             rows[inverse_id]["action_result"] = {"status": "applied", "projection_available": True}
             applied = (await client.get(url)).json()["data"]
-            assert applied["status"] == "applied" and applied["undo_available"] is False
+            assert applied["status"] == "applied"
             assert applied["projection_available"] is True
             # Valid command with an unrelated original is still not this inverse.
             command = rows[inverse_id]["action_payload"]["command"]

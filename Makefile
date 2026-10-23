@@ -8,6 +8,7 @@ BASE ?= origin/main
 
 lint:
 	uv run ruff check src/ tests/
+	uv run --no-sync lint-imports
 
 # Identical nonmutating static survivors in the hosted guards job.
 check-lock:
@@ -130,7 +131,7 @@ test-ci-integration:
 	$(QG_GATE) run --tee --log "$$LOG" -- $(CI_INTEGRATION_PYTEST_ARGS); \
 	$(QG_GATE) verdict "$$LOG"
 
-# Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
+# Quality-gate default: parallel xdist (see docs/testing/ci.md).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
 # are not torn down mid-module (important for shared FastAPI app and module-scoped DB pools).
 test-qg:

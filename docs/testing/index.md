@@ -9,6 +9,8 @@
 - [Flaky-Test Quarantine](quarantine.md) — how flaky tests leave the blocking lanes, where they still run, how they come back
 - [Orphaned Test Containers](orphaned-testcontainers.md) — how pytest leaks Docker containers, how to tell a leak from a kept container, safe sweeping
 - [E2E Suite](e2e/README.md) — how to run the end-to-end suite and what each test file proves
+- [CI and Test Scope Policy](ci.md) — agent test ladder, gate verdicts, CI topology, CI guard predicates
+- [Test Traps](test-traps.md) — hard-won rules for writing, auditing and running tests
 
 ## Quick start
 
@@ -25,4 +27,4 @@ make test-e2e-validate  # E2E (Docker, ANTHROPIC_API_KEY, claude CLI); always -n
 Unit and integration are **marker selections**, not directories: both span `tests/` and `roster/`
 (the CI selections are `CI_UNIT_PYTEST_ARGS` and `CI_INTEGRATION_PYTEST_ARGS` in the `Makefile`).
 `pyproject.toml` defaults pytest to `-n 3 --dist loadfile`; E2E must override it with `-n 0`. The
-exact agent test ladder and CI-shaped final commands are in `AGENTS.md` (Test Scope Policy).
+exact agent test ladder and CI-shaped final commands are in [CI and test scope policy](ci.md).

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getCalendarResponseReceipt, respondToCalendarInvitation, undoCalendarWorkspaceMutation } from "@/api/index";
+import { respondToCalendarInvitation } from "@/api/index";
 import type { CalendarInvitationEntry, CalendarResponseReceipt, CalendarResponseRequest } from "@/api/types";
 import { useRegisterCommands } from "@/lib/command-registry";
 
-type Receipt = CalendarResponseReceipt & { inverse?: boolean };
+type Receipt = CalendarResponseReceipt;
 
 type Choice = CalendarResponseRequest["response_status"];
 const choices: { value: Choice; label: string; key: string }[] = [
@@ -22,7 +22,6 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
 }) {
   const requests = useRef(new Map<string, CalendarResponseRequest>());
   const busy = useRef(new Set<string>());
-  const inverseOrigins = useRef(new Map<string, CalendarResponseReceipt>());
   const requestOwners = useRef(new Map<string, string>());
   const [pending, setPending] = useState(new Set<string>());
   const [receipts, setReceipts] = useState(new Map<string, Receipt>());
@@ -85,50 +84,6 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
   }))), [controls, respond]);
   useRegisterCommands(commands);
 
-  async function undo(entryId: string, receipt: CalendarResponseReceipt) {
-    if (!receipt.undo_available || !receipt.command_id || busy.current.has(entryId)) return;
-    // A network failure can follow a committed inverse reservation. Never
-    // offer a second inverse merely because this HTTP response was lost.
-    inverseOrigins.current.set(entryId, receipt);
-    setReceipts((previous) => new Map(previous).set(entryId, { ...receipt, undo_available: false }));
-    submitted.current = entryId;
-    busy.current.add(entryId);
-    setPending(new Set(busy.current));
-    try {
-      const response = await undoCalendarWorkspaceMutation(receipt.command_id);
-      const next = response.data.result as unknown as CalendarResponseReceipt;
-      onObserved?.(next);
-      // An inverse has its own actual receipt. No optimistic "undone" from a
-      // successful HTTP response or pending approval alone.
-      setReceipts((previous) => new Map(previous).set(entryId, {
-        ...next, undo_available: false, inverse: true,
-      }));
-    } catch {
-      setErrors((previous) => new Map(previous).set(entryId, "Undo unavailable. The original response receipt is retained."));
-    } finally {
-      busy.current.delete(entryId);
-      setPending(new Set(busy.current));
-    }
-  }
-
-  async function checkInverse(entryId: string) {
-    const original = inverseOrigins.current.get(entryId);
-    if (!original?.command_id || busy.current.has(entryId)) return;
-    busy.current.add(entryId);
-    setPending(new Set(busy.current));
-    try {
-      const response = await getCalendarResponseReceipt(original.command_id, original.source_butler, true);
-      setReceipts((previous) => new Map(previous).set(entryId, { ...response.data, inverse: true, undo_available: false }));
-      setErrors((previous) => { const next = new Map(previous); next.delete(entryId); return next; });
-      onObserved?.(response.data);
-    } catch {
-      setErrors((previous) => new Map(previous).set(entryId, "Undo outcome unavailable. The last response receipt is retained."));
-    } finally {
-      busy.current.delete(entryId);
-      setPending(new Set(busy.current));
-    }
-  }
-
   if (controls.length === 0 && receipts.size === 0 && errors.size === 0) return null;
   return <section aria-label="Invitation responses" className="space-y-3 border-b border-border py-3">
     {controls.map((entry) => <div key={entry.entry_id} role="group" aria-label={`Respond to ${entry.title}`}
@@ -159,7 +114,7 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
           }}>Check response outcome</button> : null}
     </div>)}
     {Array.from(receipts, ([entryId, receipt]) => <div key={entryId} className="space-y-1 text-sm">
-      <p role="status">{receipt.status === "applied" ? (receipt.inverse ? "Previous response restored." : "Response applied.") : receipt.status === "noop" ? "Response already matches; no change made."
+      <p role="status">{receipt.status === "applied" ? "Response applied." : receipt.status === "noop" ? "Response already matches; no change made."
         : receipt.status === "uncertain" ? "Response outcome uncertain; no second write will be attempted."
         : receipt.status === "failed" ? "Response rejected or unavailable; no applied receipt."
         : receipt.status === "rejected" ? (receipt.reason === "response_approval_expired" ? "Response approval expired." : "Response approval rejected.") : "Response awaiting approved execution."}
@@ -167,17 +122,12 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
       <button type="button" className={buttonClass}
         ref={(element) => { if (element) receiptButtons.current.set(entryId, element); else receiptButtons.current.delete(entryId); }}
         onClick={() => setReview(entryId)}>Review response receipt</button>
-      {inverseOrigins.current.has(entryId) && (!receipt.inverse || ["pending_approval", "approved", "uncertain"].includes(receipt.status))
-        ? <button type="button" className={buttonClass} disabled={pending.has(entryId)}
-          onClick={() => { void checkInverse(entryId); }}>Check response outcome</button>
-        : ["pending_approval", "approved"].includes(receipt.status) && controls.find((entry) => entry.entry_id === entryId)
+      {["pending_approval", "approved"].includes(receipt.status) && controls.find((entry) => entry.entry_id === entryId)
           ? <button type="button" className={buttonClass} disabled={pending.has(entryId)} onClick={() => {
             const entry = controls.find((item) => item.entry_id === entryId);
             const request = requests.current.get(entryId);
             if (entry && request) void respond(entry, request.response_status);
           }}>Check response outcome</button> : null}
-      {receipt.undo_available ? <button type="button" className={buttonClass} disabled={pending.has(entryId)}
-        onClick={() => { void undo(entryId, receipt); }}>Undo response</button> : null}
       {review === entryId ? <div role="region" aria-label="Response receipt" className="rounded border border-border p-3">
         <p>Owning source: {receipt.source_butler}. Status: {receipt.status}.</p>
         <p>Command: {receipt.command_id}. Approval: {receipt.approval_id}.</p>

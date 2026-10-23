@@ -28,6 +28,7 @@ from butlers.api.routers.approvals import (
     _row_to_autonomy_suggestion,
 )
 from butlers.modules.approvals.park import park_prepared_action
+from butlers.modules.approvals.previews import args_digest
 
 pytestmark = pytest.mark.unit
 
@@ -1635,11 +1636,13 @@ async def test_approve_audits_action(app):
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
     pending_row["id"] = action_id
+    pending_row["tool_name"] = "email_send_message"
+    pending_row["tool_args"] = {"to": "user@example.com", "subject": "Hello", "body": "Welcome"}
 
     approved_result = {
         "id": str(action_id),
-        "tool_name": "send_email",
-        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "tool_name": "email_send_message",
+        "tool_args": {"to": "user@example.com", "subject": "Hello", "body": "Welcome"},
         "status": "approved",
         "requested_at": _NOW.isoformat(),
         "butler": "general",
@@ -1700,7 +1703,15 @@ async def test_approve_audits_action(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+                resp = await client.post(
+                    f"/api/approvals/{action_id}/approve",
+                    json={
+                        "displayed_call": {
+                            "tool_name": pending_row["tool_name"],
+                            "args_digest": args_digest(pending_row["tool_args"]),
+                        }
+                    },
+                )
 
     assert resp.status_code == 200, resp.text
     # audit.append must have been called with approval.approve
@@ -1725,12 +1736,14 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
     pending_row["id"] = action_id
+    pending_row["tool_name"] = "email_send_message"
+    pending_row["tool_args"] = {"to": "user@example.com", "subject": "Hello", "body": "Welcome"}
 
     # approve_action returns the row in 'approved' state (dispatch not yet run).
     approved_result = {
         "id": str(action_id),
-        "tool_name": "send_email",
-        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "tool_name": "email_send_message",
+        "tool_args": {"to": "user@example.com", "subject": "Hello", "body": "Welcome"},
         "status": "approved",
         "requested_at": _NOW.isoformat(),
         "butler": "general",
@@ -1791,7 +1804,15 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+                resp = await client.post(
+                    f"/api/approvals/{action_id}/approve",
+                    json={
+                        "displayed_call": {
+                            "tool_name": pending_row["tool_name"],
+                            "args_digest": args_digest(pending_row["tool_args"]),
+                        }
+                    },
+                )
 
     assert resp.status_code == 200, resp.text
     body = resp.json()["data"]
@@ -1814,11 +1835,13 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
     action_id = uuid4()
     pending_row = _make_pending_row(status="pending")
     pending_row["id"] = action_id
+    pending_row["tool_name"] = "email_send_message"
+    pending_row["tool_args"] = {"to": "user@example.com", "subject": "Hello", "body": "Welcome"}
 
     approved_result = {
         "id": str(action_id),
-        "tool_name": "send_email",
-        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "tool_name": "email_send_message",
+        "tool_args": {"to": "user@example.com", "subject": "Hello", "body": "Welcome"},
         "status": "approved",
         "requested_at": _NOW.isoformat(),
         "butler": "general",
@@ -1891,7 +1914,15 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
                 ) as client:
-                    resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+                    resp = await client.post(
+                        f"/api/approvals/{action_id}/approve",
+                        json={
+                            "displayed_call": {
+                                "tool_name": pending_row["tool_name"],
+                                "args_digest": args_digest(pending_row["tool_args"]),
+                            }
+                        },
+                    )
 
     assert resp.status_code == 200, resp.text
     body = resp.json()["data"]
