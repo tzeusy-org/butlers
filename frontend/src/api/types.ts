@@ -1309,36 +1309,6 @@ export interface CalendarAuditParams {
   butler?: string;
 }
 
-/**
- * Audit action types that have a reconstructable inverse mutation and can be
- * reversed via POST /api/calendar/workspace/undo/{action_id}. Mirrors the
- * backend ``_UNDO_INVERSE_TOOL`` map in
- * ``api/routers/calendar_workspace.py`` — user-lane create/update/delete only.
- */
-export const CALENDAR_UNDOABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
-  "workspace_user_create",
-  "workspace_user_update",
-  "workspace_user_delete",
-]);
-
-/**
- * Response payload for POST /api/calendar/workspace/undo/{action_id}.
- *
- * The endpoint synthesizes and dispatches the inverse mutation server-side
- * with a freshly generated ``request_id`` (``undo-<uuid>``) — the client sends
- * no body and does not supply the request_id; it is returned here so the UI can
- * surface/audit the reversal. ``undone`` is ``true`` only when the inverse
- * dispatch succeeded and the original action was marked undone.
- */
-export interface CalendarUndoResponse {
-  action_id: string;
-  action_type: string;
-  inverse_tool: string;
-  request_id: string;
-  undone: boolean;
-  result: Record<string, unknown>;
-}
-
 /** Source-level freshness metadata for workspace rendering. */
 export interface CalendarWorkspaceSourceFreshness {
   source_id: string;
@@ -1422,65 +1392,6 @@ export interface CalendarWorkspaceReadResponse {
   entries_source_available?: boolean;
 }
 
-/** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */
-export type CalendarDedupMatchStrategy = "exact" | "balanced" | "aggressive";
-
-/**
- * The active cross-source dedup rules (workspace-global).
- *
- * `match_strategy` selects which collapse passes run; `noisy_threshold` is the
- * minimum cluster size for a cluster to be surfaced on the review panel.
- */
-export interface CalendarDedupRulesModel {
-  match_strategy: CalendarDedupMatchStrategy;
-  noisy_threshold: number;
-}
-
-/** PATCH body for the dedup rules; omitted fields are left unchanged. */
-export interface CalendarDedupRulesUpdateRequest {
-  match_strategy?: CalendarDedupMatchStrategy;
-  noisy_threshold?: number;
-}
-
-/**
- * One collapsed cross-source duplicate cluster surfaced for review.
- *
- * `kept_entry` is the survivor the read keeps; `duplicate_entries` are the
- * copies the dedup collapses away. When `keep_separate` is true the user has
- * pinned this cluster so the read does NOT collapse it.
- */
-export interface CalendarDuplicateCluster {
-  cluster_key: string;
-  match_pass: "origin_ref" | "title";
-  member_count: number;
-  keep_separate: boolean;
-  kept_entry: UnifiedCalendarEntry;
-  duplicate_entries: UnifiedCalendarEntry[];
-}
-
-/**
- * Response payload for GET /api/calendar/workspace/duplicates.
- *
- * `available` is `false` only when the underlying read could not run; an empty
- * `clusters` list with `available=true` genuinely means no duplicates were
- * collapsed in the window.
- */
-export interface CalendarDuplicatesResponse {
-  clusters: CalendarDuplicateCluster[];
-  rules: CalendarDedupRulesModel;
-  available: boolean;
-}
-
-/** Query params for GET /api/calendar/workspace/duplicates. */
-export interface CalendarDuplicatesParams {
-  view: "user" | "butler";
-  start: string;
-  end: string;
-  timezone?: string;
-  butlers?: string[];
-  sources?: string[];
-}
-
 // ---------------------------------------------------------------------------
 // Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 // ---------------------------------------------------------------------------
@@ -1558,7 +1469,6 @@ export interface CalendarResponseReceipt {
   approval_id: string | null;
   source_butler: string;
   projection_available: boolean;
-  undo_available: boolean;
   reason: string | null;
 }
 
@@ -1577,20 +1487,6 @@ export interface CalendarInvitationsParams {
   timezone?: string;
   limit?: number;
   cursor?: string;
-}
-
-/** Body to pin/unpin a duplicate cluster as keep-separate. */
-export interface CalendarKeepSeparateRequest {
-  cluster_key: string;
-  keep_separate: boolean;
-  match_pass?: "origin_ref" | "title";
-  label?: string;
-}
-
-/** Result of a keep-separate toggle. */
-export interface CalendarKeepSeparateResponse {
-  cluster_key: string;
-  keep_separate: boolean;
 }
 
 /** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
@@ -1774,34 +1670,6 @@ export interface CalendarWorkspaceMetaResponse {
   sources_available?: boolean;
 }
 
-/** Query parameters for GET /api/calendar/export/ics (one-shot .ics download). */
-export interface CalendarIcsExportParams {
-  view: CalendarWorkspaceView;
-  /** Inclusive ISO-8601 range start. */
-  start: string;
-  /** Exclusive ISO-8601 range end. */
-  end: string;
-  butlers?: string[];
-  sources?: string[];
-  status?: CalendarWorkspaceStatusFacet;
-  source_type?: UnifiedCalendarSourceType;
-}
-
-/** One event created from an imported .ics payload. */
-export interface CalendarIcsImportedEvent {
-  title: string;
-  start_at: string;
-  all_day: boolean;
-}
-
-/** Result of POST /api/calendar/import/ics (import-with-dedup). */
-export interface CalendarIcsImportResponse {
-  parsed: number;
-  imported: number;
-  skipped_duplicates: number;
-  imported_events: CalendarIcsImportedEvent[];
-}
-
 /** Per-account Google Calendar connector health state. */
 export type CalendarAccountHealthState =
   "healthy" | "degraded" | "error" | "unknown";
@@ -1949,20 +1817,15 @@ export interface CalendarWorkspaceSyncResponse {
   triggered_count: number;
 }
 
-/** Allowed mutation actions for user-view calendar events. */
-export type CalendarWorkspaceUserMutationAction =
-  "create" | "update" | "delete";
+/** The only user-view calendar mutation the dashboard issues (operator view). */
+export type CalendarWorkspaceUserMutationAction = "create";
 
 /** Allowed actions for butler-lane event mutations. */
 export type CalendarWorkspaceButlerMutationAction =
   "create" | "update" | "delete" | "toggle" | "dismiss" | "snooze";
 
 /**
- * Request payload for POST /api/calendar/workspace/user-events.
- *
- * For an update, linked people use `entity_ids` as a replacement set. Sending
- * `entity_ids: []` together with `clear_entity_ids: true` deliberately removes
- * every link; omitted or empty IDs without that flag preserve existing links.
+ * Request payload for POST /api/calendar/workspace/user-events (create only).
  */
 export interface CalendarWorkspaceUserMutationRequest {
   butler_name: string;
@@ -1985,48 +1848,6 @@ export interface CalendarSuggestedSlot {
   start_at: string; // ISO 8601
   end_at: string; // ISO 8601
   timezone: string;
-}
-
-/** Part-of-day bucket for the free-slot finder's soft ranking constraints. */
-export type CalendarFindTimePartOfDay = "morning" | "afternoon" | "evening";
-
-/** Structured (pre-parsed) constraints for POST /api/calendar/workspace/find-time. */
-export interface CalendarFindTimeConstraints {
-  part_of_day?: CalendarFindTimePartOfDay | null;
-  /** iCal weekday codes (MO…SU) to rank lower. */
-  avoid_weekdays?: string[];
-}
-
-/** Request payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeRequest {
-  butler_name: string;
-  duration_minutes: number;
-  search_start: string; // ISO 8601
-  search_end: string; // ISO 8601
-  calendar_ids?: string[] | null;
-  constraints?: CalendarFindTimeConstraints | null;
-  limit?: number;
-}
-
-/** Response payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeResponse {
-  /** Ranked open slots, earliest-first with constraint matches preferred. */
-  slots: CalendarSuggestedSlot[];
-  duration_minutes: number;
-  calendar_ids: string[];
-  /**
-   * Honest degraded signal (fail-open). `false` when the cross-source free/busy
-   * lookup could not produce availability (butler/MCP transport failure or a
-   * structured provider authentication/request failure); `slots` is then empty
-   * because nothing was checked — NOT because the calendar is open. `reason` is
-   * always the fixed, content-blind message
-   * `Free/busy lookup unavailable; try again shortly.`; raw provider diagnostics
-   * are never exposed. Render "free/busy unavailable" with `reason`, not "no
-   * open slots".
-   */
-  available: boolean;
-  /** Fixed, content-blind unavailable reason when `available` is `false`. */
-  reason: string | null;
 }
 
 /** Response payload for calendar workspace mutation endpoints. */
@@ -3639,7 +3460,19 @@ export interface ApprovalsFlatListResponse {
 }
 
 /** Full dossier for GET /api/approvals/{id}. */
+export interface DisplayedApprovalCall {
+  tool_name: string;
+  args_digest: string;
+}
+
+export interface ApprovalCallPreview {
+  title: string;
+  facts: { label: string; value: string }[];
+  displayed_call: DisplayedApprovalCall;
+}
+
 export interface ApprovalDetail {
+  call_preview?: ApprovalCallPreview | null;
   id: string;
   title: string;
   butler: string;
@@ -3699,6 +3532,7 @@ export interface ApprovalsPolicy {
 }
 
 export interface ApprovalApproveRequest {
+  displayed_call?: DisplayedApprovalCall | null;
   edits?: Record<string, unknown> | null;
 }
 

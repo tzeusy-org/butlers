@@ -13,6 +13,8 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTACTS_ENABLED_BUTLERS = ("general", "health", "relationship")
+# Contacts sync has one owner: Relationship owns entities (module-contacts spec).
+CONTACTS_SYNC_OWNER = "relationship"
 CONTACTS_EXCLUDED_BUTLERS = ("switchboard", "messenger")
 
 
@@ -30,7 +32,8 @@ def test_contacts_rollout_config_and_docs() -> None:
         assert isinstance(contacts, dict), f"{butler_name} is missing [modules.contacts]"
         validated = ContactsConfig.model_validate(contacts)
         assert "google" in validated.provider_types
-        assert validated.sync.enabled is True and validated.sync.interval_minutes == 15
+        assert validated.sync.enabled is (butler_name == CONTACTS_SYNC_OWNER)
+        assert validated.sync.interval_minutes == 15
 
     for butler_name in CONTACTS_EXCLUDED_BUTLERS:
         assert "contacts" not in _load_butler_toml(butler_name).get("modules", {})
@@ -38,3 +41,14 @@ def test_contacts_rollout_config_and_docs() -> None:
     guidance = (REPO_ROOT / "docs/modules/contacts.md").read_text().lower()
     for frag in ("google_oauth_client_id", "google_oauth_client_secret", "google_oauth_refresh"):
         assert frag in guidance
+
+
+def test_exactly_one_roster_butler_syncs_contacts() -> None:
+    """Every roster butler is checked, so a new butler cannot silently become a second syncer."""
+    syncing = []
+    for toml_path in sorted((REPO_ROOT / "roster").glob("*/butler.toml")):
+        contacts = _load_butler_toml(toml_path.parent.name).get("modules", {}).get("contacts")
+        if contacts is not None and ContactsConfig.model_validate(contacts).sync.enabled:
+            syncing.append(toml_path.parent.name)
+
+    assert syncing == [CONTACTS_SYNC_OWNER]

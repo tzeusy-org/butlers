@@ -1,6 +1,6 @@
 /**
  * Calendar workspace toolbar: view and range pickers, previous/today/next,
- * the Activity/Find time/Proposals/Duplicates panel toggles, and the status,
+ * the Activity/Proposals panel toggles, and the status,
  * type, overlays, calendar and source filters.
  */
 
@@ -21,13 +21,11 @@ import {
   type CalendarRange,
 } from "@/pages/calendar/workspace-model";
 
-export type CalendarPanel = "activity" | "findTime" | "proposals" | "duplicates";
+export type CalendarPanel = "activity" | "proposals";
 
 const PANEL_BUTTONS: Array<{ panel: CalendarPanel; label: string }> = [
   { panel: "activity", label: "Activity" },
-  { panel: "findTime", label: "Find time" },
   { panel: "proposals", label: "Proposals" },
-  { panel: "duplicates", label: "Duplicates" },
 ];
 
 interface CalendarToolbarProps {

@@ -276,10 +276,12 @@ The page MUST support two views controlled by URL search parameters:
 URL parameters MUST include: `view` (user/butler), `range` (month/week/day/list), `anchor` (ISO date), `source` (source key filter), `calendar` (calendar ID filter). All parameters MUST be persisted in the URL and synchronized via `useSearchParams`.
 
 The page MUST contain:
-- A header with title "Calendar Workspace", timezone badge, entry count badge, "Sync now" button, and context-appropriate create buttons ("Create event" in user view, "Create butler event" in butler view).
+- A header with title "Calendar Workspace", timezone badge, entry count badge, "Sync now" button, and a "Create butler event" button in butler view.
 - A toolbar card with: View toggle (User/Butler), Range selector (Month/Week/Day/List), navigation controls (Prev/Today/Next), and calendar/source filter dropdowns (user view only).
 - A main content area rendering the appropriate view mode.
-- A read-only "Find time" panel that consumes `POST /api/calendar/workspace/find-time` and distinguishes unavailable free/busy from a successful empty slot result.
+- In user view, a natural-language quick-add bar that parses a phrase into an editable draft and creates a provider event only after the user confirms, through `POST /api/calendar/workspace/user-events` with `action: "create"` and a fresh `request_id`.
+
+The workspace is an operator view (owner decision bu-kf3n4i = A). The page MUST NOT offer Google-event edit or delete dialogs, drag or resize of events, Google-series recurrence-scope editing, a free-slot ("Find time") search, duplicate review or dedup-rule controls, `.ics` import, export or subscribe, or undo of a workspace mutation. Butlers and chat keep their Google Calendar writes (event create, update and delete, instance edits, attendees and proposals) through the calendar MCP tools, which this requirement does not touch.
 
 #### Scenario: View/range state survives page reload
 
@@ -293,29 +295,22 @@ The page MUST contain:
 - **THEN** the calendar and source filter dropdowns MUST be hidden
 - **AND** the `source` and `calendar` URL parameters MUST be removed
 
-#### Scenario: Find-time provider failure is visibly unavailable
+#### Scenario: Quick-add writes only after confirmation
 
-- **WHEN** the find-time response has `available=false`, an empty `slots` list, and a safe `reason`
-- **THEN** the panel MUST render a named free/busy-unavailable state using that reason
-- **AND** it MUST NOT render the successful "No open slots match those constraints in the selected window" empty state
-- **AND** it MUST NOT offer a slot-selection or event-creation affordance for that result
-
-#### Scenario: Find-time successful zero-slot result remains empty, not degraded
-
-- **WHEN** the find-time response has `available=true` and an empty `slots` list
-- **THEN** the panel MUST render the existing "No open slots match those constraints in the selected window" empty state
-- **AND** it MUST NOT render the free/busy-unavailable state
+- **WHEN** the user submits a quick-add phrase in user view
+- **THEN** the parsed draft MUST be shown for editing and nothing MUST be written
+- **AND** confirming the draft MUST send one `create` mutation to `POST /api/calendar/workspace/user-events` with a fresh `request_id`
 
 ### Requirement: Calendar user view with grid and list layouts
 
 In user view, the calendar MUST support four range modes:
 
-1. **Month** -- a 6x7 grid (42 cells starting from Monday). Each cell MUST display: the day number (dimmed if outside current month, highlighted with a ring if today), and truncated event titles. Clicking a day cell SHALL create a new event on that date (if writable calendars exist).
+1. **Month** -- a 6x7 grid (42 cells starting from Monday). Each cell MUST display: the day number (dimmed if outside current month, highlighted with a ring if today), and truncated event titles. Day cells are read-only and MUST NOT create events.
 2. **Week** -- a 7-column grid displaying events for each day of the week.
 3. **Day** -- a single-column display for the selected date.
 4. **List** -- a table spanning 30 days from the anchor with columns: Time (formatted window or "All day"), Title, Source (badge from source key).
 
-Editable entries (those with `view=user`, `source_type=provider_event`, a `provider_event_id`, and `editable=true`) MUST display edit and delete buttons.
+Provider events are read-only in the dashboard: entries MUST NOT display edit or delete buttons and MUST NOT be draggable or resizable. Selecting an entry opens a read-only detail view.
 
 #### Scenario: Month grid highlights today
 
@@ -346,26 +341,17 @@ Recurring events from the same parent MUST be capped at 10 instances per day per
 
 ### Requirement: Calendar event creation and editing dialogs
 
-The calendar workspace MUST provide two dialog types for event mutations:
+The calendar workspace MUST provide one dialog type for event mutations, and MUST NOT provide a dialog to create, edit or delete a provider (Google) calendar event:
 
-1. **User event dialog** -- for creating/editing provider calendar events. Fields: source selector (writable calendars only), title (required), start datetime, end datetime, timezone, description (textarea), location. Validation: title required, start/end must be valid, end must be after start.
+1. **Butler event dialog** -- for creating/editing scheduled tasks and reminders. Fields: butler lane selector, event kind (scheduled_task / butler_reminder), title (required), start datetime, end datetime (required for scheduled_task), timezone, recurrence frequency (None/Daily/Weekly/Monthly/Yearly), optional until-at boundary, cron expression (for scheduled tasks without RRULE). Validation: title required, start required, scheduled tasks require either recurrence frequency or cron, end must be after start for scheduled tasks.
 
-2. **Butler event dialog** -- for creating/editing scheduled tasks and reminders. Fields: butler lane selector, event kind (scheduled_task / butler_reminder), title (required), start datetime, end datetime (required for scheduled_task), timezone, recurrence frequency (None/Daily/Weekly/Monthly/Yearly), optional until-at boundary, cron expression (for scheduled tasks without RRULE). Validation: title required, start required, scheduled tasks require either recurrence frequency or cron, end must be after start for scheduled tasks.
+The butler event dialog MUST support create and edit modes, determined by the presence of an existing entry.
 
-Both dialogs MUST support create and edit modes, determined by the presence of an existing entry.
+#### Scenario: Provider events have no edit surface
 
-#### Scenario: Create user event on specific date
-
-- **WHEN** the user clicks a day cell in month view on March 20
-- **THEN** the user event dialog MUST open in create mode
-- **AND** the start time MUST default to the next full hour on March 20
-- **AND** the end time MUST default to 30 minutes after the start
-
-#### Scenario: Delete user event with confirmation
-
-- **WHEN** the user clicks delete on a user calendar event
-- **THEN** a confirmation dialog MUST appear with the event title
-- **AND** confirming MUST send a `delete` mutation with the `provider_event_id`
+- **WHEN** the user views a provider calendar event in user view
+- **THEN** no edit, delete or drag affordance MUST be offered for it
+- **AND** the only direct provider-event create, edit or delete control is the confirmed quick-add create; approval-gated invitation answers, proposal approve/decline, primary-calendar selection and source controls stay available
 
 ---
 
@@ -394,7 +380,7 @@ The calendar workspace MUST use the following TanStack Query hooks:
 | `useCalendarWorkspace(params)` | Query | 30s |
 | `useCalendarWorkspaceMeta()` | Query | 60s |
 | `useSyncCalendarWorkspace()` | Mutation | Invalidates workspace + meta |
-| `useMutateCalendarWorkspaceUserEvent()` | Mutation | Invalidates workspace + meta |
+| `useMutateCalendarWorkspaceUserEvent()` (create only, for quick-add) | Mutation | Invalidates workspace + meta |
 | `useMutateCalendarWorkspaceButlerEvent()` | Mutation | Invalidates workspace + meta |
 
 All mutation hooks MUST invalidate both `calendar-workspace` and `calendar-workspace-meta` query keys on success.

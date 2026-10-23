@@ -69,8 +69,8 @@ uv run ruff format src/ tests/                         # Format only
 committed, staged, unstaged, and untracked changes but does **not** execute tests. `make test-qg`
 is a local `tests/` gate, not universal coverage: it omits roster, root DB/migration suites, and
 the CI-shaped selection. The exact agent ladder and final CI-shaped commands live in
-`AGENTS.md` (§ Test Scope Policy). `pytest_gate.py` receipts require a positive terminator before a
-run is called green; `UNKNOWN` is never a pass.
+`docs/testing/ci.md` (summary in `AGENTS.md` § Test Scope Policy). `pytest_gate.py` receipts
+require a positive terminator before a run is called green; `UNKNOWN` is never a pass.
 
 ## Key Conventions
 

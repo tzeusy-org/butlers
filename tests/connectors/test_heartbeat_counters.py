@@ -217,7 +217,7 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
     from uuid import uuid4
 
     from butlers.connectors.gmail_policy import GmailPolicyEvaluator
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
 
     db = AsyncMock()
     db.fetch.return_value = []

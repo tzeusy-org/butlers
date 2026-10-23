@@ -994,15 +994,15 @@ async def test_model_attempts_returns_real_rows(app):
 
     with (
         patch(
-            "butlers.connectors.discretion_dispatcher.resolve_model_with_effective_tier",
+            "butlers.core.model_call.resolve_model_with_effective_tier",
             AsyncMock(return_value=resolved),
         ),
         patch(
-            "butlers.connectors.discretion_dispatcher.apply_spend_routing_rules",
+            "butlers.core.model_call.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=local_candidate)),
         ),
         patch(
-            "butlers.connectors.discretion_dispatcher.check_token_quota",
+            "butlers.core.model_call.check_token_quota",
             AsyncMock(
                 return_value=QuotaStatus(
                     allowed=True,
@@ -1015,11 +1015,11 @@ async def test_model_attempts_returns_real_rows(app):
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch(
-            "butlers.connectors.discretion_dispatcher.next_same_tier_candidate",
+            "butlers.core.model_call.next_same_tier_candidate",
             AsyncMock(return_value=None),
         ),
         patch(
-            "butlers.connectors.discretion_dispatcher.record_dispatch_attempt",
+            "butlers.core.model_call.record_dispatch_attempt",
             AsyncMock(),
         ) as record_attempt,
     ):

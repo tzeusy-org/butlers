@@ -40,31 +40,20 @@ import type {
   ButlerSkill,
   ButlerSummary,
   CalendarAccountsResponse,
-  CalendarIcsExportParams,
-  CalendarIcsImportResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
-  CalendarUndoResponse,
   CalendarDayBriefingResponse,
-  CalendarDedupRulesModel,
-  CalendarDedupRulesUpdateRequest,
-  CalendarDuplicatesParams,
-  CalendarDuplicatesResponse,
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
   CalendarInvitationsResponse,
   CalendarResponseRequest,
   CalendarResponseReceipt,
-  CalendarKeepSeparateRequest,
-  CalendarKeepSeparateResponse,
   CalendarPrepResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
   CalendarProposalActionResponse,
   CalendarSourceToggleResponse,
-  CalendarWorkspaceFindTimeRequest,
-  CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
@@ -1562,30 +1551,6 @@ export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspac
 }
 
 /**
- * Fetch the cross-source duplicate clusters the read-model collapses, plus the
- * active dedup rules. Fail-open server-side: a read failure yields
- * `available: false` with an empty cluster list, never an error.
- */
-export function getCalendarWorkspaceDuplicates(
-  params: CalendarDuplicatesParams,
-): Promise<ApiResponse<CalendarDuplicatesResponse>> {
-  const sp = new URLSearchParams();
-  sp.set("view", params.view);
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
-  params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
-  });
-  params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
-  });
-  return apiFetch<ApiResponse<CalendarDuplicatesResponse>>(
-    `/calendar/workspace/duplicates?${sp.toString()}`,
-  );
-}
-
-/**
  * Scan the visible window for conflicts / overcommitment (the radar).
  *
  * Read-only and fail-open: a degraded response carries `issues_available=false`
@@ -1638,29 +1603,6 @@ export function respondToCalendarInvitation(
   return apiFetch<ApiResponse<CalendarResponseReceipt>>("/calendar/workspace/respond", {
     method: "POST", body: JSON.stringify(body),
   });
-}
-
-/** Persist the cross-source dedup match-strategy / noisy-threshold settings. */
-export function patchCalendarDedupRules(
-  body: CalendarDedupRulesUpdateRequest,
-): Promise<ApiResponse<CalendarDedupRulesModel>> {
-  return apiFetch<ApiResponse<CalendarDedupRulesModel>>("/calendar/workspace/dedup-rules", {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
-}
-
-/** Pin or unpin a duplicate cluster as keep-separate (per-cluster override). */
-export function setCalendarKeepSeparate(
-  body: CalendarKeepSeparateRequest,
-): Promise<ApiResponse<CalendarKeepSeparateResponse>> {
-  return apiFetch<ApiResponse<CalendarKeepSeparateResponse>>(
-    "/calendar/workspace/duplicates/keep-separate",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
 }
 
 /**
@@ -1721,27 +1663,6 @@ export function searchCalendarWorkspace(
   );
 }
 
-/**
- * Find ranked open time slots for the "Find time" panel.
- *
- * `available: false` means the free/busy lookup was unavailable because of a
- * transport failure or structured provider authentication/request failure, not
- * that the window had no open slots. Its `reason` is the fixed, content-blind
- * message `Free/busy lookup unavailable; try again shortly.`; callers should
- * render the unavailable state rather than the empty success state.
- */
-export function findCalendarWorkspaceTime(
-  body: CalendarWorkspaceFindTimeRequest,
-): Promise<ApiResponse<CalendarWorkspaceFindTimeResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceFindTimeResponse>>(
-    "/calendar/workspace/find-time",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
-}
-
 /** Trigger calendar workspace sync globally or for a selected source. */
 export function syncCalendarWorkspace(
   body: CalendarWorkspaceSyncRequest,
@@ -1755,95 +1676,6 @@ export function syncCalendarWorkspace(
 /** List connected Google accounts joined with Google Calendar connector health. */
 export function getCalendarAccounts(): Promise<ApiResponse<CalendarAccountsResponse>> {
   return apiFetch<ApiResponse<CalendarAccountsResponse>>("/calendar/accounts");
-}
-
-/**
- * Resolve an API path to an absolute URL. `API_BASE_URL` is usually relative
- * (`/api`), but the ICS export/subscribe URLs must be absolute so they work in
- * an `<a download>` and when copied into an external calendar app.
- */
-function absoluteApiUrl(path: string): string {
-  if (/^https?:\/\//i.test(API_BASE_URL)) return `${API_BASE_URL}${path}`;
-  const origin =
-    typeof window !== "undefined" && window.location ? window.location.origin : "";
-  return `${origin}${API_BASE_URL}${path}`;
-}
-
-function calendarIcsExportSearchParams(
-  params: CalendarIcsExportParams,
-): URLSearchParams {
-  const sp = new URLSearchParams();
-  sp.set("view", params.view);
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
-  });
-  params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
-  });
-  if (params.status != null) sp.set("status", params.status);
-  if (params.source_type != null) sp.set("source_type", params.source_type);
-  return sp;
-}
-
-/**
- * Build the absolute download URL for the one-shot `.ics` export
- * (`GET /api/calendar/export/ics`). Mirrors the workspace `view` / range /
- * facet filters so the export matches what the user currently sees.
- */
-export function calendarIcsExportUrl(params: CalendarIcsExportParams): string {
-  return absoluteApiUrl(
-    `/calendar/export/ics?${calendarIcsExportSearchParams(params).toString()}`,
-  );
-}
-
-/**
- * Absolute `https`/`http` URL of the live subscribe feed
- * (`GET /api/calendar/subscribe.ics`) — a read-only, self-refreshing ICS feed an
- * external calendar app can subscribe to.
- */
-export function calendarSubscribeUrl(): string {
-  return absoluteApiUrl("/calendar/subscribe.ics");
-}
-
-/**
- * `webcal://` form of {@link calendarSubscribeUrl}. Most desktop/mobile calendar
- * apps register the `webcal:` scheme and add the feed as a live subscription
- * when the user opens this URL.
- */
-export function calendarSubscribeWebcalUrl(): string {
-  return calendarSubscribeUrl().replace(/^https?:\/\//i, "webcal://");
-}
-
-/**
- * Import an uploaded `.ics` file into a calendar-enabled butler, deduped against
- * existing workspace entries (`POST /api/calendar/import/ics`). Sends multipart
- * form-data; the browser sets the `Content-Type` boundary, so this does not go
- * through {@link apiFetch} (which forces a JSON content type).
- */
-export async function importCalendarIcs(args: {
-  file: File;
-  butlerName: string;
-  calendarId?: string | null;
-}): Promise<ApiResponse<CalendarIcsImportResponse>> {
-  const form = new FormData();
-  form.append("file", args.file);
-  form.append("butler_name", args.butlerName);
-  if (args.calendarId) form.append("calendar_id", args.calendarId);
-
-  const response = await ownerFetch(`${API_BASE_URL}/calendar/import/ics`, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body: form,
-  });
-
-  if (!response.ok) {
-    const { code, message, detail } = await parseErrorBody(response, "Import failed");
-    throw new ApiError(code, message, response.status, detail);
-  }
-
-  return (await response.json()) as ApiResponse<CalendarIcsImportResponse>;
 }
 
 /** Enable or disable a single calendar as a sync source. */
@@ -1981,27 +1813,6 @@ export function getCalendarWorkspaceEntry(
     `/calendar/workspace/entries/${encodeURIComponent(entryId)}${qs ? `?${qs}` : ""}`,
   );
 }
-
-/**
- * Reverse a single previously-applied calendar mutation —
- * POST /calendar/workspace/undo/{action_id}.
- *
- * The endpoint synthesizes the inverse mutation from the logged
- * ``calendar_action_log`` row and dispatches it with a freshly generated
- * server-side ``request_id`` (returned on the response); the client sends no
- * body. Throws {@link ApiError} with status 404 (unknown action), 409 (action
- * not ``applied`` / already undone), or 422 (missing pre-state or no
- * reconstructable inverse).
- */
-export function undoCalendarWorkspaceMutation(
-  actionId: string,
-): Promise<ApiResponse<CalendarUndoResponse>> {
-  return apiFetch<ApiResponse<CalendarUndoResponse>>(
-    `/calendar/workspace/undo/${encodeURIComponent(actionId)}`,
-    { method: "POST" },
-  );
-}
-
 /** Fetch paginated calendar mutation audit log entries. */
 export function getCalendarWorkspaceAudit(
   params?: CalendarAuditParams,
@@ -3764,7 +3575,7 @@ export function getApprovalDetail(actionId: string, reviewSource?: string): Prom
 
 export function approveApproval(
   actionId: string,
-  request?: ApprovalApproveRequest,
+  request: ApprovalApproveRequest,
 ): Promise<ApiResponse<ApprovalAction>> {
   return apiFetch<ApiResponse<ApprovalAction>>(
     `/approvals/${encodeURIComponent(actionId)}/approve`,

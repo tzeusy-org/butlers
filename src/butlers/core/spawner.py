@@ -42,15 +42,15 @@ import asyncpg
 from opentelemetry import trace
 from opentelemetry.context import Context
 
-from butlers.api.conversations import (
+from butlers.config import ButlerConfig
+from butlers.core.audit import write_audit_entry
+from butlers.core.child_env import without_owner_auth
+from butlers.core.conversation_sessions import (
     conversation_clear_provider_session,
     conversation_get_provider_session,
     conversation_set_provider_session,
     resolve_resume_handle,
 )
-from butlers.config import ButlerConfig
-from butlers.core.audit import write_audit_entry
-from butlers.core.child_env import without_owner_auth
 from butlers.core.dashboard_turns import (
     acknowledge_cancel,
     claim_invoke,

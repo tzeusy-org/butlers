@@ -4474,5 +4474,95 @@
       "digest": "46df9085188c",
       "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source"
     }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Dedup Rules": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "fe173c06f447",
+      "excerpt": "Calendar Dedup Rules"
+    }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Duplicate-Cluster Review": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "9c6921dd6a9c",
+      "excerpt": "Calendar Duplicate-Cluster Review"
+    }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Keep-Separate Override": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "19f6aece4e10",
+      "excerpt": "Calendar Keep-Separate Override"
+    }
+  ],
+  "2026-06-27-calendar-ics-export-and-printable-agenda/dashboard-api/Calendar ICS Export": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "6f021f4a84fe",
+      "excerpt": "Calendar ICS Export"
+    }
+  ],
+  "2026-06-27-calendar-ics-subscribe-and-import/dashboard-api/Calendar ICS Import With Dedup": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "d6e3616e4ef8",
+      "excerpt": "Calendar ICS Import With Dedup"
+    }
+  ],
+  "2026-06-27-calendar-ics-subscribe-and-import/dashboard-api/Calendar ICS Subscribe Feed": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "a02d53faa1b6",
+      "excerpt": "Calendar ICS Subscribe Feed"
+    }
+  ],
+  "2026-07-10-calendar-mutation-audit-and-undo/dashboard-api/Calendar Mutation Undo Endpoint": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "4a5a3bc8394f",
+      "excerpt": "Calendar Mutation Undo Endpoint"
+    }
+  ],
+  "2026-09-27-calendar-find-time-error-envelope/dashboard-domain-pages/Calendar workspace page with dual-view architecture": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "1a576b942676",
+      "excerpt": "- A header with title \"Calendar Workspace\", timezone badge, entry count badge, \"Sync now\" button, and context-appropr..."
+    },
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "471eddf7b391",
+      "excerpt": "- A read-only \"Find time\" panel that consumes `POST /api/calendar/workspace/find-time` and distinguishes unavailable ..."
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Find-time provider failure is visibly unavailable",
+      "digest": "94f196027424",
+      "excerpt": "\"Find-time provider failure is visibly unavailable\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Find-time successful zero-slot result remains empty, not degraded",
+      "digest": "d6aabe2d382f",
+      "excerpt": "\"Find-time successful zero-slot result remains empty, not degraded\" is not in the block"
+    }
+  ],
+  "2026-10-11-calendar-invitation-response/dashboard-api/Calendar Mutation Undo Endpoint": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "4a5a3bc8394f",
+      "excerpt": "Calendar Mutation Undo Endpoint"
+    }
   ]
 }
