@@ -890,6 +890,12 @@ class TelegramUserClientConnector:
                 the row is scrubbed like the envelope: preview, payload and
                 ``error_detail``.
         """
+        # Only the exposure facts survive the batch's filtered-content privacy tier.
+        spans = [
+            whole_text_span("forwarded", "", **origin)
+            for message in messages or []
+            if (origin := telethon_forward_origin(message)) is not None
+        ]
         payload = FilteredEventBuffer.full_payload(
             channel=self._config.channel,
             provider=self._config.provider,
@@ -899,6 +905,7 @@ class TelegramUserClientConnector:
             external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
             observed_at=datetime.now(UTC).isoformat(),
             sender_identity=sender_identity,
+            untrusted_spans=spans or None,
             raw={},
         )
         if self._batch_has_service_sender(messages):
@@ -1330,6 +1337,10 @@ class TelegramUserClientConnector:
         for batch persistence after the event is processed.
         """
         async with self._semaphore:
+            origin = telethon_forward_origin(message)
+            replay_spans = (
+                [whole_text_span("forwarded", "", **origin)] if origin is not None else None
+            )
             try:
                 # Extract message ID for checkpoint tracking
                 message_id = getattr(message, "id", None)
@@ -1379,6 +1390,7 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1416,6 +1428,7 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1486,6 +1499,7 @@ class TelegramUserClientConnector:
                                 # discretion-IGNORE content persists a bounded
                                 # preview only; no full raw payload retained.
                                 raw={},
+                                untrusted_spans=replay_spans,
                             ),
                         )
                         await self._flush_and_drain()
@@ -1540,6 +1554,7 @@ class TelegramUserClientConnector:
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=error_sender,
                         raw=raw_for_error,
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),

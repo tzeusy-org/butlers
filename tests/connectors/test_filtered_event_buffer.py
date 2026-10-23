@@ -361,6 +361,10 @@ async def test_scrubbed_row_replays_with_placeholder_and_unchanged_identity() ->
 
     buf = _make_buffer()
     payload = _bearer_payload("Your code is 482913")
+    payload["payload"]["untrusted_spans"] = [
+        {"kind": "quoted", "start": 13, "end": 19, "origin_identity": "original-author"}
+    ]
+    payload["event"]["in_reply_to_ref"] = "opaque-replied-message"
     buf.record(
         external_message_id="msg-1",
         source_channel="email",
@@ -401,6 +405,14 @@ async def test_scrubbed_row_replays_with_placeholder_and_unchanged_identity() ->
     assert "[auth-code withheld" in envelope["payload"]["normalized_text"]
     assert envelope["event"] == payload["event"]
     assert envelope["sender"] == payload["sender"]
+    assert envelope["payload"]["untrusted_spans"] == [
+        {
+            "kind": "quoted",
+            "start": 0,
+            "end": len(envelope["payload"]["normalized_text"]),
+            "origin_identity": "original-author",
+        }
+    ]
     assert conn.execute.await_args.args[1] == "replay_complete"
 
 
@@ -487,6 +499,9 @@ def test_record_keeps_ordinary_numbers_byte_identical() -> None:
 
 def test_record_detector_failure_withholds_text_without_changing_status() -> None:
     buf = _make_buffer()
+    payload = _bearer_payload("Your code is 482913")
+    payload["payload"]["untrusted_spans"] = [{"kind": "forwarded", "start": 13, "end": 19}]
+    payload["event"]["in_reply_to_ref"] = "opaque-previous-message"
     with patch(
         "butlers.connectors.filtered_event_buffer.scrub_envelope", side_effect=RuntimeError("x")
     ):
@@ -496,7 +511,7 @@ def test_record_detector_failure_withholds_text_without_changing_status() -> Non
             sender_identity="sender@example.com",
             subject_or_preview="Hello",
             filter_reason="validation_error",
-            full_payload=_bearer_payload("Your code is 482913"),
+            full_payload=payload,
             status="error",
             error_detail="Your code is 482913",
         )
@@ -505,6 +520,10 @@ def test_record_detector_failure_withholds_text_without_changing_status() -> Non
     assert row[10] == "[withheld: bearer scrub unavailable]"
     assert row[9]["event"]["external_event_id"] == "msg-001"
     assert (row[7], row[8]) == ("validation_error", "error")
+    assert row[9]["event"] == payload["event"]
+    assert row[9]["payload"]["untrusted_spans"] == [
+        {"kind": "forwarded", "start": 0, "end": len(row[9]["payload"]["normalized_text"])}
+    ]
 
     # The fallback is total: a non-mapping payload value is withheld, not raised.
     broken = _bearer_payload("Your code is 482913")
@@ -521,6 +540,65 @@ def test_record_detector_failure_withholds_text_without_changing_status() -> Non
             full_payload=broken,
         )
     assert "482913" not in str(buf._rows[-1][9])
+
+    # Rewrites may fit known kinds conservatively, but malformed-present metadata
+    # must remain rejectable rather than become an unmarked message.
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    for spans in ([{"kind": "unknown", "start": 0, "end": 1}], ["broken"], {"bad": 1}):
+        invalid = _bearer_payload("Your code is 482913")
+        invalid["payload"]["untrusted_spans"] = spans
+        invalid["control"]["policy_tier"] = "default"
+        buf.record(
+            external_message_id="invalid",
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview=None,
+            filter_reason="validation_error",
+            full_payload=invalid,
+        )
+        stored = buf._rows[-1][9]
+        assert stored["payload"]["untrusted_spans"] == spans
+        with pytest.raises(ValueError, match="untrusted_spans"):
+            parse_ingest_envelope({"schema_version": "ingest.v1", **stored})
+
+    # Existing full-payload construction preserves exact fields for unchanged
+    # text, collapses only rewritten NUL text, and never treats reply target as
+    # the replied-message locator.
+    for text in ("owner quote", "owner\x00 quote"):
+        spans = [{"kind": "quoted", "start": 6, "end": 11}]
+        stored = FilteredEventBuffer.full_payload(
+            channel="email",
+            provider="gmail",
+            endpoint_identity="gmail:test",
+            external_event_id="identity",
+            external_thread_id=None,
+            observed_at="2026-03-11T10:00:00Z",
+            sender_identity="owner",
+            raw={},
+            normalized_text=text,
+            untrusted_spans=spans,
+            in_reply_to_ref="opaque-prior",
+            reply_target_ref="current-target",
+        )
+        buf.record(
+            external_message_id="identity",
+            source_channel="email",
+            sender_identity="owner",
+            subject_or_preview=None,
+            filter_reason="validation_error",
+            full_payload=stored,
+        )
+        persisted = buf._rows[-1][9]
+        _sanitize_replay_payload(persisted)
+        _sanitize_replay_payload(persisted)
+        assert persisted["event"]["in_reply_to_ref"] == "opaque-prior"
+        assert persisted["event"]["reply_target_ref"] == "current-target"
+        assert persisted["payload"]["normalized_text"] == "owner quote"
+        assert persisted["payload"]["untrusted_spans"] == (
+            spans if "\x00" not in text else [{"kind": "quoted", "start": 0, "end": 11}]
+        )
+        parse_ingest_envelope({"schema_version": "ingest.v1", **persisted})
 
 
 def _stored(channel: str, provider: str, thread: str | None, raw: dict, **split: str) -> dict:
