@@ -1,0 +1,9 @@
+name: CI shard watchdog retention control
+description: Harmless mechanism-only finalized artifact; no workload or complete execution evidence.
+inputs:
+  capture_head:
+    description: Reviewed delivered control source full SHA, equal to provider trigger
+    required: true
+runs:
+  using: node20
+  main: index.js
