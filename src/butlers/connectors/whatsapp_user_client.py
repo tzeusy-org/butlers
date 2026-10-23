@@ -373,6 +373,12 @@ def _is_forwarded(event: dict[str, Any]) -> bool:
     return (event.get("content") or {}).get("is_forwarded") is True
 
 
+def _quoted_ref(event: dict[str, Any]) -> str | None:
+    content = event.get("content")
+    value = content.get("quoted_message_id") if isinstance(content, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def normalize_message_text(event: dict[str, Any]) -> str:
     """Normalize a bridge event's message content to plain text.
 
@@ -1666,11 +1672,19 @@ class WhatsAppUserClientConnector:
                 reply_target_ref=chat_jid or None,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender_identity,
-                untrusted_spans=[
-                    whole_text_span("forwarded", "")
-                    for event in events or []
-                    if _is_forwarded(event)
-                ]
+                in_reply_to_ref=_quoted_ref(events[0]) if events and len(events) == 1 else None,
+                untrusted_spans=(
+                    [
+                        whole_text_span("forwarded", "")
+                        for event in events or []
+                        if _is_forwarded(event)
+                    ]
+                    + [
+                        whole_text_span("quoted", "")
+                        for event in events or []
+                        if len(events or []) > 1 and _quoted_ref(event)
+                    ]
+                )
                 or None,
                 raw={},
             ),
@@ -1953,6 +1967,7 @@ class WhatsAppUserClientConnector:
         text_parts: list[str] = []
         # Forwarded messages inside the batch, as (line index, text start, text end, origin).
         forwarded_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
+        quoted_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
         for event in buffered_events:
             message_id = str(event.get("message_id") or event.get("id"))
             _, sender_label = sender_projection[message_id]
@@ -1960,6 +1975,10 @@ class WhatsAppUserClientConnector:
             line = f"[{sender_label}]: {msg_text}"
             if _is_forwarded(event):
                 forwarded_lines.append((len(text_parts), len(line) - len(msg_text), len(line), {}))
+            if len(buffered_events) > 1 and _quoted_ref(event):
+                # One aggregate event cannot resolve several per-message reply
+                # locators. Preserve known quote exposure on that message's line.
+                quoted_lines.append((len(text_parts), len(line) - len(msg_text), len(line), {}))
             text_parts.append(line)
 
         footer_lines = ["---", f"Messages: {len(buffered_events)} new"]
@@ -1967,7 +1986,12 @@ class WhatsAppUserClientConnector:
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
         untrusted_spans = forwarded_line_spans(
             normalized_text, header_lines, text_parts, forwarded_lines
-        )
+        ) + [
+            dict(span, kind="quoted")
+            for span in forwarded_line_spans(
+                normalized_text, header_lines, text_parts, quoted_lines
+            )
+        ]
 
         flush_ts = datetime.now(UTC).isoformat()
 
@@ -2015,6 +2039,11 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": batch_event_id,
+                **(
+                    {"in_reply_to_ref": ref}
+                    if len(buffered_events) == 1 and (ref := _quoted_ref(buffered_events[0]))
+                    else {}
+                ),
                 "external_conversation_id": whatsapp_conversation_id(chat_jid),
                 "reply_target_ref": chat_jid,
                 "observed_at": flush_ts,
@@ -2107,6 +2136,7 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": msg_id,
+                **({"in_reply_to_ref": ref} if (ref := _quoted_ref(event)) else {}),
                 "external_conversation_id": (
                     whatsapp_conversation_id(chat_jid) if chat_jid else None
                 ),

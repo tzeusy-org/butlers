@@ -136,3 +136,70 @@ def telethon_forward_origin(message: Any) -> dict[str, str | None] | None:
             peer_id = str(value)
             break
     return {"origin_identity": peer_id, "origin_display_name": getattr(header, "from_name", None)}
+
+
+def telethon_in_reply_to_ref(message: Any) -> str | None:
+    """Preserve only the provider's actual replied-message locator, not authority."""
+    from telethon.tl.types import MessageReplyHeader
+    from telethon.utils import get_peer_id
+
+    header = getattr(message, "reply_to", None)
+    if not isinstance(header, MessageReplyHeader) or type(header.reply_to_msg_id) is not int:
+        return None
+    peer = header.reply_to_peer_id
+    chat_id = get_peer_id(peer) if peer is not None else getattr(message, "chat_id", None)
+    return f"{chat_id}:{header.reply_to_msg_id}" if type(chat_id) is int else None
+
+
+def telethon_message_spans(
+    message: Any, normalized_text: str, *, escape_html: bool = True
+) -> list[dict[str, Any]]:
+    """Telethon 1.44 entities index this message in UTF-16, before HTML escaping.
+
+    ReplyHeader.quote_offset indexes the *earlier* message. A known header
+    quote/external reply has no reliable range in this body: mark conservatively.
+    A same-chat ordinary reply carries only its reference and does not expose text.
+    """
+    import html
+
+    from telethon.tl.types import MessageEntityBlockquote, MessageReplyHeader
+
+    origin = telethon_forward_origin(message)
+    if origin is not None:
+        return [whole_text_span("forwarded", normalized_text, **origin)]
+    header = getattr(message, "reply_to", None)
+    if isinstance(header, MessageReplyHeader) and (
+        header.quote is True
+        or header.quote_text
+        or header.reply_media
+        or header.reply_to_peer_id is not None
+    ):
+        return [whole_text_span("quoted", normalized_text)]
+    raw = getattr(message, "message", None)
+    raw = raw if isinstance(raw, str) else ""
+    entities = getattr(message, "entities", None)
+    spans = []
+    for entity in entities if isinstance(entities, (list, tuple)) else ():
+        if not isinstance(entity, MessageEntityBlockquote):
+            continue
+        offset, length = entity.offset, entity.length
+        units = len(raw.encode("utf-16-le")) // 2
+        if (
+            type(offset) is not int
+            or type(length) is not int
+            or offset < 0
+            or length <= 0
+            or offset + length > units
+        ):
+            return [whole_text_span("quoted", normalized_text)]
+        start = _utf16_to_index(raw, offset)
+        end = _utf16_to_index(raw, offset + length)
+        if (
+            len(raw[:start].encode("utf-16-le")) // 2 != offset
+            or len(raw[:end].encode("utf-16-le")) // 2 != offset + length
+        ):
+            return [whole_text_span("quoted", normalized_text)]
+        if escape_html:
+            start, end = len(html.escape(raw[:start])), len(html.escape(raw[:end]))
+        spans.append(span_in_text("quoted", normalized_text, start, end))
+    return spans

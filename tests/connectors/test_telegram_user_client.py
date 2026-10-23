@@ -1289,3 +1289,260 @@ async def test_batch_marks_only_the_forwarded_message_text(
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "forwarded", "start": 0, "end": len("[no text]"), "origin_identity": "555"}
         ]
+
+
+async def test_provider_quotes_survive_single_batch_and_filtered_replay(connector):
+    """Locked Telethon entities use UTF-16; reply-header offsets belong to prior text."""
+    from telethon.tl.types import Message, MessageEntityBlockquote, MessageReplyHeader, PeerUser
+
+    from butlers.connectors.filtered_event_buffer import _sanitize_replay_payload
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    text = "🙂 owner <ok>\nquoted <command>\nowner tail"
+    start = text.index("quoted")
+    quoted = "quoted <command>"
+    msg = Message(
+        id=42,
+        peer_id=PeerUser(200),
+        from_id=PeerUser(999),
+        date=datetime(2026, 10, 1, tzinfo=UTC),
+        message=text,
+        entities=[
+            MessageEntityBlockquote(
+                offset=len(text[:start].encode("utf-16-le")) // 2,
+                length=len(quoted.encode("utf-16-le")) // 2,
+            )
+        ],
+        reply_to=MessageReplyHeader(reply_to_msg_id=7),
+    )
+    env = await connector._normalize_to_ingest_v1(msg)
+    body = env["payload"]["normalized_text"]
+    (span,) = env["payload"]["untrusted_spans"]
+    assert body[span["start"] : span["end"]] == "quoted &lt;command&gt;"
+    assert env["event"]["in_reply_to_ref"] == "200:7"
+    assert env["sender"]["identity"] == "999"
+    parse_ingest_envelope(env)
+    own = Message(
+        id=41,
+        peer_id=PeerUser(200),
+        from_id=PeerUser(999),
+        date=msg.date,
+        message="ordinary owner text",
+    )
+    batch = connector._build_batch_envelope(
+        "200", [own, msg], [own, msg], participant_count=2, chat_type="private"
+    )
+    (marked,) = batch["payload"]["untrusted_spans"]
+    transcript = batch["payload"]["normalized_text"]
+    assert transcript[marked["start"] : marked["end"]] == quoted
+    assert "ordinary owner text" not in transcript[marked["start"] : marked["end"]]
+    assert batch["payload"]["raw"]["conversation_history"][1]["reply_to"] == 7
+    parse_ingest_envelope(batch)
+
+    # Real policy/error producer loses text on purpose but must retain exposure.
+    for stage in ("connector", "global", "submission"):
+        connector._filtered_event_buffer._rows.clear()
+        allow = SimpleNamespace(allowed=True, action="pass_through")
+        block = SimpleNamespace(
+            allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+        )
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "connector" else allow,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "global" else allow,
+            ),
+            patch.object(
+                connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))
+            ),
+            patch.object(connector, "_flush_and_drain", AsyncMock()),
+        ):
+            await connector._process_message(msg)
+        stored = connector._filtered_event_buffer._rows[-1][9]
+        _sanitize_replay_payload(stored)
+        assert stored["payload"]["untrusted_spans"] == [
+            {"kind": "quoted", "start": 0, "end": len("[no text]")}
+        ]
+        assert stored["event"]["in_reply_to_ref"] == "200:7"
+
+    # Known quote with missing/malformed boundaries is conservative, not dropped.
+    for entities, header in [
+        ([MessageEntityBlockquote(offset=-1, length=3)], None),
+        (
+            None,
+            MessageReplyHeader(
+                reply_to_msg_id=7, quote=True, quote_text="earlier text", quote_offset=100
+            ),
+        ),
+    ]:
+        msg.entities, msg.reply_to = entities, header
+        marked = await connector._normalize_to_ingest_v1(msg)
+        assert marked["payload"]["untrusted_spans"] == [
+            {"kind": "quoted", "start": 0, "end": len(marked["payload"]["normalized_text"])}
+        ]
+    ordinary = await connector._normalize_to_ingest_v1(own)
+    assert "untrusted_spans" not in ordinary["payload"]
+
+    # Batch policy/build/submission failures must preserve quote exposure even
+    # when no normalized transcript survives its privacy tier.
+    msg.entities = [
+        MessageEntityBlockquote(
+            offset=len(text[:start].encode("utf-16-le")) // 2,
+            length=len(quoted.encode("utf-16-le")) // 2,
+        )
+    ]
+    msg.reply_to = MessageReplyHeader(reply_to_msg_id=7)
+    for stage in ("connector", "global", "discretion", "submission", "build"):
+        await _prime_flush_buffer(connector, "200", msg)
+        connector._filtered_event_buffer._rows.clear()
+        connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
+        connector._discretion_evaluators["200"] = SimpleNamespace(
+            evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
+        )
+        original = connector._build_batch_envelope
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "connector" else allow,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "global" else allow,
+            ),
+            patch.object(connector, "_resolve_batch_weight", AsyncMock(return_value=1.0)),
+            patch.object(
+                connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))
+            ),
+            patch.object(
+                connector,
+                "_build_batch_envelope",
+                side_effect=ValueError("failed") if stage == "build" else original,
+            ),
+            patch.object(connector, "_flush_and_drain", AsyncMock()),
+        ):
+            await connector._flush_chat_buffer("200")
+        row = connector._filtered_event_buffer._rows[-1]
+        assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
+        stored = row[9]
+        _sanitize_replay_payload(stored)
+        assert stored["payload"]["raw"] == {}
+        assert stored["payload"]["untrusted_spans"] == [
+            {"kind": "quoted", "start": 0, "end": len("[no text]")}
+        ]
+    connector._discretion_dispatcher = None
+
+    # The production flush uses the batch path even for one ordinary reply.
+    # Its opaque locator must survive all privacy/error branches, without
+    # treating the newly written text as a provider quote.
+    ordinary_reply = Message(
+        id=43,
+        peer_id=PeerUser(200),
+        from_id=PeerUser(999),
+        date=msg.date,
+        message="ordinary new reply",
+        reply_to=MessageReplyHeader(reply_to_msg_id=7),
+    )
+    for stage in ("success", "connector", "global", "discretion", "submission", "build"):
+        await _prime_flush_buffer(connector, "200", ordinary_reply)
+        connector._filtered_event_buffer._rows.clear()
+        connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
+        connector._discretion_evaluators["200"] = SimpleNamespace(
+            evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
+        )
+        submitted = AsyncMock(side_effect=ValueError("failed") if stage == "submission" else None)
+        original = connector._build_batch_envelope
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "connector" else allow,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "global" else allow,
+            ),
+            patch.object(connector, "_resolve_batch_weight", AsyncMock(return_value=1.0)),
+            patch.object(connector, "_submit_to_ingest", submitted),
+            patch.object(connector, "_save_checkpoint", AsyncMock()),
+            patch.object(
+                connector,
+                "_build_batch_envelope",
+                side_effect=ValueError("failed") if stage == "build" else original,
+            ),
+            patch.object(connector, "_flush_and_drain", AsyncMock()),
+        ):
+            await connector._flush_chat_buffer("200")
+        if stage == "success":
+            submitted.assert_awaited_once()
+            delivered = submitted.await_args.args[0]
+            assert delivered["event"]["in_reply_to_ref"] == "200:7"
+            assert "untrusted_spans" not in delivered["payload"]
+            parse_ingest_envelope(delivered)
+        else:
+            row = connector._filtered_event_buffer._rows[-1]
+            assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
+            stored = row[9]
+            _sanitize_replay_payload(stored)
+            assert stored["event"]["in_reply_to_ref"] == "200:7"
+            assert stored["payload"]["raw"] == {}
+            assert "untrusted_spans" not in stored["payload"]
+            assert "ordinary new reply" not in str(stored)
+    connector._discretion_dispatcher = None
+    other_reply = Message(
+        id=44,
+        peer_id=PeerUser(200),
+        from_id=PeerUser(999),
+        date=msg.date,
+        message="a different reply",
+        reply_to=MessageReplyHeader(reply_to_msg_id=8),
+    )
+    mixed_replies = connector._build_batch_envelope(
+        "200", [ordinary_reply, other_reply], [ordinary_reply, other_reply]
+    )
+    assert not mixed_replies["event"].get("in_reply_to_ref")
+    connector._filtered_event_buffer._rows.clear()
+    connector._record_batch_filtered_event(
+        "200", "batch:200:43-44", "synthetic rule", messages=[ordinary_reply, other_reply]
+    )
+    ambiguous = connector._filtered_event_buffer._rows[-1][9]
+    _sanitize_replay_payload(ambiguous)
+    assert not ambiguous["event"].get("in_reply_to_ref")
+
+    # Backfill delegates through the same actual processing path, not a second mapper.
+    msg.entities = [
+        MessageEntityBlockquote(
+            offset=len(text[:start].encode("utf-16-le")) // 2,
+            length=len(quoted.encode("utf-16-le")) // 2,
+        )
+    ]
+    msg.reply_to = MessageReplyHeader(reply_to_msg_id=7)
+
+    async def items(values):
+        for value in values:
+            yield value
+
+    connector._last_message_id = None
+    connector._config.backfill_window_h = 24
+    connector._telegram_client = SimpleNamespace(
+        iter_dialogs=lambda: items([SimpleNamespace(id=200)]),
+        iter_messages=lambda *args, **kwargs: items([msg]),
+    )
+    submitted = AsyncMock()
+    with (
+        patch.object(connector._ingestion_policy, "evaluate", return_value=allow),
+        patch.object(connector._global_ingestion_policy, "evaluate", return_value=allow),
+        patch.object(connector, "_record_owner_outbound_if_applicable", AsyncMock()),
+        patch.object(connector, "_submit_to_ingest", submitted),
+        patch.object(connector, "_flush_and_drain", AsyncMock()),
+    ):
+        await connector._perform_backfill()
+    submitted.assert_awaited_once()
+    assert submitted.await_args.args[0]["payload"]["untrusted_spans"][0]["kind"] == "quoted"
