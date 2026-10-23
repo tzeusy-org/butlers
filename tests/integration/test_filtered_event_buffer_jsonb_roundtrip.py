@@ -43,8 +43,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
+from fastapi import HTTPException
 
-from butlers.api.routers.ingestion_events import replay_ingestion_event
+from butlers.api.routers.ingestion_events import bulk_retry_ingestion_events, replay_ingestion_event
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.core.ingestion_events import ingestion_dropped_known_summary
 from butlers.db import register_jsonb_codec
@@ -102,13 +103,20 @@ def _sample_payload() -> dict:
     )
 
 
-async def _queue_replay(pool, row_id):
+async def _queue_replay(pool, row_id, *, bulk=False):
     db = SimpleNamespace(credential_shared_pool=lambda: pool, pool=lambda _: pool)
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-    assert await replay_ingestion_event(str(row_id), request, db) == {
-        "status": "replay_pending",
-        "id": str(row_id),
-    }
+    if bulk:
+        assert await bulk_retry_ingestion_events(request, {"event_ids": [str(row_id)]}, db) == {
+            "results": [{"event_id": str(row_id), "status": "replay_pending"}],
+            "succeeded": 1,
+            "failed": 0,
+        }
+    else:
+        assert await replay_ingestion_event(str(row_id), request, db) == {
+            "status": "replay_pending",
+            "id": str(row_id),
+        }
 
 
 async def _register_replay(pool, connector_type, endpoint):
@@ -574,8 +582,33 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
     # Real SQL/status uncertainty: submission succeeds but status persistence
     # fails. The transaction rolls back and an explicit later drain resubmits
     # exactly the same event identity and exposure facts for ingest dedupe.
+    # Email remains categorically unsafe even when its registry row says safe.
     await _register_replay(pool, "gmail", "gmail:user:alice@example.com")
+    email_id = await pool.fetchval(
+        "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-clean'"
+    )
+    with pytest.raises(HTTPException) as denied:
+        await _queue_replay(pool, email_id)
+    assert denied.value.status_code == 409
+    assert (
+        await pool.fetchval("SELECT status FROM connectors.filtered_events WHERE id=$1", email_id)
+        == "replay_complete"
+    )
+
+    # The authorized scenarios use distinct legitimate Telegram rows.
+    endpoint = "telegram:bot:jsonb-test"
+    await _register_replay(pool, "telegram_bot", endpoint)
+    buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
     payload = _sample_payload()
+    payload["source"] = {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": endpoint,
+    }
+    payload["sender"]["identity"] = "987"
+    payload["event"].pop("external_thread_id")
+    payload["event"]["external_conversation_id"] = "telegram:100"
+    payload["event"]["reply_target_ref"] = "100:9"
     payload["control"]["policy_tier"] = "default"
     payload["payload"]["untrusted_spans"] = [{"kind": "quoted", "start": 1, "end": 4}]
     payload["event"]["in_reply_to_ref"] = "opaque-prior"
@@ -595,8 +628,8 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
         variant["event"]["external_event_id"] = name
         buf.record(
             external_message_id=name,
-            source_channel="email",
-            sender_identity="owner",
+            source_channel="telegram_bot",
+            sender_identity="987",
             subject_or_preview=None,
             filter_reason="validation_error",
             full_payload=variant,
@@ -630,9 +663,7 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
                 yield FailedStatusConnection(connection)
 
     await _queue_replay(pool, row_ids["uncertain"])
-    await drain_replay_pending(
-        FailedStatusPool(), "gmail", "gmail:user:alice@example.com", validate
-    )
+    await drain_replay_pending(FailedStatusPool(), "telegram_bot", endpoint, validate)
     assert len(accepted) == 1
     assert (
         await pool.fetchval(
@@ -640,13 +671,13 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
         )
         == "replay_pending"
     )
-    await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", validate)
+    await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
     assert accepted[0] == accepted[1]
     assert accepted[1]["event"]["in_reply_to_ref"] == "opaque-prior"
     assert accepted[1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
     for name, _ in variants[1:]:
         await _queue_replay(pool, row_ids[name])
-    await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", validate)
+    await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
     statuses = {
         r["external_message_id"]: r["status"]
         for r in await pool.fetch(
@@ -720,25 +751,56 @@ async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: async
 
     assert "untrusted_spans" not in submitted[0]["payload"]
     assert "in_reply_to_ref" not in submitted[0]["event"]
-    payload["control"]["policy_tier"] = "default"
+    # A distinct legitimate Telegram legacy-string row traverses the authorized
+    # queue; the original Gmail historical/direct-drain population stays above.
+    endpoint = "telegram:bot:legacy-test"
+    payload["source"] = {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": endpoint,
+    }
+    payload["sender"]["identity"] = "987"
+    payload["event"].pop("external_thread_id")
+    payload["event"].update(
+        external_event_id="msg-legacy-marked",
+        external_conversation_id="telegram:100",
+        reply_target_ref="100:9",
+        in_reply_to_ref="legacy-opaque-ref",
+    )
     payload["payload"]["untrusted_spans"] = [{"kind": "forwarded", "start": 0, "end": 5}]
-    payload["event"]["in_reply_to_ref"] = "legacy-opaque-ref"
-    await pool.execute(
-        "UPDATE connectors.filtered_events SET full_payload=$1::jsonb "
-        "WHERE external_message_id='msg-legacy'",
-        json.dumps(payload),
+    buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
+    buf.record(
+        external_message_id="msg-legacy-marked",
+        source_channel="telegram_bot",
+        sender_identity="987",
+        subject_or_preview="Hello",
+        filter_reason="submission_error",
+        status="error",
+        full_payload=payload,
     )
+    await buf.flush(pool)
     row_id = await pool.fetchval(
-        "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-legacy'"
+        "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-legacy-marked'"
     )
-    await _register_replay(pool, "gmail", "gmail:user:alice@example.com")
-    await _queue_replay(pool, row_id)
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET full_payload=$1::jsonb WHERE id=$2",
+        json.dumps(payload),
+        row_id,
+    )
+    assert isinstance(
+        await pool.fetchval(
+            "SELECT full_payload FROM connectors.filtered_events WHERE id=$1", row_id
+        ),
+        str,
+    )
+    await _register_replay(pool, "telegram_bot", endpoint)
+    await _queue_replay(pool, row_id, bulk=True)
 
     async def validating_submit(envelope):
         parse_ingest_envelope(envelope)
         submitted.append(envelope)
 
-    await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", validating_submit)
+    await drain_replay_pending(pool, "telegram_bot", endpoint, validating_submit)
     assert len(submitted) == 2
     assert submitted[-1]["event"]["in_reply_to_ref"] == "legacy-opaque-ref"
     assert submitted[-1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
@@ -1311,7 +1373,7 @@ async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) 
         )
         await drain_replay_pending(pool, "telegram_bot", endpoint, other_submit)
         assert competing == []  # no automatic retry of replay_failed
-        await _queue_replay(pool, row["id"])
+        await _queue_replay(pool, row["id"], bulk=True)
 
         async def retry_submit(envelope, delivered=delivered):
             parse_ingest_envelope(envelope)
