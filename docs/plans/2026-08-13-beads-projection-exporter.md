@@ -678,7 +678,7 @@ repeat the allocation; do not refresh-rebase an otherwise clean PR.
 ## Execution Handoff
 
 Plan complete and saved to
-`docs/superpowers/plans/2026-08-13-beads-projection-exporter.md`.
+`docs/plans/2026-08-13-beads-projection-exporter.md`.
 
 Before implementation, obtain the named owner authorization for the exact
 operational phase. Then use subagent-driven execution or inline execution as

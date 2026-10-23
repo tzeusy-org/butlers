@@ -31,7 +31,7 @@ readiness. A database connection and nonempty roster alone SHALL NOT make
 register a second readiness handler or public auth exception.
 
 ID: REQ-dashboard-api-063
-Source: RFC 0007 §API Surface; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: RFC 0007 §API Surface; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Control plane is ready
@@ -88,7 +88,7 @@ that derived minimum SHALL fail configuration validation rather than create a
 healthy deployment that can never pass its own gate.
 
 ID: REQ-dashboard-api-064
-Source: heart-and-soul/vision.md:51-53,120-137; RFC 0008 deployment boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: heart-and-soul/vision.md:51-53,120-137; RFC 0008 deployment boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Brief post-restart freshness cannot pass deploy
@@ -113,7 +113,7 @@ Scope: v1-mandatory
 Enabling the public, content-blind `GET /ready` SHALL NOT configure an external functional monitor or claim that a separate host is observing it. Activation of such monitoring SHALL require a separately approved operator contract for the target, checks, notification route, and evidence. The already-approved separate-host minimal process-health pull monitor remains valid and distinct.
 
 ID: REQ-dashboard-api-065
-Source: heart-and-soul/security.md; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Expected-infinite dashboard loops; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §10
+Source: heart-and-soul/security.md; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Expected-infinite dashboard loops; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §10
 Scope: v1-mandatory
 
 #### Scenario: Internal readiness does not provision external monitoring

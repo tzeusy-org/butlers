@@ -22,3 +22,4 @@
 - [Fleet and QA-Patrol Conditions](fleet-condition-controller.md) — independent fleet condition, QA patrol age, and per-butler handoff
 - [Relationship Effective-Time Cutover](relationship-effective-time-cutover.md) — draft contract: signed receipt, lifecycle fence, and gated rel036 for the legacy-index drop
 - [Receiver-Derived Routing Cutover](receiver-derived-routing-cutover.md) — transitional: flag cutover and rollback boundary until production activation
+- [Coordinator Guardrails](coordinator-guardrails.md) — beads coordinator reconciliation rules and bd quirks

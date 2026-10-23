@@ -4,7 +4,7 @@
 The scanner SHALL use the configured lookback as a replay-overlap window while retaining bounded durable source progress and explicit gap coverage. Catch-up may include older unread entries; overlap alone is not proof of complete discovery.
 
 ID: REQ-qa-log-scanner-001
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Entries within lookback window
@@ -22,7 +22,7 @@ Scope: v1-mandatory
 The scanner SHALL have configurable limits (max candidate entries, max unique findings, max total lines parsed, and a wall-clock deadline) to prevent unbounded resource consumption during a patrol cycle. On any cap hit the scanner records the truncation time and reason (exposed as `last_truncated` and `last_truncated_reason`) and returns findings plus a partial-coverage receipt and resumable progress. Fair persisted continuation covers sources/directories, not only shuffled files within the first directory.
 
 ID: REQ-qa-log-scanner-002
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Maximum entries per scan

@@ -1,6 +1,6 @@
 ## Context
 
-See [proposal.md](proposal.md) and the [2026-09-23 reliability review](../../../docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md). Currently `background.py` sends unauthenticated heartbeat POSTs to an owner-protected Dashboard endpoint; the registry expires and routing refuses every stale target. Scheduler dispatch consults that same registry and disables QA patrol. The launcher accepts process `/health`, which cannot detect the routing failure. Startup registration and heartbeat also share `quarantined` fields with operator policy.
+See [proposal.md](proposal.md) and the [2026-09-23 reliability review](../../../docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md). Currently `background.py` sends unauthenticated heartbeat POSTs to an owner-protected Dashboard endpoint; the registry expires and routing refuses every stale target. Scheduler dispatch consults that same registry and disables QA patrol. The launcher accepts process `/health`, which cannot detect the routing failure. Startup registration and heartbeat also share `quarantined` fields with operator policy.
 
 The selected deployment is one trusted host with exact Git-roster endpoints on the internal backend network. No additional process-bound signing key is adopted. A future untrusted-host topology requires a separate security-doctrine amendment. Connector heartbeats and their liveness model are independent and unchanged.
 
