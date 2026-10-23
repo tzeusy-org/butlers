@@ -39,7 +39,7 @@ suggestion_count = 3
 [modules.calendar.sync]
 enabled = true
 interval_minutes = 5
-window_days = 30
+full_sync_window_days = 30
 ```
 
 ### Credentials
