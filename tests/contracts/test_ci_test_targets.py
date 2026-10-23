@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -463,10 +464,182 @@ def test_ci_cleanup_refuses_malformed_free_space_before_reclamation(
     assert not sentinel.exists()
 
 
-def _exercise_browser_installer(root: Path) -> None:
+def _installer_apt_fixture(directory: Path) -> tuple[Path, Path, Path]:
+    """Private synthetic APT boundary; never read host sources/configuration."""
+    apt = directory / "apt"
+    parts = apt / "sources.list.d"
+    parts.mkdir(parents=True)
+    (apt / "apt-mirrors.txt").write_text(
+        "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+        "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+        "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+    )
+    (parts / "ubuntu.sources").write_text(
+        "# Preserve runner comments\n\nTypes: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\n"
+        "Suites: noble noble-updates noble-backports noble-security\n"
+        "Components: main restricted universe multiverse\nArchitectures: amd64\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+    )
+    # Nonsecret synthetic stand-in for a credential-bearing third-party source:
+    # preservation must not turn it into world-readable copied configuration.
+    (parts / "vendor.sources").write_text(
+        "Types: deb\nURIs: https://packages.example.invalid/repo\n"
+        "Suites: stable\nComponents: main\nSigned-By: /keys/vendor.gpg\n"
+    )
+    release = directory / "os-release"
+    release.write_text('ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
+    reader = directory / "fixture-apt-config"
+    reader.write_text(
+        f"#!{sys.executable}\n"
+        "import os,re\nfrom pathlib import Path\n"
+        "config = Path(os.environ['APT_CONFIG']).read_text() if os.environ.get('APT_CONFIG') else ''\n"
+        "for key,default in [('sourcelist','sources.list'),('sourceparts','sources.list.d')]:\n"
+        "    match = re.search(r'Dir::Etc::'+key+r' \"([^\"]+)\";',config)\n"
+        "    value = match[1] if match else default\n"
+        "    if Path(__file__).with_name('late-fragment').exists(): value = default\n"
+        "    print('Dir::Etc::'+key+' \"'+value+'\";')\n"
+        "status = '/outside' if os.environ.get('APT_CONFIG') and Path(__file__).with_name('state-fragment').exists() else '/var/lib/dpkg/status'\n"
+        "print('Dir::State::status \"'+status+'\";')\n"
+        "print('Dir::State::lists \"lists/\";')\n"
+        "print('Dir::Cache::archives \"archives/\";')\n"
+        "print('Acquire::Check-Valid-Until \"true\";')\n"
+        "if Path(__file__).with_name('binary-fragment').exists():\n"
+        "    print('Binary::apt-get::Dir::Etc::sourceparts \"/outside\";')\n"
+    )
+    reader.chmod(0o755)
+    return apt, release, reader
+
+
+def _exercise_apt_recovery(root: Path) -> None:
+    """Execute trusted-input policy, private files and reader admission negatives.
+
+    The reader here is explicitly synthetic. Real Ubuntu24 effective APT
+    parsing/sandbox access and signed package transport require hosted proof.
+    """
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+    for case in [
+        "valid",
+        "late-override",
+        "binary-override",
+        "state-override",
+        "mirror-host",
+        "mirror-port",
+        "mirror-userinfo",
+        "mirror-query",
+        "mirror-fragment",
+        "mirror-path",
+        "mirror-encoded-path",
+        "mirror-wrapper",
+        "mirror-metadata",
+        "missing-official",
+        "duplicate-uris",
+        "multiline-uris",
+        "trust",
+        "suite",
+        "symlink",
+        "oversized",
+        "writable",
+        "wrong-extension",
+        "one-line",
+        "platform",
+    ]:
+        directory = root / case
+        apt, release, reader = _installer_apt_fixture(directory)
+        copied = directory / "supervisor.py"
+        copied.write_text(
+            source.replace('Path("/etc/apt")', f"Path({str(apt)!r})")
+            .replace('Path("/usr/lib/os-release")', f"Path({str(release)!r})")
+            .replace('"/usr/bin/apt-config"', repr(str(reader)))
+            .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+        )
+        namespace = runpy.run_path(str(copied))
+        ubuntu = apt / "sources.list.d/ubuntu.sources"
+        mirrors = apt / "apt-mirrors.txt"
+        before = {p: p.read_bytes() for p in apt.rglob("*") if p.is_file()}
+        if case.startswith("mirror-"):
+            bad = {
+                "host": "https://archive.ubuntu.com.evil.invalid/ubuntu/",
+                "port": "https://archive.ubuntu.com:8443/ubuntu/",
+                "userinfo": "https://user@archive.ubuntu.com/ubuntu/",
+                "query": "https://archive.ubuntu.com/ubuntu/?x=1",
+                "fragment": "https://archive.ubuntu.com/ubuntu/#x",
+                "path": "https://archive.ubuntu.com/else/",
+                "encoded-path": "https://archive.ubuntu.com/%75buntu/",
+                "wrapper": "mirror+https://archive.ubuntu.com/ubuntu/",
+                "metadata": "https://archive.ubuntu.com/ubuntu/\tpriority:2 other:unknown",
+            }[case.removeprefix("mirror-")]
+            mirrors.write_text(
+                mirrors.read_text().replace("https://archive.ubuntu.com/ubuntu/", bad)
+            )
+        elif case == "missing-official":
+            mirrors.write_text(mirrors.read_text().splitlines()[0] + "\n")
+        elif case == "duplicate-uris":
+            ubuntu.write_text(ubuntu.read_text() + "URIs: mirror+file:/etc/apt/apt-mirrors.txt\n")
+        elif case == "multiline-uris":
+            ubuntu.write_text(ubuntu.read_text().replace("URIs: mirror", "URIs:\n mirror"))
+        elif case == "trust":
+            ubuntu.write_text(ubuntu.read_text().replace("ubuntu-archive-keyring.gpg", "other.gpg"))
+        elif case == "suite":
+            ubuntu.write_text(ubuntu.read_text().replace("noble-updates", "jammy-updates"))
+        elif case == "symlink":
+            ubuntu.rename(directory / "real.sources")
+            ubuntu.symlink_to(directory / "real.sources")
+        elif case == "oversized":
+            ubuntu.write_bytes(b"x" * 65537)
+        elif case == "writable":
+            ubuntu.chmod(0o666)
+        elif case == "wrong-extension":
+            ubuntu.rename(ubuntu.with_suffix(".txt"))
+        elif case == "one-line":
+            (apt / "sources.list").write_text(
+                "deb mirror+file:/etc/apt/apt-mirrors.txt noble main\n"
+            )
+        elif case == "platform":
+            release.write_text('ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\n')
+        overlay = directory / "owned"
+        overlay.mkdir(mode=0o700)
+        if case not in {"valid", "late-override", "binary-override", "state-override"}:
+            with pytest.raises((ValueError, OSError)):
+                namespace["prepare_recovery"](overlay)
+            continue
+        namespace["prepare_recovery"](overlay)
+        private = overlay / "private"
+        assert (private / "sources.list.d/vendor.sources").read_bytes() == before[
+            apt / "sources.list.d/vendor.sources"
+        ]
+        expected = before[ubuntu].replace(
+            b"mirror+file:/etc/apt/apt-mirrors.txt",
+            f"mirror+file:{overlay / 'mirrors.txt'}".encode(),
+        )
+        assert (private / "sources.list.d/ubuntu.sources").read_bytes() == expected
+        assert private.stat().st_mode & 0o777 == 0o700
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in private.rglob("*") if p.is_file())
+        assert (overlay / "mirrors.txt").stat().st_mode & 0o777 == 0o644
+        assert {p: p.read_bytes() for p in before} == before, "host-like inputs were rewritten"
+        # Exercise the same recovery child admission without execing apt/CLI.
+        if case == "late-override":
+            (directory / "late-fragment").touch()
+            with pytest.raises(ValueError, match="effective apt source override refused"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        elif case == "state-override":
+            (directory / "state-fragment").touch()
+            with pytest.raises(ValueError, match="recovery changed ordinary apt configuration"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        elif case == "binary-override":
+            (directory / "binary-fragment").touch()
+            with pytest.raises(ValueError, match="unsupported binary/root apt path override"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        else:
+            with pytest.raises(FileNotFoundError):
+                namespace["recovery_child"](overlay, "/not/executed")
+
+
+def _exercise_browser_installer(root: Path, only_mode: str | None = None) -> None:
     """Actual shell/group lifecycle with synthetic install/OS/browser boundaries.
 
-    Only wall-clock literals are scaled in this routine control. Healthy
+    Wall-clock literals are scaled; sudo, apt configuration and install/browser
+    boundaries use fixtures. No host apt/sudo is invoked. This is not actual
+    Ubuntu APT-reader or network proof. Healthy
     boundaries include a deliberate 200 ms startup delay within a two-second
     allowance; stall pairs witness handler readiness before TERM/KILL checks.
     The ignored one-shot receipt exercises unchanged 110/120 browser and 150/160
@@ -499,6 +672,12 @@ def _exercise_browser_installer(root: Path) -> None:
         ("stall", 4, 0, 1),
         ("deps-exhaust", 2, 0, 1),
         ("deps-stall", 2, 0, 1),
+        ("deps-recover", 3, 1, 0),
+        ("deps-recovery-rejected", 1, 0, 1),
+        ("deps-prep-cancel", 1, 0, 1),
+        ("deps-supervisor-cancel", 1, 0, 1),
+        ("deps-supervisor-eof", 1, 0, 1),
+        ("deps-total-expiry", 1, 0, 1),
         ("deps-cleanup-denied", 1, 0, 1),
         ("deps-cancel", 1, 0, 1),
         ("deps-eof", 1, 0, -9),
@@ -506,6 +685,8 @@ def _exercise_browser_installer(root: Path) -> None:
         ("deps-crash", 1, 0, 1),
         ("deps-unproven-zero", 0, 0, 1),
     ]:
+        if only_mode is not None and mode != only_mode:
+            continue
         directory = root / mode
         scripts = directory / "scripts"
         cli = directory / "node_modules/.bin/playwright"
@@ -514,6 +695,30 @@ def _exercise_browser_installer(root: Path) -> None:
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
         shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
         supervisor = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+        apt_root, release, reader = _installer_apt_fixture(directory)
+        supervisor = (
+            supervisor.replace('Path("/etc/apt")', f"Path({str(apt_root)!r})")
+            .replace('Path("/usr/lib/os-release")', f"Path({str(release)!r})")
+            .replace('"/usr/bin/apt-config"', repr(str(reader)))
+            .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+        )
+        if mode == "deps-recovery-rejected":
+            (apt_root / "sources.list.d/ubuntu.sources").write_text("URIs: unsupported\n")
+        if mode == "deps-prep-cancel":
+            supervisor = supervisor.replace(
+                "def main() -> int:",
+                "_prepare = prepare_recovery\ndef prepare_recovery(owned):\n"
+                "    _prepare(owned)\n    os.kill(os.getpid(), signal.SIGTERM)\n\ndef main() -> int:",
+            )
+        if mode == "deps-total-expiry":
+            (scripts / "install-playwright-browsers.mjs").write_text(
+                scaled.replace("const TOTAL_MS = 12_000", "const TOTAL_MS = 3_000")
+            )
+        if mode == "deps-supervisor-eof":
+            supervisor = supervisor.replace(
+                "if select.select([sys.stdin], [], [], 0)[0]:",
+                "if Path(os.environ['M3_INSTALL_LEDGER']).with_name('stall-ready').exists():",
+            ).replace("os.read(sys.stdin.fileno(), 4096)", "pass  # injected supervisor pipe EOF")
         if mode == "deps-cleanup-denied":
             # Real lifecycle, with only the OS signalling boundary denied. The
             # still-running dependency pair must never race another attempt.
@@ -524,7 +729,13 @@ def _exercise_browser_installer(root: Path) -> None:
         # Observe the real OS boundary, including zombie leaders. No group may
         # be signalled after its leader was reaped and its identity released.
         instrumentation = r"""
-from pathlib import Path
+_original_mkdtemp = tempfile.mkdtemp
+def _record_overlay(*args, **kwargs):
+    value = _original_mkdtemp(*args, **kwargs)
+    with Path(os.environ['M3_INSTALL_LEDGER']).with_name('overlay-paths').open('a') as receipt:
+        receipt.write(value+'\n')
+    return value
+tempfile.mkdtemp = _record_overlay
 _original_killpg = os.killpg
 def _reserved_killpg(group, sig):
     stat = Path(f'/proc/{group}/stat')
@@ -587,7 +798,21 @@ if deps:
         prior = Path(f"/proc/{prior_pid}/stat")
         if prior.exists() and prior.read_text().split()[2] != "Z":
             data.setdefault("overlap", []).append(prior_pid)
-if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof"}):
+recovery = False
+if deps:
+    route = 'http://azure.archive.ubuntu.com/ubuntu/'
+    if os.environ.get('APT_CONFIG'):
+        import re
+        config = Path(os.environ['APT_CONFIG']).read_text()
+        parts = Path(re.search(r'Dir::Etc::sourceparts "([^"]+)"', config)[1])
+        sources = (parts / 'ubuntu.sources').read_text()
+        mirror = Path(re.search(r'URIs: mirror\+file:([^\n]+)', sources)[1])
+        candidates = [line.split() for line in mirror.read_text().splitlines()]
+        route = min(candidates, key=lambda pair: int(pair[1].split(':')[1]))[0]
+        data.setdefault('overlays', []).append(str(parts.parent.parent))
+    data.setdefault('routes', []).append(route)
+    recovery = route == 'https://archive.ubuntu.com/ubuntu/'
+if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-recover", "deps-recovery-rejected", "deps-prep-cancel"} and not recovery) or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof", "deps-supervisor-cancel", "deps-supervisor-eof", "deps-total-expiry", "deps-prep-cancel"}):
     if mode in {"deps-cleanup-denied", "deps-crash"}:
         # Surviving processes must not keep the harness capture pipes open.
         sink = os.open(os.devnull, os.O_WRONLY)
@@ -604,6 +829,8 @@ if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-clean
     data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
     p.write_text(json.dumps(data))
     (p.parent / "stall-ready").touch()
+    if mode == 'deps-supervisor-cancel':
+        os.kill(os.getppid(), signal.SIGTERM)
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
@@ -660,6 +887,29 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                 assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
+            if mode == "deps-recover":
+                assert data["routes"] == [
+                    "http://azure.archive.ubuntu.com/ubuntu/",
+                    "https://archive.ubuntu.com/ubuntu/",
+                ], data
+                assert len(data["pids"]) == 2 and not data.get("overlap"), data
+            elif mode == "deps-exhaust":
+                assert data["routes"] == ["http://azure.archive.ubuntu.com/ubuntu/"] * 2
+            elif mode in {"cold", "warm"}:
+                assert data["routes"] == ["http://azure.archive.ubuntu.com/ubuntu/"]
+            assert all(not Path(overlay).exists() for overlay in data.get("overlays", [])), data
+            if (directory / "overlay-paths").exists():
+                assert all(
+                    not Path(value).exists()
+                    for value in (directory / "overlay-paths").read_text().splitlines()
+                )
+            if mode in {
+                "deps-supervisor-cancel",
+                "deps-supervisor-eof",
+                "deps-total-expiry",
+                "deps-prep-cancel",
+            }:
+                assert "outcome=83" in result.stderr, result.stderr
             if mode in {
                 "deps-cleanup-denied",
                 "deps-crash",
@@ -692,6 +942,8 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                 stat = Path(f"/proc/{pid}/stat")
                 if stat.exists() and stat.read_text().split()[2] != "Z":
                     os.kill(pid, 9)
+    if only_mode is None:
+        _exercise_apt_recovery(root / "source-policy")
 
 
 def test_vitest_concurrent_failure_terminates_both_owned_groups(tmp_path: Path) -> None:
