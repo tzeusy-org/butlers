@@ -66,7 +66,7 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         ["tests//test_selected.py"],
     ):
         monkeypatch.setattr(
-            ci_route, "plan_scoped_tests", lambda *_a, **_k: _plan("scoped", unsafe)
+            ci_route, "plan_scoped_tests", lambda *_a, unsafe=unsafe, **_k: _plan("scoped", unsafe)
         )
         refused = ci_route.route(**inputs)
         assert refused["mode"] == "full" and refused["inventory"] == "true"

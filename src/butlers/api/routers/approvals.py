@@ -21,11 +21,12 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
@@ -94,6 +95,14 @@ from butlers.modules.approvals.sensitivity import redact_constraints, redact_too
 from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_body(model: type[BaseModel]) -> Any:
+    """An optional JSON body: a fresh ``model()`` per request, documented with its defaults."""
+    return Body(
+        default_factory=model, json_schema_extra={"default": model().model_dump(mode="json")}
+    )
+
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
@@ -924,8 +933,10 @@ async def list_actions(
             conditions.append(f"requested_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -933,8 +944,10 @@ async def list_actions(
             conditions.append(f"requested_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -1029,8 +1042,8 @@ async def list_executed_actions(
             conditions.append(f"approval_rule_id = ${idx}")
             args.append(parsed_rule_id)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     if since is not None:
         try:
@@ -1038,8 +1051,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -1047,8 +1062,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = " WHERE " + " AND ".join(conditions)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -1094,8 +1111,8 @@ async def get_action(
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
@@ -1130,15 +1147,15 @@ async def get_action(
 @router.post("/actions/{action_id}/approve")
 async def approve_action(
     action_id: str,
-    request: ApprovalActionApproveRequest = Body(default=ApprovalActionApproveRequest()),
+    request: Annotated[ApprovalActionApproveRequest, _optional_body(ApprovalActionApproveRequest)],
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and dispatch it for execution."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1446,8 +1463,8 @@ async def retry_action(
     """Retry dispatch for an approved action that was not yet executed."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1497,14 +1514,14 @@ async def retry_action(
 @router.post("/actions/{action_id}/reject")
 async def reject_action(
     action_id: str,
-    request: ApprovalActionRejectRequest = Body(default=ApprovalActionRejectRequest()),
+    request: Annotated[ApprovalActionRejectRequest, _optional_body(ApprovalActionRejectRequest)],
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1615,9 +1632,9 @@ async def create_rule(
 
     try:
         risk_tier = _risk_tier_for_butler_tool(request.butler, request.tool_name)
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not resolve approval policy for %s", request.butler, exc_info=True)
-        raise HTTPException(status_code=503, detail="Approval policy unavailable")
+        raise HTTPException(status_code=503, detail="Approval policy unavailable") from exc
     constraint_error = validate_rule_constraints(
         tool_name=request.tool_name,
         risk_tier=risk_tier,
@@ -1656,8 +1673,10 @@ async def create_rule_from_action(
     """Create a standing rule from a pending action."""
     try:
         parsed_id = UUID(request.action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid action_id: {request.action_id}"
+        ) from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1851,8 +1870,8 @@ async def get_rule(
 
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
     if not target_pools:
@@ -1883,8 +1902,8 @@ async def revoke_rule(
     """Revoke (deactivate) a standing approval rule."""
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
     if not named_pools:
@@ -1940,8 +1959,8 @@ async def get_rule_suggestions(
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -2402,8 +2421,10 @@ async def list_approvals_history(
     if since is not None:
         try:
             since_dt = datetime.fromisoformat(since)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     decided_statuses = list(_DECIDED_STATUSES)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -2744,8 +2765,10 @@ async def confirm_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not named_pools:
@@ -2873,7 +2896,9 @@ async def confirm_suggestion(
 @router.post("/suggestions/{suggestion_id}/dismiss")
 async def dismiss_suggestion(
     suggestion_id: str,
-    request: AutonomySuggestionDismissRequest = Body(default=AutonomySuggestionDismissRequest()),
+    request: Annotated[
+        AutonomySuggestionDismissRequest, _optional_body(AutonomySuggestionDismissRequest)
+    ],
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[AutonomySuggestion]:
     """Dismiss an autonomy suggestion with an optional reason and cooldown.
@@ -2885,8 +2910,10 @@ async def dismiss_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not suggestion_pools:
@@ -2961,8 +2988,8 @@ async def get_approval_detail(
     """Full dossier for one approval — GET /api/approvals/{id}."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     calendar_expected_args: dict[str, Any] | None = None
     if review_source is not None and review_source.startswith("calendar:"):
@@ -3042,7 +3069,7 @@ async def get_approval_detail(
 async def approve_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
+    request: Annotated[ApprovalApproveRequest, _optional_body(ApprovalApproveRequest)],
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
@@ -3053,8 +3080,8 @@ async def approve_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3286,15 +3313,15 @@ async def approve_owning_action(
 async def deny_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
+    request: Annotated[ApprovalDenyRequest, _optional_body(ApprovalDenyRequest)],
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3377,8 +3404,8 @@ async def defer_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3470,8 +3497,8 @@ async def retry_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3534,8 +3561,8 @@ async def abandon_approval(
     """Durably abandon one approved, unexecuted action from the dashboard only."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:

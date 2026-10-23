@@ -5,6 +5,7 @@ The pure revision control is not transaction, authentication or PostgreSQL proof
 """
 
 from dataclasses import replace
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,9 @@ from butlers.core.obligation_sources import (
     RuntimeCreationSnapshot,
 )
 from butlers.core.obligations import DeclarationError, ObligationDeclaration
+from tests.polling import poll_until
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.unit
@@ -329,7 +333,7 @@ async def test_migrated_occurrence_race_cancel_and_final_claim_fence(owning_sour
         await run_source_transaction(
             pool,
             "health",
-            lambda repo: repo.capture(value.source_id, value.revision, slot=slot),
+            lambda repo, slot=slot: repo.capture(value.source_id, value.revision, slot=slot),
         )
         for slot in ("next-pending-slot", "next-claimed-slot")
     ]
@@ -347,7 +351,9 @@ async def test_migrated_occurrence_race_cancel_and_final_claim_fence(owning_sour
             await run_source_transaction(
                 pool,
                 "health",
-                lambda repo: prepare_dark_submission(repo, value.source_id, occurrence, first),
+                lambda repo, occurrence=occurrence: prepare_dark_submission(
+                    repo, value.source_id, occurrence, first
+                ),
             )
     deleted = replace(value, generation=3, state="deleted")
     await run_source_transaction(
@@ -615,7 +621,7 @@ async def test_migrated_schedule_revision_race_cancel_and_role_shadow_refusals(o
         await run_source_transaction(
             pool,
             "health",
-            lambda r: r.capture(
+            lambda r, slot=slot: r.capture(
                 source_id,
                 first.definition.revision,
                 slot=slot,
@@ -952,15 +958,18 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
             await asyncio.wait_for(second_acquired.wait(), 10)
             assert actor_pids[0] != actor_pids[1]
             assert len(actor_pids) == 2
-            async with asyncio.timeout(10):
-                while not await monitor.fetchval(
+
+            async def second_actor_blocked_on_first():
+                return await monitor.fetchval(
                     "SELECT wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%' "
                     "AND $2=ANY(pg_blocking_pids(pid)) "
                     "FROM pg_stat_activity WHERE pid=$1 AND datname=current_database()",
                     actor_pids[1],
                     actor_pids[0],
-                ):
-                    await asyncio.sleep(0.01)
+                )
+
+            async with asyncio.timeout(10):
+                await poll_until(second_actor_blocked_on_first, interval_s=0.01)
             release.set()
             first, second = await asyncio.wait_for(asyncio.gather(*actors), 10)
             assert first.submission is not None and second is None
@@ -1084,7 +1093,6 @@ async def test_actual_git_scheduler_cas_capture_commit_and_deadline_boundary(
 async def test_actual_insight_model_job_commits_source_and_closed_payload(owning_sources):
     """Authored owning-role PG/readback, NOTRUN until an actual hosted carrier."""
     from datetime import UTC, datetime, timedelta
-    from pathlib import Path
 
     from butlers.config import load_config
     from butlers.core.obligation_git_sources import (
@@ -1095,7 +1103,7 @@ async def test_actual_insight_model_job_commits_source_and_closed_payload(owning
     from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
 
     pool = owning_sources.switchboard
-    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "switchboard")
+    config = load_config(_REPO_ROOT / "roster" / "switchboard")
     snapshot = capture_loaded_git_sources(
         config, RuntimeConfig("switchboard"), await _complete_core_catalog("switchboard")
     )
@@ -1237,3 +1245,97 @@ async def test_migrated_creator_acl_converges_after_bootstrap_round_trip(postgre
     await asyncio.to_thread(round_trip)
     # A NEW ordinary connection observes the committed privileged re-creation.
     assert await ordinary_metadata() == before
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_stamped_schema_without_baseline_keeps_local_owner_and_acl(
+    postgres_container,
+):
+    """A shared-predecessor stamp is not a local scheduled_tasks relation.
+
+    Author-only until actual PostgreSQL execution: preserve the ordinary
+    migration identity, independent committed readback and individual ACLs.
+    """
+    import asyncio
+    from urllib.parse import urlparse
+
+    import asyncpg
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.testing.migration import create_migration_db, migration_db_name
+
+    ordinary_url = await asyncio.to_thread(
+        create_migration_db, postgres_container, migration_db_name()
+    )
+    await run_migrations(ordinary_url, chain="core")
+    # This is the real existing shared-schema replay shape, not a copied table
+    # stand-in or a replay of foundation under a different actor.
+    config = _build_alembic_config(ordinary_url, ["core"], target_schema="health")
+    await asyncio.to_thread(command.stamp, config, "core_254")
+    before = await asyncpg.connect(ordinary_url, timeout=5)
+    try:
+        assert await before.fetchval("SELECT to_regclass('health.scheduled_tasks')") is None
+        assert await before.fetchval("SELECT version_num FROM health.alembic_version") == "core_254"
+    finally:
+        await before.close(timeout=5)
+
+    await run_migrations(ordinary_url, chain="core", schema="health")
+    connection = await asyncpg.connect(ordinary_url, timeout=5)
+    try:
+        actor = await connection.fetchval("SELECT current_user")
+        assert actor == urlparse(ordinary_url).username
+        assert not await connection.fetchval(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user"
+        )
+        assert await connection.fetchval("SELECT to_regclass('health.scheduled_tasks')") is None
+        tables = [
+            "obligation_definitions",
+            "obligation_revisions",
+            "obligation_source_commands",
+            "obligation_occurrences",
+            "obligation_source_outbox",
+        ]
+        owners = await connection.fetch(
+            "SELECT relname,pg_get_userbyid(relowner) AS owner FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname='health' AND c.relname=ANY($1::text[])",
+            tables,
+        )
+        assert len(owners) == 5 and all(row["owner"] == actor for row in owners)
+        functions = await connection.fetch(
+            "SELECT pg_get_userbyid(proowner) AS owner FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid=p.pronamespace "
+            "WHERE n.nspname='health' AND proname=ANY($1::text[])",
+            [
+                "obligation_evidence_immutable",
+                "obligation_definition_guard",
+                "obligation_occurrence_guard",
+            ],
+        )
+        assert len(functions) == 3 and all(row["owner"] == actor for row in functions)
+        visible = await connection.fetch(
+            "SELECT DISTINCT table_name FROM information_schema.columns "
+            "WHERE table_schema='health' AND table_name=ANY($1::text[])",
+            tables,
+        )
+        assert {row["table_name"] for row in visible} == set(tables)
+        for table in tables:
+            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRIGGER", "REFERENCES"):
+                assert await connection.fetchval(
+                    "SELECT has_table_privilege('butler_health_rw',$1,$2)",
+                    "health." + table,
+                    privilege,
+                )
+                assert not await connection.fetchval(
+                    "SELECT has_table_privilege('butler_general_rw',$1,$2)",
+                    "health." + table,
+                    privilege,
+                )
+        assert (
+            await connection.fetchval("SELECT version_num FROM health.alembic_version")
+            == "core_274"
+        )
+    finally:
+        await connection.close(timeout=5)

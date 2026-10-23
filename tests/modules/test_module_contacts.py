@@ -320,7 +320,9 @@ async def test_telegram_full_cycle_completion_disposition(case):
                 class EarlierCursorProvider:
                     name = "telegram"
 
-                    async def full_sync(self, *, account_id, page_token=None):
+                    async def full_sync(
+                        self, *, account_id, page_token=None, terminal_cursor=terminal_cursor
+                    ):
                         return ContactBatch(
                             contacts=[contact] if page_token is None else [],
                             next_page_token="terminal" if page_token is None else None,
@@ -328,7 +330,7 @@ async def test_telegram_full_cycle_completion_disposition(case):
                             checkpoint={"complete_full_fetch": True},
                         )
 
-                async def observed_apply(value):
+                async def observed_apply(value, *, applied=applied):
                     applied.append(value)
 
                 guarded = ContactsSyncEngine(
@@ -422,7 +424,7 @@ async def test_telegram_full_cycle_completion_disposition(case):
                 class BadProvider:
                     name = "telegram"
 
-                    async def full_sync(self, **kwargs):
+                    async def full_sync(self, *, bad=bad, **kwargs):
                         return bad
 
                 unchanged = store.state.model_copy(deep=True)

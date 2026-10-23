@@ -417,9 +417,9 @@ async def set_context(
     # Validate signal type against enum vocabulary
     try:
         ContextSignal(signal_type)
-    except ValueError:
+    except ValueError as exc:
         valid = [s.value for s in ContextSignal]
-        raise ValueError(f"Invalid signal type '{signal_type}'. Valid types: {valid}")
+        raise ValueError(f"Invalid signal type '{signal_type}'. Valid types: {valid}") from exc
 
     # Validate confidence range
     if not 0.0 <= confidence <= 1.0:

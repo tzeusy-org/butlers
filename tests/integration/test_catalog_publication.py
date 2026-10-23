@@ -31,6 +31,7 @@ from butlers.core.goal_admission import (
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.contracts.test_catalog_publication import registered_catalog
+from tests.polling import poll_until
 from tests.switchboard.goal_admission_fixtures import Sources, limits
 from tests.switchboard.goal_ledger_fixtures import configure
 
@@ -491,13 +492,16 @@ async def test_real_superseded_publish_waits_then_refuses_without_history_change
             tasks.append(asyncio.create_task(old.publish(changed)))
             await asyncio.wait_for(old_acquired.wait(), 5)
             assert pids["new"] != pids["old"]
-            async with asyncio.timeout(5):
-                while not await fleet.fetchval(
+
+            async def old_publication_waits_on_lock():
+                return await fleet.fetchval(
                     "SELECT wait_event_type='Lock' AND query LIKE '%publish_capability_catalog%' "
                     "FROM pg_stat_activity WHERE pid=$1",
                     pids["old"],
-                ):
-                    await asyncio.sleep(0.01)
+                )
+
+            async with asyncio.timeout(5):
+                await poll_until(old_publication_waits_on_lock, interval_s=0.01)
             release.set()
             await asyncio.wait_for(tasks[0], 5)
             with pytest.raises(EvidenceRefused):

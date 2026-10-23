@@ -60,7 +60,10 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
 )
 from butlers.tools.switchboard.registry.registry import register_butler
+from tests.polling import poll_until
 from tests.relationship_authority_helpers import baseline_writer
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -344,18 +347,21 @@ async def _accepted(
 
 async def _wait_for_lock(pool, pid):
     async with asyncio.timeout(5):
-        while not await pool.fetchval(
-            "SELECT wait_event_type='Lock' FROM pg_catalog.pg_stat_activity WHERE pid=$1",
-            pid,
-        ):
-            await asyncio.sleep(0.01)
+
+        async def _condition_met() -> bool:
+            return await pool.fetchval(
+                "SELECT wait_event_type='Lock' FROM pg_catalog.pg_stat_activity WHERE pid=$1",
+                pid,
+            )
+
+        await poll_until(_condition_met, interval_s=0.01)
 
 
 async def _router():
     name = "relationship_api_router"
     if name in sys.modules:
         return sys.modules[name]
-    path = Path(__file__).resolve().parents[2] / "roster/relationship/api/router.py"
+    path = _THIS_FILE.parents[2] / "roster/relationship/api/router.py"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -1165,7 +1171,7 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
         async with _owner_app(env) as (client, _service, headers):
 
             @client._transport.app.post(f"/api/test-temporal-rule/{kind}")
-            async def create_temporal_rule():
+            async def create_temporal_rule(*, temporal_constraints=temporal_constraints):
                 return await create_approval_rule(
                     env.rel,
                     "relationship_assert_fact",
@@ -2277,8 +2283,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     assert recovered.to_record() == device.to_record()
     # Classified data makes downgrade refusal causal, not an empty-store test.
     migration = (
-        Path(__file__).resolve().parents[2]
-        / "roster/relationship/migrations/037_fact_content_authority.py"
+        _THIS_FILE.parents[2] / "roster/relationship/migrations/037_fact_content_authority.py"
     )
     spec = importlib.util.spec_from_file_location("_authority_owned_migration", migration)
     module = importlib.util.module_from_spec(spec)

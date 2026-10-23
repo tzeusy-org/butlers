@@ -132,6 +132,13 @@ def _prep_envelope(event_id: UUID, title: str, starts_at: datetime) -> dict[str,
     }
 
 
+def _write_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 async def load_fixture(manifest_path: Path) -> dict[str, Any]:
     config = _environment()
     starts_at = datetime.now(UTC).replace(second=0, microsecond=0) + timedelta(hours=1)
@@ -228,10 +235,7 @@ async def load_fixture(manifest_path: Path) -> dict[str, Any]:
             "allowlisted_commitment_keys": sorted(ALLOWED_COMMITMENT_KEYS),
             "commitment_fingerprints": [item.fingerprint for item in FIXTURE_COMMITMENTS],
         }
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        await asyncio.to_thread(_write_manifest, manifest_path, manifest)
         return manifest
     finally:
         await connection.close()

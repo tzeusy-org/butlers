@@ -8,6 +8,7 @@ import copy
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -19,6 +20,7 @@ from butlers.core.obligation_sources import RuntimeCreationSnapshot, SourceConfl
 from butlers.core.obligations import DeclarationError, ObligationDeclaration
 
 pytestmark = pytest.mark.unit
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def schedule(**changes):
@@ -498,7 +500,9 @@ async def test_noop_disable_and_source_authority_refusals_preserve_actual_rows()
         }[mutation]
         with pytest.raises(SourceConflict, match=reason):
             await run_source_transaction(
-                pool, "health", lambda r: write(r, definition(), source_id, changed.revision)
+                pool,
+                "health",
+                lambda r, revision=changed.revision: write(r, definition(), source_id, revision),
             )
         conn.definitions, conn.revisions, conn.rows = old
         assert stored
@@ -554,8 +558,6 @@ async def test_role_shadow_wrong_command_and_stale_generation_refuse_before_effe
 
 
 async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, monkeypatch):
-    from pathlib import Path
-
     from butlers.config import load_config
     from butlers.core import scheduler
     from tests.config.test_obligation_declarations import _loaded_config
@@ -564,13 +566,13 @@ async def test_actual_typed_sync_consumes_same_carrier_without_new_io(tmp_path, 
     config = _loaded_config(tmp_path)
     declared = config.schedules[0]
     plain = type(declared)(name=declared.name, cron=declared.cron, prompt=declared.prompt)
-    education = load_config(Path(__file__).resolve().parents[2] / "roster/education")
+    education = load_config(_REPO_ROOT / "roster/education")
     education_plain = [
         type(spec).model_validate(spec.model_dump(exclude={"obligation"}))
         for spec in education.schedules
     ]
     rosters = {
-        domain: load_config(Path(__file__).resolve().parents[2] / "roster" / domain)
+        domain: load_config(_REPO_ROOT / "roster" / domain)
         for domain in ("chronicler", "general", "health", "lifestyle", "travel")
     }
     plain_rosters = {
@@ -1437,10 +1439,38 @@ async def test_full_loaded_git_reconciliation_uses_actual_inventory_and_tombston
     }
     (tmp_path / "butler.toml").write_text('[butler]\nname="health"\nport=9100\n')
     empty = capture_loaded_git_sources(load_config(tmp_path), runtime, registry)
+    stale_git_row = copy.deepcopy(pool.connection.rows[source])
     (deleted,) = await reconcile_loaded_git_sources(pool, empty)
     assert deleted.state == "deleted" and deleted.source_id == source
     assert source not in pool.connection.rows and runtime_row in pool.connection.rows
     assert pool.connection.occurrences[occurrence]["state"] == "cancelled"
     assert len(pool.connection.outbox) > len(stable[1])
+    assert await reconcile_loaded_git_sources(pool, empty) == ()
+    assert pool.connection.depth == 0
+
+    # A previously committed tombstone can outlive its old TOML row. Preserve
+    # that durable history while reconciling the stale row, never resurrect it.
+    pool.connection.rows[source] = stale_git_row
+    history = copy.deepcopy(
+        (
+            pool.connection.definitions,
+            pool.connection.revisions,
+            pool.connection.commands,
+            pool.connection.outbox,
+            pool.connection.occurrences,
+        )
+    )
+    with pytest.raises(SourceConflict, match="creation_binding_immutable"):
+        await reconcile_loaded_git_sources(pool, updated)
+    assert pool.connection.rows[source] == stale_git_row
+    assert await reconcile_loaded_git_sources(pool, empty) == ()
+    assert source not in pool.connection.rows and runtime_row in pool.connection.rows
+    assert (
+        pool.connection.definitions,
+        pool.connection.revisions,
+        pool.connection.commands,
+        pool.connection.outbox,
+        pool.connection.occurrences,
+    ) == history
     assert await reconcile_loaded_git_sources(pool, empty) == ()
     assert pool.connection.depth == 0

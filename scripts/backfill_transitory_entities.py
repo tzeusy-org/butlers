@@ -126,7 +126,6 @@ _ORG_INDICATORS = frozenset(
         "solutions",
         "technologies",
         "consulting",
-        "consulting",
         "systems",
     }
 )

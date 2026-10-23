@@ -178,9 +178,17 @@ def upgrade() -> None:
             domains text[] := ARRAY['chronicler','concierge','education','finance','general',
                 'health','home','lifestyle','messenger','qa','relationship','switchboard','travel'];
         BEGIN
+            -- Stamped/shared-predecessor replay can legitimately have no local
+            -- scheduled_tasks. In that case retain the actual owner of the
+            -- owning definition relation created above, never a peer owner or
+            -- a caller-provided identity. Ordinary full replay still prefers
+            -- the existing scheduled_tasks baseline owner.
             SELECT pg_get_userbyid(c.relowner) INTO STRICT owner_name
               FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-             WHERE n.nspname=own_schema AND c.relname='scheduled_tasks' AND c.relkind='r';
+             WHERE n.nspname=own_schema AND c.relkind='r'
+               AND c.relname IN ('scheduled_tasks','obligation_definitions')
+             ORDER BY CASE c.relname WHEN 'scheduled_tasks' THEN 0 ELSE 1 END
+             LIMIT 1;
             FOREACH table_name IN ARRAY ARRAY['obligation_definitions','obligation_revisions',
                 'obligation_source_commands','obligation_occurrences','obligation_source_outbox']
             LOOP

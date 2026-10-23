@@ -434,7 +434,7 @@ async def test_off_observer_preserves_cancellation_and_other_base_exceptions(mon
     monkeypatch.setattr(wake, "_open_reaction_lifecycle", AsyncMock())
     for error in (asyncio.CancelledError(), BaseException("closed-test-control")):
 
-        def interrupt(**_):
+        def interrupt(error=error, **_):
             raise error
 
         monkeypatch.setattr(admission, "build_dark_attempt_observation", interrupt)

@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.contract
 
@@ -45,7 +46,7 @@ class TestIngestEnvelopeFormat:
         # Missing source raises
         base = dict(envelope)
         del base["source"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             parse_ingest_envelope(base)
 
         # Canonical pairings present

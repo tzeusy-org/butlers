@@ -6,6 +6,7 @@ no authenticated fleet publication or admission switch is wired.
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ from butlers.core.obligations import DeclarationError, parse_declaration, qualif
 from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
 
 pytestmark = pytest.mark.unit
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_declarations_are_exact_immutable_sets_not_authority_envelopes():
@@ -348,14 +350,13 @@ async def test_actual_startup_diagnostics_follow_final_approval_catalog(
 
 
 async def test_education_roster_ceilings_cover_actual_registered_workflows(monkeypatch, caplog):
-    from pathlib import Path
     from unittest.mock import AsyncMock
 
     from butlers.config import load_config
     from butlers.core.obligation_catalog import diagnose_loaded_schedules
     from tests.contracts.test_tool_authorization_catalog import _roster_catalog
 
-    root = Path(__file__).resolve().parents[2]
+    root = _REPO_ROOT
     config = load_config(root / "roster/education")
     prompts = {spec.name: spec for spec in config.schedules if spec.dispatch_mode == "prompt"}
     # These are the workflow branches, including the analytics fallback and
@@ -427,7 +428,6 @@ async def test_education_roster_ceilings_cover_actual_registered_workflows(monke
 async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_authority(
     monkeypatch, caplog
 ):
-    from pathlib import Path
     from unittest.mock import AsyncMock
 
     from butlers.config import load_config
@@ -463,7 +463,7 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
             },
         },
     }
-    root = Path(__file__).resolve().parents[2]
+    root = _REPO_ROOT
     monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
     for domain, workflows in required.items():
         config = load_config(root / "roster" / domain)
@@ -518,7 +518,7 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
             )
             spec = prompts["chronicler_day_close"]
 
-            def changed(raw):
+            def changed(raw, spec=spec):
                 return type(spec).model_validate(
                     spec.model_dump(exclude={"obligation"}) | {"obligation": raw}
                 )
@@ -575,14 +575,13 @@ async def test_roster_prompt_ceilings_resolve_complete_workflows_without_fleet_a
 async def test_home_feed_is_typed_and_checked_against_actual_registered_non_actuating_ceiling(
     monkeypatch, caplog
 ):
-    from pathlib import Path
     from unittest.mock import AsyncMock
 
     from butlers.config import load_config
     from butlers.core import obligation_catalog
     from tests.contracts.test_tool_authorization_catalog import _roster_catalog
 
-    root = Path(__file__).resolve().parents[2]
+    root = _REPO_ROOT
     config = load_config(root / "roster" / "home")
     assert len(config.subscriptions) == 1
     subscription = config.subscriptions[0]

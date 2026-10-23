@@ -7,6 +7,7 @@ No fixture grants catalog/creator authority or invokes a model/provider.
 import copy
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ import pytest
 from tests.core.test_obligation_schedule_sources import RecordingConnection, RecordingPool
 
 pytestmark = pytest.mark.unit
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 NOW = datetime(2026, 6, 15, 12, tzinfo=UTC)
 
@@ -661,7 +664,6 @@ async def test_actual_insight_job_registration_stages_nominal_model_obligation(
     job_name, monkeypatch
 ):
     """Real roster/handler/typed source/CAS; collaborators do not prove PG authority."""
-    from pathlib import Path
 
     from butlers.background import _deterministic_jobs_for_butler
     from butlers.config import load_config
@@ -673,7 +675,7 @@ async def test_actual_insight_job_registration_stages_nominal_model_obligation(
     from butlers.core.scheduler import tick
     from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
 
-    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "switchboard")
+    config = load_config(_REPO_ROOT / "roster" / "switchboard")
     snapshot = capture_loaded_git_sources(
         config, RuntimeConfig("switchboard"), await _complete_core_catalog("switchboard")
     )

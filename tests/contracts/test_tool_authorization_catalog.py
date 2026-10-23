@@ -26,8 +26,10 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.base import ToolMeta
 from butlers.modules.registry import default_registry
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.contract
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = _THIS_FILE.parents[2]
 _D4_FIELDS = (
     "owner_domain",
     "effect_class",
@@ -199,7 +201,6 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Execute native registration and wrapping, never provider or handler bodies."""
-    from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
@@ -209,7 +210,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     from butlers.daemon import ButlerDaemon
     from butlers.modules.registry import default_registry
 
-    roster = Path(__file__).resolve().parents[2] / "roster"
+    roster = _THIS_FILE.parents[2] / "roster"
     registry = default_registry()
     await _provider_catalogs()
     for variant in ("general", "switchboard", "messenger", "relationship", "chronicler"):

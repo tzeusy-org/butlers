@@ -55,11 +55,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Lifestyle butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

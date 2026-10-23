@@ -63,11 +63,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Travel butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ async def get_trip_summary(
 
     try:
         trip = _row_to_trip(dict(trip_row))
-    except Exception:
+    except Exception as exc:
         # The top-level trip row is the entire response's subject -- there is
         # no sub-collection to exclude-and-continue over. Fail with an honest,
         # documented error instead of an unhandled 500.
@@ -251,7 +251,7 @@ async def get_trip_summary(
         raise HTTPException(
             status_code=502,
             detail=f"Trip {trip_id} data is corrupt and could not be read",
-        )
+        ) from exc
 
     legs_rows = await pool.fetch(
         "SELECT id, trip_id, type, carrier, departure_airport_station, departure_city,"

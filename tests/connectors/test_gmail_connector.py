@@ -1463,7 +1463,15 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
         primary_tracebacks = []
         requests = []
 
-        async def transport(request):
+        async def transport(
+            request,
+            *,
+            requests=requests,
+            failure=failure,
+            primary=primary,
+            primary_args=primary_args,
+            primary_tracebacks=primary_tracebacks,
+        ):
             requests.append((request.method, str(request.url)))
             if len(requests) == 1:
                 if isinstance(failure, Exception):
@@ -1540,7 +1548,7 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
         runtime._metrics = MagicMock()
         requests = []
 
-        async def token_transport(request):
+        async def token_transport(request, *, requests=requests, code=code):
             requests.append((request.method, str(request.url)))
             if len(requests) == 1:
                 return httpx.Response(400, json={"error": code}, request=request)

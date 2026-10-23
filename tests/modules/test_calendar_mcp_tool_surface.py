@@ -33,6 +33,7 @@ EXPECTED_CALENDAR_TOOLS = frozenset(
         "calendar_remove_attendees",
         "calendar_respond",
         "calendar_response_fence_status",
+        "calendar_scan_reminder_events",
         "calendar_set_primary",
         "calendar_sync_status",
         "calendar_toggle_butler_event",

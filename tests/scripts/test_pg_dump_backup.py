@@ -176,7 +176,7 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
     _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
     assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
-    for table in scoped_data_tables:
+    for _table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
 
 

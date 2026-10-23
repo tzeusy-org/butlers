@@ -234,11 +234,11 @@ async def list_schedules(
     """Return all scheduled tasks for a single butler."""
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
     schedules = [_row_to_schedule(row) for row in rows]

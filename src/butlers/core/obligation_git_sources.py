@@ -236,7 +236,10 @@ async def reconcile_loaded_git_sources(
             if locked is None or locked["source"] != "toml" or locked["name"] != name:
                 raise SourceConflict("git_schedule_required")
             await connection.execute(f"DELETE FROM {table} WHERE id=$1", row["id"])
-            if old is not None:
+            # A source tombstone may already be committed while its old TOML
+            # row remains. Remove that stale row without attempting a forbidden
+            # successor revision or duplicating immutable history/outbox.
+            if old is not None and old.state != "deleted":
                 removed = replace(old, generation=old.generation + 1, state="deleted")
                 results.append(
                     await repository.revise(commands[name], removed, expected_revision=old.revision)

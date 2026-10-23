@@ -485,7 +485,9 @@ job conversion or unavailable local material cannot create a fresh active
 source. A dangling active source without its actual scheduled row refuses;
 absence alone does not prove deletion. The owning role, relation identity,
 full-inventory lock, command/source lock order and whole-transaction rollback
-remain mandatory.
+remain mandatory. An already-tombstoned source with a stale TOML row is cleaned
+up without a successor revision, duplicate outbox entry or history removal. A
+desired row cannot revive that deleted source identity.
 
 A source definition's `active` state describes available configuration material;
 it does not admit a goal or validate grants against a fleet catalog. Admission
@@ -597,7 +599,12 @@ pipeline and its existing model fallback continue unchanged in dark mode.
 `core_274` anchors its five owning tables and three immutable-trigger functions
 to the existing, qualified `scheduled_tasks` migration owner. A managed-bootstrap
 re-upgrade therefore preserves the ordinary migration identity rather than making
-its caller the permanent owner. It explicitly converges the same own-schema and
+its caller the permanent owner. For a legitimate shared-predecessor stamp with
+no local `scheduled_tasks`, the newly created local `obligation_definitions`
+relation supplies the actual owning identity; no peer schema or caller-supplied
+identity is substituted. An additional real-Postgres control exercises that
+stamped replay with separate committed metadata and individual-ACL readback.
+It explicitly converges the same own-schema and
 public runtime table privileges as bootstrap, regardless of creator default ACLs.
 It adds no runtime role membership, TEMP permission or statistics-reading grant.
 The existing ordinary-login migration round-trip schema oracle remains unchanged;

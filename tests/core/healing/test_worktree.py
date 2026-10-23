@@ -39,6 +39,7 @@ from butlers.core.healing.worktree import (
     reap_stale_worktrees,
     remove_healing_worktree,
 )
+from tests.polling import poll_until
 
 
 @pytest.fixture(autouse=True)
@@ -208,7 +209,15 @@ class TestCreateHealingWorktree:
             groups = []
             operation = None
 
-            async def helper_git(executable, *args, **kwargs):
+            async def helper_git(
+                executable,
+                *args,
+                mode=mode,
+                children=children,
+                groups=groups,
+                ready=ready,
+                **kwargs,
+            ):
                 assert executable == "git"
                 script = "import sys,time; print('READY',flush=True); " + (
                     "print('released'); print('companion',file=sys.stderr)"
@@ -230,11 +239,13 @@ class TestCreateHealingWorktree:
                 if flooded:
 
                     async def pipes_saturated():
-                        while not all(
-                            len(stream._buffer) > stream._limit and stream._paused
-                            for stream in (child.stdout, child.stderr)
-                        ):
-                            await asyncio.sleep(0.005)
+                        async def _condition_met() -> bool:
+                            return all(
+                                len(stream._buffer) > stream._limit and stream._paused
+                                for stream in (child.stdout, child.stderr)
+                            )
+
+                        await poll_until(_condition_met, interval_s=0.005)
 
                     await asyncio.wait_for(pipes_saturated(), 5)
                     assert child.stdout._paused and child.stderr._paused

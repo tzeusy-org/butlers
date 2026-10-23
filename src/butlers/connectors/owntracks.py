@@ -1619,8 +1619,8 @@ class OwnTracksConnector:
             # Parse payload
             try:
                 body = await request.json()
-            except Exception:
-                raise HTTPException(status_code=400, detail={"error": "Invalid JSON"})
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail={"error": "Invalid JSON"}) from exc
 
             if not isinstance(body, dict) or "_type" not in body:
                 raise HTTPException(
