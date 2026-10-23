@@ -406,3 +406,41 @@ async def test_legacy_rule_memory_follows_owning_audit_commit(app, monkeypatch, 
             response = await client.post(path, json=payload)
             assert response.status_code == 409
             assert len(owner["rules"]) == len(memory) == len(dispatches) == 1
+
+
+@pytest.mark.parametrize("refusal", ["already_approved", "expires_during_approval"])
+async def test_refused_owner_edit_preserves_stored_call(binding_http, monkeypatch, refusal):
+    """Actual HTTP/transaction boundary; refusal operation is a collaborator."""
+    from copy import deepcopy
+
+    client, state = binding_http
+    row = state["row"]
+    original = deepcopy(row["tool_args"])
+    if refusal == "already_approved":
+        row["status"] = "approved"
+        expected_code = 409
+    else:
+        # Model the production operation's expiry transition and error result.
+        async def expire(conn, **kwargs):
+            state["events"].append("approve")
+            state["row"]["status"] = "expired"
+            return {"error": "Action expired and cannot be approved"}
+
+        monkeypatch.setattr(routes.approvals_ops, "approve_action", expire)
+        expected_code = 400
+    response = await client.post(
+        f"/api/approvals/{row['id']}/approve",
+        json={
+            "displayed_call": {
+                "tool_name": row["tool_name"],
+                "args_digest": args_digest(original),
+            },
+            "edits": {"text": "Refused owner edit"},
+        },
+    )
+    assert response.status_code == expected_code
+    assert state["row"]["tool_args"] == original
+    assert state["row"]["status"] == ("approved" if refusal == "already_approved" else "expired")
+    assert state["dispatches"] == []
+    assert "audit" not in state["events"]
+    assert state["events"][-1] == "commit"

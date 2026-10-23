@@ -3214,11 +3214,14 @@ async def approve_owning_action(
         if edits and action_row is not None and action_row["tool_name"] == "calendar_respond":
             raise HTTPException(status_code=409, detail="response_command_is_immutable")
 
-        # Apply edits to tool args before approval (same connection, no partial update risk)
+        # Keep the locked original call until the owning decision accepts the edit.
+        original_tool_args: dict[str, Any] | None = None
         if edits and action_row is not None:
             raw_args = action_row["tool_args"]
-            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            tool_args.update(edits)
+            original_tool_args = (
+                json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            )
+            tool_args = {**original_tool_args, **edits}
             # Bind the sanitized dict directly (no json.dumps, no ::jsonb
             # cast) — asyncpg's registered jsonb codec already serializes
             # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
@@ -3238,6 +3241,16 @@ async def approve_owning_action(
             # this approval, optional standing rule and audit have committed.
             decision_memory_writer=None,
         )
+        if "error" in result and original_tool_args is not None:
+            # A refused decision may still commit its legitimate expiry transition.
+            # Restore the exact prior call before releasing the same row lock;
+            # neither a refusal nor its retry may alter an already-approved call.
+            # Any restoration failure aborts this entire owning transaction.
+            await conn.execute(
+                "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
+                original_tool_args,
+                parsed_id,
+            )
         if "error" not in result:
             edits_note = json.dumps(edits) if edits else None
             await audit_router.append(
