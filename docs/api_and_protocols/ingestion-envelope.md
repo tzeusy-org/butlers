@@ -84,6 +84,32 @@ The same decision applies before and inside the advisory lock. Connectors must:
 - Provide `control.idempotency_key` when the source has no stable event id.
 - Treat duplicate acceptance as success, not error.
 
+## Dark goal input and reply references
+
+The trusted closed goal harness reads canonical retained `normalized_text`, attachments and
+`payload.untrusted_spans` by server request reference. It recomputes the input digest and returns a
+frozen sequence whose marked ranges and attribution labels are data. There is no caller-supplied
+trusted cache, duplicate raw store, live ingress consumer, model launch or key mount. Owner sender
+verification is independent of quoted authors, display names and body claims. Email From/domain
+verdicts alone do not authenticate an owner principal. Authenticated dashboard authority requires
+the private stored owner admission bound to the exact accepted origin/body and unique live entity.
+
+`event.in_reply_to_ref` identifies the message being answered; `event.reply_target_ref` identifies
+where to send the current reply. Neither is a caller-selected goal/effect ID. Exact stored inbound
+or outbound provenance must match transport, endpoint, conversation and verified recipient.
+Unknown/foreign references create no guessed continuity. Missing inbound trust is exposed; a bot
+reply uses the producing goal's actual exposure. A live owner prompt may receive one immutable
+source-bound inbox entry without a new budget or invocation; Stop/expiry are rechecked after locks.
+
+Channel kind comes only from the authoritative registry. A successful missing/invalid declaration
+means message; lookup failure refuses. Feed input records through its domain-owned deterministic
+service and creates no goal without a matching Git declaration. Registry kind drift cannot change
+the canonical accepted request identity or allocate a second budget on retry.
+
+Roll out receiver/schema before marker/reference producers because envelope models forbid extras.
+Complete buffered and filtered replay propagation before consumption. Keep live activation off;
+rollback disables activation/consumption before removing reader or producer support.
+
 ## Sender Authentication Verdict
 
 For every accepted `email` envelope the Switchboard stores one verdict on the canonical `public.ingestion_events.sender_authentication` column: `authenticated`, `unverified` or `failed`. It describes the From domain only and is computed once at ingest from the topmost `Authentication-Results` header kept in `payload.raw` (a lower or injected header never counts). An aligned `dkim=pass` or a `dmarc=pass` gives `authenticated`; a `dmarc` fail or permerror, or an aligned `dkim` fail, gives `failed`; a missing header, a metadata-tier row with no raw payload, `temperror`, `none` and unaligned passes give `unverified`. Non-email rows, and rows ingested before the column existed, read `NULL`. A verifier error stores `NULL` and never fails the ingest. Header parsing is quote-, comment- and literal-aware, so sender text echoed by the receiver cannot forge a clause; an unreadable header is `unverified`, unless it still carries a `dmarc` fail or permerror or a fail on an aligned `dkim` signature, which reads `failed` (a stray character in echoed text can hide a forgery from the strict parser but never a real failure). Alignment uses `header.d` only. The verdict is the receiving provider's claim from the topmost header: it is not proof for mail placed without SMTP receipt (IMAP APPEND, import or insert), where the sender can write that header. The verdict never grants owner origin. Readers use this column instead of parsing headers themselves. See `openspec/specs/ingestion-event-registry/spec.md`.
