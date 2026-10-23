@@ -34,7 +34,9 @@ spec:
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
+            {{- if .Values.butlersControl.enabled }}
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
+            {{- end }}
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
