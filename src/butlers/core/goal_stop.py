@@ -29,7 +29,9 @@ class StopUnavailable(RuntimeError):
 
 
 def _uuid(value):
-    if type(value) is not UUID:
+    # asyncpg decodes PostgreSQL UUIDs as a UUID subclass. Require the typed
+    # value, without coercing strings/bytes or caller-supplied wire objects.
+    if not isinstance(value, UUID):
         raise ValueError("invalid_stop_identity")
 
 

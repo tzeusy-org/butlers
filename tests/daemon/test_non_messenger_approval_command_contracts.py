@@ -464,6 +464,10 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         # The registered Calendar tool uses its trusted startup-bound canonical
         # preparer; replay still runs through the owning gate and executor.
         ("src/butlers/modules/calendar_response.py", "prepare_and_park"),
+        # RFC 0038 D13 exact goal calls use the same atomic pending/intent
+        # writer with immutable lineage. Verified ingress and approved replay
+        # remain separate required producers, not a generic command exemption.
+        ("src/butlers/modules/approvals/goal_calls.py", "park_goal_call"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):

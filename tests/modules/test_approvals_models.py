@@ -93,8 +93,11 @@ class TestPendingActionModel:
             ActionStatus.EXPIRED,
             ActionStatus.EXECUTED,
             ActionStatus.ABANDONED,
+            # RFC 0038 D13: Stop cancellation is distinct from rejection/expiry.
+            ActionStatus.CANCELLED,
         }
         assert ActionStatus.PENDING.value == "pending"
+        assert ActionStatus.CANCELLED.value == "cancelled"
 
 
 @pytest.mark.unit

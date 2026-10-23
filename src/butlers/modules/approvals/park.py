@@ -257,45 +257,30 @@ async def _insert_pending_action(
     *,
     origin: str | None = None,
 ) -> None:
+    lineage_columns = ""
+    lineage_values = ""
+    lineage_args: tuple[Any, ...] = ()
     if request.goal_lineage is not None:
         # Explicit migrated schema path only. Never hide lineage in evidence,
         # JSON metadata or the unrelated prepared producer-origin column.
-        await connection.execute(
-            """
-            INSERT INTO pending_actions (
-                id, tool_name, tool_args, agent_summary, session_id, status, origin,
-                requested_at, expires_at, why, evidence, blast_radius, reversibility,
-                deduplication_key, goal_id, invocation_id, goal_depth, goal_exposed,
-                goal_origin, goal_effect_id, goal_capability, goal_args_digest,
-                goal_approved_args_digest
-            ) VALUES ($1, $2, $3, $4, $5, 'pending', $6,
-                      $7, $8, $9, $10, $11, $12, $13,
-                      $14, $15, $16, $17, $18, $19, $20, $21, $22)
-            """,
-            request.action_id,
-            request.tool_name,
-            request.tool_args,
-            request.agent_summary,
-            request.session_id,
-            origin,
-            request.requested_at,
-            request.expires_at,
-            request.why,
-            list(request.evidence),
-            request.blast_radius,
-            request.reversibility,
-            request.deduplication_key,
-            *(request.goal_lineage.columns()[name] for name in GOAL_LINEAGE_COLUMNS),
+        # Only these fixed identifiers/placeholders vary. All values remain
+        # bound parameters, and ordinary/prepared rows never name new columns.
+        lineage_columns = ", " + ", ".join(GOAL_LINEAGE_COLUMNS)
+        lineage_values = ", " + ", ".join(
+            f"${index}" for index in range(14, 14 + len(GOAL_LINEAGE_COLUMNS))
         )
-        return
+        columns = request.goal_lineage.columns()
+        lineage_args = tuple(columns[name] for name in GOAL_LINEAGE_COLUMNS)
+    # Keep one pending-row writer for ordinary, prepared and goal admission;
+    # all paths retain their surrounding delivery-intent transaction.
     await connection.execute(
-        """
+        f"""
         INSERT INTO pending_actions (
             id, tool_name, tool_args, agent_summary, session_id, status, origin,
             requested_at, expires_at, why, evidence, blast_radius, reversibility,
-            deduplication_key
+            deduplication_key{lineage_columns}
         ) VALUES ($1, $2, $3, $4, $5, 'pending', $6,
-                  $7, $8, $9, $10, $11, $12, $13)
+                  $7, $8, $9, $10, $11, $12, $13{lineage_values})
         """,
         request.action_id,
         request.tool_name,
@@ -310,6 +295,7 @@ async def _insert_pending_action(
         request.blast_radius,
         request.reversibility,
         request.deduplication_key,
+        *lineage_args,
     )
 
 

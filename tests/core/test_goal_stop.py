@@ -281,6 +281,55 @@ async def test_reclaimed_cancel_work_fences_stale_or_wrong_identity_and_ACK_is_e
         await stop.ack_cancel_work(second, "d" * 64, "fenced_absent")
 
 
+async def test_actual_asyncpg_UUID_rows_reclaim_and_ACK_without_accepting_wire_coercions():
+    # This is the pinned driver's real decoded UUID type, not a test lookalike.
+    # No database/role/locking claim is made by this repository software control.
+    from uuid import UUID
+
+    from asyncpg.pgproto.pgproto import UUID as DriverUUID
+
+    class DriverRows(StopConnection):
+        async def fetchrow(self, sql, *args):
+            row = await super().fetchrow(sql, *args)
+            if row and "FROM switchboard.goal_approval_cancel_work w" in sql:
+                return {
+                    key: DriverUUID(str(value)) if isinstance(value, UUID) else value
+                    for key, value in row.items()
+                }
+            return row
+
+    connection = DriverRows()
+    native = connection.seed_effect()
+    identity = replace(
+        native,
+        goal_id=DriverUUID(str(native.goal_id)),
+        effect_id=DriverUUID(str(native.effect_id)),
+        action_id=DriverUUID(str(native.action_id)),
+    )
+    stop = GoalStop(Pool(connection))
+    await stop.stop_goal(identity.goal_id, DriverUUID(str(uuid4())), "b" * 64)
+    first = await stop.claim_cancel_work(identity)
+    assert first.generation == 1 and await stop.claim_cancel_work(identity) is None
+    # Accept a typed database value, never parse a caller's representation into authority.
+    for invalid in (str(native.goal_id), native.goal_id.bytes, 1, True, None, {}):
+        with pytest.raises(ValueError, match="invalid_stop_identity"):
+            replace(identity, goal_id=invalid)
+        with pytest.raises(ValueError, match="invalid_stop_identity"):
+            replace(first, claim_id=invalid)
+        with pytest.raises(ValueError, match="invalid_stop_identity"):
+            await stop.stop_goal(invalid, uuid4(), "b" * 64)
+    connection.work[identity.effect_id]["lease_valid"] = False
+    second = await stop.claim_cancel_work(identity)
+    assert second.generation == first.generation + 1 and second.claim_id != first.claim_id
+    with pytest.raises(StopUnavailable, match="cancel_ack_conflict"):
+        await stop.ack_cancel_work(first, "c" * 64, "cancelled")
+    decoded_claim = replace(second, claim_id=DriverUUID(str(second.claim_id)))
+    await stop.ack_cancel_work(decoded_claim, "c" * 64, "fenced_absent")
+    await stop.ack_cancel_work(decoded_claim, "c" * 64, "fenced_absent")
+    assert connection.work[identity.effect_id]["state"] == "acknowledged"
+    assert connection.effects[identity.effect_id]["status"] == "cancelled"
+
+
 async def test_dispatch_witness_after_claim_refuses_ACK_without_rewriting_uncertainty():
     connection = StopConnection()
     identity = connection.seed_effect()
