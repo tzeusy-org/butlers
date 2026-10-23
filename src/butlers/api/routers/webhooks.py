@@ -440,8 +440,10 @@ async def list_webhooks(
     """Return all webhook registrations ordered by created_at DESC."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     rows = await pool.fetch(
         f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks ORDER BY created_at DESC"
@@ -467,8 +469,10 @@ async def create_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     secret = _generate_secret()
     secret_encrypted = _encrypt_secret(secret)
@@ -520,8 +524,10 @@ async def get_webhook(
     """Return one webhook registration by ID."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     row = await pool.fetchrow(
         f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks WHERE id = $1::uuid",
@@ -552,8 +558,10 @@ async def update_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     existing = await pool.fetchrow(
         "SELECT id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
@@ -644,8 +652,10 @@ async def delete_webhook(
     """Delete a webhook registration."""
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # The DELETE and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
@@ -686,8 +696,10 @@ async def test_webhook(
     """
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     row = await pool.fetchrow(
         "SELECT id, endpoint, events, enabled, secret_encrypted, last_test_at, last_test_ok, "

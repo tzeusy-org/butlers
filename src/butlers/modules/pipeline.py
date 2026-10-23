@@ -2587,45 +2587,19 @@ class MessagePipeline:
                 )
 
                 # --- Engagement detection ---
-                # On each ingress request FROM THE OWNER, mark unengaged
-                # insight_engagement rows delivered within the last 60 minutes
-                # as engaged=TRUE, and record the owner-ingress day in the
-                # durable daily rollup (bu-tdd4k.5). Connector/automated/
-                # non-owner ingress must NOT count as engagement — the
-                # disengagement ratchet (check_total_disengagement_auto_off)
-                # is a vision success marker and can never fire if noise
-                # impersonates owner attention. Gated on a direct, read-only
-                # identity lookup rather than the full resolve_and_inject_
-                # identity() preamble machinery (no temp-contact creation or
-                # owner-notify side effects belong in a best-effort gate).
-                # This is a best-effort side effect — failures must not block routing.
-                try:
-                    from butlers.core.attention_ledger import record_owner_ingress_rollup
-                    from butlers.identity import resolve_contact_by_channel
-                    from butlers.tools.switchboard.insight.broker import (
-                        check_and_update_engagement,
-                    )
+                # Owner-authored ingress marks recent insight deliveries engaged;
+                # best-effort, so failures never block routing.
+                from butlers.tools.switchboard.insight.engagement import (
+                    record_owner_ingress_engagement,
+                )
 
-                    sender_value = source_metadata.get("source_id") or source_metadata.get(
-                        "identity"
-                    )
-                    is_owner_ingress = False
-                    if sender_value and source:
-                        resolved_sender = await resolve_contact_by_channel(
-                            self._pool, source, sender_value
-                        )
-                        is_owner_ingress = (
-                            resolved_sender is not None and "owner" in resolved_sender.roles
-                        )
-
-                    if is_owner_ingress:
-                        await check_and_update_engagement(self._pool)
-                        await record_owner_ingress_rollup(self._pool, occurred_at=received_at)
-                except Exception:
-                    logger.debug(
-                        "Engagement detection failed; proceeding without update",
-                        exc_info=True,
-                    )
+                await record_owner_ingress_engagement(
+                    self._pool,
+                    source=source,
+                    sender_value=source_metadata.get("source_id")
+                    or source_metadata.get("identity"),
+                    received_at=received_at,
+                )
 
                 # --- Mark as processing so the scanner does not re-enqueue ---
                 if message_inbox_id is not None:
@@ -4506,14 +4480,6 @@ class PipelineModule(Module):
     @property
     def config_schema(self) -> type[BaseModel]:
         return PipelineConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # No module-specific tables; pipeline uses shared switchboard schema.
-        return None
 
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a pre-constructed ``MessagePipeline`` instance.

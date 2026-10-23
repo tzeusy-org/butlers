@@ -10,6 +10,7 @@ the hooks pytest actually calls rather than a hand-built imitation.
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import os
 import subprocess
@@ -224,7 +225,11 @@ def _run_nightly(
     workflow = (REPO_ROOT / ".github/workflows/nightly.yml").read_text()
     step = workflow.split("      - name: Quarantined tests\n", 1)[1]
     block = step.split("        run: |\n", 1)[1]
-    command = "\n".join(line[10:] for line in block.splitlines() if line.startswith("          "))
+    # The run block ends at the first non-blank line indented less than its body.
+    lines = itertools.takewhile(
+        lambda line: not line.strip() or line.startswith("          "), block.splitlines()
+    )
+    command = "\n".join(line[10:] for line in lines if line.strip())
     binary_dir = project / ".bin"
     binary_dir.mkdir()
     binary = binary_dir / "uv"

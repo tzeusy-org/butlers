@@ -18,7 +18,8 @@ snapshot disagrees; fix this page. The port map below is the one other docs link
 ```mermaid
 graph TB
     subgraph K3S["k3s: butlers (prod) / butlers-dev (dev)"]
-        UP["Deployment butlers-up<br/>all roster daemons, one port each"]
+        UP["Deployment butlers-up<br/>roster daemons, one port each<br/>(dev stage: domains only)"]
+        CONTROL["Deployment butlers-control (dev stage only)<br/>Switchboard :41100 / session :41199"]
         Conn["Deployments connector-*<br/>enabled entries in values.connectors"]
         API["Deployment dashboard-api :41200<br/>FastAPI + fleet shadow observer"]
         MIG["dashboard-api initContainer: migrations"]
@@ -29,7 +30,9 @@ graph TB
     end
     PG["PostgreSQL (external to chart)"]
     OTel["Cluster LGTM telemetry"]
-    Conn -- "MCP: butlers-up Service" --> UP
+    Conn -- "MCP: Switchboard Service (dev stage)" --> CONTROL
+    Conn -. "MCP: butlers-up Service (prod, unsplit)" .-> UP
+    CONTROL -- "domain MCP" --> UP
     API -- "identity probes" --> UP
     API -- "SQL" --> PG
     UP -- "SQL" --> PG
@@ -39,13 +42,24 @@ graph TB
     UP -- "OTLP" --> OTel
 ```
 
-`butlers up` runs every roster butler in one Deployment; each butler still
-serves its own FastMCP endpoint on its own port. Connectors run as separate
-Deployments and submit ingress to Switchboard over MCP. The database is
-external to the chart. Migrations run in the `dashboard-api` initContainer;
-`make deploy-*` waits for the dashboard and daemon rollouts. The chart also
-provides Services, ExternalSecrets, NetworkPolicies and persistent volumes.
-See [chart workloads](../../docs/operations/kubernetes-deployment.md#what-the-chart-runs)
+Production `butlers up` runs every roster butler in one Deployment; each butler
+still serves its own FastMCP endpoint on its own port. Dev KEY_ABSENT_STAGE runs
+Switchboard in `butlers-control` and domains in `butlers-up`
+(`butlers up --exclude switchboard`). Each daemon retains its MCP port. Exactly
+one control process reserves one session slot and one domain process reserves
+four, preserving the owner total of five without changing the process-local
+semaphore. Helm production and the production Compose launcher remain unsplit at
+five. Helm `butlersControl.enabled` (set in the dev values) and the dev Compose
+overlay select this topology; see
+[stage boundaries and pending live proof](../../docs/architecture/key-absent-control.md).
+The refusal-only session listener is separate from service health.
+
+Connectors run as separate Deployments and submit ingress to Switchboard over
+MCP. The database is external to the chart. Migrations run in the
+`dashboard-api` initContainer; `make deploy-*` waits for the dashboard and
+daemon rollouts. The chart also provides Services, ExternalSecrets,
+NetworkPolicies and persistent volumes. See
+[chart workloads](../../docs/operations/kubernetes-deployment.md#what-the-chart-runs)
 for the object map and retained off-cluster components.
 
 ---
@@ -110,6 +124,12 @@ These are chart values, not observed live listeners. `butlers-up` exposes
 | `frontend` (Service port 80, nginx target 8080) | 31173 | 32173 |
 | `dashboard-api-host` (Service port 41200) | 31200 | 32200 |
 | `connector-owntracks-host` (Service port 40086) | 31086 | 32086 |
+
+In the dev stage the `butlers-control` Service carries Switchboard's 41100
+(unchanged for every caller) and the control session stage port 41199. The
+session port is cluster-internal only: `GET /health` returns a fixed 503 and
+every other route is refused; a NetworkPolicy admits only the documented
+callers. It has no NodePort or host port.
 
 PostgreSQL uses `POSTGRES_PORT` (default 5432) outside the chart. The chart
 does not deploy MinIO; the retained Compose MinIO and host-port setup is

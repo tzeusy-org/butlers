@@ -33,8 +33,11 @@ Scope: v1-mandatory
 
 ### Requirement: Every model-reachable capability declares authorization metadata
 Every LLM-presentable tool SHALL declare its owner domain, effect class, output
-trust, output sensitivity, resource parameters, safety arguments, approval
-policy, idempotency mode and owner-authority flag. Every tool whose call can
+trust, output sensitivity, resource parameters (each marked selection-bound or
+not; `REQ-capability-authorization-018`), safety arguments, approval
+policy (including its approval mode, `default` or `always_per_event`;
+`REQ-capability-authorization-017`), idempotency mode and owner-authority flag.
+Every tool whose call can
 deliver content to, or invite, another party, whatever its effect class, SHALL
 also declare the arguments that name those parties (recipients, attendees,
 invitees, shares), or declare them undeterminable when its arguments cannot
@@ -123,12 +126,22 @@ Scope: v1-mandatory
 - **THEN** the goal is admitted with origin `obligation` and exactly that capability set, and its actuation follows the RFC 0028 risk map
 - **AND** a device name or note in the event that someone other than the owner could set is untrusted output, so reading it exposes the invocation
 
+#### Scenario: Staffer admission uses a closed Git-owned contract
+- **WHEN** trusted infrastructure admits a staffer using its versioned Git-owned declaration
+- **THEN** the declaration identifies staffer, owning domain, contract and pinned catalog digests, exact capability IDs and resource sets, and execute or park-only restriction
+- **AND** missing, stale or unreadable declarations/catalogs, wildcards, duplicate/unknown IDs, owner-decision, custody or transact entries refuse admission
+- **AND** intersection only narrows resources and preserves park-only; no prompt confers authority
+
+
 ### Requirement: Grants bound discovery and every call
 The broker SHALL list to an invocation only capabilities within its grant and
 SHALL check every call against the grant's capabilities, resource scope,
 park-only flags, approval policy and remaining budget before dispatch, in a
 transaction that also requires the goal to be running and, for a lead, its
-epoch to be current. Knowing a capability's name SHALL NOT make it callable.
+epoch to be current. For a selection-bound resource parameter, the same
+transaction SHALL also require that the owner selection record the scope derives
+from is still active (`REQ-capability-authorization-018`). Knowing a
+capability's name SHALL NOT make it callable.
 
 ID: REQ-capability-authorization-004
 Source: RFC 0038, D7
@@ -358,8 +371,9 @@ Scope: v1-mandatory
 
 ### Requirement: Owner decisions and private custody are unreachable from goals
 Tools that approve, reject, edit or dispatch parked actions, create or promote
-standing rules, or return private-custody content SHALL NOT be LLM-presentable
-or grantable to any invocation.
+standing rules, create, change or revoke owner selection records
+(`REQ-capability-authorization-018`), or return private-custody content SHALL
+NOT be LLM-presentable or grantable to any invocation.
 
 ID: REQ-capability-authorization-014
 Source: RFC 0038, D4; RFC 0021; RFC 0037
@@ -368,6 +382,10 @@ Scope: v1-mandatory
 #### Scenario: A lead looks for the approval tool
 - **WHEN** a lead searches its catalog for a tool that approves parked actions
 - **THEN** no such tool is listed or callable, and the parked effect stays pending until the owner decides through an owner channel
+
+#### Scenario: A lead looks for a tool that selects sources
+- **WHEN** a lead searches its catalog for a tool that selects sources for a subject or creates, changes or revokes an owner selection record
+- **THEN** no such tool is listed or callable, and only the owner's action on the owner surface can write or revoke a selection
 
 ### Requirement: Transact capabilities are disabled
 The broker SHALL NOT grant or list a `transact` capability to any goal or
@@ -435,6 +453,173 @@ Scope: v1-mandatory
 - **WHEN** the owner prepares a dashboard action that delivers content to or invites someone other than the owner and submits it after seeing the exact recipients and content
 - **THEN** the submit click is the confirmation and records per-event approval by the authenticated owner for that exact action before dispatch
 - **AND** this self-approval does not count toward standing-rule promotion suggestions
+
+### Requirement: Catalog-declared always-per-event approval mode
+A capability's catalog entry MAY declare the approval mode `always_per_event`.
+The declaration SHALL travel with the tool's catalog descriptor, and no butler
+configuration, owner policy or standing rule SHALL be able to remove or loosen
+it. The catalog check SHALL fail in CI when a tool declares the mode but its
+owning butler has no approvals gate for that tool, and such a tool SHALL NOT be
+grantable.
+
+The broker SHALL apply a capability that declares the mode as park-only in every
+grant that includes it, whatever the goal's origin, cause or exposure and
+whether the invocation is a lead or a child. Every call SHALL park through the
+owning domain's approvals module for the owner's per-event approval. No standing
+rule SHALL approve such a call, including a rule whose recipient is the owner or
+that is template-pinned, and no rule SHALL be creatable for the capability. The
+mode adds no capability to any origin's ceiling: it only removes automatic
+approval paths.
+
+Only these SHALL count as the per-event approval: the owner's approval of the
+parked call (or of the owner's edit of it) through an owner channel; the
+owner's own submit on the owner surface after seeing the exact call
+(`REQ-capability-authorization-016`); and one "Approve all" tap on a decision
+set that shows every item's exact call and recipients with per-item untick.
+A standing rule SHALL NOT match a decision set, and an approved wait envelope
+SHALL NOT pre-approve a later call to the capability. Approvals of these calls
+SHALL NOT count toward standing-rule promotion.
+
+ID: REQ-capability-authorization-017
+Source: RFC 0038, D4, D5 and D13; bu-p5umi2.4 = A (always-per-event approval mode); bu-qlx055 = A (decision sets and wait envelopes); RFC 0038 owner item 3 (calendar invitation answers)
+Scope: v1-mandatory
+
+#### Scenario: A standing rule matches an unexposed owner goal's call
+- **WHEN** an unexposed owner goal calls a capability that declares `always_per_event` and an active standing rule matches its tool and arguments
+- **THEN** the call parks as `pending` for the owner's per-event approval and the handler does not run
+- **AND** no rule is recorded as its approval and the rule's `use_count` is unchanged
+
+#### Scenario: An exposed goal's call ignores owner-addressed and template-pinned rules
+- **WHEN** an exposed invocation calls a capability that declares `always_per_event` under a standing rule that pins the recipient to the owner or is template-pinned
+- **THEN** the call parks for the owner's per-event approval
+
+#### Scenario: Third-party, obligation and child calls park
+- **WHEN** a third-party goal, an obligation goal whose declared capability set includes the capability, or a child whose lead holds it calls a capability that declares `always_per_event`
+- **THEN** each call parks for the owner's per-event approval, the obligation's declaration pre-approves nothing, and neither the lead nor the child can approve the child's call
+
+#### Scenario: The owner submits the action on the owner surface
+- **WHEN** the owner submits an action backed by a capability that declares `always_per_event` after seeing the exact call
+- **THEN** the submit is the recorded per-event approval for that exact call
+- **AND** it does not count toward standing-rule promotion suggestions
+
+#### Scenario: Approve all on a decision set
+- **WHEN** the owner taps "Approve all" on a decision set whose card shows the exact call and recipients of an always-per-event item, with per-item untick
+- **THEN** that tap is the per-event approval for the item
+- **AND** no standing rule matches the set or any of its always-per-event items
+
+#### Scenario: A wait envelope never pre-approves the capability
+- **WHEN** the owner approved an effect card carrying a wait envelope and the goal later calls a capability that declares `always_per_event` inside that envelope
+- **THEN** the call parks for its own per-event approval
+
+#### Scenario: A rule cannot be created for the capability
+- **WHEN** the owner asks to create a standing rule, or to create a rule from a pending action, for a tool that declares `always_per_event`
+- **THEN** the request is refused with a typed reason and no rule is persisted
+
+#### Scenario: A tool declares the mode without an approvals gate
+- **WHEN** a module declares `always_per_event` for a tool that its owning butler's approvals configuration does not gate
+- **THEN** the catalog check fails in CI and the broker never includes the tool in a grant
+
+#### Scenario: Butler configuration cannot remove the mode
+- **WHEN** a butler's approvals configuration sets expiry or risk tier for a tool that declares `always_per_event`
+- **THEN** those settings apply, the mode is unchanged, and no configuration key unsets it
+
+#### Scenario: Calendar invitation answers declare the mode
+- **WHEN** the catalog describes `calendar_respond`
+- **THEN** it declares `always_per_event`, so every invitation answer needs the owner's per-event approval and no standing rule applies, as today
+
+### Requirement: Owner selection records bind selection-bound resource scopes
+A capability's catalog entry MAY declare some of its resource parameters
+selection-bound. The control plane SHALL hold owner selection records. Each
+record SHALL carry an id; its subject (the owning domain and a subject
+reference); the capability it covers; an exact, bounded set of resource
+identifiers; the authenticated owner action that wrote it (actor, owner
+surface, request id and time); and its state, `active` or `revoked`, with the
+revoke time and actor. A record SHALL be immutable except for a one-way revoke.
+Only an authenticated owner action on the owner surface, through a
+control-plane endpoint, SHALL write or revoke a record. Goals, invocations,
+standing rules, approvals of parked effects, service-plane relays, domains and
+connectors SHALL NOT write or revoke one. Two submits of one owner action with
+the same request id SHALL resolve to one record. Only the broker and the owner
+surface SHALL read records, and only the broker SHALL turn a record into a
+resource scope.
+
+A selection SHALL reach a goal only through an owner-origin admission from the
+owner-surface action that wrote or referenced it, and admission SHALL record
+the selection's id from server-held context. Third-party, obligation, staffer
+and caused admissions SHALL NOT carry a selection. A selection id or resource
+list in message text, model output, tool arguments, an ingest envelope, a
+standing-rule slot or a caused admission's payload SHALL be ignored.
+
+When the broker mints a grant that includes a capability with selection-bound
+parameters, the grant's resource scope for those parameters SHALL be exactly
+the identifiers of the active selection record, for that capability, that the
+goal's admission references. With no such record the scope SHALL be empty, and
+the capability SHALL be neither listed nor callable. A child's scope SHALL be
+the intersection of its request and the lead's selection-bound scope
+(`REQ-capability-authorization-005`). On every call, in the per-call
+transaction (`REQ-capability-authorization-004`), the broker SHALL also require
+that the record is still active; a call after a revoke commits SHALL be refused
+and recorded. Reads already returned are not recalled.
+
+A selection is not an effect: no approval, "Approve all" tap or standing rule
+SHALL create, extend or substitute for one. Selection-bound calls keep their
+effect class, so a selection-bound read stays a read: it is allowed under
+exposure, its output trust and sensitivity apply unchanged, and a later
+standing-rule send to someone other than the owner still needs to name any
+sensitive category the invocation read (bu-o3638f = A). A capability with no
+selection-bound parameters is unaffected.
+
+ID: REQ-capability-authorization-018
+Source: RFC 0038, D4, D5, D7 and D9; bu-p5umi2.4 = A (OQ1: a control-plane selection record written only from the owner dashboard); bu-qlx055 = A (decision sets); bu-o3638f = A (standing-rule slots and sensitive categories)
+Scope: v1-mandatory
+
+#### Scenario: The owner selects two of three sources
+- **WHEN** the owner selects sources A and C for a subject on the owner surface, and the owner goal admitted from that action calls the selection-bound capability for C
+- **THEN** the grant's resource scope for that capability is exactly A and C, and the call proceeds
+- **AND** a call for B, a known identifier the owner did not select, is refused and recorded without contacting the domain
+
+#### Scenario: No selection keeps the capability unavailable
+- **WHEN** a goal's admission references no active selection record for a capability with selection-bound parameters
+- **THEN** the capability is not listed to any of the goal's invocations, and a call naming it is refused and recorded
+- **AND** an owner checklist's Finance and Travel sources therefore stay unavailable, as the adopted owner-checklist default requires
+
+#### Scenario: Forged selection references are ignored
+- **WHEN** a selection id or a list of resource identifiers appears in an owner message, model output, tool arguments, an ingest envelope, a standing-rule slot or a caused admission's payload
+- **THEN** admission and the broker ignore it, and a grant's selection-bound scope derives only from a record the admission references from server-held context
+
+#### Scenario: Non-owner and caused admissions carry no selection
+- **WHEN** a third-party, obligation, staffer or caused goal needs a capability with selection-bound parameters
+- **THEN** its admission carries no selection, and the capability is neither listed nor callable to it
+
+#### Scenario: The owner revokes a selection mid-goal
+- **WHEN** the owner revokes an active selection on the owner surface while a goal that references it is running
+- **THEN** the next call naming any of its identifiers is refused in the per-call transaction and recorded
+- **AND** reads already returned are not recalled, and Stop and lead-epoch rules are unchanged
+
+#### Scenario: A revoke races a call
+- **WHEN** a revoke of a selection and a call within its scope commit concurrently
+- **THEN** the call either commits before the revoke and proceeds, or is refused after it, and no call is forwarded against a revoked record
+
+#### Scenario: A child only narrows a selection-bound scope
+- **WHEN** a lead whose selection-bound scope is A and C delegates a child, requesting C alone, or B and C
+- **THEN** the request for C alone gives the child exactly C, and the request naming B is refused, so no child can add a resource
+
+#### Scenario: Approve all and standing rules cannot select sources
+- **WHEN** the owner taps "Approve all" on a decision set, or a standing rule matches a goal's effect
+- **THEN** neither creates, extends or substitutes for a selection record, and the selection-bound scope is unchanged
+
+#### Scenario: A selection-bound read keeps the sensitive-category rule
+- **WHEN** an exposed owner goal reads a selected source whose output is in a sensitive category, and then sends to someone other than the owner under a standing rule that does not name that category
+- **THEN** the read is allowed with its declared output trust and sensitivity
+- **AND** the standing rule does not fire, and the send parks for per-event owner approval
+
+#### Scenario: The owner submits the same selection twice
+- **WHEN** the owner surface submits one selection action twice with the same request id
+- **THEN** one selection record exists, and both submits resolve to it
+
+#### Scenario: A capability without selection-bound parameters is unaffected
+- **WHEN** a goal calls a capability whose catalog entry declares no selection-bound parameter
+- **THEN** its grant and resource scope behave as they would with no selection records at all
 
 ## Source References
 

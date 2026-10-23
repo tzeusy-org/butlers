@@ -213,11 +213,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 async def _resolve_github_token(db: DatabaseManager) -> str | None:
@@ -3225,14 +3225,16 @@ async def create_allowed_repo(
             repo,
             body.enabled,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Repository '{owner}/{repo}' is already in the whitelist",
-        )
-    except Exception:
+        ) from exc
+    except Exception as exc:
         logger.error("Failed to add allowed repo '%s/%s'", owner, repo, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to add repository to whitelist")
+        raise HTTPException(
+            status_code=500, detail="Failed to add repository to whitelist"
+        ) from exc
 
     if row is None:
         raise HTTPException(status_code=500, detail="Insert returned no row")

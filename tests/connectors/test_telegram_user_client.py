@@ -129,7 +129,7 @@ async def test_envelope_passes_parse_ingest_envelope(
     """Telegram user-client envelope must validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     msg = _make_message()
     env = await connector._normalize_to_ingest_v1(msg)
@@ -366,7 +366,7 @@ async def test_large_group_envelope_passes_parse(
     """Large-group envelope with interaction_eligible=False must still validate against schema."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     chat_id = "777"
     connector._participant_count_cache[chat_id] = (50, time.monotonic())
@@ -1140,3 +1140,152 @@ async def test_live_discretion_passes_aggressive_hint_for_service_sender(
 
     dispatcher.call.assert_awaited_once()
     assert "123456" not in dispatcher.call.await_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# Untrusted span marking (bu-xmueeq, REQ-connector-base-spec-004)
+# ---------------------------------------------------------------------------
+
+
+def _fwd_header(user_id: int, name: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        date=datetime(2026, 10, 1, tzinfo=UTC),
+        from_id=SimpleNamespace(user_id=user_id),
+        from_name=name,
+    )
+
+
+async def test_forwarded_message_is_one_forwarded_span(
+    connector: TelegramUserClientConnector,
+) -> None:
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    msg = _make_message(sender_id=999, text="Wire 500 to the new account")
+    msg.fwd_from = _fwd_header(555, "Mallory")
+    env = await connector._normalize_to_ingest_v1(msg)
+
+    assert env["sender"]["identity"] == "999"
+    assert env["payload"]["untrusted_spans"] == [
+        {
+            "kind": "forwarded",
+            "start": 0,
+            "end": len("Wire 500 to the new account"),
+            "origin_identity": "555",
+            "origin_display_name": "Mallory",
+        }
+    ]
+    parse_ingest_envelope(env)
+
+    # Exercise the real single-message policy, discretion and error producers.
+    for stage in ("connector", "global", "discretion", "submission"):
+        connector._filtered_event_buffer._rows.clear()
+        allow = SimpleNamespace(allowed=True, action="pass_through")
+        block = SimpleNamespace(
+            allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+        )
+        connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
+        connector._discretion_evaluators[str(msg.chat_id)] = SimpleNamespace(
+            evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
+        )
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "connector" else allow,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "global" else allow,
+            ),
+            patch.object(
+                connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))
+            ),
+            patch.object(connector, "_flush_and_drain", AsyncMock()),
+        ):
+            await connector._process_message(msg)
+        row = connector._filtered_event_buffer._rows[-1]
+        assert row[8] == ("error" if stage == "submission" else "filtered")
+        stored = row[9]
+        assert stored["sender"]["identity"] == "999"
+        assert stored["payload"]["untrusted_spans"][0] == {
+            "kind": "forwarded",
+            "start": 0,
+            "end": len("[no text]"),
+            "origin_identity": "555",
+            "origin_display_name": "Mallory",
+        }
+
+
+async def test_batch_marks_only_the_forwarded_message_text(
+    connector: TelegramUserClientConnector,
+) -> None:
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    def _msg(msg_id: int, text: str, fwd: SimpleNamespace | None = None) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=msg_id,
+            chat_id=200,
+            sender_id=777,
+            sender=SimpleNamespace(first_name="Alice", username=None),
+            message=text,
+            text=text,
+            date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+            reply_to_msg_id=None,
+            fwd_from=fwd,
+        )
+
+    own = _msg(1, "look at this")
+    forwarded = _msg(2, "Claim your prize here", _fwd_header(555))
+    envelope = connector._build_batch_envelope(
+        "200", [own, forwarded], [own, forwarded], participant_count=2, chat_type="private"
+    )
+
+    text = envelope["payload"]["normalized_text"]
+    (span,) = envelope["payload"]["untrusted_spans"]
+    assert (span["kind"], span["origin_identity"]) == ("forwarded", "555")
+    assert text[span["start"] : span["end"]] == "Claim your prize here"
+    parse_ingest_envelope(envelope)
+    for stage in ("connector", "global", "discretion", "submission", "build"):
+        await _prime_flush_buffer(connector, "200", forwarded)
+        connector._filtered_event_buffer._rows.clear()
+        allow = SimpleNamespace(allowed=True, action="pass_through")
+        block = SimpleNamespace(
+            allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+        )
+        connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
+        connector._discretion_evaluators["200"] = SimpleNamespace(
+            evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason=""))
+        )
+        original = connector._build_batch_envelope
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "connector" else allow,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=block if stage == "global" else allow,
+            ),
+            patch.object(connector, "_resolve_batch_weight", AsyncMock(return_value=1.0)),
+            patch.object(
+                connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))
+            ),
+            patch.object(
+                connector,
+                "_build_batch_envelope",
+                side_effect=ValueError("failed") if stage == "build" else original,
+            ),
+            patch.object(connector, "_flush_and_drain", AsyncMock()),
+        ):
+            await connector._flush_chat_buffer("200")
+        row = connector._filtered_event_buffer._rows[-1]
+        stored = row[9]
+        assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
+        assert stored["payload"]["raw"] == {}
+        assert "normalized_text" not in stored["payload"]
+        assert stored["payload"]["untrusted_spans"] == [
+            {"kind": "forwarded", "start": 0, "end": len("[no text]"), "origin_identity": "555"}
+        ]

@@ -67,6 +67,7 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
@@ -398,6 +399,16 @@ def _resolve_observed_at(
             return parsed, OBSERVED_AT_DATE_HEADER
         break
     return received_at, OBSERVED_AT_RECEIPT_TIME
+
+
+def _has_attached_message(payload: dict[str, Any], depth: int = 0) -> bool:
+    """Whether the MIME tree carries a whole message from someone else (``message/rfc822``)."""
+    if depth > 20 or not isinstance(payload, dict):
+        return False
+    if payload.get("mimeType") == "message/rfc822":
+        return True
+    parts = payload.get("parts")
+    return isinstance(parts, list) and any(_has_attached_message(part, depth + 1) for part in parts)
 
 
 class GmailConnectorConfig(BaseModel):
@@ -2215,6 +2226,8 @@ class GmailConnectorRuntime:
         Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
+            replay_spans = None
+            replay_sender = "unknown"
             try:
                 # Fetch message data (required for label/header-based policy evaluation)
                 message_data = await self._fetch_message(message_id)
@@ -2222,6 +2235,16 @@ class GmailConnectorRuntime:
                 # Extract common fields for buffer recording
                 _subject = self._get_subject(message_data)
                 _from_header = self._get_from_header(message_data)
+                replay_sender = _from_header
+                replay_body = self._extract_body_from_payload(message_data.get("payload", {}))
+                replay_spans = (
+                    email_untrusted_spans(
+                        f"Subject: {html.escape(_subject)}\n\n{html.escape(replay_body)}",
+                        subject=_subject,
+                        has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                    )
+                    or None
+                )
                 _thread_id = message_data.get("threadId")
                 _observed_dt, _observed_source = _resolve_observed_at(message_data)
                 _observed_at = _observed_dt.isoformat()
@@ -2278,6 +2301,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2323,6 +2347,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2360,6 +2385,7 @@ class GmailConnectorRuntime:
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
                             classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2417,7 +2443,7 @@ class GmailConnectorRuntime:
                 self._filtered_event_buffer.record(
                     external_message_id=message_id,
                     source_channel=self._config.connector_channel,
-                    sender_identity="unknown",
+                    sender_identity=replay_sender,
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -2427,8 +2453,9 @@ class GmailConnectorRuntime:
                         external_event_id=message_id,
                         external_thread_id=None,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=replay_sender,
                         raw={"message_id": message_id},
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -2781,6 +2808,14 @@ class GmailConnectorRuntime:
         }
         if known_contact is not None:
             envelope["control"]["known_contact"] = known_contact
+        # Forwarded, quoted and attached third-party content (RFC 0038 D5, bu-xmueeq).
+        untrusted_spans = email_untrusted_spans(
+            normalized_text,
+            subject=subject,
+            has_attached_message=_has_attached_message(payload),
+        )
+        if untrusted_spans:
+            envelope["payload"]["untrusted_spans"] = untrusted_spans
         # Bearer material (OTP codes, reset/magic links) never leaves the connector.
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed

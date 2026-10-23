@@ -76,7 +76,7 @@ graph TB
 
 **Endpoint**: Switchboard's `ingest()` MCP tool
 
-**Envelope schema** (`ingest.v1`, defined in `roster/switchboard/tools/routing/contracts.py`):
+**Envelope schema** (`ingest.v1`, defined in `roster/switchboard/tools/contracts.py`):
 
 | Field | Type | Required | Description |
 |---|---|---|---|

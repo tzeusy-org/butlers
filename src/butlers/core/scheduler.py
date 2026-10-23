@@ -24,6 +24,7 @@ import asyncpg
 from croniter import croniter
 from opentelemetry import trace
 
+from butlers.config import ScheduleSpec
 from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
@@ -638,7 +639,7 @@ def _jsonb_to_dict(value: Any, *, context: str) -> dict[str, Any] | None:
 
 async def sync_schedules(
     pool: asyncpg.Pool,
-    schedules: list[dict[str, Any]],
+    schedules: list[ScheduleSpec],
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
@@ -661,14 +662,15 @@ async def sync_schedules(
 
     Args:
         pool: asyncpg connection pool.
-        schedules: List of dicts with schedule fields.
+        schedules: Validated ``ScheduleSpec`` entries (see ``butlers.config``); all
+            schedule validation happens when the spec is constructed, not here.
         skills_dir: Optional path to the butler's skills directory for notify
             reference checking.  When provided, SKILL.md files for any
             kebab-case skill names found in the prompt are also inspected.
         default_timezone: IANA timezone used to interpret cron fields for TOML
             schedules (which have no per-row timezone).  Defaults to UTC; the
             daemon passes the owner's configured general timezone so hour-pinned
-            crons fire at the intended local time. A schedule dict may carry its own
+            crons fire at the intended local time. A spec may carry its own
             ``timezone`` (IANA name) which overrides this; the literal ``"UTC"`` is the
             owner-timezone sentinel, so pin real UTC with ``"Etc/UTC"``.
         quiet_policy: Owner quiet-window policy (``quiet_start_hour``, ``quiet_end_hour``,
@@ -682,135 +684,7 @@ async def sync_schedules(
     # Determine whether the DB schema includes temporal intelligence columns.
     _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
 
-    normalized_schedules: list[dict[str, Any]] = []
-    for i, schedule in enumerate(schedules):
-        schedule_path = f"schedules[{i}]"
-        if not isinstance(schedule, dict):
-            raise ValueError(f"{schedule_path} must be a dict/object")
-
-        name = schedule.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"{schedule_path}.name must be a non-empty string")
-
-        cron = schedule.get("cron")
-        if not isinstance(cron, str) or not cron.strip():
-            raise ValueError(f"{schedule_path}.cron must be a non-empty string")
-        if not croniter.is_valid(cron):
-            raise ValueError(f"Invalid {schedule_path}.cron: {cron!r}")
-
-        task_type = schedule.get("task_type", "cron")
-        if task_type not in ("cron", "deadline"):
-            raise ValueError(
-                f"{schedule_path}.task_type must be 'cron' or 'deadline' (got {task_type!r})"
-            )
-
-        dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(
-            dispatch_mode=schedule.get("dispatch_mode", _DISPATCH_MODE_PROMPT),
-            prompt=schedule.get("prompt"),
-            job_name=schedule.get("job_name"),
-            job_args=schedule.get("job_args"),
-            complexity=schedule.get("complexity"),
-            context=schedule_path,
-        )
-
-        # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
-        if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
-            _check_notify_reference(
-                task_name=name,
-                prompt=prompt,
-                skills_dir=skills_dir,
-            )
-
-        # Deadline-specific fields
-        deadline_fields: dict[str, Any] = {}
-        if task_type == "deadline":
-            from datetime import date as _date
-
-            raw_target = schedule.get("target_date")
-            if raw_target is None:
-                raise ValueError(
-                    f"{schedule_path}.target_date is required when task_type='deadline'"
-                )
-            if isinstance(raw_target, str):
-                try:
-                    from datetime import date as _date2
-
-                    raw_target = _date2.fromisoformat(raw_target)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"{schedule_path}.target_date must be a YYYY-MM-DD date string"
-                    ) from exc
-            if not isinstance(raw_target, _date):
-                raise ValueError(
-                    f"{schedule_path}.target_date must be a date value (got {raw_target!r})"
-                )
-
-            lead_time_days = schedule.get("lead_time_days")
-            if not isinstance(lead_time_days, int) or lead_time_days <= 0:
-                raise ValueError(
-                    f"{schedule_path}.lead_time_days must be a positive integer "
-                    f"(got {lead_time_days!r})"
-                )
-
-            alert_thresholds = schedule.get("alert_thresholds")
-            if not isinstance(alert_thresholds, list) or not alert_thresholds:
-                raise ValueError(
-                    f"{schedule_path}.alert_thresholds must be a non-empty list of threshold dicts"
-                )
-
-            deadline_fields = {
-                "target_date": raw_target,
-                "lead_time_days": lead_time_days,
-                "alert_thresholds": alert_thresholds,
-            }
-
-        raw_budget = schedule.get("max_token_budget")
-        max_token_budget: int | None = None
-        if raw_budget is not None:
-            max_token_budget = int(raw_budget) if isinstance(raw_budget, (int, float)) else None
-
-        continuity = bool(schedule.get("continuity", False))
-
-        schedule_timezone = schedule.get("timezone")
-        if schedule_timezone is not None:
-            if not isinstance(schedule_timezone, str):
-                raise ValueError(f"{schedule_path}.timezone must be a string when set")
-            schedule_timezone = schedule_timezone.strip()
-            if not schedule_timezone or schedule_timezone.upper() == "UTC":
-                raise ValueError(
-                    f"{schedule_path}.timezone is the follow-the-owner sentinel; "
-                    'use "Etc/UTC" to pin UTC or omit the key'
-                )
-            try:
-                ZoneInfo(schedule_timezone)
-            except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
-                raise ValueError(
-                    f"Invalid {schedule_path}.timezone: {schedule_timezone!r}"
-                ) from exc
-
-        normalized_schedules.append(
-            {
-                "name": name,
-                "cron": cron,
-                "task_type": task_type,
-                "dispatch_mode": dispatch_mode,
-                "prompt": prompt,
-                "job_name": job_name,
-                "job_args": job_args,
-                "complexity": complexity,
-                "max_token_budget": max_token_budget,
-                "continuity": continuity,
-                "timezone": schedule_timezone,
-                # Deadline-specific fields — validated above for deadline tasks,
-                # None for cron tasks; always present so the needs_update check
-                # can compare them without KeyError.
-                "target_date": deadline_fields.get("target_date"),
-                "lead_time_days": deadline_fields.get("lead_time_days"),
-                "alert_thresholds": deadline_fields.get("alert_thresholds"),
-            }
-        )
-
-    toml_names = {s["name"] for s in normalized_schedules}
+    toml_names = {spec.name for spec in schedules}
 
     # When the schema includes temporal intelligence columns, fetch them so the
     # needs_update check can detect changes to deadline-specific fields.
@@ -857,24 +731,27 @@ async def sync_schedules(
     for row in toml_only_rows:
         db_by_name.setdefault(row["name"], row)
 
-    for entry in normalized_schedules:
-        name = entry["name"]
-        cron = entry["cron"]
-        task_type = entry["task_type"]
-        prompt = entry["prompt"]
-        dispatch_mode = entry["dispatch_mode"]
-        job_name = entry["job_name"]
-        job_args = entry["job_args"]
-        complexity = entry["complexity"]
-        max_token_budget = entry["max_token_budget"]
-        continuity = entry["continuity"]
-        target_date = entry["target_date"]
-        lead_time_days = entry["lead_time_days"]
-        alert_thresholds = entry["alert_thresholds"]
+    for spec in schedules:
+        name = spec.name
+        cron = spec.cron
+        task_type = spec.task_type
+        prompt = spec.prompt
+        dispatch_mode = spec.dispatch_mode.value
+        job_name = spec.job_name
+        job_args = spec.job_args
+        complexity = spec.complexity or _DEFAULT_COMPLEXITY
+        max_token_budget = spec.max_token_budget
+        continuity = spec.continuity
+        target_date = spec.target_date
+        lead_time_days = spec.lead_time_days
+        alert_thresholds = spec.alert_thresholds
+        # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
+        if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
+            _check_notify_reference(task_name=name, prompt=prompt, skills_dir=skills_dir)
         # An explicit per-schedule zone wins; otherwise the owner's zone (the stored
         # "UTC" column default is the follow-the-owner sentinel, so it is stored for unset).
-        stored_timezone = entry["timezone"] or "UTC"
-        effective_timezone = _effective_schedule_timezone(entry["timezone"], default_timezone)
+        stored_timezone = spec.timezone or "UTC"
+        effective_timezone = _effective_schedule_timezone(spec.timezone, default_timezone)
         next_run_at = _next_run(
             cron,
             timezone=effective_timezone,
@@ -1234,9 +1111,7 @@ async def ensure_module_default_schedule(
                     "owner_schema to recover a TOML-owned schedule"
                 )
 
-            # Import lazily so normal scheduler use does not load the API
-            # router layer unless a recovery actually transitions a row.
-            from butlers.api.routers.audit import append as append_audit
+            from butlers.core.audit import append as append_audit
 
             await append_audit(
                 connection,
@@ -2940,8 +2815,8 @@ async def schedule_create(
             calendar_event_id,
             next_run_at,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"Task name {name!r} already exists")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(f"Task name {name!r} already exists") from exc
     logger.info("Created runtime schedule: %s (%s)", name, task_id)
     return task_id
 

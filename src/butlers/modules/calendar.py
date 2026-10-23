@@ -50,7 +50,7 @@ from butlers.core.temporal.scheduling import (
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.fleet_events import publish_fleet_event
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled, tool_registrar
 from butlers.modules.calendar_response import (
     CalendarResponseCoordinator,
     CalendarResponseError,
@@ -3234,15 +3234,8 @@ class CalendarModule(Module):
         return CalendarConfig
 
     @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    @property
     def credentials_env(self) -> list[str]:
         return []
-
-    def migration_revisions(self) -> str | None:
-        return None
 
     def canonical_approval_preparers(self) -> dict[str, Any]:
         if self._config is None or not self._config.response_enabled:
@@ -3287,6 +3280,7 @@ class CalendarModule(Module):
                 output_trust="untrusted",
                 output_sensitivity="sensitive",
                 resource_params=("request",),
+                selection_bound={"request": False},
                 safety_args=(),
                 idempotency="none",
                 owner_authority=False,
@@ -3314,6 +3308,7 @@ class CalendarModule(Module):
             output_trust="untrusted",
             output_sensitivity="sensitive",
             resource_params=("entry_id",),
+            selection_bound={"entry_id": False},
             safety_args=("entry_id", "response_status", "request_id", "send_updates"),
             idempotency="key_required",
             owner_authority=False,
@@ -3415,10 +3410,7 @@ class CalendarModule(Module):
         self._butler_name = self._resolve_effective_butler_name(butler_name)
         module = self
 
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn
+        _tool = tool_registrar(mcp, self._config)
 
         if butler_name in RESPONSE_FENCE_OWNERS:
 

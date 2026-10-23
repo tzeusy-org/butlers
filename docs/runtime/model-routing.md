@@ -220,6 +220,22 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
+## The model-call kernel
+
+`butlers.core.model_call.call_model(pool, spec, attempt_fn, adapter_for=..., sink=...)` is the
+one attempt loop for single-call (session-less) model invocations. It owns tier resolution and
+spend routing rules, the monthly spend ceiling (before the first attempt and before every
+relaunch), per-entry quota skips, failover classification, same-tier failover, attempt rows, usage
+recording and the failover metrics. The caller supplies only `attempt_fn`, which invokes a resolved
+adapter for one candidate. `CallSpec.max_relaunches` bounds runtime-failure relaunches (RFC 0038
+D14 callers pass `1`); a failure whose exception carries captured `tool_calls` is never relaunched.
+Every call is also capped at `MAX_ATTEMPTS` (5) invocations and quota skips. Adapters come from
+`butlers.core.runtimes.registry.AdapterRegistry`, the only place that special-cases the Codex
+runtime's construction.
+
+The connector `DiscretionDispatcher` runs on the kernel. The Spawner's session loop and the
+Switchboard's structured classifier keep their own loops for now.
+
 ## Resolution Flow in the Spawner
 
 `resolve_model_with_effective_tier(pool, butler_name, complexity)` is the catalog entry point used by the spawner. It returns a 6-tuple:

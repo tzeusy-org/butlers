@@ -148,7 +148,7 @@ async def test_build_ingest_envelope_passes_parse_ingest_envelope(
     """Envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     envelope = await gmail_runtime._build_ingest_envelope(_make_message())
     try:
@@ -671,7 +671,7 @@ async def test_health_state_clears_on_next_successful_call(
 
     # Actual startup composition publishes bounded unloaded evidence before
     # provider work. Provider/network boundaries alone are synthetic here.
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
 
     runtime._config = gmail_config.model_copy(
         update={
@@ -1170,7 +1170,7 @@ async def test_build_ingest_envelope_treats_bad_header_container_as_empty(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """Malformed headers retain the email with documented subject/sender fallbacks."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = None
@@ -1198,7 +1198,7 @@ async def test_build_ingest_envelope_skips_nested_multipart_parts_none(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """A null nested MIME parts collection does not drop the email."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {
@@ -1230,7 +1230,7 @@ async def test_build_ingest_envelope_skips_nested_multipart_malformed_parts(
     malformed_parts: Any,
 ) -> None:
     """Malformed nested MIME parts do not prevent the email from reaching ingest."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {
@@ -1257,7 +1257,7 @@ async def test_build_ingest_envelope_skips_nested_attachment_body_none(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
     """A null nested attachment body does not drop the email."""
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     message = _make_message()
     message["payload"] = {
@@ -1463,7 +1463,15 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
         primary_tracebacks = []
         requests = []
 
-        async def transport(request):
+        async def transport(
+            request,
+            *,
+            requests=requests,
+            failure=failure,
+            primary=primary,
+            primary_args=primary_args,
+            primary_tracebacks=primary_tracebacks,
+        ):
             requests.append((request.method, str(request.url)))
             if len(requests) == 1:
                 if isinstance(failure, Exception):
@@ -1540,7 +1548,7 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
         runtime._metrics = MagicMock()
         requests = []
 
-        async def token_transport(request):
+        async def token_transport(request, *, requests=requests, code=code):
             requests.append((request.method, str(request.url)))
             if len(requests) == 1:
                 return httpx.Response(400, json={"error": code}, request=request)
@@ -1629,3 +1637,133 @@ async def test_auto_reply_is_ingested_as_tier2_with_its_marker_even_under_a_pass
     assert envelope["payload"]["raw"] is None
     assert envelope["control"]["ingestion_tier"] == "metadata"
     assert envelope["control"]["automated_kind"] == "auto_reply"
+
+
+# ---------------------------------------------------------------------------
+# Untrusted span marking (bu-xmueeq, REQ-connector-base-spec-004)
+# ---------------------------------------------------------------------------
+
+
+async def test_quoted_reply_marks_only_the_quoted_block(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    body = (
+        "Sounds good, go ahead.\n\n"
+        "On Tue, Oct 21, 2026 at 9:00 AM Bob <bob@example.com> wrote:\n"
+        "> Please wire the deposit today.\n"
+        "> Thanks, Bob"
+    )
+    envelope = await gmail_runtime._build_ingest_envelope(
+        _make_message(subject="Re: deposit", body_text=body)
+    )
+
+    text = envelope["payload"]["normalized_text"]
+    (span,) = envelope["payload"]["untrusted_spans"]
+    assert span["kind"] == "quoted"
+    assert text[span["start"] : span["end"]].startswith("On Tue, Oct 21")
+    assert text[span["start"] : span["end"]].endswith("Thanks, Bob")
+    assert "Sounds good" not in text[span["start"] : span["end"]]
+    parse_ingest_envelope(envelope)
+
+
+async def test_forward_marker_starts_a_forwarded_span(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    body = "FYI\n\n---------- Forwarded message ---------\nFrom: Eve\nClick this link now"
+    envelope = await gmail_runtime._build_ingest_envelope(
+        _make_message(subject="Fwd: urgent", body_text=body)
+    )
+
+    text = envelope["payload"]["normalized_text"]
+    (span,) = envelope["payload"]["untrusted_spans"]
+    assert span["kind"] == "forwarded"
+    assert text[span["start"] :].startswith("---------- Forwarded message")
+    assert span["end"] == len(text)
+
+    from butlers.ingestion_policy import PolicyDecision
+
+    message = _make_message(subject="Fwd: urgent", body_text=body)
+    for stage in ("connector", "global", "submission", "label"):
+        gmail_runtime._filtered_event_buffer._rows.clear()
+        allow = PolicyDecision(action="pass_through")
+        with (
+            patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
+            patch.object(
+                gmail_runtime._ingestion_policy,
+                "evaluate",
+                return_value=(
+                    PolicyDecision(action="block", matched_rule_type="sender_domain")
+                    if stage == "connector"
+                    else allow
+                ),
+            ),
+            patch.object(
+                gmail_runtime._global_ingestion_policy,
+                "evaluate",
+                return_value=(
+                    PolicyDecision(action="skip", matched_rule_type="sender_domain")
+                    if stage == "global"
+                    else allow
+                ),
+            ),
+            patch.object(
+                gmail_runtime, "_submit_to_ingest_api", AsyncMock(side_effect=ValueError("failed"))
+            ),
+        ):
+            message["labelIds"] = ["CATEGORY_PROMOTIONS"] if stage == "label" else []
+            if stage == "label":
+                from dataclasses import replace
+
+                gmail_runtime._label_filter = replace(
+                    gmail_runtime._label_filter, exclude_labels=frozenset({"CATEGORY_PROMOTIONS"})
+                )
+            await gmail_runtime._ingest_single_message("msg123")
+        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        assert stored["sender"]["identity"] == "sender@example.com"
+        assert stored["payload"]["untrusted_spans"] == [
+            {"kind": "forwarded", "start": 0, "end": len("[no text]")}
+        ]
+        assert "normalized_text" not in stored["payload"]
+        assert body not in str(stored)
+
+
+async def test_forward_subject_without_marker_marks_the_whole_text(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    envelope = await gmail_runtime._build_ingest_envelope(
+        _make_message(subject="Fwd: invoice", body_text="see below, the boundary got lost")
+    )
+
+    text = envelope["payload"]["normalized_text"]
+    assert envelope["payload"]["untrusted_spans"] == [
+        {"kind": "forwarded", "start": 0, "end": len(text)}
+    ]
+
+
+async def test_attached_message_marks_the_whole_text_embedded(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    message = _make_message(body_text="see attached")
+    plain = message["payload"]
+    message["payload"] = {
+        "headers": plain["headers"],
+        "mimeType": "multipart/mixed",
+        "body": {},
+        "parts": [
+            {"mimeType": "text/plain", "body": plain["body"]},
+            {"mimeType": "message/rfc822", "filename": "fwd.eml", "body": {"size": 10}},
+        ],
+    }
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    text = envelope["payload"]["normalized_text"]
+    assert envelope["payload"]["untrusted_spans"] == [
+        {"kind": "embedded", "start": 0, "end": len(text)}
+    ]
+
+
+async def test_plain_email_carries_no_spans(gmail_runtime: GmailConnectorRuntime) -> None:
+    envelope = await gmail_runtime._build_ingest_envelope(_make_message())
+    assert "untrusted_spans" not in envelope["payload"]

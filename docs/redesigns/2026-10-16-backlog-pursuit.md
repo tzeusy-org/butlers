@@ -14,8 +14,8 @@ one "run 21"; in the ledger it is run 22.
   apart, at most 3 agents at a time, 36 agents in total (opus, high effort).
 - Baseline: main@490d6e008 and a full `bd export` at 2026-10-16 22:39 +08:00 (669 live beads).
 - Release gate: **bu-l25s6i** (owner). Epic: **bu-1mbyoa** (backlog graph hygiene).
-- Data: `2026-10-16-backlog-pursuit-data.json`. One record per agent:
-  `jq '.audits[] | select(.page=="<key>")' docs/redesigns/2026-10-16-backlog-pursuit-data.json`
+- Data (archived): `git show 218607d8e75b7f9bd465335360a87d62b141a30a:docs/redesigns/2026-10-16-backlog-pursuit-data.json`. One record per agent:
+  `git show 218607d8e75b7f9bd465335360a87d62b141a30a:docs/redesigns/2026-10-16-backlog-pursuit-data.json | jq '.audits[] | select(.page=="<key>")'`
   (keys are partition names such as `rfc0038` or `dots-lead`, and the cross-cutting passes
   `x-owner-asks`, `x-owner-vet`, `x-dedupe`, `x-critic-1`, `x-critic-2`, `x-leftovers-1..3`).
   `.metrics`, `.defect_classes` and `.owner_packet` hold the run-level numbers.

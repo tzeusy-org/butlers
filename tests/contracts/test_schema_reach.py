@@ -455,6 +455,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{quoted_schema}.butler_registry_control_plane>",
     ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
     (
+        "roster/switchboard/migrations/047_goal_ledger.py",
+        "<dynamic:switchboard.{table}>",
+    ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "roster/switchboard/migrations/047_goal_ledger.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
         "roster/switchboard/tests/test_correct_route.py",
         "<dynamic:{table}>",
     ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -631,6 +639,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.media_refs",
     ): "burn-down: existing switchboard.media_refs coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/control.py",
+        "switchboard.butler_secrets",
+    ): "sanctioned:RFC-0038: KEY_ABSENT_STAGE startup refuses when Switchboard's own secret store holds GOAL private-key metadata (secret_key names only, never values); public.butler_secrets is checked beside it",
+    (
         "src/butlers/core/condition_ledger.py",
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -687,6 +699,34 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.butler_registry_control_plane",
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_attempt_bindings",
+    ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_decisions",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.budgets",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.goal_inbox",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.invocations",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
         "src/butlers/core/ingestion_events.py",
         "<dynamic:{table}>",
     ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -698,6 +738,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/runtime_config.py",
         "<dynamic:{self._schema}.runtime_config>",
     ): "dynamic-local: configured runtime schema; source ownership is dynamic; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/core/runtime_config.py",
+        "switchboard.runtime_config",
+    ): "sanctioned:RFC-0038: goal admission reads only Switchboard's explicit goal_admission_config snapshot (D10, bu-fkoexp)",
     (
         "src/butlers/core/scheduler.py",
         "switchboard.butler_registry_control_plane",

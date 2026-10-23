@@ -1120,7 +1120,7 @@ async def test_mounted_structural_refusals_are_fixed_422_without_writes(
             (audit["outcome"], audit["failure_category"])
             for audit in await _audits(mapping_pool, details["receipt"])
         ] == [("refused", "request_invalid")], name
-        for header, value in key_headers:
+        for _header, value in key_headers:
             assert not await mapping_pool.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts "
                 "WHERE key_digest = $1 AND outcome = 'success')",

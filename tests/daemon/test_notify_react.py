@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from butlers.core_tools._routing import _extract_delivery_id
 from butlers.daemon import ButlerDaemon
-from butlers.tools.switchboard.routing.contracts import parse_notify_request
+from butlers.tools.switchboard.contracts import parse_notify_request
 
 pytestmark = pytest.mark.unit
 

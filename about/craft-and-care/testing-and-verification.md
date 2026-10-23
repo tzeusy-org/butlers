@@ -55,7 +55,7 @@ The local hygiene gate commands (lint, format, `make test-qg`) are listed in
 `make test-qg` is valuable regression evidence, but it is not CI-equivalent: it
 does not cover `roster/`, root DB/migration suites, or the CI marker selection.
 For a final backend claim, use the CI-shaped unit and integration targets in
-`AGENTS.md` only when local reproduction is needed; otherwise push the exact
+[`docs/testing/ci.md`](../../docs/testing/ci.md) only when local reproduction is needed; otherwise push the exact
 head after focused evidence and use terminal hosted CI as the one broad result.
 
 That one broad result is the merge queue's `merge_group` run, which validates
@@ -119,25 +119,28 @@ These diagnostics do not admit missing evidence, install weights or change test 
 Full-mode smoke may use exact successful child identities only. An uncovered item runs the
 original dedicated command. Derived release evidence names actual child commands, selector
 provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
-The owned daily/manual coverage workflow validates all eleven actual CoverageData databases,
-source population, tracing, digest and same-checkout/run/attempt/computed assignment before
-combination. It also validates coverage-pipeline PR changes with actual event provenance,
-full fresh inventory, all eleven covered children, independent execution reconciliation
-and real smoke fallback. Its always-running preflight/report gates refuse every failed or
-skipped prerequisite. Pipeline PRs upload authentic reports; only successful scheduled/manual
-main runs may update the badge. Reporting integrity remains separate from required
-check/guards/frontend verdicts.
+Coverage runs nightly, not per pull request (owner decision bu-w72da2 = A). The scheduled or
+manually dispatched nightly workflow freshly collects inventory, runs all eleven covered
+children, validates every actual CoverageData database, source population, tracing, digest and
+same-checkout/run/attempt/computed assignment before combination, and uploads the combined
+report as an artifact. Its always-running preflight/report gates refuse every failed or skipped
+prerequisite; only successful scheduled/manual main runs may update the badge. A change to the
+coverage pipeline is validated by dispatching the nightly workflow on its branch. Reporting
+integrity remains separate from required check/guards/frontend verdicts.
 Protected merge-group and ordinary PR shards use CI_COVERAGE=0 with the same complete
-selection, workers, markers, timeouts and execution receipts. The owned assurance workflow
-uses CI_COVERAGE=1; ordinary standalone calls retain covered defaults. Actual covered PR
-validation run 38672598762 established the replacement mechanism before this cadence change.
-It does not prove final-head queue success, queue speedup or the seven-minute goal.
+selection, workers, markers, timeouts and execution receipts. The nightly coverage jobs use
+CI_COVERAGE=1; ordinary standalone calls retain covered defaults.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
-actual test membership. Required frontend fails if guards or either child fails. Browser
+actual test membership. Required frontend fails if guards or either child fails. The
+Playwright browser job is required through `check`: every merge group and main push runs it,
+as does every pull request the route classifies as frontend (a change under `frontend/`,
+`.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
 reuses only the source/attempt/content-bound build and retains locked browser version,
-mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
+mandatory OS dependencies on cache hits/misses (two bounded attempts with privileged group
+cleanup), then three bounded browser attempts within the 720-second installer budget.
+Dependency retries require confirmed termination and reaping of the owned process group.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
 
 The frontend verifier compares configuration booleans, module error counters and reconstructed
@@ -188,7 +191,7 @@ are not grounds for deletion. A missed target keeps the phase open with its
 limiting domains recorded in the owning Beads task.
 
 The graduated commands and planner behavior live in
-[AGENTS.md](../../AGENTS.md#test-scope-policy) and the
+[CI and test scope policy](../../docs/testing/ci.md) and the
 [testing spec](../../openspec/specs/testing/spec.md). The performance target
 does not weaken their escalation rules or the merge queue's full-tree gate.
 
@@ -233,7 +236,7 @@ If something could not be verified, state that plainly.
 
 ## Repo-Specific Risk Areas
 
-Read `AGENTS.md` before broad verification in these areas:
+Read [`docs/testing/test-traps.md`](../../docs/testing/test-traps.md) and `AGENTS.md` before broad verification in these areas:
 
 - DB-backed tests using `testcontainers`
 - asyncio loop-scope and xdist interactions

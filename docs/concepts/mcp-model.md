@@ -181,6 +181,7 @@ conflicts with the inventory is refused rather than silently replaced.
 | `output_trust` | `trusted`, `untrusted` or `stamped`; all current declarations conservatively use `untrusted`. |
 | `output_sensitivity` | Whole-payload `ordinary` or `sensitive`; current declarations use `sensitive`. |
 | `resource_params` | Visible argument names selecting resources, excluding message content and display attributes. |
+| `selection_bound` | One explicit true or false per `resource_params` name. True only where a spec requires the scope be exactly what the owner picked (REQ-capability-authorization-018): such a capability is neither listed nor callable without an owner-surface selection record. Every current param is false; a missing, extra or non-boolean entry fails the catalog check. Declarative only: no runtime path reads it yet. |
 | `safety_args` | Existing sensitive visible arguments an approval must pin. |
 | `approval_policy` | Immutable snapshot of the existing actual configured gate, including disabled/absent state. |
 | `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
@@ -229,3 +230,82 @@ model schema; `_write` is a sensitivity marker, not a visible parameter. Schema
 and description digests retain their definitions, while the generation digest
 also reflects authorization and policy identity. Repeated unchanged builds
 must agree and later mutations must not alter an already frozen generation.
+
+## Final-registry fleet publication (RFC 0038 D4)
+
+`core_275` adds the private, default-OFF definition repository. It stores only
+immutable tool descriptors, definition/authorization digests and boot/generation
+identities, never handlers, call arguments, credentials or model authority. This
+is shared public control-plane metadata, not direct access to a butler's private
+schema. Canonical FastMCP registration and `tools/list` remain complete.
+
+The daemon's final-startup hook publishes its actual post-approval `ToolCatalog`.
+Publication is authenticated by the acquired connection's non-owner,
+non-superuser, non-BYPASSRLS `butler_<domain>_rw` role. There is no caller-verified
+flag or model-facing publication tool. Enabled RLS restricts non-owner writes to
+that role's domain even after bootstrap regrants public DML. The existing database
+owner stably owns all five catalog tables, independent of the migration executor.
+RLS is non-FORCE so ordinary full `pg_dump` and restore retain every catalog row;
+no backup exclusion, security-definer or BYPASSRLS role is added. Runtime roles
+may neither own nor inherit/assume that trusted maintenance owner, and may not
+be superusers or bypass RLS. Publication checks the actual five table identities,
+stable database ownership, enabled/non-FORCE flags and absence of runtime membership
+in that owner; a missing table or changed posture refuses before publication. Immutable triggers remain mandatory. History is append-only;
+current registrations advance monotonically and cannot resurrect a retired or
+expired lease. A changed finalization republishes the real replacement.
+
+The governed fleet is chronicler, concierge, education, finance, general, health,
+home, lifestyle, messenger, qa, relationship, switchboard and travel. Calendar
+is explicitly excluded because it is a module, not a standalone roster daemon.
+An absent/extra member, missing publication or failed module is not a healthy
+empty fleet. Membership/exclusion changes require a corresponding explicit
+migration and reader contract change. Runtime publishers cannot edit membership
+or activation. The singleton control starts disabled; this change does not
+provision or activate a runtime profile.
+
+Each publisher has a 90-second server-clock lease renewed every 30 seconds.
+Freshness is a bounded lease, not an instantaneous process-liveness claim. A
+failed renewal stops renewal; retirement failure leaves the reader to refuse
+when the existing lease expires. Shutdown retires only that boot/revision under
+one retained five-second cleanup bound. A stale process cannot renew or retire a
+replacement. A lost commit reply is unavailable until exact instance/revision
+readback; it is not permission for a blind second publication. Old immutable
+history remains historical after replacement, restart or retirement. An identical
+complete restart retains the content digest and changes the generation identity.
+
+`PublishedCatalogProvider` is the concrete default of `GoalAdmission`. Its
+same-connection read requires the existing Switchboard transaction and verified
+role. One SQL/MVCC snapshot reads activation, exact membership and all current
+registrations, then reconstructs every immutable descriptor and recomputes
+schema, description, authorization and fleet digests. No network or second pool
+runs under the admission goal locks. There is no local-catalog, stale-cache or
+empty-fleet fallback. The reduced admission projection uses exact
+`<domain>__<canonical-name>` IDs and never converts conditional recipient prose
+into executable default-owner authority.
+
+The M2 broker adapter consumes `snapshot()`/`require_registration()` from this
+same reader: retain full immutable D4 fields, the shared fleet content digest,
+registration UUIDs and fleet generation digest; revalidate current registration
+before listing/calling. The reader does not perform grant/resource/recipient,
+approval, exposure, selection or per-call enforcement. Actual broker integration
+remains its own required delivery, without making M1 depend on M2.
+
+Migration rollback refuses to discard any publication history. With empty
+history, shared tables remain until the last recorded schema installation leaves
+275; installation tracking follows actual upgrades, not numeric revision order.
+Role/bootstrap/race/rollback/committed-readback and real admission integration
+require the named PostgreSQL contracts. Software doubles and collection do not
+prove those outcomes or activation readiness.
+
+A current catalog publisher replaces only its own expected current revision.
+A new boot may acquire the domain pointer once; an instance already present in
+immutable publication history cannot restart that acquisition after being
+superseded. An unconfirmed publication blocks another publish until the exact
+attempted revision is read back as current. Retirement and expiry do not permit
+an established instance to resurrect itself; restart uses a new boot identity.
+
+Catalog retirement keeps its original five-second cleanup deadline. The daemon
+retains its shutdown task across repeated cancellation, attempts the existing
+MCP/socket/scheduler/module/database cleanup after retirement failure, and then
+propagates the retirement error or caller cancellation. A failed retirement
+retains its owner slot; continuing resource cleanup does not claim retirement.

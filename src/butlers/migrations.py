@@ -94,48 +94,26 @@ def _discover_butler_chains() -> list[str]:
 class _ChainRootFamily:
     """One discoverable shape of migration-chain root directory.
 
-    Pairs the filesystem resolution rule with the GitHub Actions path-filter
-    glob (relative to the repo root) that must cover it in the post-merge
-    migration-chain workflow (``.github/workflows/migration-chain-main.yml``).
-    This is the single source of truth for both ``_resolve_chain_dir``'s
-    resolution order and the CI-coverage guard test in
-    ``tests/config/test_migration_chain_head.py`` — adding a new root shape
-    here without a matching workflow glob update fails that guard test
-    instead of letting migrations land with the "Migration Chain Integrity
-    (main)" check silently absent.
+    Pairs the filesystem resolution rule with the chains it applies to; the
+    tuple order below is ``_resolve_chain_dir``'s resolution order.
     """
 
-    workflow_path_filter: str
     dir_for_chain: Callable[[str], Path]
     applies_to_chain: Callable[[str], bool] = lambda chain: True  # noqa: E731
 
 
 _CHAIN_ROOT_FAMILIES: tuple[_ChainRootFamily, ...] = (
     _ChainRootFamily(
-        workflow_path_filter="alembic/versions/**",
         applies_to_chain=lambda chain: chain in _SHARED_CHAINS,
         dir_for_chain=lambda chain: ALEMBIC_DIR / "versions" / chain,
     ),
     _ChainRootFamily(
-        workflow_path_filter="src/butlers/modules/*/migrations/**",
         dir_for_chain=lambda chain: MODULES_DIR / chain / "migrations",
     ),
     _ChainRootFamily(
-        workflow_path_filter="roster/*/migrations/**",
         dir_for_chain=lambda chain: ROSTER_DIR / chain / "migrations",
     ),
 )
-
-
-def chain_root_workflow_path_filters() -> tuple[str, ...]:
-    """Return the workflow path-filter globs required to cover every migration-root family.
-
-    Derived from ``_CHAIN_ROOT_FAMILIES`` — the same data ``_resolve_chain_dir``
-    resolves against — so the CI-coverage guard test can assert workflow
-    coverage against this instead of restating the globs as test-local
-    literals that could silently drift from the resolver.
-    """
-    return tuple(family.workflow_path_filter for family in _CHAIN_ROOT_FAMILIES)
 
 
 def _resolve_chain_dir(chain: str) -> Path | None:

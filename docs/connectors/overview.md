@@ -89,6 +89,37 @@ Canonical dedupe key guidance per provider:
 - **Email:** RFC `Message-ID` + receiving mailbox identity
 - **API/MCP:** caller idempotency key or deterministic payload hash + source identity + bounded time window
 
+## Untrusted Spans and Channel Kind
+
+RFC 0038 D5 starts an owner goal exposed when the owner's message carries someone else's text.
+Connectors mark that text; goal admission (not built yet) reads the marks. Nothing on the current
+routing path reads them. Helpers live in `butlers.ingestion_spans`.
+
+- `payload.untrusted_spans`: `{kind, start, end, origin_identity?, origin_display_name?}` records,
+  with `kind` one of `forwarded`, `quoted` or `embedded`. `[start, end)` are Python `str` indices
+  into `normalized_text` after the contract strips its surrounding whitespace. A connector that
+  knows a message carries such text but cannot locate it marks the whole text. The contract turns
+  a span that does not fit into a whole-text span, and when a bearer scrub rewrites the text, each
+  kind collapses to one whole-text span. The forwarding owner stays `sender.identity`.
+- `event.in_reply_to_ref`: a provider reference to the replied-to message (`<chat_id>:<message_id>`
+  on Telegram). The replied-to text is not in `normalized_text`, so it is not marked; admission
+  resolves the reference, so a reply to the butler's own message is not exposed by the reply alone.
+- Channel kind is registered per connector, not set per envelope (`REQ-connector-base-spec-003`).
+  A device or telemetry feed passes `channel_kind=CHANNEL_KIND_FEED` to `ConnectorHeartbeat`, which
+  sends it as `capabilities.channel_kind`. Switchboard keeps it on the `connector_registry` row and
+  drops an unrecognised value, and admission resolves it with `registered_channel_kind(pool,
+  connector_type, endpoint_identity)`. An unregistered or undeclared connector is a message
+  channel. `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed
+  path.
+
+| Connector | What it marks |
+| --- | --- |
+| Telegram bot | A forward marks the whole text as `forwarded`, with the original author. `blockquote` entities become `quoted` spans. `external_reply` (a reply to another chat) marks the whole text as `quoted`. A same-chat reply sets `in_reply_to_ref`. |
+| Telegram user client | A forwarded message (`fwd_from`) marks its whole text, or its own line in a batch transcript. |
+| WhatsApp | A forward (the bridge's `content.is_forwarded`) marks its whole text, or its own line in a batch. WhatsApp names no original author. A quoted reply carries only `quoted_message_id`, so nothing is marked. |
+| Gmail (full tier) | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. The metadata tier is not marked. |
+| Home Assistant, ActivityWatch, OwnTracks, Steam, Google Health | Register `channel_kind = "feed"` on every heartbeat. |
+
 ## Checkpoint Persistence
 
 All connectors persist their resume cursor in the database via the `cursor_store` module (`butlers.connectors.cursor_store`). The canonical storage location is the `switchboard.connector_registry` table, keyed by `(connector_type, endpoint_identity)`.
@@ -238,6 +269,27 @@ an authentication artifact.
 `record()` also scrubs the buffered `full_payload` envelope (the shared `scrub_envelope` that
 connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
 carry typed placeholders; a detector failure withholds that text without changing the row's status.
+
+Filtered-event replay retains `payload.untrusted_spans` and `event.in_reply_to_ref` from
+message-capable policy, batch/discretion and error producers. Unchanged retained text keeps the
+exact span records. When privacy omits a body, bearer scrubbing changes it, NUL removal moves its
+offsets or the detector fails, known exposure kinds conservatively cover the whole retained text
+(or `[no text]` placeholder). Discarded bodies and bearer values are never restored to recover
+offsets. Malformed-present markers remain rejectable by canonical ingest validation; replay never
+silently deletes them. Repeated scrubbing and sanitization retain the exposure facts.
+
+The forwarding owner remains the sender. The opaque replied-message locator stays distinct from
+`reply_target_ref`: it confers no origin, feed selection, goal or effect authority, and only later
+admission resolves it. Replay removes stored `drop_context` metadata while preserving these two
+envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
+stored a marker or reference cannot recover it; there is no historical backfill.
+
+The authorized replay API still queues only under the connector's replay-safety policy. Drains
+retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
+rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
+followed by uncertain status persistence may be delivered again with the same event identity for
+existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
+switch.
 
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its

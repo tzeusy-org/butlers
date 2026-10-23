@@ -77,6 +77,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.telegram_spans import telethon_forward_origin
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -96,6 +97,7 @@ from butlers.ingestion_bearer_scrub import (
     scrub_envelope,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -888,6 +890,12 @@ class TelegramUserClientConnector:
                 the row is scrubbed like the envelope: preview, payload and
                 ``error_detail``.
         """
+        # Only the exposure facts survive the batch's filtered-content privacy tier.
+        spans = [
+            whole_text_span("forwarded", "", **origin)
+            for message in messages or []
+            if (origin := telethon_forward_origin(message)) is not None
+        ]
         payload = FilteredEventBuffer.full_payload(
             channel=self._config.channel,
             provider=self._config.provider,
@@ -897,6 +905,7 @@ class TelegramUserClientConnector:
             external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
             observed_at=datetime.now(UTC).isoformat(),
             sender_identity=sender_identity,
+            untrusted_spans=spans or None,
             raw={},
         )
         if self._batch_has_service_sender(messages):
@@ -1199,13 +1208,21 @@ class TelegramUserClientConnector:
         header_lines.append("---")
 
         text_parts: list[str] = []
+        # Forwarded messages inside the batch, as (line index, text start, text end, origin).
+        forwarded_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
         for msg in new_messages_sorted:
             sender_id = self._extract_sender_identity(msg)
             display_name = seen_sender_ids[sender_id]
             text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
             is_owner = owner_sender_id is not None and sender_id == owner_sender_id
             owner_tag = " (owner)" if is_owner else ""
-            text_parts.append(f"[{display_name}{owner_tag}]: {text}")
+            line = f"[{display_name}{owner_tag}]: {text}"
+            origin = telethon_forward_origin(msg)
+            if origin is not None:
+                # A media-only forward has no text: the whole line stands for it.
+                text_start = len(line) - len(text) if text else 0
+                forwarded_lines.append((len(text_parts), text_start, len(line), origin))
+            text_parts.append(line)
 
         footer_lines: list[str] = [
             "---",
@@ -1215,6 +1232,9 @@ class TelegramUserClientConnector:
             footer_lines.append(f"Flush window: {oldest_ts} → {newest_ts}")
 
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
+        untrusted_spans = forwarded_line_spans(
+            normalized_text, header_lines, text_parts, forwarded_lines
+        )
 
         # Build conversation_history: all context messages, sorted ascending by ID.
         # Collect display names for all context senders (superset of new-message senders).
@@ -1289,6 +1309,7 @@ class TelegramUserClientConnector:
             "payload": {
                 "raw": {"conversation_history": conversation_history},
                 "normalized_text": normalized_text,
+                **({"untrusted_spans": untrusted_spans} if untrusted_spans else {}),
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
@@ -1316,6 +1337,10 @@ class TelegramUserClientConnector:
         for batch persistence after the event is processed.
         """
         async with self._semaphore:
+            origin = telethon_forward_origin(message)
+            replay_spans = (
+                [whole_text_span("forwarded", "", **origin)] if origin is not None else None
+            )
             try:
                 # Extract message ID for checkpoint tracking
                 message_id = getattr(message, "id", None)
@@ -1365,6 +1390,7 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1402,6 +1428,7 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1472,6 +1499,7 @@ class TelegramUserClientConnector:
                                 # discretion-IGNORE content persists a bounded
                                 # preview only; no full raw payload retained.
                                 raw={},
+                                untrusted_spans=replay_spans,
                             ),
                         )
                         await self._flush_and_drain()
@@ -1526,6 +1554,7 @@ class TelegramUserClientConnector:
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=error_sender,
                         raw=raw_for_error,
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -2042,6 +2071,7 @@ class TelegramUserClientConnector:
             )
 
         # Build ingest.v1 envelope
+        forward = telethon_forward_origin(message)
         envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
             "source": {
@@ -2071,6 +2101,11 @@ class TelegramUserClientConnector:
                 "interaction_eligible": interaction_eligible,
             },
         }
+        if forward is not None:
+            # A forwarded message is someone else's text in full (RFC 0038 D5).
+            envelope["payload"]["untrusted_spans"] = [
+                whole_text_span("forwarded", normalized_text, **forward)
+            ]
 
         return scrub_envelope(envelope)[0]
 

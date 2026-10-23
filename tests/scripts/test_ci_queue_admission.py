@@ -227,7 +227,7 @@ def test_capture_retains_complete_enqueue_events_source_and_every_attempt():
     assert any("/attempts/1" in x for x in calls)
     for case in ("queue", "timeline", "runs", "search", "attempt", "jobs"):
 
-        def broken(endpoint, *, method="GET", payload=None):
+        def broken(endpoint, *, method="GET", payload=None, case=case):
             value = copy.deepcopy(api(endpoint, method=method, payload=payload))
             if endpoint == "graphql":
                 repository = value["data"]["repository"]

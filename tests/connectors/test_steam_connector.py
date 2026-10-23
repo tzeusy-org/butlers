@@ -49,7 +49,7 @@ from butlers.connectors.steam import (
     build_status_change_envelope,
     steam_events_submitted_total,
 )
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _STEAM_ID = 76561198012345678
 _ENDPOINT = f"gaming:steam:{_STEAM_ID}"

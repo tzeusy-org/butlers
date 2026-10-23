@@ -97,15 +97,17 @@ class TestStafferVsButlerDistinction:
         assert ButlerType.STAFFER.value == "staffer", (
             "ButlerType.STAFFER must equal 'staffer' for routing exclusion to work (RFC 0003)"
         )
-        # Verify the routing classify module references ButlerType to filter staffers.
+        # Verify the classifier's candidate loader references the staffer type to filter staffers.
         import inspect as _inspect
 
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
         from butlers.tools.switchboard.routing import classify
 
-        src = _inspect.getsource(classify)
+        assert classify._load_available_butlers is load_available_butlers
+        src = _inspect.getsource(load_available_butlers)
         assert "staffer" in src.lower(), (
-            "routing classify must reference 'staffer' type to exclude staffers from "
-            "LLM classification (RFC 0003)"
+            "the classifier's candidate loader must reference 'staffer' type to exclude "
+            "staffers from LLM classification (RFC 0003)"
         )
 
     def test_staffers_excluded_from_briefing_contribution(self):

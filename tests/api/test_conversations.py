@@ -42,7 +42,6 @@ from butlers.api.conversations import (
     message_create_idempotent,
     message_find_reply_since,
     message_set_session_id_if_null,
-    resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -55,6 +54,7 @@ from butlers.api.routers.conversations import (
     _stream_conversation_response,
     _submit_to_switchboard,
 )
+from butlers.core.conversation_sessions import resolve_resume_handle
 from butlers.core.dashboard_turns import DashboardTurnResult
 
 pytestmark = pytest.mark.unit
@@ -2276,7 +2276,7 @@ class _FakeChatStreamListener:
             self._queue.put_nowait(envelope)
         self.closed = False
 
-    async def get(self, timeout: float) -> dict[str, object] | None:
+    async def get(self, timeout: float) -> dict[str, object] | None:  # noqa: ASYNC109 - fakes ChatStreamListener.get
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except TimeoutError:
@@ -2463,7 +2463,7 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         if listener is not None:
             queued_get = listener.get
 
-            async def receive_wake(timeout):
+            async def receive_wake(timeout):  # noqa: ASYNC109 - fakes ChatStreamListener.get
                 observed.append("listener_wait")
                 event = await queued_get(timeout)
                 observed.append("listener_wake" if event is not None else "listener_timeout")

@@ -23,15 +23,6 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.model_settings import _attention_episode
-from butlers.tools.switchboard.routing.transport import (
-    CONFIRMED,
-    PROVIDER_REJECTED,
-    RECIPIENT_UNAVAILABLE,
-    TransportErrorClass,
-    TransportErrorDetail,
-    TransportOutcome,
-    TransportResult,
-)
 from butlers.tools.switchboard.runtime_attention.outbox import (
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -41,6 +32,15 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
 from butlers.tools.switchboard.runtime_attention.worker import (
     RuntimeAttentionDeliveryWorker,
     build_messenger_transport,
+)
+from butlers.tools.switchboard.transport import (
+    CONFIRMED,
+    PROVIDER_REJECTED,
+    RECIPIENT_UNAVAILABLE,
+    TransportErrorClass,
+    TransportErrorDetail,
+    TransportOutcome,
+    TransportResult,
 )
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -340,7 +340,7 @@ async def test_fenced_claim_evidence_reaches_the_safe_reason_projection(
 
     A stale-claim recovery episode is fenced to ``uncertain`` without ever
     calling ``mark_uncertain`` — the CHECK constraint and
-    ``routing.transport.WORKER_RECOVERY`` reserve the
+    ``switchboard.transport.WORKER_RECOVERY`` reserve the
     ``('transport_uncertain', 'worker_recovery')`` pair for exactly this path,
     but ``fence_stale_claim`` previously left the evidence columns NULL, so a
     recovery-driven uncertain episode showed no ``safe_reason`` in the API/UI.

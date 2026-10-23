@@ -55,7 +55,7 @@ def _assert_contiguous_traceability(
 
 def test_projection_plan_allocates_its_core_revision_from_the_fetched_head() -> None:
     """Allocate from the live frontier without requiring a refresh rebase."""
-    implementation_plan = _read("docs/superpowers/plans/2026-08-13-beads-projection-exporter.md")
+    implementation_plan = _read("docs/plans/2026-08-13-beads-projection-exporter.md")
     tasks = _read("openspec/changes/beads-projection-exporter/tasks.md")
     core_head = get_chain_head("core")
     match = re.fullmatch(r"core_(\d+)", core_head)
@@ -138,7 +138,7 @@ def test_retirement_packet_requires_a_complete_jsonl_consumer_inventory() -> Non
     )
     planning_artifacts = (
         "about/legends-and-lore/rfcs/0025-tracker-host-beads-projection-exporter.md",
-        "docs/superpowers/plans/2026-08-13-beads-projection-exporter.md",
+        "docs/plans/2026-08-13-beads-projection-exporter.md",
         "openspec/changes/beads-projection-exporter/design.md",
         "openspec/changes/beads-projection-exporter/specs/beads-projection/spec.md",
         "openspec/changes/beads-projection-exporter/tasks.md",
@@ -291,7 +291,7 @@ def test_suspicious_empty_or_regressed_candidate_requires_source_completeness_ev
     )
     design = _read("openspec/changes/beads-projection-exporter/design.md")
     tasks = _read("openspec/changes/beads-projection-exporter/tasks.md")
-    implementation_plan = _read("docs/superpowers/plans/2026-08-13-beads-projection-exporter.md")
+    implementation_plan = _read("docs/plans/2026-08-13-beads-projection-exporter.md")
     dashboard_api_spec = _read(
         "openspec/changes/beads-projection-exporter/specs/dashboard-api/spec.md"
     )

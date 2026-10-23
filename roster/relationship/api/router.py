@@ -179,11 +179,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Relationship butler database is not available",
-        )
+        ) from exc
 
 
 async def _table_columns(pool, table_name: str) -> set[str]:
@@ -1580,7 +1580,7 @@ async def promote_entity(
             raise HTTPException(
                 status_code=422,
                 detail={"code": "invalid_predicate", "message": str(exc)},
-            )
+            ) from exc
 
     # Every existing entity row this request writes against: the promoted
     # subject and every entity object. A freshly created subject is uncommitted,
@@ -1684,7 +1684,7 @@ async def promote_entity(
                     raise HTTPException(
                         status_code=422,
                         detail={"code": "invalid_predicate", "message": str(exc)},
-                    )
+                    ) from exc
 
             # Fetch aggregated facts stats inside the same transaction for read-after-write
             # consistency (avoids an extra pool round-trip and ensures the just-written facts
@@ -2257,7 +2257,7 @@ async def dismiss_queue_entity(
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid_predicate", "message": str(exc)},
-        )
+        ) from exc
 
     item = DismissQueueItemResult(
         entity_id=body.entity_id,
@@ -2694,13 +2694,13 @@ async def create_entity_info(
             request.is_primary,
             request.secured,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=(
                 f"An entity_info entry with type '{request.type}' already exists for this entity."
             ),
-        )
+        ) from exc
 
     return CreateEntityInfoResponse(
         id=row["id"],
@@ -2791,11 +2791,11 @@ async def patch_entity_info(
                 f"UPDATE public.entity_info SET {set_clause} WHERE id = ${idx}",
                 *args,
             )
-        except asyncpg.UniqueViolationError:
+        except asyncpg.UniqueViolationError as exc:
             raise HTTPException(
                 status_code=409,
                 detail="An entity_info entry with this type already exists for this entity.",
-            )
+            ) from exc
 
     updated = await pool.fetchrow(
         """SELECT id, type, value, label, is_primary, secured
@@ -6042,19 +6042,19 @@ async def merge_entities(
             target_entity_id=target_id,
             _audit_entity_order=(body.entityA, body.entityB),
         )
-    except SameEntityError:
+    except SameEntityError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": "same_entity", "message": "entityA and entityB must be different."},
-        )
-    except SourceEntityNotFoundError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except SourceEntityTombstonedError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except TargetEntityNotFoundError:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    except TargetEntityTombstonedError:
-        raise HTTPException(status_code=404, detail="Entity not found")
+        ) from exc
+    except SourceEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except SourceEntityTombstonedError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except TargetEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
+    except TargetEntityTombstonedError as exc:
+        raise HTTPException(status_code=404, detail="Entity not found") from exc
     except TemporalOccurrenceCollisionError as exc:
         raise HTTPException(
             status_code=409,
@@ -6065,7 +6065,7 @@ async def merge_entities(
                     "identity; nothing was changed."
                 ),
             },
-        )
+        ) from exc
 
     return MergeEntitiesResponse(
         kept_entity_id=result.kept_entity_id,

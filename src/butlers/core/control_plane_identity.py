@@ -11,15 +11,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+
+from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 
 IDENTITY_PATH = "/internal/control-plane/identity"
 IDENTITY_SCHEMA = "butler.control.v1"
@@ -48,14 +50,23 @@ class ExpectedDaemon:
         return f"http://{self.host}:{self.port}{IDENTITY_PATH}"
 
 
+def _backend_host(port: int) -> str:
+    resolved = urlparse(resolve_cross_container_mcp_url(f"http://localhost:{port}"))
+    return resolved.hostname or "localhost"
+
+
 def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
-    """Freeze the expected set from Git-discovered configs, never DB rows."""
-    host = os.environ.get("BUTLERS_HOST", "localhost")
+    """Freeze the expected set from Git-discovered configs, never DB rows.
+
+    Each backend host follows the canonical destination rule: domains use
+    ``BUTLERS_HOST``; Switchboard's port uses ``SWITCHBOARD_MCP_URL`` when set,
+    so its identity is probed where it runs (``butlers-control`` in the stage).
+    """
     targets = tuple(
         ExpectedDaemon(
             name=config.name,
             port=config.port,
-            host=host,
+            host=_backend_host(config.port),
         )
         for config in configs
     )
@@ -64,7 +75,7 @@ def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
     if len({target.port for target in targets}) != len(targets):
         raise ValueError("duplicate roster port")
     for target in targets:
-        target.url  # Validate the complete trusted endpoint before any I/O.
+        _ = target.url  # Validate the complete trusted endpoint before any I/O.
     return targets
 
 

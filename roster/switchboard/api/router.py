@@ -205,11 +205,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Switchboard butler database is not available",
-        )
+        ) from exc
 
 
 async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> bool:
@@ -1672,9 +1672,9 @@ async def create_backfill_job(
             body.daily_cost_cap_cents,
             now,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to create backfill job")
-        raise HTTPException(status_code=503, detail="Failed to create backfill job")
+        raise HTTPException(status_code=503, detail="Failed to create backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=503, detail="No row returned after insert")
@@ -1725,9 +1725,9 @@ async def get_backfill_job(
             " WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to fetch backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
@@ -1760,9 +1760,9 @@ async def pause_backfill_job(
             "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to fetch backfill job %s for pause", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
@@ -1780,9 +1780,9 @@ async def pause_backfill_job(
             "UPDATE switchboard.backfill_jobs SET status='paused', updated_at=now() WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to pause backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to pause backfill job")
+        raise HTTPException(status_code=503, detail="Failed to pause backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -1828,9 +1828,9 @@ async def cancel_backfill_job(
             "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to fetch backfill job %s for cancel", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
@@ -1850,9 +1850,9 @@ async def cancel_backfill_job(
             " WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to cancel backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to cancel backfill job")
+        raise HTTPException(status_code=503, detail="Failed to cancel backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -1896,9 +1896,9 @@ async def resume_backfill_job(
             "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to fetch backfill job %s for resume", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
@@ -1916,9 +1916,9 @@ async def resume_backfill_job(
             "UPDATE switchboard.backfill_jobs SET status='pending', updated_at=now() WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to resume backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to resume backfill job")
+        raise HTTPException(status_code=503, detail="Failed to resume backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -2324,8 +2324,8 @@ async def update_routing_instruction(
 
     try:
         UUID(instruction_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id FROM switchboard.routing_instructions WHERE id = $1 AND deleted_at IS NULL",
@@ -2420,8 +2420,8 @@ async def delete_routing_instruction(
 
     try:
         UUID(instruction_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID") from exc
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
@@ -2612,7 +2612,7 @@ async def create_ingestion_rule(
     try:
         validate_ingestion_action(body.action, body.scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # For global scope route_to, validate target butler exists
     if body.scope == "global":
@@ -2622,13 +2622,13 @@ async def create_ingestion_rule(
     try:
         validated_condition = validate_condition(body.rule_type, body.condition, body.action)
     except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Validate rule_type compatibility with scope
     try:
         validate_rule_type_for_scope(body.rule_type, body.scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     row = await pool.fetchrow(
         "INSERT INTO switchboard.ingestion_rules"
@@ -2687,8 +2687,8 @@ async def get_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     row = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
@@ -2730,8 +2730,8 @@ async def update_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
@@ -2753,13 +2753,13 @@ async def update_ingestion_rule(
     try:
         validate_ingestion_action(effective_action, effective_scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Validate rule_type-scope compatibility
     try:
         validate_rule_type_for_scope(effective_rule_type, effective_scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # For global scope route_to, validate target butler exists
     if effective_scope == "global":
@@ -2779,7 +2779,7 @@ async def update_ingestion_rule(
                 effective_rule_type, body.condition, effective_action
             )
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         updates["condition"] = validated_condition
     elif body.action is not None:
         # An action change must not strand the except-known-contacts option on a verdict
@@ -2790,7 +2790,7 @@ async def update_ingestion_rule(
         try:
             validate_condition(effective_rule_type, stored_condition, effective_action)
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if body.priority is not None:
         updates["priority"] = body.priority
@@ -2895,8 +2895,8 @@ async def delete_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
@@ -3335,8 +3335,8 @@ async def get_rule_promotion_stats(
 def _parse_suggestion_id(suggestion_id: str) -> uuid.UUID:
     try:
         return uuid.UUID(suggestion_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=422, detail="invalid suggestion id")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="invalid suggestion id") from exc
 
 
 @router.post(
@@ -3364,7 +3364,7 @@ async def confirm_rule_promotion_suggestion(
     try:
         rule_row = await apply_suggestion(pool, sid, decided_by="owner")
     except SuggestionNotApplicable as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     _invalidate_ingestion_cache()
     await emit_dashboard_audit(

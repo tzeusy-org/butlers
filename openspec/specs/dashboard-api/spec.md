@@ -779,6 +779,8 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 ### Requirement: Calendar Workspace
 `src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
 
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The workspace is an operator view. `POST /api/calendar/workspace/user-events` SHALL accept `action="create"` only (the quick-add confirmation); `update` and `delete` SHALL be rejected with HTTP 422. The dashboard API SHALL NOT expose duplicate review, dedup-rule or keep-separate writes, free-slot search (`find-time`), `.ics` export, subscribe or import, or a mutation-undo route. The workspace read keeps collapsing cross-source duplicates with the stored dedup rules and keep-separate pins. Every calendar MCP tool (`calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, instance edits, attendees and proposals) stays registered and unchanged for butlers and chat.
+
 #### Scenario: Workspace read
 - **WHEN** `GET /api/calendar/workspace?view=user&start=...&end=...` is called
 - **THEN** calendar entries are fan-out queried across butler DBs (joining `calendar_event_instances`, `calendar_events`, `calendar_sources`, and `calendar_sync_cursors`)
@@ -1284,118 +1286,6 @@ Scope: v1-mandatory
   `L3` escalation label
 - **AND** commitments at `L2` or `L3` are visually emphasized
 
-### Requirement: Calendar ICS Export
-
-The dashboard API SHALL expose `GET /api/calendar/export/ics`, a read-only
-data-portability export that streams the calendar workspace entries for a date
-range as a `text/calendar` (iCalendar / VCALENDAR) file generated with the
-`icalendar` library. The export SHALL reuse the existing workspace
-read/projection and accept the same `view`, `butlers`, `sources`, `status`, and
-`source_type` filters as `GET /api/calendar/workspace`, so the exported set
-matches what the workspace read returns for the same inputs. Each entry SHALL
-become a VEVENT whose `SUMMARY` is the entry title verbatim — the `BUTLER:`
-prefix on butler-authored events MUST be preserved. The endpoint MUST perform no
-provider write, MUST NOT spawn an LLM session, and MUST NOT require a database
-migration. ICS subscribe (`webcal`) and `.ics` import are out of scope.
-
-#### Scenario: Range exported as valid VCALENDAR
-
-- **WHEN** `GET /api/calendar/export/ics` is called with a valid `view`, `start`,
-  and `end`
-- **THEN** the response is `text/calendar` with a `Content-Disposition: attachment`
-  header and a body that parses as a valid VCALENDAR containing one VEVENT per
-  workspace entry in the range, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
-
-#### Scenario: Butler title prefix preserved
-
-- **WHEN** the exported range includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Empty range yields an empty calendar
-
-- **WHEN** the requested range contains no entries
-- **THEN** the endpoint returns HTTP 200 with a valid VCALENDAR that contains no
-  VEVENT components, rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum,
-  or a `status`/`source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing; a request missing
-  the required `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar ICS Subscribe Feed
-
-The dashboard API SHALL expose `GET /api/calendar/subscribe.ics`, a read-only
-live ICS feed an external calendar application can subscribe to (for example via
-`webcal://`). On each fetch the endpoint SHALL re-render the **current** calendar
-workspace entries — over a rolling window relative to the request time (the
-default window is `now − 30 days … now + 60 days`, within the 90-day workspace
-range cap) — as a `text/calendar` (iCalendar / VCALENDAR) body generated with the
-`icalendar` library, reusing the same projection, the `view` / `butlers` /
-`sources` / `status` / `source_type` filters, and the `BUTLER:` title-prefix
-preservation as `GET /api/calendar/export/ics`. The response SHALL use
-`Content-Disposition: inline` so clients treat it as a subscription feed rather
-than a one-shot download. The endpoint MUST perform no provider write, MUST NOT
-spawn an LLM session, MUST NOT require a database migration, and MUST be served
-behind the same network boundary as the other dashboard/calendar endpoints (no
-new unauthenticated surface, no per-feed token).
-
-#### Scenario: Feed re-renders current workspace entries
-
-- **WHEN** `GET /api/calendar/subscribe.ics` is fetched
-- **THEN** the response is HTTP 200 `text/calendar` with a
-  `Content-Disposition: inline` header and a body that parses as a valid
-  VCALENDAR containing one VEVENT per current workspace entry in the rolling
-  window, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
-
-#### Scenario: Butler title prefix preserved
-
-- **WHEN** the feed window includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Unknown facet rejected
-
-- **WHEN** a `status` or `source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing
-
-### Requirement: Calendar ICS Import With Dedup
-
-The dashboard API SHALL expose `POST /api/calendar/import/ics`, which accepts an
-uploaded `.ics` file plus a target `butler_name` (and optional `calendar_id`),
-parses its VEVENT components, and creates the events in the user calendar through
-the existing `calendar_create_event` MCP path. The import SHALL be **deduplicated
-against existing workspace entries** using the read-model's existing
-`(title, starts_epoch)` collapse key: an event whose collapse key matches an
-existing workspace entry — including every event when the same `.ics` is imported
-again — MUST be skipped rather than creating a duplicate. Duplicate VEVENTs within
-the uploaded file itself MUST also be collapsed. The endpoint SHALL return the
-`parsed`, `imported`, and `skipped_duplicates` counts, where
-`imported + skipped_duplicates == parsed`. The endpoint MUST require no database
-migration.
-
-#### Scenario: New events imported
-
-- **WHEN** a `.ics` containing events not present in the workspace is imported
-- **THEN** each such event is created via `calendar_create_event` and the
-  response reports `imported` equal to the number of new events with
-  `skipped_duplicates` of 0
-
-#### Scenario: Re-importing the same file is a no-op
-
-- **WHEN** a `.ics` whose events already exist in the workspace (the
-  `(title, starts_epoch)` collapse key matches existing entries) is imported
-- **THEN** no `calendar_create_event` call is made for those events and the
-  response reports `imported` of 0 with `skipped_duplicates` equal to the parsed
-  event count
-
-#### Scenario: Empty or invalid payload rejected
-
-- **WHEN** the uploaded file is empty or is not parseable as iCalendar
-- **THEN** the endpoint returns HTTP 400 and creates nothing
-
 ### Requirement: Prep Rail Surfaces Merged Message Context
 
 The meeting-prep rail read `GET /api/calendar/workspace/prep/{event_id}` SHALL
@@ -1414,98 +1304,6 @@ open to a structured empty payload when no contribution exists.
 #### Scenario: Message context surfaced without request-time cross-butler read
 - **WHEN** the prep rail read serves an event with email message context
 - **THEN** the `message_context` is read only from `calendar.v_prep_contributions` (the precomputed cached view), with no on-demand `SELECT` against any sibling schema and no LLM/Gmail session opened while serving the request
-
-### Requirement: Calendar Duplicate-Cluster Review
-
-The dashboard API SHALL expose `GET /api/calendar/workspace/duplicates`, a
-read-only surface that exposes the cross-source duplicate clusters the workspace
-read-model collapses. For a `view` + `start` + `end` range it SHALL re-run the
-same two-pass dedup over the un-collapsed workspace rows and return every cluster
-of more than one member the dedup would collapse: the kept survivor (lowest
-keyset), the collapsed-away `duplicate_entries`, the `match_pass`
-(`origin_ref` | `title`) that grouped them, the `member_count`, and a
-`keep_separate` flag. Clusters with fewer members than the active
-`noisy_threshold` SHALL be omitted. The endpoint MUST be fail-open: any read
-failure SHALL yield HTTP 200 with `available=false` and an empty `clusters` list,
-never an HTTP 500. It MUST perform no provider write and MUST NOT spawn an LLM
-session.
-
-#### Scenario: Collapsed cluster exposed
-
-- **WHEN** the same event is synced into multiple butler schemas (identical
-  `origin_ref` + start) and `GET /api/calendar/workspace/duplicates` is called
-  for a range covering it
-- **THEN** the response contains one cluster with `match_pass="origin_ref"`,
-  `member_count` equal to the number of copies, a `kept_entry`, and the remaining
-  copies as `duplicate_entries`, and `available=true`
-
-#### Scenario: Below-threshold clusters omitted
-
-- **WHEN** a cluster's member count is less than the active `noisy_threshold`
-- **THEN** that cluster is not included in the returned `clusters` list
-
-#### Scenario: Fail-open on read failure
-
-- **WHEN** the underlying workspace read fails
-- **THEN** the endpoint returns HTTP 200 with `available=false` and an empty
-  `clusters` list rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum
-- **THEN** the endpoint returns HTTP 400; a request missing the required
-  `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar Dedup Rules
-
-The dashboard API SHALL expose `PATCH /api/calendar/workspace/dedup-rules` to
-persist the workspace-global cross-source dedup rules: a `match_strategy` of
-`exact` (origin-ref identity pass only), `balanced` (origin-ref + title/start
-collapse; the default), or `aggressive` (as `balanced` but normalising titles by
-stripping non-alphanumerics), and a `noisy_threshold` (minimum cluster size for
-the review surface to report a cluster, at least 2). Omitted fields SHALL be left
-unchanged. An unknown `match_strategy` SHALL be rejected without persisting. The
-live workspace read SHALL honor the persisted rules so that changing the strategy
-changes what the read collapses. The rules SHALL persist across requests.
-
-#### Scenario: Strategy and threshold persisted
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a valid
-  `match_strategy` and `noisy_threshold`
-- **THEN** the endpoint returns HTTP 200 with the new rules and a subsequent read
-  of the rules returns the persisted values
-
-#### Scenario: Unknown strategy rejected
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a
-  `match_strategy` outside `exact`/`balanced`/`aggressive`
-- **THEN** the endpoint rejects the request (HTTP 400 or 422) and does not change
-  the persisted rules
-
-### Requirement: Calendar Keep-Separate Override
-
-The dashboard API SHALL expose `POST /api/calendar/workspace/duplicates/keep-separate`
-to pin or unpin a duplicate cluster (identified by its `cluster_key`) so the
-dedup does not collapse it. When pinned (`keep_separate=true`) the workspace read
-SHALL keep all members of that cluster as distinct entries, and the review
-surface SHALL still report the cluster with its `keep_separate` flag set. When
-unpinned (`keep_separate=false`) the override SHALL be removed and the cluster
-SHALL collapse again under the active rules. Overrides SHALL persist across
-requests.
-
-#### Scenario: Pinned cluster is not collapsed
-
-- **WHEN** a cluster is pinned via `POST /api/calendar/workspace/duplicates/keep-separate`
-  with `keep_separate=true`
-- **THEN** the workspace read keeps every member of that cluster as a distinct
-  entry, and the duplicates surface still lists the cluster with
-  `keep_separate=true`
-
-#### Scenario: Unpin restores collapse
-
-- **WHEN** a previously-pinned cluster is unpinned with `keep_separate=false`
-- **THEN** the override is removed and the cluster collapses again under the
-  active dedup rules
 
 ### Requirement: Calendar Mutation Audit-Trail Read Endpoint
 
@@ -1568,115 +1366,6 @@ self-explaining and deep-linkable to the originating session.
   history — the frontend renders a "some sources unavailable" note. A clean
   fan-out (or a legitimately empty log) reports `sources_available: true`
   (default), and clients that ignore the field observe the prior shape.
-
-### Requirement: Calendar Mutation Undo Endpoint
-
-`src/butlers/api/routers/calendar_workspace.py` SHALL expose
-`POST /api/calendar/workspace/undo/{action_id}` that reverses a single previously
-logged calendar mutation. The endpoint SHALL synthesize the inverse mutation from
-the logged `calendar_action_log` row (`action_payload` plus the captured
-pre-mutation state in `action_result`) and dispatch it through the **existing**
-calendar MCP tools with a **fresh `request_id`**; it SHALL NOT introduce a new
-MCP tool and SHALL NOT reverse an action that was never applied, was already
-undone, or whose pre-state is unavailable.
-For an applied workspace_user_respond action, this same endpoint SHALL use the same registered calendar_respond operation with a server-owned inverse reference and fresh request_id, not a second undo MCP tool. It MUST bind the exact owning source/account/occurrence/self, retained prior status and unchanged post-status/ETag, use the same verified approval and executor path, and admit at most one inverse write. A started uncertain inverse MUST retain its non-reacceptance fence; existing create/update/delete inverse behavior and all prior scenarios remain unchanged.
-
-ID: REQ-dashboard-api-070
-Source: Existing Calendar Mutation Undo Endpoint; bu-q7vx1q.18 AC4 and design.md approved response-only inverse composition.
-Scope: v1-mandatory
-
-#### Scenario: Undo an update reverse-applies the captured pre-state
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an
-  `applied` `workspace_user_update` row whose `action_result` carries the
-  pre-mutation event state
-- **THEN** an inverse `calendar_update_event` is dispatched that restores the
-  event's pre-state fields (title, start/end, timezone, location, description,
-  attendees, recurrence, calendar id, and linked people) with a freshly generated
-  `request_id`
-- **AND** an empty captured people set is dispatched as `entity_ids: []` plus
-  `clear_entity_ids: true`, so undo restores an originally-unlinked event rather
-  than preserving newly added links
-- **AND** the undo dispatch is itself recorded in `calendar_action_log` (so it is
-  idempotent and appears in the audit trail)
-- **AND** the response reports the undone `action_id`, the inverse tool invoked,
-  and the new `request_id`
-
-#### Scenario: Undo a delete recreates the event from the pre-image
-
-- **WHEN** the undone row is an `applied` `workspace_user_delete` whose
-  `action_result` carries the pre-deletion event state
-- **THEN** an inverse `calendar_create_event` is dispatched from the captured
-  pre-image with a fresh `request_id`, recreating the event and its linked people
-  on its home calendar
-
-#### Scenario: Undo a create deletes the created event
-
-- **WHEN** the undone row is an `applied` `workspace_user_create`
-- **THEN** an inverse `calendar_delete_event` is dispatched against the created
-  event id (from the row's `origin_ref`/`action_result`) with a fresh `request_id`
-
-#### Scenario: Undo of a non-applied action fails fast
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` targets a row whose
-  `action_status` is `pending`, `failed`, or `noop`
-- **THEN** the endpoint returns a fail-fast error (HTTP 409) naming the row's
-  status and stating that only an `applied` mutation can be undone
-- **AND** no inverse mutation is dispatched
-
-#### Scenario: Undo of a missing or expired pre-state fails fast with diagnostics
-
-- **WHEN** the targeted row exists and is `applied` but its `action_result` lacks
-  the captured pre-mutation state (e.g. it was logged before pre-state capture, or
-  the event no longer exists to restore against)
-- **THEN** the endpoint returns a fail-fast error (HTTP 422) whose detail names
-  the `action_id`, the `action_type`, and the reason the inverse could not be
-  reconstructed (missing/expired pre-state)
-- **AND** no inverse mutation is dispatched
-- **BECAUSE** silently guessing an inverse on a single-owner calendar could
-  materialize a wrong event or a wrong restore
-
-#### Scenario: Undo of an unknown action id returns not found
-
-- **WHEN** `{action_id}` does not match any `calendar_action_log` row **and every
-  targeted calendar schema's owner-lookup fan-out responded successfully**
-- **THEN** the endpoint returns HTTP 404 and dispatches no mutation
-
-#### Scenario: Undo owner-lookup inconclusive on a source failure returns 503
-
-- **WHEN** `{action_id}` matches no returned row but at least one targeted calendar
-  schema's owner-lookup fan-out FAILED (so the owning schema may simply have been
-  unreachable)
-- **THEN** the endpoint returns HTTP 503 (retryable) naming that one or more
-  calendar sources were unavailable, and dispatches no mutation
-- **BECAUSE** a transient source failure MUST NOT be reported as a definitive 404
-  "this action does not exist" — that would fabricate absence from a degraded read
-
-#### Scenario: Repeated undo of the same action is rejected
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an action
-  whose inverse mutation has already been dispatched and recorded
-- **THEN** the endpoint fails fast (HTTP 409) reporting the action was already
-  undone, rather than dispatching a second inverse
-
-#### Scenario: Response undo uses the same approved self-only operation
-
-- **WHEN** an applied workspace_user_respond receipt retains its prior self status and exact unchanged post-version
-- **THEN** the existing undo endpoint dispatches one newly approved calendar_respond inverse restoring only the recorded self status
-- **AND** server-recorded needsAction is allowed only as the inverse
-- **AND** no new undo tool or attendee/event-field replacement is introduced
-
-#### Scenario: Response undo refuses stale or unearned inverses
-
-- **WHEN** the original is failed/unknown/noop, prior state is absent, ownership is ambiguous or provider version/status/source changed
-- **THEN** the endpoint dispatches no inverse and reports the honest refusal
-- **AND** no guessed retention window or read-only provider match creates an applied original
-
-#### Scenario: Concurrent response inverse retains its start fence
-
-- **WHEN** concurrent undo or replay encounters an already claimed or uncertain started inverse
-- **THEN** only its one bound approved command can own the inverse attempt
-- **AND** no repeated egress or generic exception-based claim release occurs after start
 
 ### Requirement: Calendar Workspace Single-Entry Lookup
 
@@ -1783,13 +1472,6 @@ The read MUST be fail-open and honest: a resolution-query failure SHALL NOT drop
 #### Scenario: Backward-compatible additive shape
 - **WHEN** a client that predates this change reads the workspace response
 - **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged, with entry-level `linked_people` defaulting to `[]`, and the response envelope's `people_source_available` defaulting to `true` (both optional/additive)
-
-#### Scenario: User event removes its final linked person
-- **WHEN** `POST /api/calendar/workspace/user-events` receives an `action="update"` payload with `entity_ids: []` and `clear_entity_ids: true`
-- **THEN** the dashboard API forwards both values unchanged to `calendar_update_event`
-- **AND** the calendar projection removes the event's existing people links
-- **AND** the API rejects a clear signal paired with omitted or non-empty `entity_ids`
-- **AND** a title-only update, or an empty `entity_ids` value without the explicit flag, preserves existing people links
 
 ### Requirement: Decisions Digest Endpoint
 
@@ -2512,7 +2194,7 @@ Scope: v1-mandatory
 
 ### Requirement: Approved Calendar Invitation Response Surface
 
-The dashboard API SHALL expose authenticated occurrence-only POST /api/calendar/workspace/respond and mounted Accept/Decline/Tentative controls using one typed mutation handler. A verified click MUST compose the exact canonical pending command with the existing approval decision and owning shared executor, never raw provider dispatch or a caller bypass. Pending, rejected, uncertain, noop, applied and projection-unavailable outcomes MUST remain distinct, and an undo door MUST be earned only by a guarded applied receipt.
+The dashboard API SHALL expose authenticated occurrence-only POST /api/calendar/workspace/respond and mounted Accept/Decline/Tentative controls using one typed mutation handler. A verified click MUST compose the exact canonical pending command with the existing approval decision and owning shared executor, never raw provider dispatch or a caller bypass. Pending, rejected, uncertain, noop, applied and projection-unavailable outcomes MUST remain distinct.
 
 ID: REQ-dashboard-api-069
 Source: bu-q7vx1q.18 original AC2,5,6; dashboard owner auth; module-calendar Approval-Bound Self Invitation Response; design.md
@@ -2544,10 +2226,10 @@ Scope: v1-mandatory
 
 - **WHEN** approval is pending/rejected or the provider effect is uncertain
 - **THEN** the mounted workspace keeps honest invitation/decision state and offers the matching review/error door
-- **AND** it adds no optimistic accepted badge, success receipt or enabled undo
+- **AND** it adds no optimistic accepted badge, success receipt
 - **AND** degraded projection remains visible
 - **AND** GET /api/calendar/workspace/responses/{command_id} reads the source-qualified durable receipt without approving or dispatching a command
-- **AND** inverse=true follows only the original command's retained inverse claim and verifies its reciprocal binding, including after an undo reply is lost or the invitation leaves the inbox
+- **AND** inverse=true follows only the original command's retained inverse claim and verifies its reciprocal binding, including after the invitation leaves the inbox
 - **AND** an unavailable inverse read retains the last receipt and never replays the original response or reserves a replacement inverse
 
 #### Scenario: Applied receipt is distinct from current projection
@@ -2555,7 +2237,6 @@ Scope: v1-mandatory
 - **WHEN** the own provider result verifies response while projection is unavailable or stale
 - **THEN** the API and mounted workspace show the applied receipt and projection availability separately
 - **AND** a replacement source/entry cannot receive the stale response
-- **AND** undo is offered only with valid guarded applied pre-state
 
 #### Scenario: Existing permission and radar behavior survives
 

@@ -1760,7 +1760,7 @@ async def test_dropped_known_reports_counts_and_routes_before_catch_all(app):
     from datetime import UTC, datetime, timedelta
     from uuid import uuid4
 
-    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY, KnownContactSnapshot
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY, KnownContactSnapshot
 
     pool = AsyncMock()
     pool.fetchrow.return_value = {"dropped": 3, "episodes": 2}
