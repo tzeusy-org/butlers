@@ -229,6 +229,18 @@ a model's owner-looking text can supply it. Recipient-free calls do no identity
 I/O. This reader does not prove link inertness, template pinning, a standing rule,
 actuation risk or any permission to bypass the existing exposure matrix.
 
+`PublishedAuthorities` also consumes that shared identity reader for exactly the
+native `core.notifications.notify` descriptor from the complete current fleet.
+The actual final registration, publication digest and admitted goal remain bound;
+renamed/foreign descriptors and caller-supplied resolver or owner fields cannot
+select this branch. The same locked connection reads identities before budget
+reservation and the existing exposure/approval matrix still decides the call.
+An exposed owner-directed notify parks because this reader proves no inert
+rendering. Unknown or inherited parties park; unavailable owner storage refuses.
+Ordinary transport success remains an UNKNOWN effect with no committed receipt.
+The new published-catalog/identity PostgreSQL control is authored only; software
+SQL-protocol stores do not prove role, lock or durability behavior.
+
 Software controls exercise actual Broker.call and loopback private MCP. The new
 PostgreSQL identity/retirement-lock control is authored and collected, not run
 locally. These controls do not establish owning durable receipts. Actual A2

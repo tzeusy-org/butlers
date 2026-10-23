@@ -196,3 +196,20 @@ async def test_real_broker_admission_consumes_independent_SQL_owner_evidence():
         result = await broker.call(connection.goal, token, cap.identity, args)
         assert result.status == ("parked" if explicit_unknown else "committed")
         assert identity_rows.events and connection.used == 1 and len(domains.calls) == 1
+
+
+async def test_shared_identity_binding_keeps_exact_snapshot_without_policy_exemptions():
+    from butlers.capability_broker.recipients import resolve_recipient_binding
+
+    capability, connection = notify(), Rows()
+    args = {"entity_id": str(connection.owner), "message": "controlled"}
+    connection.targets[connection.owner] = {"id": connection.owner}
+    binding = await resolve_recipient_binding(connection, capability, args)
+    expected = arguments_digest(args)
+    args["message"] = "changed after resolution"
+    assert binding.args_digest == expected and binding.args_digest != arguments_digest(args)
+    assert binding.capability == capability.identity
+    assert binding.argument_names == ("entity_id",) and binding.targets == (connection.owner,)
+    connection.is_in_transaction = lambda: False
+    with pytest.raises(BrokerRefused):
+        await resolve_recipient_binding(connection, capability, args)

@@ -455,12 +455,36 @@ async def test_real_bootstrap_roles_null_lineage_and_immutable_history(
         assert await snapshot(observer, call.action_id) == before
         with pytest.raises(GoalApprovalsUnavailable, match="owning_goal_role_unavailable"):
             await OwningGoalApprovals(owner, "home").lookup(identity(call))
-        await connection.execute("CREATE TEMP TABLE pending_actions(id uuid)")
-        try:
+        # Runtime TEMP is deliberately unavailable; a shadow attack must be
+        # prepared by the administrator before assuming the tested role.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with connection.transaction():
+                await connection.execute("CREATE TEMP TABLE pending_actions(id uuid)")
+    shadow = await asyncpg.connect(
+        urlparse(admin_url)._replace(scheme="postgresql").geturl(),
+        timeout=10,
+        command_timeout=5,
+        server_settings={"search_path": "home,public"},
+    )
+    try:
+        await shadow.execute("CREATE TEMP TABLE pending_actions(id uuid)")
+        shadow_backend = await shadow.fetchval("SELECT pg_backend_pid()")
+        async with shadow.transaction():
+            await shadow.execute("SET LOCAL ROLE butler_home_rw")
+            assert await shadow.fetchval("SELECT current_user") == "butler_home_rw"
+            assert await shadow.fetchval("SELECT pg_backend_pid()") == shadow_backend
+            assert "pg_temp_" in await shadow.fetchval(
+                "SELECT pg_my_temp_schema()::regnamespace::text"
+            )
             with pytest.raises(GoalApprovalsUnavailable, match="owning_goal_role_unavailable"):
-                await OwningGoalApprovals(connection, "home").lookup(identity(call))
-        finally:
-            await connection.execute("DROP TABLE pg_temp.pending_actions")
+                await OwningGoalApprovals(shadow, "home").lookup(identity(call))
+    finally:
+        # Closing this owned backend also removes its temporary relation.
+        try:
+            await asyncio.wait_for(shadow.close(), timeout=5)
+        except BaseException:
+            shadow.terminate()
+            raise
     assert await snapshot(observer, call.action_id) == before
 
 

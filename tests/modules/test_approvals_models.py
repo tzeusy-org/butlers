@@ -456,29 +456,22 @@ class TestApprovalsMigration:
 
         from sqlalchemy import create_engine, text
 
-        from butlers.migrations import get_chain_head, run_migrations
+        from alembic import command
+        from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
 
+        # Install the real base support tables/FKs before reproducing the
+        # historical pending shape. A version stamp alone cannot create them.
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        command.upgrade(config, "approvals@approvals_001")
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         with engine.begin() as conn:
-            # schema-standin-exempt: a deliberately pre-migration shape, stamped
-            # at an old revision so run_migrations() can be tested upgrading it.
-            conn.execute(
-                text(
-                    "CREATE TABLE pending_actions ("
-                    "id UUID PRIMARY KEY,"
-                    "tool_name TEXT NOT NULL,"
-                    "tool_args JSONB NOT NULL,"
-                    "status VARCHAR NOT NULL DEFAULT 'pending',"
-                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-                    ")"
-                )
-            )
-            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_001')"))
+            # The collapsed base includes these fields; the old pre-002
+            # contract intentionally lacks only them, not the subsystem.
+            conn.execute(text("ALTER TABLE pending_actions DROP COLUMN why, DROP COLUMN evidence"))
             conn.execute(
                 text(
                     "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
@@ -526,10 +519,13 @@ class TestApprovalsMigration:
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import get_chain_head, run_migrations
+        from alembic import command
+        from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        command.upgrade(config, "approvals@approvals_002")
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         legacy_evidence = [
@@ -538,23 +534,8 @@ class TestApprovalsMigration:
         ]
 
         with engine.begin() as conn:
-            # schema-standin-exempt: a deliberately pre-migration shape, stamped
-            # at an old revision so run_migrations() can be tested upgrading it.
-            conn.execute(
-                text(
-                    "CREATE TABLE pending_actions ("
-                    "id UUID PRIMARY KEY,"
-                    "tool_name TEXT NOT NULL,"
-                    "tool_args JSONB NOT NULL,"
-                    "status VARCHAR NOT NULL DEFAULT 'pending',"
-                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-                    "why TEXT,"
-                    "evidence JSONB NOT NULL DEFAULT '[]'::jsonb"
-                    ")"
-                )
-            )
-            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_002')"))
+            # Keep the actual 001/002 support schema while seeding the
+            # genuine legacy evidence that 005 must convert before checks.
             conn.execute(
                 text(
                     "INSERT INTO pending_actions "

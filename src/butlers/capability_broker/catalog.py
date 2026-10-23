@@ -12,6 +12,7 @@ from butlers.core.tool_presentation_inventory import STORE_WRITERS
 
 from .contracts import BrokerRefused, Capability, PolicyEvidence, Principal, Reason
 from .domains import Catalog
+from .recipients import resolve_recipient_binding
 
 
 class PublishedAuthorities:
@@ -21,9 +22,10 @@ class PublishedAuthorities:
     registration generation or the fleet's process identities. Every listing
     and call rereads the current complete fleet; no cached fallback is kept.
 
-    This supplies no owner selection, recipient, standing-rule or risk facts.
-    Only reads declaring no parties need none of those facts. All other policy
-    queries refuse until their actual authority producers are integrated.
+    No-party reads need no recipient evidence. Native core.notify declarations
+    additionally consume the existing same-transaction identity resolver. This
+    supplies no selection, standing-rule, rendering, risk or effect-commit facts;
+    other policy queries still refuse without their actual producers.
     """
 
     async def catalog(self, connection, principal: Principal) -> Catalog:
@@ -47,10 +49,19 @@ class PublishedAuthorities:
         raise BrokerRefused(Reason.SELECTION)
 
     async def policy(self, connection, principal, capability, args) -> PolicyEvidence:
+        if not connection.is_in_transaction():
+            raise BrokerRefused(Reason.POLICY)
         parties = capability.recipient_params
         if (
-            not connection.is_in_transaction()
-            or capability.effect_class != "read"
+            capability.recipient_resolver == "core_notify"
+            and capability.name == "notify"
+            and capability.effect_class == "communicate"
+            and set(parties.argument_names) == {"recipient", "entity_id", "request_context"}
+        ):
+            binding = await resolve_recipient_binding(connection, capability, args)
+            return PolicyEvidence("none", recipient_binding=binding)
+        if (
+            capability.effect_class != "read"
             or parties.argument_names
             or parties.undeterminable
             or parties.default_owner_condition

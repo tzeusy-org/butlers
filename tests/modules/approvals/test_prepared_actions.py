@@ -57,9 +57,35 @@ async def pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
-    await db_pool.execute("TRUNCATE approval_events, pending_actions CASCADE")
-    yield db_pool
-    await db_pool.close()
+    try:
+        # TRUNCATE follows the pending/rule FK graph into immutable goal evidence,
+        # even when empty. Preserve all goal rows and append-only event history.
+        async with db_pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "DELETE FROM pending_actions p WHERE p.goal_origin = 'legacy' "
+                "AND NOT EXISTS (SELECT 1 FROM approval_goal_effects g "
+                "WHERE g.action_id = p.id OR g.pending_action_id = p.id) "
+                "AND NOT EXISTS (SELECT 1 FROM approval_goal_receipts r "
+                "WHERE r.action_id = p.id OR r.pending_action_id = p.id)"
+            )
+            # 015/016 delete delivery children via their presentation lifetime;
+            # direct attempt deletion would violate the immutable attempt guard.
+            await connection.execute(
+                "DELETE FROM approval_rules r WHERE NOT EXISTS ("
+                "SELECT 1 FROM pending_actions p "
+                "WHERE p.approval_rule_id = r.id OR p.id = r.created_from) "
+                "AND NOT EXISTS (SELECT 1 FROM approval_goal_effects g "
+                "WHERE g.action_id = r.created_from) "
+                "AND NOT EXISTS (SELECT 1 FROM approval_goal_receipts g "
+                "WHERE g.action_id = r.created_from)"
+            )
+        # Each case starts with the governed default-OFF admission state.
+        await db_pool.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled = false WHERE singleton"
+        )
+        yield db_pool
+    finally:
+        await db_pool.close()
 
 
 def _prepared_kwargs(**overrides: object) -> dict:
