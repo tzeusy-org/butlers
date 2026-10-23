@@ -1,4 +1,4 @@
-# Spec: REQ-module-calendar-029, REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-module-calendar-029, REQ-dashboard-api-069
 """Owning migrated approval/command transactions with controlled provider HTTP.
 
 This test uses the production core/approvals chains and runtime role on every

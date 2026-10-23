@@ -42,7 +42,7 @@ function userEventResponse(result: Record<string, unknown>, conflicts: unknown[]
   };
 }
 
-describe("CalendarWorkspacePage quick-add (the only provider-event write)", () => {
+describe("CalendarWorkspacePage quick-add (confirmed provider-event creation)", () => {
   const { renderPage } = installCalendarPageHarness();
 
   async function parseAndConfirm() {

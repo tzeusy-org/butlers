@@ -15,6 +15,7 @@ from butlers.modules.calendar import CalendarModule
 
 pytestmark = pytest.mark.unit
 
+# Includes provider writes retained for butlers/chat and approval-gated invitation answers.
 EXPECTED_CALENDAR_TOOLS = frozenset(
     {
         "calendar_add_attendees",
@@ -30,6 +31,8 @@ EXPECTED_CALENDAR_TOOLS = frozenset(
         "calendar_list_events",
         "calendar_propose_event",
         "calendar_remove_attendees",
+        "calendar_respond",
+        "calendar_response_fence_status",
         "calendar_set_primary",
         "calendar_sync_status",
         "calendar_toggle_butler_event",
@@ -42,15 +45,6 @@ EXPECTED_CALENDAR_TOOLS = frozenset(
     }
 )
 
-# The write tools the dashboard no longer drives itself but butlers and chat still do.
-WRITE_TOOLS = frozenset(
-    {
-        "calendar_create_event",
-        "calendar_update_event",
-        "calendar_delete_event",
-    }
-)
-
 
 class _StubMCP:
     """Minimal MCP stub that captures registered tools by function name."""
@@ -58,7 +52,7 @@ class _StubMCP:
     def __init__(self) -> None:
         self.tools: dict[str, object] = {}
 
-    def tool(self):
+    def tool(self, *args, **kwargs):
         def decorator(func):
             self.tools[func.__name__] = func
             return func
@@ -71,16 +65,12 @@ async def _registered_tools() -> set[str]:
     mod = CalendarModule()
     await mod.register_tools(
         mcp=mcp,
-        config={"provider": "google", "calendar_id": "primary"},
+        config={"provider": "google", "calendar_id": "primary", "response_enabled": True},
         db=None,
-        butler_name="test-butler",
+        butler_name="messenger",
     )
     return set(mcp.tools)
 
 
 async def test_calendar_module_registers_the_full_tool_surface():
     assert await _registered_tools() == EXPECTED_CALENDAR_TOOLS
-
-
-async def test_calendar_write_tools_stay_registered():
-    assert WRITE_TOOLS <= await _registered_tools()

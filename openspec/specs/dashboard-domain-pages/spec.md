@@ -281,7 +281,7 @@ The page MUST contain:
 - A main content area rendering the appropriate view mode.
 - In user view, a natural-language quick-add bar that parses a phrase into an editable draft and creates a provider event only after the user confirms, through `POST /api/calendar/workspace/user-events` with `action: "create"` and a fresh `request_id`.
 
-The workspace is an operator view (owner decision bu-kf3n4i = A). The page MUST NOT offer Google-event edit or delete dialogs, drag or resize of events, Google-series recurrence-scope editing, a free-slot ("Find time") search, duplicate review or dedup-rule controls, `.ics` import, export or subscribe, or undo of a workspace mutation. Butlers and chat keep those calendar writes through the calendar MCP tools, which this requirement does not touch.
+The workspace is an operator view (owner decision bu-kf3n4i = A). The page MUST NOT offer Google-event edit or delete dialogs, drag or resize of events, Google-series recurrence-scope editing, a free-slot ("Find time") search, duplicate review or dedup-rule controls, `.ics` import, export or subscribe, or undo of a workspace mutation. Butlers and chat keep their Google Calendar writes (event create, update and delete, instance edits, attendees and proposals) through the calendar MCP tools, which this requirement does not touch.
 
 #### Scenario: View/range state survives page reload
 
@@ -351,7 +351,7 @@ The butler event dialog MUST support create and edit modes, determined by the pr
 
 - **WHEN** the user views a provider calendar event in user view
 - **THEN** no edit, delete or drag affordance MUST be offered for it
-- **AND** the only user-view write is the confirmed quick-add create
+- **AND** the only direct provider-event create, edit or delete control is the confirmed quick-add create; approval-gated invitation answers, proposal approve/decline, primary-calendar selection and source controls stay available
 
 ---
 

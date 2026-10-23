@@ -1,6 +1,6 @@
 /**
- * Confirm step of the natural-language quick-add bar: the only provider-event
- * write the dashboard still makes. It sends one `create` through
+ * Confirm step of the natural-language quick-add bar: the dashboard's
+ * retained provider-event create action. It sends one `create` through
  * `POST /api/calendar/workspace/user-events` with a fresh `request_id`.
  */
 

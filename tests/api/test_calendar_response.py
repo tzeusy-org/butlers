@@ -1,4 +1,4 @@
-# Spec: REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-dashboard-api-069
 """Authenticated response admission and exact same-owner decision composition."""
 
 from __future__ import annotations
@@ -266,8 +266,8 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
 
 
 async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
-    # REQ-dashboard-api-069, REQ-dashboard-api-070: recovery is a durable read,
-    # including when the undo reply was lost after committing its reservation.
+    # REQ-dashboard-api-069: recovery is a durable read,
+    # including when an inverse claim was already committed.
     original_id, inverse_id = uuid.uuid4(), uuid.uuid4()
     rows = {}
     pending = {}

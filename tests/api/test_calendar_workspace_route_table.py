@@ -64,13 +64,6 @@ def _calendar_operations() -> frozenset[tuple[str, str]]:
     )
 
 
-def test_removed_calendar_routes_are_absent_from_the_route_table():
-    assert REMOVED.isdisjoint(_calendar_operations())
-
-
-def test_kept_calendar_routes_are_present_in_the_route_table():
-    assert KEPT <= _calendar_operations()
-
-
 def test_calendar_route_table_has_no_unexpected_routes():
+    assert REMOVED.isdisjoint(KEPT)
     assert _calendar_operations() == KEPT
