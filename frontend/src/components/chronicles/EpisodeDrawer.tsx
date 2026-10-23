@@ -30,7 +30,7 @@ import { DraftNotice } from "@/components/ui/draft-notice";
 //     the correction form omits the Title field for sensitive episodes for
 //     the same reason (nothing to compare the correction against).
 //   - Restricted episodes: hidden at the server layer, never shown here.
-//   - See bu-6c5i6 privacy contract in roster/chronicler/AGENTS.md.
+//   - See bu-6c5i6 privacy contract in docs/butlers/chronicler.md (Frontend contract).
 // ---------------------------------------------------------------------------
 
 import { useState } from "react"

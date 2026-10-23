@@ -16,7 +16,7 @@
 // tooltip (e.g. "Travel: 38 min"). The title and payload are masked.
 // Restricted episodes (canonical_privacy = "restricted") remain fully
 // hidden at the server layer and never reach the frontend.
-// See bu-6c5i6 privacy contract in roster/chronicler/AGENTS.md.
+// See bu-6c5i6 privacy contract in docs/butlers/chronicler.md (Frontend contract).
 //
 // A hover tooltip (Radix UI primitive) surfaces: title, source, precision,
 // and duration. Drilldown is via clicking the bar (opens EpisodeDrawer);

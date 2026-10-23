@@ -1022,7 +1022,7 @@ async def list_source_state(
 #
 # This endpoint is intended for engineers diagnosing scheduler cadence,
 # switchboard tick rate, and QA canary health — NOT for user-facing UIs.
-# See roster/chronicler/AGENTS.md "Ops sessions escape hatch" for usage.
+# See docs/operations/chronicler-projection-recovery.md "Ops sessions escape hatch" for usage.
 
 
 @router.get("/ops/sessions", response_model=PaginatedResponse[OpsSessionRow])

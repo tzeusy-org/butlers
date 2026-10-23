@@ -11,6 +11,8 @@
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
 - [Data Retention](data-retention.md) — per-table retention decisions, opt-in pruners
+- [Chronicler Migration Verification](chronicler-migration-verification.md) — named migration outcomes and historical backfill checks
+- [Chronicler Projection Recovery](chronicler-projection-recovery.md) — operational-session inspection and watermark reset
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
