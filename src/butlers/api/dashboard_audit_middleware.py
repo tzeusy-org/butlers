@@ -169,7 +169,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
                     parsed_body = {"__value__": parsed}
                     if body_truncated:
                         parsed_body["__body_truncated__"] = True
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 parsed_body = {"__raw__": raw_body.decode(errors="replace")}
                 if body_truncated:
                     parsed_body["__body_truncated__"] = True

@@ -578,6 +578,7 @@ async def test_choose_validation_and_audit_never_expose_body(callback_privacy, c
         ('{"token":' + json.dumps(token), 422),
         (json.dumps(token), 422),
         (json.dumps([token]), 422),
+        (b'"\xff"', 404),
         ('{"token":' + json.dumps(token) + ',"option_index":0' + " " * 17000 + "}", 200),
         ("{" + " " * 16370 + '"token":' + json.dumps(token) + ',"option_index":0}', 200),
         ("{" + " " * 16370 + '"token":' + json.dumps(token), 422),
