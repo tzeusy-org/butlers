@@ -575,6 +575,11 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        cli_auth_relay = None
+        if self.config.name == "switchboard" and self._control_profile is not None:
+            from butlers.session_host.service_auth import configured_control_relay
+
+            cli_auth_relay = configured_control_relay(authority=self._credential_store)
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -584,6 +589,7 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            cli_auth_relay=cli_auth_relay,
         )
         config = uvicorn.Config(
             app,
@@ -715,6 +721,7 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        cli_auth_relay: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -811,7 +818,8 @@ class ButlerDaemon:
             butler_name=butler_name,
             approval_push_runtime=approval_push_runtime,
         )
-        return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        app = _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        return cli_auth_relay.wrap(app) if cli_auth_relay is not None else app
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.

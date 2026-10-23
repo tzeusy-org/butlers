@@ -19,6 +19,7 @@ spec:
         {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 8 }}
     spec:
       initContainers:
+        {{- include "butlers.sessionAuthInit" (dict "root" . "role" "dashboard") | nindent 8 }}
         - name: migrations
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -35,6 +36,7 @@ spec:
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
+            {{- include "butlers.sessionAuthEnv" . | nindent 12 }}
             - {name: BUTLERS_HOST, value: butlers-up}
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
@@ -87,6 +89,7 @@ spec:
             appArmorProfile: {type: Unconfined}
             {{- end }}
           volumeMounts:
+            {{- include "butlers.sessionAuthMount" . | nindent 12 }}
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             - {name: backups, mountPath: /backups, readOnly: true}
@@ -97,6 +100,7 @@ spec:
               subPath: runtime_probe_control_signing_key
               readOnly: true
       volumes:
+        {{- include "butlers.sessionAuthVolumes" (dict "root" . "role" "dashboard") | nindent 8 }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}

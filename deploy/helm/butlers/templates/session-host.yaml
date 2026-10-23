@@ -1,0 +1,229 @@
+{{- if .Values.sessionHost.enabled }}
+{{- $h := .Values.sessionHost }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $h.image) }}
+{{- fail "sessionHost.image must be an immutable image digest" }}
+{{- end }}
+{{- $tls := required "sessionHost.tlsSecretName requires provisioned host service identity" $h.tlsSecretName }}
+{{- $proofs := required "sessionHost.proofsConfigMap requires reviewed exact-image evidence" $h.proofsConfigMap }}
+{{- $ip := required "sessionHost.gatewayServiceIP must be allocated explicitly" $h.gatewayServiceIP }}
+{{- if not $h.providerHosts }}{{ fail "sessionHost.providerHosts must not be empty" }}{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-session-config
+data:
+  host.json: |
+    {"listen_host":"0.0.0.0","binary":"/usr/local/bin/codex","model_function_binary":"/usr/local/bin/opencode","broker_url":"http://broker.session.internal:41199/mcp","proof_index":"/run/session-proofs/index.json","tls":{"ca":"/run/session-tls/ca.crt","certificate":"/run/session-tls/tls.crt","private_key":"/run/session-tls/tls.key"}{{ if $h.cliAuthEnabled }},"cli_auth_enabled":true,"credential_volume":"/run/session-credentials"{{ end }}}
+  gateway.json: |
+    {"internal_address":"0.0.0.0","control_address":"0.0.0.0","dns_address":{{ $ip | toJson }},"providers":{{ $h.providerHosts | toJson }},"broker_host":"butlers-control","host_target":"session-host"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-host
+spec:
+  replicas: {{ if .Values.suspend }}0{{ else }}1{{ end }}
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: [{{ $ip | quote }}]
+        options: [{name: ndots, value: "1"}]
+      initContainers:
+        {{- if $h.cliAuthEnabled }}
+        - name: credential-volume
+          image: {{ $h.image | quote }}
+          command: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, prepare-auth-volume, --enable, --config, /run/session-credentials]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: credentials, mountPath: /run/session-credentials}
+        {{- end }}
+        - name: proof-snapshot
+          image: {{ $h.image | quote }}
+          command: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, stage-proofs, --enable, --config, /proof-source]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: proof-source, mountPath: /proof-source, readOnly: true}
+            - {name: proofs, mountPath: /proofs}
+      containers:
+        - name: session-host
+          image: {{ $h.image | quote }}
+          command: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, host, --enable, --config, /etc/session-host/host.json]
+          ports: [{name: control, containerPort: 41299}]
+          securityContext:
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, KILL]
+            appArmorProfile: {type: Unconfined}
+            # Exact seccomp profile installation is an explicit node prerequisite.
+            seccompProfile: {type: Localhost, localhostProfile: butlers/session-host.json}
+          resources:
+            {{- toYaml $h.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/session-host, readOnly: true}
+            - {name: proofs, mountPath: /run/session-proofs, readOnly: true}
+            - {name: tls, mountPath: /run/session-tls, readOnly: true}
+            # Actual host factory uses /tmp/session-host-stage, not /run.
+            - {name: stage, mountPath: /tmp}
+            {{- if $h.cliAuthEnabled }}
+            - {name: credentials, mountPath: /run/session-credentials}
+            {{- end }}
+      volumes:
+        {{- if $h.cliAuthEnabled }}
+        - name: credentials
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        {{- end }}
+        - name: config
+          configMap: {name: {{ .Release.Name }}-session-config}
+        - name: proof-source
+          configMap: {name: {{ $proofs }}, defaultMode: 292}
+        - name: proofs
+          emptyDir: {medium: Memory, sizeLimit: 8Mi}
+        - name: tls
+          secret: {secretName: {{ $tls }}, defaultMode: 256}
+        - name: stage
+          emptyDir: {medium: Memory, sizeLimit: 256Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-egress
+spec:
+  replicas: {{ if .Values.suspend }}0{{ else }}1{{ end }}
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      containers:
+        - name: session-egress
+          image: {{ $h.image | quote }}
+          command: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host, gateway, --enable, --config, /etc/session-host/gateway.json]
+          ports:
+            - {name: model, containerPort: 443}
+            - {name: broker, containerPort: 41199}
+            - {name: relay, containerPort: 41300}
+            - {name: dns, containerPort: 53, protocol: UDP}
+          securityContext:
+            runAsUser: 65532
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}
+            seccompProfile: {type: RuntimeDefault}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 128Mi}}
+          volumeMounts:
+            - {name: config, mountPath: /etc/session-host, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ .Release.Name }}-session-config}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: session-host}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 4 }}
+  ports: [{name: control, port: 41299, targetPort: control}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: session-egress}
+spec:
+  clusterIP: {{ $ip }}
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 4 }}
+  ports:
+    - {name: model, port: 443, targetPort: model}
+    - {name: broker, port: 41199, targetPort: broker}
+    - {name: relay, port: 41300, targetPort: relay}
+    - {name: dns, port: 53, targetPort: dns, protocol: UDP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ .Release.Name }}-session-host}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 14 }}
+      ports: [{protocol: TCP, port: 41299}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 14 }}
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 41199}, {protocol: UDP, port: 53}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ .Release.Name }}-session-egress}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "session-egress") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 14 }}
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 41199}, {protocol: UDP, port: 53}]
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 14 }}
+      ports: [{protocol: TCP, port: 41300}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 14 }}
+      ports: [{protocol: TCP, port: 41299}]
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 14 }}
+      ports: [{protocol: TCP, port: 41199}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4]
+      ports: [{protocol: TCP, port: 443}]
+{{- end }}

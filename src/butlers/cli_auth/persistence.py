@@ -277,6 +277,12 @@ async def capture_device_auth_authority_baseline(
     key = _db_key(provider)
     if provider.name == "codex":
         return await _require_codex_authority(codex_authority).load_codex_cli_auth()
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    if configured_dashboard_sandbox() is not None:
+        if provider.name != "opencode-openai":
+            raise ValueError("Unsupported host device-auth provider")
+        return (await store.load_opencode_cli_auths())[provider.name]
     if store.shared_pool is not None:
         return await store.load_shared(key)
     return await store.load(key)
@@ -402,7 +408,10 @@ async def persist_validated_staged_device_auth_bytes(
     if projected is None:
         logger.warning("CLI auth persist: refusing invalid staged device-auth document")
         return False
-    if provider.token_path is None:
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if provider.token_path is None and remote is None:
         # A successful authority CAS without a usable runtime projection would
         # leave the just-completed device flow unavailable until restart.
         logger.warning("CLI auth persist: provider has no canonical runtime projection path")
@@ -426,6 +435,23 @@ async def persist_validated_staged_device_auth_bytes(
     if not stored:
         logger.warning("CLI auth persist: device-auth authority changed before commit")
         return False
+
+    if remote is not None:
+        if provider.name not in {"codex", "opencode-openai"}:
+            return False  # No implicit local volume for an unmapped provider.
+        try:
+            # Keep the established Codex ABI; the new OpenCode selector is
+            # likewise a closed request, never a dashboard-provided document.
+            if provider.name == "codex":
+                await remote.sync_codex()
+            else:
+                await remote.sync_provider(provider.name)
+        except Exception:
+            # The DB commit remains factual, but this flow has not earned a
+            # synchronized runtime volume. Never restore a local-file path.
+            logger.warning("CLI auth persist: session-host projection unavailable")
+            return False
+        return True
 
     if not _reconcile_device_auth_runtime_file(provider, projected):
         return False
@@ -542,6 +568,23 @@ async def restore_tokens(
     """
     results: dict[str, bool] = {}
 
+    from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+    remote = configured_dashboard_sandbox()
+    if remote is not None:
+        # Select the remote path before any dashboard-local authority read,
+        # token-path test, mkdir or write. Control re-reads its own DB authority.
+        for provider in PROVIDERS.values():
+            if provider.name not in {"codex", "opencode-openai", "opencode-go"}:
+                results[provider.name] = False
+                continue
+            try:
+                await remote.sync_provider(provider.name)
+                results[provider.name] = True
+            except Exception:
+                results[provider.name] = False
+        return results
+
     for provider in PROVIDERS.values():
         key = _db_key(provider)
         try:
@@ -613,6 +656,10 @@ def _record_codex_baseline() -> None:
     """Record the codex ``auth.json`` baseline after a restore so the first
     post-startup invocation does not falsely detect a rotation. Best-effort."""
     try:
+        from butlers.session_host.service_auth import configured_dashboard_sandbox
+
+        if configured_dashboard_sandbox() is not None:
+            return
         from butlers.core.runtimes._codex_auth_sync import record_auth_baseline
 
         codex_provider = PROVIDERS.get("codex")

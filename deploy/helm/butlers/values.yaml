@@ -318,3 +318,20 @@ beadsExport:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 512Mi}
+
+# Dark source only. Enabling requires separately provisioned TLS/evidence and
+# exact-image/network conformance. No key, certificate or proof is generated.
+sessionHost:
+  enabled: false
+  cliAuthEnabled: false  # requires separately provisioned control/dashboard transport identities
+  cliAuthTransportEnabled: false  # explicit control/dashboard consumer wiring, also requires host CLI auth
+  controlAuthSecretName: ""  # control service server + distinct host-client transport identity/config
+  dashboardAuthSecretName: ""  # dashboard-client transport identity/config only
+  image: ""  # mandatory immutable repository@sha256:<64 lowercase hex>
+  tlsSecretName: ""  # host cert, key and runner CA only; never broker signing keys
+  proofsConfigMap: ""  # immutable root-owned 0444 reviewed proof files
+  gatewayServiceIP: ""  # explicit allocated cluster IP used as the ONLY DNS server
+  providerHosts: [api.openai.com]
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 2Gi}

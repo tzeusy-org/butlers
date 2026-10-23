@@ -1,0 +1,11 @@
+# Dedicated session-host image over the exact reviewed Butlers application image.
+# Build with APP_IMAGE=repository@sha256:<digest>. No dependency/version install,
+# credential creation, proof generation or runtime activation occurs here.
+ARG APP_IMAGE
+FROM ${APP_IMAGE}
+ARG APP_IMAGE
+RUN case "$APP_IMAGE" in *@sha256:*) ;; *) echo 'immutable APP_IMAGE required' >&2; exit 1;; esac
+USER 0:0
+ENTRYPOINT ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "/app/.venv/bin/python", "-m", "butlers.session_host"]
+# No implicit enable/config: the image performs no IO and exits by default.
+CMD ["host"]

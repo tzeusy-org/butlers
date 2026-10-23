@@ -22,6 +22,7 @@ spec:
         sysctls:
           - {name: net.ipv4.ip_local_reserved_ports, value: "41100,41199"}
       initContainers:
+        {{- include "butlers.sessionAuthInit" (dict "root" . "role" "control") | nindent 8 }}
         {{- include "butlers.waitFor" (dict "root" . "name" "dashboard-api" "url" "http://dashboard-api:41200/health") | nindent 8 }}
         {{- include "butlers.oauthGate" . | nindent 8 }}
       containers:
@@ -34,6 +35,7 @@ spec:
             - {name: service, containerPort: 41100}
             - {name: session, containerPort: 41199}
           env:
+            {{- include "butlers.sessionAuthEnv" . | nindent 12 }}
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
             - {name: BUTLERS_HOST, value: butlers-up}
@@ -59,6 +61,7 @@ spec:
             # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
             appArmorProfile: {type: Unconfined}
           volumeMounts:
+            {{- include "butlers.sessionAuthMount" . | nindent 12 }}
             - {name: logs, mountPath: /app/logs}
             {{- range list "claude" "codex" "opencode" "gemini" }}
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
@@ -66,6 +69,7 @@ spec:
             {{- include "butlers.verifiersMount" . | nindent 12 }}
             {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
       volumes:
+        {{- include "butlers.sessionAuthVolumes" (dict "root" . "role" "control") | nindent 8 }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}

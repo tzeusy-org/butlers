@@ -26,7 +26,7 @@ spec:
 {{- if .Values.butlersControl.enabled }}
 ---
 # Service traffic stays namespace-local. Session reachability is a distinct
-# identity boundary: only the operator health pod and future session host.
+# identity boundary: only the operator health pod and fixed session gateway.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -47,7 +47,7 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: session-host
+              app.kubernetes.io/component: session-egress
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}

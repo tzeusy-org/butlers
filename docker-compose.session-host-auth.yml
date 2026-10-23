@@ -1,0 +1,49 @@
+# Explicit optional overlay AFTER docker-compose.session-host.yml. No material
+# generation or activation by the ordinary launcher. Inputs must be provisioned
+# purpose-specific transport files; model credentials remain selected in DB.
+services:
+  session-host:
+    volumes:
+      - ./deploy/session-host/host-auth.json:/etc/session-host/host.json:ro
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+      - /run/session-credentials:rw,nosuid,nodev,noexec,size=1m,mode=0700
+  session-control-auth-init:
+    profiles: [session-host-auth]
+    image: ${SESSION_HOST_IMAGE:?set exact reviewed application image digest}
+    entrypoint: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host.material, control, --source, /auth-source, --destination, /auth-output]
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    network_mode: none
+    volumes:
+      - ${SESSION_CONTROL_AUTH_INPUT:?install control transport files}:/auth-source:ro
+      - session-control-auth:/auth-output
+  session-dashboard-auth-init:
+    profiles: [session-host-auth]
+    image: ${SESSION_HOST_IMAGE:?set exact reviewed application image digest}
+    entrypoint: [/usr/bin/env, -i, PATH=/usr/local/bin:/usr/bin:/bin, HOME=/tmp, /app/.venv/bin/python, -m, butlers.session_host.material, dashboard, --source, /auth-source, --destination, /auth-output]
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    network_mode: none
+    volumes:
+      - ${SESSION_DASHBOARD_AUTH_INPUT:?install dashboard transport files}:/auth-source:ro
+      - session-dashboard-auth:/auth-output
+  butlers-control:
+    environment:
+      BUTLERS_SESSION_HOST_CLI_AUTH: "1"
+    depends_on:
+      session-control-auth-init: {condition: service_completed_successfully}
+    volumes:
+      - session-control-auth:/etc/session-host:ro
+  dashboard-api:
+    environment:
+      BUTLERS_SESSION_HOST_CLI_AUTH: "1"
+    depends_on:
+      session-dashboard-auth-init: {condition: service_completed_successfully}
+    volumes:
+      - session-dashboard-auth:/etc/session-host:ro
+volumes:
+  session-control-auth: {}
+  session-dashboard-auth: {}

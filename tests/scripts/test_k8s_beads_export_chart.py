@@ -229,7 +229,7 @@ def test_tracker_egress_policy_covers_every_pod_but_the_bridge() -> None:
             {
                 "key": "app.kubernetes.io/component",
                 "operator": "NotIn",
-                "values": ["beads-export"],
+                "values": ["beads-export", "session-host", "session-egress"],
             }
         ]
     }

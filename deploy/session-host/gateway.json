@@ -1,0 +1,8 @@
+{
+  "internal_address": "172.30.253.2",
+  "control_address": "172.30.254.2",
+  "dns_address": "172.30.253.2",
+  "providers": ["api.openai.com"],
+  "broker_host": "butlers-control-session",
+  "host_target": "172.30.253.3"
+}

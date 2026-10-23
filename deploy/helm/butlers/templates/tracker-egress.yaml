@@ -22,7 +22,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: NotIn
-        values: [beads-export]
+        values: [beads-export, session-host, session-egress]
   policyTypes: [Egress]
   egress:
     - to:

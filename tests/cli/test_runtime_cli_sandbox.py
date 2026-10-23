@@ -3679,3 +3679,174 @@ def test_runtime_cli_sandbox_init_closes_inherited_descriptors_before_provider_e
     assert result.returncode == 0, result.stderr
     assert result.stdout == "BUTLERS_RUNTIME_CLI_SANDBOX_READY\nprovider-ran"
     assert "INHERITED-FD-SENTINEL" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("death_proven", [True, False])
+async def test_session_command_never_releases_output_before_domain_death(death_proven):
+    """D3: use the shared launch owner and require containment before result release.
+
+    Controlled handles prove software ordering; actual user namespaces, pidfds
+    and network isolation remain the exact-image/dev harness obligations.
+    """
+    from butlers.cli_auth.sandbox import ReadonlySandboxAuthority, SandboxUnavailableError
+    from butlers.cli_auth.sandbox_platform import (
+        BubblewrapDashboardCLIAuthSandbox,
+        ReadonlySandboxInvocation,
+    )
+
+    events = []
+
+    class Handle:
+        def __init__(self):
+            from types import SimpleNamespace
+
+            self.process = SimpleNamespace(stdout=asyncio.StreamReader(), returncode=0)
+            self.process.stdout.feed_data(b"model output")
+            self.process.stdout.feed_eof()
+
+        async def complete_readonly(self):
+            events.append("death-proof")
+            return death_proven
+
+        async def terminate(self):
+            events.append("terminate")
+
+    sandbox = BubblewrapDashboardCLIAuthSandbox(
+        exact_image_preflight=lambda: None,
+        shim_input_resolver=lambda _path: (),
+        readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
+            command=("/usr/local/bin/codex", *command[1:]), readonly_inputs=()
+        ),
+    )
+    launch = AsyncMock(return_value=Handle())
+    sandbox._launch_invocation = launch
+    arguments = dict(
+        command=("codex", "exec", "--json"),
+        expected_executable=Path("/usr/local/bin/codex"),
+        authorities=(
+            ReadonlySandboxAuthority(Path(".codex/auth.json"), b"fixture-model-authority"),
+            ReadonlySandboxAuthority(Path(".codex/config.toml"), b"fixture-broker-only"),
+        ),
+        timeout_s=1,
+    )
+    if death_proven:
+        result = await sandbox.run_staged_command(PROVIDERS["codex"], **arguments)
+        assert result.output == b"model output"
+        assert events == ["death-proof"]
+    else:
+        with pytest.raises(SandboxUnavailableError):
+            await sandbox.run_staged_command(PROVIDERS["codex"], **arguments)
+        assert events == ["death-proof", "terminate"]
+    assert launch.await_count == 1
+    assert launch.call_args.kwargs["authorities"] == arguments["authorities"]
+    assert launch.call_args.kwargs["command"][0] == "/usr/local/bin/codex"
+
+    launch.reset_mock()
+    with pytest.raises(SandboxUnavailableError):
+        await sandbox.run_staged_command(
+            PROVIDERS["codex"], **{**arguments, "expected_executable": Path("/other/codex")}
+        )
+    launch.assert_not_awaited()
+
+
+async def test_session_command_repeated_cancellation_joins_same_containment_owner():
+    """A second caller cancel cannot abandon an in-progress namespace cleanup."""
+    from butlers.cli_auth.sandbox_platform import (
+        BubblewrapDashboardCLIAuthSandbox,
+        ReadonlySandboxInvocation,
+    )
+
+    reading = asyncio.Event()
+    closing = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    calls = []
+
+    class Reader(asyncio.StreamReader):
+        async def read(self, size):
+            reading.set()
+            return await super().read(size)
+
+    class Handle:
+        process = MagicMock(stdout=Reader(), returncode=None)
+
+        async def terminate(self):
+            calls.append("terminate")
+            closing.set()
+            await release_cleanup.wait()
+
+    sandbox = BubblewrapDashboardCLIAuthSandbox(
+        exact_image_preflight=lambda: None,
+        shim_input_resolver=lambda _path: (),
+        readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
+            command=("/usr/local/bin/codex", *command[1:]), readonly_inputs=()
+        ),
+    )
+    sandbox._launch_invocation = AsyncMock(return_value=Handle())
+    task = asyncio.create_task(
+        sandbox.run_staged_command(
+            PROVIDERS["codex"],
+            command=("codex", "exec"),
+            expected_executable=Path("/usr/local/bin/codex"),
+            authorities=(),
+            timeout_s=1,
+        )
+    )
+    try:
+        await asyncio.wait_for(reading.wait(), 1)
+        task.cancel()
+        await asyncio.wait_for(closing.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and calls == ["terminate"]
+    finally:
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+    assert not sandbox._session_workers
+
+
+async def test_session_staging_failure_removes_partial_files_before_identity_reuse(
+    tmp_path, monkeypatch
+):
+    """Partial per-launch authority must never start a process or survive cleanup."""
+    from butlers.cli_auth import sandbox_platform as platform
+    from butlers.cli_auth.sandbox import ReadonlySandboxAuthority, SandboxUnavailableError
+
+    home = tmp_path / "one-invocation"
+    home.mkdir(mode=0o700)
+    root_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    identity = platform.SandboxIdentity(uid=61000, gid=61000)
+    identities = MagicMock(acquire=AsyncMock(return_value=identity), release=AsyncMock())
+    original_stage = platform._stage_readonly_authority
+    monkeypatch.setattr(os, "fchown", lambda *_args: None)
+    writes = []
+
+    def stage(stage_home, leased, authority):
+        writes.append(str(authority.relative_path))
+        if len(writes) == 2:
+            raise OSError("controlled staging failure")
+        original_stage(stage_home, leased, authority)
+
+    monkeypatch.setattr(platform, "_stage_readonly_authority", stage)
+    spawn = AsyncMock()
+    sandbox = platform.BubblewrapDashboardCLIAuthSandbox(
+        identity_pool=identities,
+        stage_factory=lambda _: platform.SandboxStage(home, root_fd),
+        spawn=spawn,
+    )
+    with pytest.raises(SandboxUnavailableError):
+        await sandbox._launch_invocation(
+            command=("/usr/bin/true",),
+            readonly_inputs=(),
+            shim_readonly_inputs=(),
+            relative_output_path=None,
+            authority=None,
+            authorities=(
+                ReadonlySandboxAuthority(Path(".codex/auth.json"), b"fixture-credential"),
+                ReadonlySandboxAuthority(Path(".codex/config.toml"), b"fixture-config"),
+            ),
+        )
+    assert writes == [".codex/auth.json", ".codex/config.toml"]
+    spawn.assert_not_awaited()
+    assert not home.exists()
+    identities.release.assert_awaited_once_with(identity)
