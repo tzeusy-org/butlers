@@ -36,6 +36,30 @@ trusted source/deployment operators and does not grant a malicious host a
 security boundary. Runtime-probe public verification and Dashboard signing
 remain separate contracts; only the probe's network destination moves.
 
+The existing source guard in `tests/daemon/test_control_stage.py` scans every
+tracked Python file under `src/` without importing it, together with tracked
+Helm `.yaml`, `.yml` and `.tpl` files. It follows lexical constant assignments,
+import aliases, simple concatenation and labelled paths into value reads or
+opaque calls. Positional and keyword-only parameter defaults retain known names
+from their defining scope, including aliases and shadowed parameter names. Unknown generic credential keys are not assumed to be this key.
+Known key names cannot disappear through unsupported calls, return values or
+attribute/container assignments. The stricter `control.py` checks remain:
+name enumeration/comparison and the exact `SELECT EXISTS` key-metadata probes
+are allowed; reading the stored value is not. Diagnostics contain only source
+path, line and refusal category, never evaluated credential values.
+
+This is a trusted-source regression ratchet, not arbitrary Python execution or
+whole-program noninterference. Alias cycles terminate; constant combinations
+are bounded, with unresolved unrelated expressions kept unknown rather than
+declaring them private keys. Missing, invalid or symlinked selected sources and
+failed finite Git enumeration refuse the check. Ignored/untracked local material
+is never scanned. A separate authorized profile's file-backed signer with an
+explicit trusted path remains lawful; no broker-package exemption or
+`KEY_ABSENT_STAGE` signer construction is introduced. Static chart text checks
+do not prove rendering, deployed mounts or native enforcement. One disposable
+tracked-source mutation case exercises the same guard and its harmless restores
+without executing resolver snippets or creating key material.
+
 Exactly one control process receives one session slot and one domain process
 receives four. This preserves owner bu-6y6f6m's existing aggregate maximum five
 with unchanged process-local semaphores. Idle reservations are not borrowed.
