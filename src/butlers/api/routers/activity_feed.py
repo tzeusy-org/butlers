@@ -20,7 +20,7 @@ public shadow. Results are merged and sorted in application code, then capped
 at ``limit``.
 
 SQL column projections and query functions are versioned in
-:mod:`butlers.api.read_models.activity_v1`.
+:mod:`butlers.api.read_models.activity`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.deps import Db
 from butlers.api.models.activity_feed import ActivityEvent, ActivityFeed
-from butlers.api.read_models.activity_v1 import (
+from butlers.api.read_models.activity import (
     ActivityActionRow,
     ActivityEpisodeRow,
     ActivitySessionRow,

@@ -50,7 +50,7 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
-from butlers.api.read_models.butlers_v1 import query_sessions_24h
+from butlers.api.read_models.butlers import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 from butlers.core.pricing import PricingConfig, estimate_session_cost
@@ -146,7 +146,7 @@ async def _fetch_sessions_24h(
 ) -> dict[str, int]:
     """Return a mapping of butler_name -> session count for the last 24 hours.
 
-    Delegates to :func:`~butlers.api.read_models.butlers_v1.query_sessions_24h`
+    Delegates to :func:`~butlers.api.read_models.butlers.query_sessions_24h`
     from the versioned read-model boundary.  This call is best-effort: any DB
     or query failure returns an empty mapping so the list endpoint stays
     available when the DB is unhealthy.

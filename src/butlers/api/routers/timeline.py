@@ -11,7 +11,7 @@ composite ``(timestamp, id)`` keyset pagination (``before`` cursor + ``limit``)
 and SQL-level filtering by butler and event type.
 
 Cross-butler fan-out reads go through the versioned read-model boundary in
-``butlers.api.read_models.timeline_v1`` rather than constructing ad-hoc SQL
+``butlers.api.read_models.timeline`` rather than constructing ad-hoc SQL
 inline in this router.
 """
 
@@ -37,7 +37,7 @@ from butlers.api.models.timeline import (
     TimelineResponse,
 )
 from butlers.api.pagination import decode_cursor, encode_cursor
-from butlers.api.read_models.timeline_v1 import (
+from butlers.api.read_models.timeline import (
     TIMELINE_ATTENTION_LIMIT,
     TimelineNotificationRow,
     TimelineSessionRow,
@@ -167,7 +167,7 @@ def _notification_dto_to_event(dto: TimelineNotificationRow) -> TimelineEvent:
 
 def _session_to_event(row, *, butler: str) -> TimelineEvent:  # noqa: ANN001
     """Legacy shim — raw asyncpg Record accepted.  New code: use :func:`_session_dto_to_event`."""
-    from butlers.api.read_models.timeline_v1 import _row_to_session  # noqa: PLC0415
+    from butlers.api.read_models.timeline import _row_to_session  # noqa: PLC0415
 
     dto = _row_to_session(row, butler=butler)
     return _session_dto_to_event(dto)

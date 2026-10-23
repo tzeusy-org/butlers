@@ -831,7 +831,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
     from copy import deepcopy
     from types import SimpleNamespace
 
-    from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
+    from butlers.api.read_models.calendar_workspace import query_calendar_invitations
     from butlers.modules.calendar import CalendarModule
 
     stale = _invitation_row()
@@ -976,7 +976,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
 
 
 async def test_invitations_pagination_validation_and_honest_source_failures(app, monkeypatch):
-    from butlers.api.read_models.calendar_workspace_v1 import CalendarConflictScan
+    from butlers.api.read_models.calendar_workspace import CalendarConflictScan
 
     rows = [_invitation_row(title=f"Invite {i}") for i in range(3)]
     app, db = _build_app(app, workspace_rows={"general": rows})

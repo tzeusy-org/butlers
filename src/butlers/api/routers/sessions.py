@@ -17,7 +17,7 @@ Single-session detail is served ONLY by the cross-butler ``GET
 session ids are globally unique, and the global path resolves pinned rows and
 deep links without a ``?butler=`` hint. Cross-butler reads (list + detail
 fan-outs) go through the versioned read-model boundary in
-``butlers.api.read_models.sessions_v1`` rather than constructing ad-hoc SQL
+``butlers.api.read_models.sessions`` rather than constructing ad-hoc SQL
 inline.
 """
 
@@ -64,7 +64,7 @@ from butlers.api.models.session import (
 )
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
-from butlers.api.read_models.sessions_v1 import (
+from butlers.api.read_models.sessions import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
     SessionSummaryRow,
