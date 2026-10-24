@@ -68,6 +68,9 @@ BEGIN
             'Migration/runtime user "%" does not exist. Create it first or set PGOPTIONS="-c butlers.connecting_user=<existing role>".',
             _migration_user;
     END IF;
+    IF _migration_user::text LIKE 'perception\_%' ESCAPE '\' THEN
+        RAISE EXCEPTION 'a perception service cannot be the ordinary migration identity';
+    END IF;
     IF current_user::name = _migration_user THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap cannot run as the shared migration role';
     END IF;
@@ -3891,7 +3894,7 @@ BEGIN
                 'NOCREATEDB NOCREATEROLE NOREPLICATION',r);
         END IF;
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r AND
-            (rolcanlogin OR rolinherit OR rolsuper OR rolbypassrls OR rolcreatedb
+            ((r='perception_owner' AND rolcanlogin) OR rolinherit OR rolsuper OR rolbypassrls OR rolcreatedb
              OR rolcreaterole OR rolreplication)) THEN
             RAISE EXCEPTION 'unsafe perception service role';
         END IF;
@@ -4420,13 +4423,13 @@ BEGIN
                 'availability_reason',CASE WHEN configured THEN 'configured_empty' ELSE 'unconfigured' END);
         END IF;
         RETURN jsonb_build_object('id',slot.id,'kind',k,'subject',subj,
-            'state',CASE WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'unknown' ELSE slot.state END,
-            'value',CASE WHEN slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of THEN slot.typed_value END,
+            'state',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'unknown' ELSE slot.state END,
+            'value',CASE WHEN configured AND slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of THEN slot.typed_value END,
             'stale_last_value',CASE WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN slot.typed_value END,
             'source',slot.source,'observed_at',slot.observed_at,'fresh_until',slot.fresh_until,
             'age_seconds',greatest(0,extract(epoch FROM as_of-slot.observed_at)),
             'labels',slot.labels,'evidence_refs',slot.evidence_refs,'generation',slot.generation,
-            'availability_reason',CASE WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'stale'
+            'availability_reason',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'stale'
                 WHEN slot.state='unmeasurable' THEN 'all_inputs_unmeasurable'
                 WHEN slot.state='unknown' THEN 'unknown_evidence'
                 WHEN slot.state='unconfigured' THEN 'unconfigured' ELSE 'confirmed' END);
@@ -4629,7 +4632,8 @@ BEGIN
     END IF;
     FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'perception_%' LOOP
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r.rolname AND
-            (rolsuper OR rolbypassrls OR rolcanlogin OR rolinherit OR rolcreatedb OR rolcreaterole OR rolreplication))
+            (rolsuper OR rolbypassrls OR (r.rolname='perception_owner' AND rolcanlogin)
+             OR rolinherit OR rolcreatedb OR rolcreaterole OR rolreplication))
             OR EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid=r.rolname::regrole OR member=r.rolname::regrole) THEN
             RAISE EXCEPTION 'perception role isolation refused';
         END IF;

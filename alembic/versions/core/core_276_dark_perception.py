@@ -27,7 +27,7 @@ AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN
     ('perception_owner_reader','perception_availability_reader','perception_dots_writer',
      'perception_context_writer','perception_health_writer','perception_expect_writer',
      'perception_sensing_writer','perception_attention_writer') AND
-    (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolbypassrls OR r.rolcreatedb
+    (r.rolinherit OR r.rolsuper OR r.rolbypassrls OR r.rolcreatedb
      OR r.rolcreaterole OR r.rolreplication OR pg_has_role(current_user,r.oid,'MEMBER')
      OR EXISTS(SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid)))
 AND NOT EXISTS (SELECT 1 FROM pg_auth_members

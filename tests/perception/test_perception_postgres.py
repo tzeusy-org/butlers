@@ -270,6 +270,13 @@ def test_all_four_states_and_expiry_preserve_last_evidence(db):
         body = request(key=state, generation=i, minute=i, state=state)
         write(db, body)
         assert read(db, at=AT + timedelta(minutes=i))["state"] == state
+    db.execute(
+        text("UPDATE perception_private.sources SET max_age_seconds=NULL WHERE source='home.dots'")
+    )
+    assert read(db, at=AT + timedelta(minutes=4))["state"] == "unconfigured"
+    db.execute(
+        text("UPDATE perception_private.sources SET max_age_seconds=3600 WHERE source='home.dots'")
+    )
     expired = read(db, at=AT + timedelta(hours=2))
     assert expired["state"] == "unknown" and expired["value"] is None
     assert expired["stale_last_value"]["presence"] == "inside"

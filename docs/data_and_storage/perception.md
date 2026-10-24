@@ -42,9 +42,11 @@ health, confirmed expectations, sensing and canonical attention projections.
 `perception_owner_reader` is the private shadow reader;
 `perception_availability_reader` returns only unknown/optional busy-until.
 Ordinary domain, connector, dashboard and model roles have neither direct
-storage access nor permission to assume these identities. This change does not
-provision credentials or memberships, or turn a domain daemon into a trusted
-reducer. Actual service authentication/provisioning is a separate activation.
+storage access nor permission to assume these identities. Service roles start NOLOGIN with no memberships. A later explicitly authorized
+host provisioning may enable direct service login without changing this API;
+bootstrap continues to reject memberships and ordinary-runtime inheritance.
+This change provisions no credentials/memberships and turns no domain daemon
+into a trusted reducer. Actual service authentication/provisioning is a separate activation.
 
 The privileged `perception_private.sources` profile binds the fixed source,
 writer and kind, permitted subject identities, evidence source set and a finite
