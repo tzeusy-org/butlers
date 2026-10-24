@@ -1,8 +1,8 @@
-"""Same-transaction recipient evidence for the registered core notify handler.
+"""Same-transaction recipient evidence for registered native handlers.
 
 This does not publish a catalog, authorize a model's claimed identity, match a
 standing rule, or promise inert rendering. The catalog adapter must bind the
-native resolver tag from the verified final core.notifications descriptor.
+native resolver tag from the verified final descriptor.
 Unimplemented/inherited selectors conservatively remain non-owner.
 """
 
@@ -12,6 +12,7 @@ from dataclasses import replace
 from uuid import UUID
 
 from butlers.core.capability_json import arguments_digest, canonical_bytes, parse_arguments
+from butlers.core.tool_catalog import RecipientParameters
 from butlers.identity import resolve_owner_channel_via_definer
 
 from .contracts import BrokerRefused, Capability, Reason, RecipientBinding
@@ -62,6 +63,26 @@ async def resolve_recipient_binding(
         # entry_id is an event locator, never an owner identity. Inherited
         # provider recipients remain unknown and therefore per-event PARK.
         targets = [None for _ in present]
+    elif (
+        capability.recipient_resolver == "native_email"
+        and capability.identity == "messenger__email_send_message"
+        and capability.effect_class == "communicate"
+        and r == RecipientParameters(("to",))
+    ):
+        # The existing definer accepts only a single well-formed address and
+        # resolves unique live owner facts. It does not parse display names or
+        # lists, infer an owner from content, or open another connection.
+        target = snapshot.get("to")
+        resolved = None
+        if type(target) is str:
+            try:
+                resolved = await resolve_owner_channel_via_definer(
+                    connection, "email", target, raise_on_error=True
+                )
+            except Exception:
+                raise BrokerRefused(Reason.POLICY) from None
+        targets = [resolved[0].entity_id if resolved is not None else None for _ in present]
+        unknown = not present or resolved is None
     elif native:
         channel = snapshot.get("channel") or "telegram"
         intent = snapshot.get("intent", "send")

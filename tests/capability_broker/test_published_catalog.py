@@ -507,3 +507,256 @@ async def test_registered_calendar_response_is_conservative_per_event_park(monke
     assert (
         conn.used == 1 and final["calendar_respond"].approval_policy["mode"] == "always_per_event"
     )
+
+
+async def registered_native_email(monkeypatch):
+    """Actual Messenger/EmailModule registration; SQL controls, never SMTP I/O."""
+    from types import SimpleNamespace
+
+    from butlers.daemon import ButlerDaemon
+    from butlers.modules.email import EmailModule
+
+    captured = []
+    finalize = ButlerDaemon._finalize_tool_catalog
+
+    async def capture(daemon):
+        result = await finalize(daemon)
+        captured.append(daemon)
+        return result
+
+    apply_gates = ButlerDaemon._apply_approval_gates
+
+    async def startup_originals(daemon):
+        # Match lifecycle.py's actual assignment; the catalog-only helper does
+        # not need it, but an owning replay consumer must keep pre-gate handlers.
+        originals = await apply_gates(daemon)
+        daemon._gated_tool_originals = originals
+        return originals
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    with monkeypatch.context() as registration:
+        registration.setattr(ButlerDaemon, "_finalize_tool_catalog", capture)
+        registration.setattr(ButlerDaemon, "_apply_approval_gates", startup_originals)
+        final = await _roster_catalog("messenger")
+    daemon = captured[0]
+    email = next(m for m in daemon._active_modules if type(m) is EmailModule)
+
+    class Permissions:
+        granted = True
+        reads = 0
+
+        async def fetchrow(self, sql, *args):
+            assert "FROM public.permissions" in sql and args == ("messenger", "email.send")
+            self.reads += 1
+            return {"granted": self.granted, "reason": "controlled permission"}
+
+    permissions, sends = Permissions(), []
+    email._pool, email._butler_name, email._audit_pool = permissions, "messenger", None
+
+    def smtp(to, subject, body):
+        sends.append({"to": to, "subject": subject, "body": body})
+        return {"message_id": "controlled-not-a-commit-receipt"}
+
+    monkeypatch.setattr(email, "_smtp_send", smtp)
+    return SimpleNamespace(
+        catalog=final, daemon=daemon, email=email, permissions=permissions, sends=sends
+    )
+
+
+async def registered_native_email_broker(monkeypatch):
+    from types import SimpleNamespace
+
+    native = await registered_native_email(monkeypatch)
+    final, daemon, email = native.catalog, native.daemon, native.email
+    permissions, sends = native.permissions, native.sends
+    broker, conn, domains, token, store, publishers = await current_broker()
+    await publishers["messenger"].publish(final)
+    conn.grants = (
+        Grant("messenger__email_send_message", resources=(("to", ("owner@example.invalid",)),)),
+    )
+    owner = uuid4()
+    reads = []
+    fetch, fetchrow = conn.fetch, conn.fetchrow
+
+    async def identities(sql, *args):
+        if "FROM public.entities" in sql:
+            assert conn.in_transaction and "FOR SHARE" in sql and "LIMIT 2" in sql
+            assert "metadata->>'merged_into' IS NULL" in sql
+            assert "metadata->>'deleted_at' IS NULL" in sql
+            reads.append("owner")
+            return [{"id": owner}]
+        return await fetch(sql, *args)
+
+    async def target(sql, *args):
+        if "public.resolve_owner_triple" in sql:
+            assert conn.in_transaction
+            assert args[0] == "owner-channel"
+            reads.append("email")
+            return (
+                {"entity_id": owner, "is_primary": True}
+                if args[1] == ["has-email:owner@example.invalid"]
+                else None
+            )
+        return await fetchrow(sql, *args)
+
+    conn.fetch, conn.fetchrow = identities, target
+    async with conn.transaction():
+        conn.catalog_digest = (await PublishedCatalogProvider().snapshot(conn)).digest
+    return SimpleNamespace(
+        broker=broker,
+        conn=conn,
+        domains=domains,
+        token=token,
+        fleet=store,
+        publishers=publishers,
+        catalog=final,
+        daemon=daemon,
+        email=email,
+        permissions=permissions,
+        sends=sends,
+        owner=owner,
+        identity_reads=reads,
+    )
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "owner",
+        "non-owner",
+        "unknown",
+        "ambiguous",
+        "deleted",
+        "merged",
+        "malformed",
+        "multipart",
+        "display",
+        "outage",
+        "exposed",
+        "park-only",
+    ],
+)
+async def test_native_email_same_transaction_recipient_and_mandatory_park(monkeypatch, branch):
+    from butlers.capability_broker.policy import bind_recipient_policy
+    from butlers.core.capability_json import arguments_digest
+
+    native = await registered_native_email_broker(monkeypatch)
+    broker, conn = native.broker, native.conn
+    to = {
+        "non-owner": "other@example.invalid",
+        "unknown": "unknown@example.invalid",
+        "malformed": "not-an-address",
+        "multipart": "owner@example.invalid,other@example.invalid",
+        "display": "Owner <owner@example.invalid>",
+    }.get(branch, "owner@example.invalid")
+    conn.grants = (
+        Grant(
+            "messenger__email_send_message",
+            resources=(("to", (to,)),),
+            park_only=branch == "park-only",
+        ),
+    )
+    conn.exposed = branch == "exposed"
+    args = {"to": to, "subject": "controlled", "body": "untrusted content"}
+    fetch, fetchrow = conn.fetch, conn.fetchrow
+
+    async def owners(sql, *values):
+        if "FROM public.entities" in sql:
+            assert conn.in_transaction and "FOR SHARE" in sql
+            if branch == "ambiguous":
+                return [{"id": native.owner}, {"id": uuid4()}]
+            if branch in {"deleted", "merged"}:
+                return []  # Actual SQL above excludes either tombstone.
+        return await fetch(sql, *values)
+
+    async def target(sql, *values):
+        if "public.resolve_owner_triple" in sql:
+            assert conn.in_transaction
+            if branch == "outage":
+                raise RuntimeError("controlled_identity_unavailable")
+            if branch in {"ambiguous", "deleted", "merged", "unknown"}:
+                return None
+        return await fetchrow(sql, *values)
+
+    conn.fetch, conn.fetchrow = owners, target
+    cap = (await broker.list_tools(conn.goal, native.token))[0]
+    assert cap.recipient_resolver == "native_email" and cap.idempotency == "none"
+    if branch == "outage":
+        with pytest.raises(BrokerRefused, match=Reason.POLICY.value):
+            await broker.call(conn.goal, native.token, cap.identity, args)
+        assert conn.used == 0 and native.domains.calls == [] and native.sends == []
+        return
+    async with conn.transaction():
+        evidence = await broker.authorities.policy(conn, None, cap, args)
+        bound = bind_recipient_policy(cap, args, arguments_digest(args), evidence)
+    assert bound.recipient == (
+        "owner" if branch in {"owner", "exposed", "park-only"} else "non_owner"
+    )
+    result = await broker.call(conn.goal, native.token, cap.identity, args)
+    assert result.status == "parked" and result.value is None and native.sends == []
+    assert native.domains.calls[0][0].decision.disposition.value == "park"
+
+
+@pytest.mark.parametrize(
+    "damage", ["module", "namespace", "group", "recipient", "resource", "selection", "gate"]
+)
+async def test_native_email_cannot_borrow_foreign_or_changed_metadata(monkeypatch, damage):
+    from butlers.core.tool_catalog import ToolCatalog
+
+    native = await registered_native_email_broker(monkeypatch)
+    descriptor = native.catalog["email_send_message"]
+    changes = {
+        "module": {"module_name": "other"},
+        "namespace": {"namespace": "other.write"},
+        "group": {"group_name": "other"},
+        "recipient": {"recipient_params": RecipientParameters(("subject",))},
+        "resource": {"resource_params": (), "selection_bound": {}},
+        "selection": {"selection_bound": {"to": True}},
+        "gate": {"approval_policy": {**descriptor.approval_policy, "configured_gate": False}},
+    }[damage]
+    altered = replace(descriptor, **changes)
+    try:
+        projected = broker_catalog.project_catalog(
+            ToolCatalog((altered,), True, native.catalog.generation_digest), domain="messenger"
+        )
+    except BrokerRefused as refused:
+        assert refused.reason is Reason.CATALOG
+    else:
+        cap = projected.capabilities[0]
+        assert cap.recipient_resolver == "none"
+        async with native.conn.transaction():
+            with pytest.raises(BrokerRefused, match=Reason.POLICY.value):
+                await native.broker.authorities.policy(
+                    native.conn, None, cap, {"to": "owner@example.invalid"}
+                )
+    assert native.sends == [] and native.conn.used == 0
+
+
+@pytest.mark.parametrize(
+    "fault", ["stopped", "revoked", "budget", "resource", "catalog", "retired"]
+)
+async def test_native_email_reservation_keeps_current_ledger_fences(monkeypatch, fault):
+    native = await registered_native_email_broker(monkeypatch)
+    conn = native.conn
+    if fault == "stopped":
+        conn.status = "stopped"
+    elif fault == "revoked":
+        conn.invocation_count = 0
+    elif fault == "budget":
+        conn.budget = 0
+    elif fault == "resource":
+        conn.grants = (
+            Grant("messenger__email_send_message", resources=(("to", ("other@example.invalid",)),)),
+        )
+    elif fault == "catalog":
+        conn.catalog_digest = "changed"
+    else:
+        native.fleet.current["messenger"]["live"] = False
+    with pytest.raises(BrokerRefused):
+        await native.broker.call(
+            conn.goal,
+            native.token,
+            "messenger__email_send_message",
+            {"to": "owner@example.invalid", "subject": "never", "body": "sent"},
+        )
+    assert conn.used == 0 and native.sends == [] and native.domains.calls == []

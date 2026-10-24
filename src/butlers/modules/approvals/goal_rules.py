@@ -44,8 +44,8 @@ async def matching_goal_rule(connection, request, catalog, grant):
     """Lock actual rule rows after the goal gate, then use existing precedence.
 
     No callback, boolean override, caller owner enum, or descriptive catalog
-    condition supplies authority. Only native core-notify has a real same-TX
-    recipient resolver here; other exposed calls need complete exact pins.
+    condition supplies authority. Native core-notify and Messenger email have real same-TX
+    recipient resolvers here; other exposed calls need complete exact pins.
     """
     if catalog is None or grant is None:
         return None
@@ -71,7 +71,7 @@ async def matching_goal_rule(connection, request, catalog, grant):
         return None
     descriptor = next(d for d in catalog.descriptors if d.canonical_name == request.tool_name)
     owner_recipient = False
-    if lineage.goal_exposed and capability.recipient_resolver == "core_notify":
+    if lineage.goal_exposed and capability.recipient_resolver in {"core_notify", "native_email"}:
         binding = await resolve_recipient_binding(connection, capability, request.tool_args)
         evidence = bind_recipient_policy(
             capability,

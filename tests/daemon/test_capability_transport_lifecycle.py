@@ -84,6 +84,12 @@ async def test_actual_startup_refuses_before_approval_delivery_or_public_MCP(tmp
     d = daemon(tmp_path)
     d.config.capability_broker_transport = enabled()
     patches = _patch_infra()
+    # The shared infrastructure owner has two delivered representations across
+    # this branch and its hosted public union. Neither/both must fail closed;
+    # never silently omit the actual runtime-adapter patch before startup.
+    runtime_keys = frozenset(patches) & {"get_adapter", "build_runtime_adapter"}
+    assert runtime_keys in ({"get_adapter"}, {"build_runtime_adapter"})
+    runtime_key = next(iter(runtime_keys))
     with ExitStack() as stack:
         for key in (
             "db_from_env",
@@ -95,7 +101,7 @@ async def test_actual_startup_refuses_before_approval_delivery_or_public_MCP(tmp
             "sync_schedules",
             "FastMCP",
             "Spawner",
-            "get_adapter",
+            runtime_key,
             "shutil_which",
             "start_mcp_server",
             "connect_switchboard",

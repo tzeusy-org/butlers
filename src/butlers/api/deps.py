@@ -683,9 +683,11 @@ class CalendarPreparationClients:
             settings = config_owner.calendar_owner_prepare
             if settings.domain != config_owner.name or settings.domain in self.clients:
                 raise ValueError("calendar_prepare_owner_mismatch")
-            from butlers.capability_broker.production import material_context
-            from butlers.capability_broker.transport.calendar_prepare import CalendarPrepareClient
+            from butlers.capability_broker.transport.calendar_prepare_client import (
+                CalendarPrepareClient,
+            )
             from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+            from butlers.capability_broker.transport.material import material_context
 
             peer = settings.service_peer
             config = TransportConfig(

@@ -339,7 +339,7 @@ cancels an undispatched approval and does not refund an already issued rule use.
 Park-only grants, `always_per_event`, third-party starts, child administration
 and exposed noncommunication effects cannot use this path for automatic
 approval. Safety arguments must be pinned. Exposed communication additionally
-requires either the actual native notify same-transaction owner-recipient
+requires either the actual native notify or Messenger email same-transaction owner-recipient
 binding or exact constraints fixing every declared and supplied argument.
 This implementation supports the exact-value branch of template pinning only;
 it does not infer owner-authored typed templates from strings or patterns.
@@ -479,3 +479,35 @@ proof. Migrated runtime-role Calendar edit, race, rollback and independent
 readback cases are authored for hosted execution. No local activation, new
 selection/recipient authority, generic D7 verifier or full broker nine-criterion
 completion follows from this source increment.
+
+### Native Messenger email
+
+The complete published Messenger `email_send_message` descriptor has one native
+recipient branch: module `email`, group `write`, namespace `email.write`, explicit
+`to` resource with `selection_bound=false`, and the actual configured approval
+gate. Changed or foreign metadata cannot borrow that branch. On the existing
+locked transaction, the adapter reads a unique live owner and invokes the
+existing ambiguity-safe owner-channel definer for one well-formed email address.
+Display strings, multiple recipients, unknown, conflicting or retired identities
+remain non-owner; unavailable identity infrastructure refuses before reservation.
+There is no implicit email recipient or owner authority derived from message text.
+
+The configured gate still parks owner-directed email, including exposed calls.
+Owning rules may approve an exposed call only with the current same-transaction
+owner binding or exact pins covering every declared and supplied input; safety
+arguments stay pinned. Park-only and always-per-event take precedence. Signed
+PARK persists the exact call before any send. Stored or edited approval replay
+rereads current catalog, Grant/resources and recipient classification, then uses
+the existing goal-first snapshot, audit, Stop and one-winner consume protocol.
+An edited `to` has no inherited recipient or resource authorization.
+
+After consume commits, the captured registered EmailModule handler still checks
+the real `email.send` permission before its single SMTP attempt. Idempotency stays
+`none`; handler output and lost acknowledgement both remain UNKNOWN external
+effects and never authorize another forward. Software controls use actual
+registration, daemon factory and handler with controlled SQL/SMTP collaborators.
+Migrated role, identity ambiguity/owner-change locking, rollback, edited replay,
+Stop, permission and competing/lost-ACK cases are authored for hosted PostgreSQL
+execution, with local collection providing no durability claim. This branch
+does not complete the original nine criteria, enable a profile, or supply generic
+D7, selection, creator or runner authority.

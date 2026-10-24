@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from butlers.core.catalog_reader import PublishedCatalogProvider
 from butlers.core.tool_catalog import (
+    RecipientParameters,
     ToolCatalog,
     declared_approval_mode,
     validate_authorization_catalog,
@@ -53,17 +54,26 @@ class PublishedAuthorities:
             raise BrokerRefused(Reason.POLICY)
         parties = capability.recipient_params
         if (
-            capability.recipient_resolver == "calendar_response"
-            and capability.name == "calendar_respond"
-            and capability.effect_class == "communicate"
-            and capability.always_per_event
-            and parties.argument_names == ("entry_id",)
-            and parties.undeterminable
-        ) or (
-            capability.recipient_resolver == "core_notify"
-            and capability.name == "notify"
-            and capability.effect_class == "communicate"
-            and set(parties.argument_names) == {"recipient", "entity_id", "request_context"}
+            (
+                capability.recipient_resolver == "calendar_response"
+                and capability.name == "calendar_respond"
+                and capability.effect_class == "communicate"
+                and capability.always_per_event
+                and parties.argument_names == ("entry_id",)
+                and parties.undeterminable
+            )
+            or (
+                capability.recipient_resolver == "native_email"
+                and capability.identity == "messenger__email_send_message"
+                and capability.effect_class == "communicate"
+                and parties == RecipientParameters(("to",))
+            )
+            or (
+                capability.recipient_resolver == "core_notify"
+                and capability.name == "notify"
+                and capability.effect_class == "communicate"
+                and set(parties.argument_names) == {"recipient", "entity_id", "request_context"}
+            )
         ):
             binding = await resolve_recipient_binding(connection, capability, args)
             return PolicyEvidence("none", recipient_binding=binding)
@@ -134,6 +144,23 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                 and descriptor.recipient_params.undeterminable
                 and descriptor.idempotency == "key_required"
             )
+            native_email = (
+                domain == "messenger"
+                and descriptor.canonical_name == "email_send_message"
+                and descriptor.module_name == "email"
+                and descriptor.namespace == "email.write"
+                and descriptor.group_name == "write"
+                and descriptor.effect_class == "communicate"
+                and descriptor.output_trust == "untrusted"
+                and descriptor.resource_params == ("to",)
+                and dict(descriptor.selection_bound) == {"to": False}
+                and descriptor.recipient_params == RecipientParameters(("to",))
+                and descriptor.safety_args == ("to",)
+                and not descriptor.owner_authority
+                and descriptor.idempotency == "none"
+                and mode in {"default", "always_per_event"}
+                and policy["configured_gate"]
+            )
             capabilities.append(
                 Capability(
                     domain=domain,
@@ -154,6 +181,8 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                         if native_notify
                         else "calendar_response"
                         if native_calendar
+                        else "native_email"
+                        if native_email
                         else "none"
                     ),
                     description=descriptor.description,

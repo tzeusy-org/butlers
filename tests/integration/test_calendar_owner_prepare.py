@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastmcp import FastMCP
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_db
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.capability_broker.assertions import AssertionSigner
 from butlers.capability_broker.catalog import PublishedAuthorities
 from butlers.capability_broker.contracts import BrokerRefused
@@ -271,6 +271,12 @@ async def test_real_calendar_root_revision_fresh_decision_and_one_winner(
         db.register_configured_modules("relationship", frozenset({"calendar", "approvals"}))
         app = create_authenticated_domain_app()
         app.dependency_overrides[get_db] = lambda: db
+        # ASGITransport deliberately skips application lifespan. Supply the
+        # existing required dependency, but fail if the stale card dispatches.
+        mcp_manager = SimpleNamespace(
+            get_client=AsyncMock(side_effect=AssertionError("premature_calendar_dispatch"))
+        )
+        app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
         arrived, release = asyncio.Event(), asyncio.Event()
         prepared_count = 0
 
@@ -381,6 +387,7 @@ async def test_real_calendar_root_revision_fresh_decision_and_one_winner(
                     f"/api/approvals/{root}/approve", json={"displayed_call": before_card}
                 )
                 assert stale.status_code == 409 and writes == []
+                mcp_manager.get_client.assert_not_awaited()
                 fresh = edited.json()["data"]["call_preview"]["displayed_call"]
                 assert (
                     fresh["args_digest"]
