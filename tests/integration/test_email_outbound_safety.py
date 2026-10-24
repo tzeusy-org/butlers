@@ -299,7 +299,7 @@ def _make_daemon_patches() -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
     from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
@@ -335,7 +335,9 @@ def _make_daemon_patches() -> dict[str, Any]:
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "RuntimeConfigAccessor": patch(
             "butlers.core.runtime_config.RuntimeConfigAccessor",
@@ -363,7 +365,7 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):
@@ -1364,7 +1366,7 @@ async def _boot_messenger_with_route_execute(
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):
@@ -1402,7 +1404,7 @@ def _make_route_envelope(
             "message": message,
         },
     }
-    if recipient and intent in {"send", "approval_request", "decision_request"}:
+    if recipient and intent in {"send", "approval_request"}:
         notify_request["delivery"]["recipient"] = recipient
     if subject is not None:
         notify_request["delivery"]["subject"] = subject
@@ -2216,128 +2218,6 @@ class TestApprovalRequestDelivery:
         )
 
 
-def _decision_request_actions() -> list[dict[str, str]]:
-    """A two-option Decision Desk prompt (bu-ckkpz.3)."""
-    dashboard_url = "https://dashboard.example.test/decisions?bead=bu-test1"
-    prompt = "12345678-1234-5678-1234-567812345678"
-    return [
-        {
-            "verb": "choose",
-            "label": "1. Ship it",
-            "callback_token": f"dsk1:{prompt}:0:0123456789abcdef",
-            "dashboard_url": dashboard_url,
-        },
-        {
-            "verb": "choose",
-            "label": "2. Hold",
-            "callback_token": f"dsk1:{prompt}:1:0123456789abcdef",
-            "dashboard_url": dashboard_url,
-        },
-        {"verb": "open_dashboard", "dashboard_url": dashboard_url},
-    ]
-
-
-@pytest.mark.asyncio
-class TestDecisionRequestDelivery:
-    """Decision prompts share the approval push's owner-only delivery rules."""
-
-    async def test_telegram_owner_prompt_has_one_row_per_option(self, tmp_path: Path) -> None:
-        messenger_dir = _telegram_messenger_dir(tmp_path)
-        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
-        assert route_execute_fn is not None
-
-        envelope = _make_route_envelope(
-            channel="telegram",
-            intent="decision_request",
-            recipient=OWNER_TELEGRAM,
-            message="Decision needed: Pick a rollout",
-            origin_butler="switchboard",
-            actions=_decision_request_actions(),
-        )
-        send_spy = AsyncMock(return_value={"status": "sent", "message_id": 1})
-
-        with (
-            patch(
-                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=(_owner_contact(), True)),
-            ),
-            patch.object(TelegramModule, "_send_message", new=send_spy),
-        ):
-            result = await route_execute_fn(**envelope)
-
-        assert result.get("status") == "ok", result
-        send_spy.assert_awaited_once()
-        assert send_spy.await_args.args[0] == OWNER_TELEGRAM
-        actions = _decision_request_actions()
-        assert send_spy.await_args.kwargs["reply_markup"] == {
-            "inline_keyboard": [
-                [{"text": "1. Ship it", "callback_data": actions[0]["callback_token"]}],
-                [{"text": "2. Hold", "callback_data": actions[1]["callback_token"]}],
-                [{"text": "Open dashboard", "url": actions[2]["dashboard_url"]}],
-            ]
-        }
-
-    async def test_email_decision_prompt_carries_the_dashboard_link(self, tmp_path: Path) -> None:
-        messenger_dir = _messenger_dir(tmp_path)
-        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
-        assert route_execute_fn is not None
-
-        envelope = _make_route_envelope(
-            channel="email",
-            intent="decision_request",
-            recipient=OWNER_EMAIL,
-            message="Decision needed: Pick a rollout",
-            origin_butler="switchboard",
-            actions=_decision_request_actions(),
-        )
-        send_spy = AsyncMock(return_value={"status": "sent"})
-
-        with (
-            patch(
-                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=(_owner_contact(), True)),
-            ),
-            patch.object(EmailModule, "_send_email", new=send_spy),
-        ):
-            result = await route_execute_fn(**envelope)
-
-        assert result.get("status") == "ok", result
-        assert send_spy.await_args.args[2] == (
-            "Decision needed: Pick a rollout\n\nDecide in the dashboard: "
-            "https://dashboard.example.test/decisions?bead=bu-test1"
-        )
-
-    async def test_non_owner_decision_target_is_rejected_before_delivery(
-        self, tmp_path: Path
-    ) -> None:
-        messenger_dir = _telegram_messenger_dir(tmp_path)
-        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
-        assert route_execute_fn is not None
-
-        envelope = _make_route_envelope(
-            channel="telegram",
-            intent="decision_request",
-            recipient=KNOWN_NON_OWNER_TELEGRAM,
-            message="Decision needed",
-            origin_butler="switchboard",
-            actions=_decision_request_actions(),
-        )
-        send_spy = AsyncMock(return_value={"status": "sent"})
-
-        with (
-            patch(
-                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=None),
-            ),
-            patch.object(TelegramModule, "_send_message", new=send_spy),
-        ):
-            result = await route_execute_fn(**envelope)
-
-        assert result.get("status") == "error", result
-        assert "verified owner" in result["error"]["message"].lower()
-        send_spy.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # DBS Card Alert incident replay (2026-03-16)
 # ---------------------------------------------------------------------------
@@ -2436,3 +2316,108 @@ class TestDBSIncidentReplay:
             f"Got: {result}"
         )
         assert "blocked" in result["error"]["message"].lower()
+
+
+@pytest.fixture
+def messenger_replay_db_url(postgres_container):
+    """Migrate before entering the owning asynchronous test loop."""
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core", "approvals"]
+    )
+
+
+@pytest.mark.integration
+async def test_registered_messenger_park_has_durable_exact_envelope_and_once_replay(
+    messenger_replay_db_url, tmp_path, monkeypatch
+):
+    """Real SQL storage/readback; provider calls remain an owned software boundary."""
+    import copy
+
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    pool = await asyncpg.create_pool(
+        messenger_replay_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    daemon = None
+    approvals = ApprovalsModule()
+    original_pool = None
+    try:
+        daemon, registered_route = await _boot_messenger_with_route_execute(
+            _messenger_dir(tmp_path)
+        )
+        original_pool = daemon.db.pool
+        daemon.db.pool = pool
+        await approvals.on_startup({}, pool)
+        monkeypatch.setattr(
+            "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+            AsyncMock(return_value=None),
+        )
+        send = AsyncMock(return_value={"message_id": "synthetic-provider-reference"})
+        email = next(module for module in daemon._modules if module.name == "email")
+        monkeypatch.setattr(email, "_send_email", send)
+        envelope = _make_route_envelope(
+            channel="email",
+            intent="send",
+            recipient="non-owner@example.test",
+            message="Original https://example.test",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        envelope["input"]["context"]["notify_request"]["render_links_inert"] = True
+        expected = copy.deepcopy(envelope)
+        refusal = await registered_route(**envelope)
+        assert refusal["status"] == "error"
+        send.assert_not_awaited()
+        # A separate acquisition witnesses the committed original JSON, rather
+        # than a recorder or the connection that admitted the pending action.
+        async with pool.acquire() as readback:
+            rows = await readback.fetch(
+                "SELECT id, tool_name, tool_args, status FROM pending_actions"
+            )
+        assert len(rows) == 1
+        action = rows[0]
+        assert (action["tool_name"], action["tool_args"], action["status"]) == (
+            "route.execute",
+            expected,
+            "pending",
+        )
+        envelope["input"]["context"]["notify_request"]["delivery"]["message"] = "Later caller edit"
+        replayed = []
+
+        async def execute(name, arguments):
+            assert name == "route.execute"
+            replayed.append(copy.deepcopy(arguments))
+            return await registered_route(**arguments)
+
+        approvals.set_tool_executor(execute)
+        # This invokes the existing trusted internal owner-decision boundary;
+        # HTTP authentication and live owner credentials are not exercised here.
+        approved = await approvals._approve_action(
+            str(action["id"]), actor={"type": "human", "id": "owner", "authenticated": True}
+        )
+        assert "error" not in approved
+        assert replayed == [expected]
+        send.assert_awaited_once_with(
+            "non-owner@example.test",
+            "[relationship] Notification",
+            "Original https://example.test",
+            render_links_inert=True,
+        )
+        async with pool.acquire() as readback:
+            final = await readback.fetchrow(
+                "SELECT status, tool_args FROM pending_actions WHERE id=$1", action["id"]
+            )
+        assert (final["status"], final["tool_args"]) == ("executed", expected)
+        await approvals._dispatch_approved_action_by_id(str(action["id"]))
+        assert send.await_count == 1
+        assert replayed == [expected]
+    finally:
+        await approvals.on_shutdown()
+        if daemon is not None:
+            daemon.db.pool = original_pool
+            await daemon.shutdown()
+        await pool.close()

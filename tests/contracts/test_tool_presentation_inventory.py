@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -141,7 +140,9 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         db=SimpleNamespace(pool=AsyncMock()),
     )
     daemon.config = load_config(_REPO_ROOT / "roster" / butler_name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=groups)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(
+        update={"core_groups": groups}
+    )
     daemon.mcp = FastMCP(f"catalog-{butler_name}-{'-'.join(groups)}")
     daemon.spawner = MagicMock()
     before_tasks = asyncio.all_tasks()

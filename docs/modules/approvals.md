@@ -143,6 +143,8 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   compare-and-set
   writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
   expire a still-pending action whose `expires_at` has passed instead of acting on it.
+  Dashboard approve-with-edits restores the locked original arguments on a refused decision
+  before committing, preserving an expiry transition without persisting the refused edit.
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
@@ -173,6 +175,50 @@ recorded failure or uncertain delivery remains visible even for a prepared actio
   every configured approvals source. A missing pool, failed read, duplicate UUID, or wrong source
   withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
   Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
+
+## Approval cards show the exact stored call
+
+The owner push for a single parked action (Telegram) renders the call itself, not
+the assistant's description of it. A per-tool preview registry
+(`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
+fact lines: for email sends every To, Cc and Bcc address, the subject
+and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
+text. The assistant's `why`, `blast_radius` and `reversibility` sit under
+"Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
+span rendered in code formatting so it stays literal after the transport's HTML
+escaping. "Started by" names the owning butler (and marks prepared actions).
+
+Approve and Reject are offered only when the whole call is shown and the card
+fits about 3,500 UTF-16 code units (Telegram's own measure, so an emoji counts
+twice). Otherwise the card says why and offers Open only:
+no registered preview, an argument the preview cannot show (for example
+attachments or a reply markup), a recipient that cannot be enumerated, a body
+with backticks, any C0/C1 control character (other than a newline) or Unicode
+format character such as a bidi override or zero-width space in a shown value
+(these can forge the transport's placeholders or reorder what the owner reads), an
+over-budget call, or an `administer` or protected or
+consequential tool. Register a preview with `register_preview(tool, renderer,
+effect_class=...)`; an unregistered tool is Open only by design.
+
+Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
+stored call) on its `approval_delivery_presentations` row, written under the
+action's row lock when the handoff starts; the handoff does not start if the
+stored call changed since it was rendered, and a card never records a NULL
+digest. A connector-authenticated Telegram tap carries only the action id, so the
+approve endpoint refuses it with 409 "changed since shown" when any presented
+digest differs from the stored call, and the tap edits the message to say nothing
+was executed. This check applies to card taps only: a dashboard approval binds to
+the call the dashboard displayed, and dashboard edits are the owner's explicit
+change. The dashboard dossier and summary review dialog expose only a complete registered
+owner-safe `call_preview`, including the tool identity and argument digest from the
+same stored row. Both approval API routes require that `displayed_call` and
+compare it under the pending-row lock before any owner edit, status/audit write
+or dispatch. Missing, malformed, stale or unshowable calls execute nothing.
+Summary actions first open the complete review; the five-second undo callback
+retains that exact reviewed snapshot even if a later fetch sees a different call.
+No raw secret-field fallback or truncated preview earns an Approve button.
+Rows presented before migration 018 carry no digest and are not checked.
+Migration 018's downgrade refuses while any presentation carries a digest.
 
 ## Related Pages
 

@@ -1,3 +1,4 @@
+import { MemoryProvenanceLine } from "@/components/memory/MemoryProvenanceLine";
 // ---------------------------------------------------------------------------
 // RuleDetailPage — the rule's detail page. (bu-2ix8d.7)
 //
@@ -177,6 +178,7 @@ export default function RuleDetailPage() {
       {rule && (
         <div className="mx-auto flex max-w-[680px] flex-col gap-6">
           <DetailEyebrow kind="rule" id={rule.id} />
+          <MemoryProvenanceLine record={rule} />
 
           {/* State line — maturity + permanence + scope, in the API's words. */}
           <StateLine

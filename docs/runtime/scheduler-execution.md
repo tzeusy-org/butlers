@@ -20,6 +20,14 @@ On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the
 
 Each synced task gets a computed `next_run_at` based on its cron expression and optional stagger offset.
 
+### Schedule timezone
+
+Hour-pinned cron fields are evaluated in the owner's configured general timezone, so `0 23 * * *` fires at 23:00 owner-local. A `[[butler.schedule]]` entry may set `timezone` (an IANA name) to pin its own zone instead, and sync stores it on the row. Use this for infrastructure schedules whose comment states a UTC time. Pin real UTC with `timezone = "Etc/UTC"`: the literal `"UTC"` (like an empty or missing value) is the sentinel that follows the owner timezone, so it cannot pin. `timezone = "UTC"` (any case) or a blank value is refused with an error naming `Etc/UTC`, as is an unknown zone. A change to only the declared timezone updates the existing row.
+
+### Always-quiet warning
+
+When sync can read the owner quiet window (`public.approvals_policy`), it logs one warning per prompt-mode schedule that references `notify` but whose every firing in the next week, including the stagger allowance, falls inside that window, because its notifications would always be held or dropped. The lint never rejects a schedule or blocks sync, and it stays silent when there is no usable policy, the cron is irregular, or the schedule is job-mode or does not notify.
+
 ## Dispatch Modes
 
 Scheduled tasks support two dispatch modes, configured via `dispatch_mode`:
@@ -31,6 +39,8 @@ The task's `prompt` string is sent to the spawner, which spawns an LLM session. 
 ### Job Mode
 
 The task's `job_name` maps to a registered Python function that runs directly without spawning an LLM. This is for deterministic maintenance work: memory consolidation, analytics computation, eligibility sweeps.
+
+Job mode also fits owner reminders whose text has a fixed shape. Relationship `upcoming-dates-check` and `relationship-maintenance` render a template from an existing read, and Chronicler `chronicler_gap_interview` asks yesterday's gap interview through the same service as its MCP tool. A job reaches the owner through `butlers.jobs.owner_notify.send_owner_telegram`: the `notify.v1` send through Switchboard `deliver` on the client `dispatch_scheduled_task` binds for the handler call, with one attention-ledger row per outcome. Unlike `notify()`, a quiet-hours or context-bus suppression drops the send rather than deferring it.
 
 ## The Tick Loop
 

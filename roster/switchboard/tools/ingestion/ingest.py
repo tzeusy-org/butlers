@@ -44,7 +44,7 @@ from uuid import UUID
 
 import asyncpg
 from opentelemetry import metrics as otel_metrics
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from butlers.conversation_identity import event_conversation_identity
 from butlers.core.account_security_events import (
@@ -63,7 +63,8 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.ingestion_spans import collapse_spans
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
@@ -405,6 +406,25 @@ def _scrub_bearer_material(
     return raw_payload, normalized_text, fresh
 
 
+def _persist_exposure_markers(
+    envelope: IngestEnvelopeV1, raw_payload: dict[str, Any], stored_text: str
+) -> None:
+    """Copy the reply reference and untrusted spans into ``raw_payload``.
+
+    Each key is written only when the connector supplied it, so envelopes without markers
+    persist exactly as before. Spans index the connector's text; when the stored text differs
+    (bearer scrub, null-byte strip, scrub failure) their offsets are stale, so each kind
+    collapses to one whole-text span rather than fencing the wrong characters.
+    """
+    if envelope.event.in_reply_to_ref is not None:
+        raw_payload["event"]["in_reply_to_ref"] = envelope.event.in_reply_to_ref
+    if envelope.payload.untrusted_spans:
+        spans = [span.model_dump(exclude_none=True) for span in envelope.payload.untrusted_spans]
+        if stored_text != envelope.payload.normalized_text:
+            spans = collapse_spans(stored_text, spans)
+        raw_payload["payload"]["untrusted_spans"] = spans
+
+
 def _record_bearer_scrub(source_channel: str, artifacts: list[BearerArtifact]) -> None:
     """Count fresh scrubs per rule (false-positive visibility)."""
     if not artifacts:
@@ -578,10 +598,14 @@ def _make_ingestion_envelope(
         # silently over-matching the channel's other event types.
         raw_key = str(event.get("external_event_id") or "")
 
+    control = payload.get("control") or {}
+    known_contact = control.get("known_contact") if isinstance(control, Mapping) else None
+
     return IngestionEnvelope(
         sender_address=sender_address,
         source_channel=source_channel,
         source_endpoint_identity=source_endpoint_identity,
+        known_contact=known_contact if isinstance(known_contact, bool) else None,
         headers=headers,
         mime_parts=mime_parts,
         thread_id=str(thread_id) if thread_id else None,
@@ -680,6 +704,23 @@ def _run_policy_evaluation(
         )
 
 
+def _envelope_error_summary(exc: Exception) -> str:
+    """Content-free description of an envelope validation failure: field paths and error types.
+
+    Never includes pydantic's message, input value or context (they quote envelope content).
+    The key named by an ``extra_forbidden`` error is caller-supplied, so it is not echoed.
+    """
+    if not isinstance(exc, ValidationError):
+        return type(exc).__name__
+    parts = []
+    for error in exc.errors(include_input=False, include_url=False):
+        loc = [str(part) for part in error["loc"]]
+        if error["type"] == "extra_forbidden" and loc:
+            loc[-1] = "<unexpected field>"
+        parts.append(f"{'.'.join(loc) or '<root>'}: {error['type']}")
+    return "; ".join(parts) or "validation failed"
+
+
 async def ingest_v1(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
@@ -741,20 +782,21 @@ async def ingest_v1(
     try:
         envelope = parse_ingest_envelope(payload)
     except Exception as exc:
-        logger.warning("Ingest envelope validation failed: %s", exc)
+        # Pydantic's own text echoes the offending input values, i.e. envelope content, and
+        # connectors re-log the returned error; log and return a content-free summary only.
+        summary = _envelope_error_summary(exc)
+        logger.warning("Ingest envelope validation failed: %s", summary)
         _ingest_metrics.record_ingest_result(source=_source_for_metrics, outcome="validation_error")
-        raise ValueError(f"Invalid ingest.v1 envelope: {exc}") from exc
+        raise ValueError(f"Invalid ingest.v1 envelope: {summary}") from None
 
     # Validate explicit pins before any duplicate early return.  The dedupe keys
     # intentionally ignore control directives, so a repeated payload with a bad
     # pin must still be rejected instead of accepted as a harmless duplicate.
     pinned_target = envelope.control.pinned_target
     if pinned_target is not None:
-        from butlers.tools.switchboard.routing.classify import (
-            _load_available_butlers,
-        )
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
 
-        available_butlers = await _load_available_butlers(pool)
+        available_butlers = await load_available_butlers(pool)
         if not any(butler["name"] == pinned_target for butler in available_butlers):
             _ingest_metrics.record_ingest_result(
                 source=envelope.source.channel, outcome="validation_error"
@@ -986,6 +1028,11 @@ async def ingest_v1(
     raw_payload = _strip_null_bytes(raw_payload)
     if attachments_value is not None:
         attachments_value = _strip_null_bytes(attachments_value)
+
+    # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
+    # representation: nothing on the routing path reads them.
+    _persist_exposure_markers(envelope, raw_payload, normalized_text)
+    raw_payload = _strip_null_bytes(raw_payload)
 
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot

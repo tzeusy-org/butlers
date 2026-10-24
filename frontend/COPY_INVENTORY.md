@@ -43,6 +43,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Undo
 - loading…
 - failed to load dossier
+- Open only: an exact safe preview is unavailable. Approval is disabled.
 - Defer
 - Approve:
 - Referenced Entities
@@ -83,6 +84,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Stalled
 - Approval origin: {}
 - {} Undo
+- Stored call preview
 - Deny reason (optional)
 - None
 - UTC
@@ -122,6 +124,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Rule re-enabled
 - Rule disabled
 - Update failed: {}
+- Review the stored call before approving.
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
@@ -142,26 +145,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. model.priority
 - Toggle selected entry
 - Toggle selected audit entry
-
-## `frontend/src/pages/BeadDetailPage.tsx`
-
-- Snapshot export as of
-- Bead snapshot is unavailable.
-- The detail cannot be verified until the exported snapshot is readable and fresh.
-- Retry
-- Details
-- Labels
-- Bead labels
-- Timestamps
-- Description
-- Design
-- Acceptance criteria
-- Dependencies
-- Direct dependencies
-- External reference
-- Decisions
-- Bead not found
-- This Bead is not present in the current readable snapshot.
 
 ## `frontend/src/pages/ButlerDetailPage.tsx`
 
@@ -209,244 +192,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
-- Recurrence scope
-- Snooze
-- Set
-- Duration
-- When
-- Window
-- Avoid weekends
-- Failed to find open time slots.
-- Choose a duration and search for open time.
-- No open slots match those constraints in the selected window.
-- Loading activity log…
-- No calendar mutations logged yet.
-- ‹ Prev
-- Next ›
-- session ›
-- Event detail
-- Title
-- Source
-- Provenance
-- Attendees
-- People
-- Description
-- Location
-- Delete event
-- Search events
-- Type to search across all events.
-- Searching…
-- No matching events.
-- Search
-- Agenda
-- Export / Import
-- Create butler event
-- Create event
-- View
-- Range
-- Today
-- Activity
-- Find time
-- Proposals
-- Duplicates
-- Status
-- All statuses
-- Type
-- All types
-- · unavailable
-- · none
-- Calendar
-- All calendars
-- All sources
-- Drawing the calendar…
-- No butler lanes yet.
-- Add event
-- No events in this lane.
-- Edit
-- Dismiss
-- Delete
-- All day
-- Undo
-- No events in this range.
-- Detail
-- Configure Sources
-- Accounts
-- Reading source metadata…
-- No connected sources.
-- Set as primary
-- Recover
-- Reconnect
-- Close
-- Calendar Source
-- Start
-- End
-- Timezone
-- Suggested times:
-- Book anyway (overlap)
-- Cancel
-- Butler lane
-- No butlers available
-- Event type
-- Reminder
-- Scheduled task
-- Cron (optional)
-- Recurrence
-- None
-- Daily
-- Weekly
-- Monthly
-- Yearly
-- Set until boundary
-- Until
-- No occurrences in the next 90 days.
-- Calculating…
-- Delete Event
-- Edit recurring event
-- Activity log
-- Reverse this calendar change
-- Close detail panel
-- Live entry detail
-- Search calendar…
-- Search calendar events
-- Sync all sources now
-- Open printable agenda
-- Export or import calendar
-- Configure sources
-- Create user event
 - Calendar sync
-- Previous range
-- Jump to today
-- Next range
-- Cross-domain overlays
-- Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
-- Calendar events
-- Linked people
-- Create event on {}
-- {} more on {}: open day view
-- Open slot {}: {}
-- Undo move
-- Connected accounts
-- Toggle {}
-- {} {} in view
-- Show
-- Hide
-- Full re-sync from scratch (cursor recovery)
-- This source needs re-authorization
-- e.g. Daily medication
-- User
-- Butler
-- Month
-- Week
-- Day
-- List
-- 1 hour
-- 3 hours
-- Tomorrow 9am
-- Active
-- Paused
-- Error
-- Completed
-- Cancelled
-- Provider event
-- Schedule
-- Butler event
-- Next 7 days
-- Next 14 days
-- Next 30 days
-- 30 minutes
-- 45 minutes
-- 90 minutes
-- 2 hours
-- Any time of day
-- Mornings
-- Afternoons
-- Evenings
-- Enter a valid snooze time
-- No writable calendar is available to search for free time.
-- Failed to update {}: {}
-- Event {} updated.
-- Failed to update {}.
-- Cannot toggle this source: no owning butler resolved
-- Failed to update source: {}
-- Source enabled for sync
-- Source disabled
-- Reversed {} · undo {}
-- Invitation details unavailable. Try again shortly.
-- No writable calendar sources are available for user events.
-- Could not resolve calendar owner for this event.
-- Could not resolve butler event for this drag.
-- Change not saved: {}
-- Reverted.
-- Event moved.
-- Failed to save calendar change.
-- Sync queued for {} calendar owner(s).
-- Failed to trigger sync.
-- Source sync failed.
-- Recovery sync joined queued work for {}.
-- Recovery sync queued for {}.
-- Sync joined queued work for {}.
-- Sync queued for {}.
-- Failed to trigger source sync.
-- Failed to create event: {}
-- Failed to update event: {}
-- Created event ({}).
-- Created calendar event.
-- Updated event ({}).
-- Updated calendar event.
-- Title is required.
-- Start and end times must be valid.
-- End time must be after start time.
-- Could not resolve owning butler for this calendar source.
-- Event id is missing for update.
-- Failed to save calendar event.
-- Failed to add calendar event.
-- Could not resolve owning butler for this event.
-- Failed to delete event: {}
-- Deleted event ({}).
-- Deleted calendar event.
-- Failed to delete calendar event.
-- Could not update {}: the new time conflicts with another event.
-- Missing butler event linkage for toggle
-- {} failed: {}
-- Resume
-- Pause
-- Event resumed
-- Event paused
-- Toggle failed
-- Missing butler event linkage for delete
-- Delete "{}"?
-- Delete failed: {}
-- Event deleted
-- Delete failed
-- Missing butler event linkage for snooze
-- Snooze failed: {}
-- Snoozed to {}
-- Snooze failed
-- Missing butler event linkage for dismiss
-- Dismiss failed: {}
-- Reminder dismissed
-- Dismiss failed
-- Select a butler lane before saving
-- Title is required
-- Start time is required
-- End time is required for scheduled events
-- End time must be after start time
-- Scheduled events require either a recurrence frequency or cron expression
-- Until boundary is invalid
-- Missing event context for update
-- Missing butler event linkage for update
-- Failed to create butler event: {}
-- Failed to update butler event: {}
-- Butler event created
-- Butler event updated
-- Event mutation failed
-- Proposal accepted. Event added to the Butlers calendar.
-- Failed to accept the proposed fix.
-- Proposal dismissed.
-- Failed to dismiss the proposed fix.
-- Failed to set primary: change was not persisted
-- Primary calendar updated
-- Failed to set primary: {}
 
 ## `frontend/src/pages/ChatPage.tsx`
 
@@ -456,6 +202,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - This conversation may have been deleted, or the link is incorrect.
 - New conversation
 - Recent conversations
+- Conversation owner
 - conversation history
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
@@ -505,24 +252,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Deny selected attention item
 - Defer selected
 - Defer selected attention item
-
-## `frontend/src/pages/DecisionsPage.tsx`
-
-- Choice:
-- Open Bead detail
-- Created:
-- Due:
-- Options
-- Default:
-- Read-only context: this digest cannot apply a default or close a decision.
-- system · decisions
-- Decisions
-- loading…
-- No decisions waiting.
-- Decision context for {}
-- Decision options
-- Recorded choices
-- Open decisions
 
 ## `frontend/src/pages/EducationPage.tsx`
 
@@ -765,9 +494,19 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - health · medications
 - Medications
 
+## `frontend/src/pages/NotFoundPage.tsx`
+
+- Nothing is registered at
+- Press
+- to search, or go back to the dashboard.
+- Back to the dashboard
+- Page not found
+
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
+- Retry
+- All-time notification statistics are stale. The latest refresh failed.
 - Butler
 - Channel
 - Status
@@ -779,6 +518,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Next
 - Notifications
 - Monitor notification delivery across all butlers.
+- All-time notification statistics unavailable
+- The statistics request failed. Try again to load the counts.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
@@ -1003,6 +744,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Reset {} usage for {}
 - Reset {} usage
 - Set {} limit for {}
+- Declared capabilities
 - verification failed
 - Excluded by breaker after {} consecutive dispatch failures
 - insufficient dispatch history
@@ -1293,6 +1035,130 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Refresh timeline
 - Jump to latest events
 
+## `frontend/src/pages/calendar/AgendaList.tsx`
+
+- No events in this range.
+- Detail
+
+## `frontend/src/pages/calendar/ButlerEventDialog.tsx`
+
+- Butler lane
+- No butlers available
+- Event type
+- Reminder
+- Scheduled task
+- Title
+- Start
+- Timezone
+- End
+- Cron (optional)
+- Recurrence
+- None
+- Daily
+- Weekly
+- Monthly
+- Yearly
+- Set until boundary
+- Until
+- No occurrences in the next 90 days.
+- Calculating…
+- Cancel
+- e.g. Daily medication
+
+## `frontend/src/pages/calendar/ButlerLanes.tsx`
+
+- No butler lanes yet.
+- Add event
+- No events in this lane.
+- Edit
+- Dismiss
+- Delete
+
+## `frontend/src/pages/calendar/CalendarActivityPanel.tsx`
+
+- Loading activity log…
+- No calendar mutations logged yet.
+- ‹ Prev
+- Next ›
+- session ›
+- Activity log
+
+## `frontend/src/pages/calendar/CalendarCanvas.tsx`
+
+- Drawing the calendar…
+- Calendar events
+- Cross-domain overlays
+- Linked people
+
+## `frontend/src/pages/calendar/CalendarConflictRadar.tsx`
+
+- Proposal accepted. Event added to the Butlers calendar.
+- Proposal dismissed.
+
+## `frontend/src/pages/calendar/CalendarEntryDetailPanel.tsx`
+
+- Event detail
+- Title
+- When
+- Source
+- Provenance
+- session ›
+- Attendees
+- People
+- Close detail panel
+- Live entry detail
+- Description
+- Location
+- Failed to update {}: {}
+- Event {} updated.
+- Failed to update {}.
+
+## `frontend/src/pages/calendar/CalendarHeader.tsx`
+
+- Search
+- Agenda
+- Create butler event
+- Sync all sources now
+- Search events
+- Open printable agenda
+- Configure sources
+
+## `frontend/src/pages/calendar/CalendarSearchPalette.tsx`
+
+- Search events
+- Type to search across all events.
+- Searching…
+- No matching events.
+- Search calendar…
+- Search calendar events
+
+## `frontend/src/pages/calendar/CalendarToolbar.tsx`
+
+- View
+- Range
+- Today
+- Status
+- All statuses
+- Type
+- All types
+- · unavailable
+- · none
+- Calendar
+- All calendars
+- Source
+- All sources
+- Previous range
+- Jump to today
+- Next range
+- Cross-domain overlays
+- Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
+- Activity
+- Proposals
+
+## `frontend/src/pages/calendar/MonthGrid.tsx`
+
+- {} more on {}: open day view
+
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
 
 - Promise
@@ -1311,6 +1177,40 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - ISO 8601
 - Draft end
 - Draft location
+
+## `frontend/src/pages/calendar/SourcesDialog.tsx`
+
+- Configure Sources
+- Accounts
+- Reading source metadata…
+- No connected sources.
+- Set as primary
+- Recover
+- Reconnect
+- Close
+- Connected accounts
+- Toggle {}
+- {} {} in view
+- Show
+- Hide
+- Full re-sync from scratch (cursor recovery)
+- This source needs re-authorization
+- Failed to set primary: change was not persisted
+- Primary calendar updated
+- Failed to set primary: {}
+
+## `frontend/src/pages/calendar/TimeGrid.tsx`
+
+- All day
+
+## `frontend/src/pages/calendar/atoms.tsx`
+
+- Snooze
+- Set
+- 1 hour
+- 3 hours
+- Tomorrow 9am
+- Enter a valid snooze time
 
 ## `frontend/src/components/ErrorBoundary.tsx`
 
@@ -1621,42 +1521,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - This week
 - Later
 
-## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
-
-- Loading...
-- Recurrence instrumentation is incomplete. Payment-state claims are paused.
-- No recurrence cadence has been evaluated yet.
-- Recurrence instruments are measurable.
-- No upcoming bills -- you are all clear!
-- No spending data for the last 30 days.
-- Set category
-- Normalize merchant
-- No transactions recorded yet.
-- Date
-- Merchant
-- Category
-- Amount
-- No subscriptions tracked yet.
-- No accounts on file yet -- connect or add an account to see net-worth context.
-- Recurrence signal health
-- Upcoming bills
-- Spending by category
-- Combined category chart
-- e.g. groceries
-- e.g. Whole Foods Market
-- Recent transactions
-- Select all transactions
-- Select transaction {}
-- Subscriptions
-- Accounts
-- Monthly spend
-- Active subscriptions
-- Next bill
-- Top category · 30d
-- This overlays the selected transactions' facts. It does not modify the original transaction records.
-- Updated {} transaction fact{}.
-- Bulk update failed.
-
 ## `frontend/src/components/butler-detail/ButlerFrictionPanel.tsx`
 
 - no friction episodes this period
@@ -1667,40 +1531,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - TODAY
 - 7D
 - 30D
-
-## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
-
-- Collections overview
-- Could not load collections overview.
-- Collections
-- Could not load collections.
-- No collections yet.
-- Name
-- Items
-- Created
-- Previous
-- Next
-- Recent items
-- Could not load recent items.
-- No items yet.
-- Collection sizes
-- Could not load size histogram.
-- No collections to display.
-- Quick actions
-- Create collection
-- Add a new collection to store related items.
-- Description
-- (optional)
-- Cancel
-- Create
-- Some data failed to load. Displayed values may be incomplete.
-- Total collections
-- Total items
-- Recently modified
-- Largest collection
-- Search collections...
-- Collection name
-- What is this collection for?
 
 ## `frontend/src/components/butler-detail/ButlerHealthMeasurementsTab.tsx`
 
@@ -1731,57 +1561,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Steps
 - Sleep duration
 
-## `frontend/src/components/butler-detail/ButlerHomeDevicesTab.tsx`
-
-- Loading...
-- Failed to load device count.
-- Failed to load offline count.
-- Failed to load maintenance count.
-- Failed to load snapshot time.
-- Failed to load device inventory.
-- No devices in snapshot cache.
-- Device
-- Domain
-- Area
-- State
-- Health
-- Failed to load maintenance queue.
-- No maintenance items.
-- Failed to load command log.
-- No commands logged.
-- kWh
-- Failed to load energy data.
-- No energy data available.
-- Failed to load top consumers.
-- No consumer data available.
-- Home Assistant
-- Total devices
-- Offline
-- Overdue maintenance
-- Last snapshot
-- Maintenance queue
-- HA command log
-- Person mappings
-- Active devices
-- Recent commands
-- Energy
-- Top consumers
-
-## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
-
-- Could not load taste overview.
-- Could not load taste verdicts.
-- No taste verdicts recorded yet.
-- Could not load recent works.
-- No works recorded yet.
-- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
-- Taste verdicts
-- Recently added
-- Works tracked
-- All signals
-- Signals (7d)
-- Taste overview
-
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
 
 - Auto-scroll
@@ -1810,6 +1589,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Shutdown
 - Identity & routing
 - Session timeout
+- Memory read ceiling
 - System prompt
 - Prompt diff · v{} to v{} · {}
 - Edit system prompt · {}
@@ -1856,11 +1636,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Model ID
 - Runtime
 - Extra Args
+- 0 && rate
+- Loading cost preview...
+- Cost preview unavailable. You can still save with a reason.
+- Catalog rates in USD per 1M tokens (base tier)
 - Override the model catalog settings for this butler.
 - Model
 - Complexity Override
 - Use catalog default
 - Override the complexity tier for this model on this butler only.
+- Choosing another catalog entry adds its override; the existing entry stays unchanged.
+- Reason
 - Cancel
 - No overrides configured. The butler uses the global model catalog.
 - Alias
@@ -1878,7 +1664,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Override specific catalog entries for this butler.
 - Add override
 - Remove Override?
+- Cost preview
 - Select a model...
+- Why is this override needed?
 - Model override saved
 - Failed: {}
 - Unknown error
@@ -1997,9 +1785,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Schedule "{}" deleted
 - Failed to delete schedule: {}
 - Schedule "{}" updated
-- Failed to update schedule: {}
 - Schedule "{}" created
-- Failed to create schedule: {}
+- Failed to {} schedule: {}
 
 ## `frontend/src/components/butler-detail/ButlerSessionsTab.tsx`
 
@@ -2037,6 +1824,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerStateTab.tsx`
 
+- Promise
 - Set value
 - Create or overwrite a key-value pair in the state store
 - Key
@@ -2044,51 +1832,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Cancel
 - State Store
 - e.g. config.theme
-
-## `frontend/src/components/butler-detail/ButlerStatusBadge.tsx`
-
-- Up
-- Degraded
-- Down
-- Butler status: Up
-- Butler status: Degraded
-- Butler status: Down
-- Butler status: {}
-
-## `frontend/src/components/butler-detail/ButlerTravelTripsTab.tsx`
-
-- Loading…
-- = now && ms
-- No legs or check-ins in the next 7 days.
-- All clear. No pre-trip actions required.
-- No trips found.
-- Previous
-- Next
-- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
-- Close
-- Trip data unavailable.
-- Destination
-- Dates
-- Traveller party
-- No travellers recorded.
-- Connections
-- Connection data unavailable.
-- No connection on this journey.
-- Alerts
-- Timeline
-- No timeline entries yet.
-- Accommodations
-- Upcoming travel
-- Next departure
-- Active trips
-- Planned trips
-- Open actions
-- Week ahead
-- Week ahead schedule
-- Upcoming checklist
-- Trips roster
-- Trip detail
-- Check-in: {}
+- State key "{}" saved
 
 ## `frontend/src/components/butler-detail/ButlerVerdictOpener.tsx`
 
@@ -2104,43 +1848,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Sleep sessions · 7d
 - Daily summaries · 7d
 - Google Health: {}
-
-## `frontend/src/components/butler-detail/HomeAtmosphereLocationPanel.tsx`
-
-- The atmosphere feed is stale. Saved coordinates remain available.
-- Latitude
-- Longitude
-- Saving home location...
-- Home location saved. The next scheduled refresh will pick up this change.
-- Loading saved home location...
-- Retry
-- The saved location may be out of date.
-- Atmosphere location
-
-## `frontend/src/components/butler-detail/HomePersonMappingPanel.tsx`
-
-- Remove
-- Add mapping
-- Clear
-- Mapping request was not applied. Check the values and try again.
-- Home Assistant person ID {}
-- Person entity UUID {}
-
-## `frontend/src/components/butler-detail/HomeSafetyWatchPanel.tsx`
-
-- Loading safety sensors
-- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
-- Reload safety sensors
-- No safety sensors declared yet.
-- Could not remove the sensor. It is still being watched.
-- Remove
-- Sensor entity ID
-- Hazard
-- Name in alerts
-- Could not save the sensor. Check the details and try again.
-- Safety sensors
-- Stop watching {}
-- Kitchen leak sensor
 
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
@@ -2173,10 +1880,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
 - Navigate to butler
-
-## `frontend/src/components/butler-detail/atoms.tsx`
-
-- Loading...
 
 ## `frontend/src/components/butlers/BoardFooter.tsx`
 
@@ -2219,54 +1922,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Printable agenda
 - Close agenda
 
-## `frontend/src/components/calendar/CalendarDuplicatesPanel.tsx`
-
-- Reviewing duplicates…
-- Duplicate review
-- Match strategy
-- Noisy threshold
-- No cross-source duplicates in this range. Nothing is being collapsed.
-- Noisy threshold (minimum cluster size)
-- Matched on {}
-- Exact
-- Balanced
-- Aggressive
-- Match strategy set to {}.
-- Failed to update match strategy.
-- Noisy threshold must be a whole number ≥ 2.
-- Noisy threshold set to {}.
-- Failed to update noisy threshold.
-- Cluster kept separate. Copies will show.
-- Cluster will collapse again.
-- Failed to update keep-separate.
-
-## `frontend/src/components/calendar/CalendarPortabilityDialog.tsx`
-
-- Export / Import calendar
-- Export .ics
-- Download .ics
-- Subscribe (live feed)
-- Copy
-- Open in calendar app (webcal://)
-- Import .ics
-- File
-- Import into
-- Parsed
-- Imported
-- Skipped duplicates
-- Download calendar as ICS
-- Subscribe feed URL
-- Copy subscribe URL
-- Choose .ics file
-- Import target calendar
-- Import calendar file
-- Import result
-- Subscribe URL copied
-- Could not copy. Select the URL and copy manually
-- Choose a .ics file to import
-- Choose a calendar to import into
-- Imported {} · skipped {} duplicate{}
-
 ## `frontend/src/components/calendar/CalendarProposalsPanel.tsx`
 
 - Loading proposals…
@@ -2294,7 +1949,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Submitting response…
 - Check response outcome
 - Review response receipt
-- Undo response
 - Open approval dossier
 - Approval review unavailable; source or action identity is unverified.
 - Close receipt
@@ -2350,6 +2004,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Nothing scheduled across your domains. Tomorrow is clear.
 - Day briefing
 
+## `frontend/src/components/calendar/DebriefCard.tsx`
+
+- Sent. View conversation
+- e.g. "send Sam the deck by Friday", or "nothing agreed"
+- Meeting debriefs
+
 ## `frontend/src/components/calendar/LinkedPeopleAvatars.tsx`
 
 - Linked people: {}
@@ -2388,6 +2048,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/chat/ChatPanel.tsx`
 
+- Showing cached conversations; this list may be out of date.
+- conversation discovery
 - conversation history
 - Previous conversation
 - Next conversation
@@ -2427,6 +2089,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/chat/FloatingChatWidget.tsx`
 
 - Talk to Butlers
+- Saved conversation details may be out of date.
+- Saved updates may be out of date.
 - Conversation history
 - History
 - New conversation
@@ -2435,6 +2099,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Close chat
 - Close
 - conversation history
+- conversation updates
 - Talk to Butlers (new reply)
 
 ## `frontend/src/components/chat/MessageInput.tsx`
@@ -2717,10 +2382,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - No sessions in the selected window.
 - Session activity
 
-## `frontend/src/components/decisions/decisions-verdict-opener.tsx`
-
-- decision digest
-
 ## `frontend/src/components/education/CrossTopicChart.tsx`
 
 - Cross-Topic Portfolio
@@ -2825,6 +2486,76 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Struggling Concepts
 - Struggling concepts
+
+## `frontend/src/components/finance/ButlerFinanceFinancesTab.tsx`
+
+- Loading...
+- Recurrence instrumentation is incomplete. Payment-state claims are paused.
+- No recurrence cadence has been evaluated yet.
+- Recurrence instruments are measurable.
+- No upcoming bills -- you are all clear!
+- No spending data for the last 30 days.
+- Set category
+- Normalize merchant
+- No transactions recorded yet.
+- Date
+- Merchant
+- Category
+- Amount
+- No subscriptions tracked yet.
+- No accounts on file yet -- connect or add an account to see net-worth context.
+- Recurrence signal health
+- Upcoming bills
+- Spending by category
+- Combined category chart
+- e.g. groceries
+- e.g. Whole Foods Market
+- Recent transactions
+- Select all transactions
+- Select transaction {}
+- Subscriptions
+- Accounts
+- Monthly spend
+- Active subscriptions
+- Next bill
+- Top category · 30d
+- This overlays the selected transactions' facts. It does not modify the original transaction records.
+- Updated {} transaction fact{}.
+- Bulk update failed.
+
+## `frontend/src/components/general/ButlerGeneralCollectionsTab.tsx`
+
+- Collections overview
+- Could not load collections overview.
+- Collections
+- Could not load collections.
+- No collections yet.
+- Name
+- Items
+- Created
+- Previous
+- Next
+- Recent items
+- Could not load recent items.
+- No items yet.
+- Collection sizes
+- Could not load size histogram.
+- No collections to display.
+- Quick actions
+- Create collection
+- Add a new collection to store related items.
+- Description
+- (optional)
+- Cancel
+- Create
+- Some data failed to load. Displayed values may be incomplete.
+- Total collections
+- Total items
+- Recently modified
+- Largest collection
+- Search collections...
+- Collection name
+- What is this collection for?
 
 ## `frontend/src/components/general/EntityBrowser.tsx`
 
@@ -3113,6 +2844,79 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Symptom deleted.
 - Failed to delete symptom.
 
+## `frontend/src/components/home/ButlerHomeDevicesTab.tsx`
+
+- Loading...
+- Failed to load device count.
+- Failed to load offline count.
+- Failed to load maintenance count.
+- Failed to load snapshot time.
+- Failed to load device inventory.
+- No devices in snapshot cache.
+- Device
+- Domain
+- Area
+- State
+- Health
+- Failed to load maintenance queue.
+- No maintenance items.
+- Failed to load command log.
+- No commands logged.
+- kWh
+- Failed to load energy data.
+- No energy data available.
+- Failed to load top consumers.
+- No consumer data available.
+- Home Assistant
+- Total devices
+- Offline
+- Overdue maintenance
+- Last snapshot
+- Maintenance queue
+- HA command log
+- Person mappings
+- Active devices
+- Recent commands
+- Energy
+- Top consumers
+
+## `frontend/src/components/home/HomeAtmosphereLocationPanel.tsx`
+
+- The atmosphere feed is stale. Saved coordinates remain available.
+- Latitude
+- Longitude
+- Saving home location...
+- Home location saved. The next scheduled refresh will pick up this change.
+- Loading saved home location...
+- Retry
+- The saved location may be out of date.
+- Atmosphere location
+
+## `frontend/src/components/home/HomePersonMappingPanel.tsx`
+
+- Remove
+- Add mapping
+- Clear
+- Mapping request was not applied. Check the values and try again.
+- Home Assistant person ID {}
+- Person entity UUID {}
+
+## `frontend/src/components/home/HomeSafetyWatchPanel.tsx`
+
+- Loading safety sensors
+- Couldn&apos;t load your safety sensors. Alerts still use the list already saved.
+- Reload safety sensors
+- No safety sensors declared yet.
+- Could not remove the sensor. It is still being watched.
+- Remove
+- Sensor entity ID
+- Hazard
+- Name in alerts
+- Could not save the sensor. Check the details and try again.
+- Safety sensors
+- Stop watching {}
+- Kitchen leak sensor
+
 ## `frontend/src/components/ingestion/BatchSettingsCard.tsx`
 
 - Batch Settings
@@ -3359,6 +3163,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - decision:
 - target:
 - rule type
+- except people I know
 - priority (lower = higher)
 - e.g. noreply.example.com
 - email address
@@ -3481,6 +3286,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - inner circle
 - Search entities, pages, butlers, actions…
 - Sessions & state
+- Owner shortcuts
 - Entities
 
 ## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
@@ -3527,6 +3333,21 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Collapse sidebar
 - Main navigation
 
+## `frontend/src/components/lifestyle/ButlerLifestyleTasteTab.tsx`
+
+- Could not load taste overview.
+- Could not load taste verdicts.
+- No taste verdicts recorded yet.
+- Could not load recent works.
+- No works recorded yet.
+- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
+- Taste verdicts
+- Recently added
+- Works tracked
+- All signals
+- Signals (7d)
+- Taste overview
+
 ## `frontend/src/components/memory/AttentionRail.tsx`
 
 - Needs attention
@@ -3554,6 +3375,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - open ↗
 - Retry failed. Still dead-lettered.
+- Episodes
 - the daybook
 - dead letter
 
@@ -3563,6 +3385,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Fact: {} {}
 - from episode {}
 - Source {}
+- Facts
 - the ledger
 
 ## `frontend/src/components/memory/HousekeepingBand.tsx`
@@ -3608,6 +3431,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Expired retention
 - Catalog drift
 
+## `frontend/src/components/memory/MemoryProvenanceLine.tsx`
+
+- told me
+- · Source:
+- Endorsed by
+- Guidance waiting for you
+- Source attribution
+
 ## `frontend/src/components/memory/MemorySearch.tsx`
 
 - Search memory
@@ -3619,13 +3450,19 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/memory/RulesRegister.tsx`
 
+- Guidance waiting for you
+- Show all guidance
 - Rule: {}
+- Rules
 - standing orders
 
 ## `frontend/src/components/memory/SearchResults.tsx`
 
+- Searching the books…
+- Nothing on this page.
 - Nothing in the books.
 - search results
+- Search results
 
 ## `frontend/src/components/notifications/notification-feed.tsx`
 
@@ -3973,6 +3810,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Create failed: {}
 - {} failed for {} {}: {}
 
+## `frontend/src/components/relationship/EntityDossierPanel.tsx`
+
+- Loading the relationship dossier
+- No relationships are recorded for this person yet.
+- Relationship dossier
+
 ## `frontend/src/components/relationship/EntityVerbRail.tsx`
 
 - Saving...
@@ -4154,6 +3997,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/schedules/ScheduleForm.tsx`
 
+- void | Promise
 - Name
 - Cron Expression
 - Standard 5-field cron: minute hour day-of-month month day-of-week
@@ -4493,6 +4337,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Pending
 - Unknown
 
+## `frontend/src/components/settings/ModelAllowanceStrip.tsx`
+
+- Allowance
+
 ## `frontend/src/components/settings/QaStafferCard.tsx`
 
 - system · qa staffer
@@ -4527,6 +4375,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/state/StateBrowser.tsx`
 
+- void | Promise
 - Key
 - Value (JSON)
 - Cancel
@@ -4539,6 +4388,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Edit
 - e.g. config.theme
 - Filter by key prefix...
+- State key "{}" saved
 
 ## `frontend/src/components/switchboard/RegistryTable.tsx`
 
@@ -4573,7 +4423,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Backups
 - Backup recency and reachability
-- Could not load backup facts.
 - Run failed
 - Stale
 - Healthy
@@ -4585,7 +4434,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Restore drill
 - No drill yet
 - Passed
-- if (isError) return
 - Backup status unavailable.
 - Backup source is unreachable or not configured.
 - Status
@@ -4608,8 +4456,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Database Size
 - PostgreSQL disk footprint
-- Could not load database size.
-- if (isError) return
 - Total size
 - Largest schemas (top 5)
 
@@ -4617,9 +4463,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Deployment
 - What's actually serving right now
-- Could not load deployment status.
 - 0: red clause "serving
-- if (isError) return
 - No deployment recorded yet.
 - up to date with origin/main
 - Commits-behind-origin/main check unavailable.
@@ -4633,8 +4477,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Migration Drift
 - Codebase vs. deployed schema state
-- Could not load migration drift status.
-- if (isError) return
 - Drift check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 - In sync
@@ -4644,7 +4486,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Data Egress
 - External services that received data
-- Could not load egress catalog.
 - Owner only -- sign in as the owner to view.
 - No external egress recorded yet.
 - Last seen
@@ -4653,8 +4494,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Insight Delivery
 - Proactive insight pipeline state
-- Could not load insight delivery state.
-- if (isError) return
 - Queued
 - Delivered
 - Failed
@@ -4664,8 +4503,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Security Posture
 - Auth and secrets configuration
-- Could not load security posture.
-- if (isError) return
 - Owner authentication
 - Export secret
 - Infra credentials
@@ -4697,6 +4534,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Owner alert not delivered
 - Owner alert may not have arrived; it is not resent automatically
 - Owner alert status unknown
+- No owner alert has been raised for this condition
+- Owner alert waits for the attention grace
 - Owner alert status: {}
 - All
 - Commitments
@@ -4707,8 +4546,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Definer search-path check unavailable. This is not a clean bill of health.
 - Stored Functions
 - Deployed bodies vs. init-db.sql
-- Could not load stored-function drift status.
-- if (isError) return
 - Stored-function check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
 
@@ -4728,8 +4565,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Uptime
 - Process uptime
-- Could not load uptime info.
-- if (isError) return
 - Running for
 - Started
 
@@ -4737,8 +4572,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Version
 - Software version
-- Could not load version info.
-- if (isError) return
 - Package version
 - Last deploy
 
@@ -4809,6 +4642,41 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Offline / Quarantined
 - Connectors
 
+## `frontend/src/components/travel/ButlerTravelTripsTab.tsx`
+
+- Loading…
+- = now && ms
+- No legs or check-ins in the next 7 days.
+- All clear. No pre-trip actions required.
+- No trips found.
+- Previous
+- Next
+- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
+- Close
+- Trip data unavailable.
+- Destination
+- Dates
+- Traveller party
+- No travellers recorded.
+- Connections
+- Connection data unavailable.
+- No connection on this journey.
+- Alerts
+- Timeline
+- No timeline entries yet.
+- Accommodations
+- Upcoming travel
+- Next departure
+- Active trips
+- Planned trips
+- Open actions
+- Week ahead
+- Week ahead schedule
+- Upcoming checklist
+- Trips roster
+- Trip detail
+- Check-in: {}
+
 ## `frontend/src/components/ui/Display.tsx`
 
 - Secrets
@@ -4858,6 +4726,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Inventory of every credential the system holds.
 - Nothing waiting.
 
+## `frontend/src/components/ui/atoms.tsx`
+
+- Loading...
+
 ## `frontend/src/components/ui/breadcrumbs-control.tsx`
 
 - (inside
@@ -4874,6 +4746,17 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Loading {}
 - {} needs attention
+
+## `frontend/src/components/ui/draft-notice.tsx`
+
+- Browser draft privacy
+- Drafts stay in this browser profile for up to 24 hours. People using this profile and scripts on this origin can read them. Drafts are not encrypted or synced to the server.
+- Discard draft
+- Use this tab
+- Keep editing
+- Discard and close
+- Draft conflict
+- Unsaved draft
 
 ## `frontend/src/components/ui/expandable-detail.tsx`
 
@@ -4904,6 +4787,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ui/query-boundary.tsx`
 
+- Retry
+- Refreshing
+- Offline. Showing last confirmed result.
+
+## `frontend/src/components/ui/query-tile.tsx`
+
+- extends Omit
 - Retry
 
 ## `frontend/src/components/ui/range-toggle.tsx`
@@ -4939,6 +4829,3 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - To
 - Time window picker
 - Preset windows
-
----
-*Total strings: 3937*

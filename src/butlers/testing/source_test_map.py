@@ -130,7 +130,7 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     ),
     # --- Modules: mailbox ---
     # --- Modules: calendar ---
-    ("src/butlers/modules/calendar.py", ["tests/modules/"]),
+    ("src/butlers/modules/calendar/", ["tests/modules/"]),
     # --- Modules: catch-all ---
     ("src/butlers/modules/", ["tests/modules/"]),
     # --- Tools ---

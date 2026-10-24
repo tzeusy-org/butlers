@@ -51,7 +51,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.routers.priority_contacts import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import router as priority_contacts_router
 
 pytestmark = pytest.mark.integration
@@ -171,7 +171,7 @@ async def priority_contacts_client(cascade_pool: asyncpg.Pool) -> AsyncIterator[
     """The real priority-contacts router bound to the live migrated database."""
     app = FastAPI()
     app.include_router(priority_contacts_router)
-    app.dependency_overrides[_get_db_manager] = lambda: _StubDatabaseManager(cascade_pool)
+    app.dependency_overrides[get_db] = lambda: _StubDatabaseManager(cascade_pool)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

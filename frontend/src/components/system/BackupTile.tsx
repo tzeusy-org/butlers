@@ -31,6 +31,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useBackupFacts } from "@/hooks/use-system"
@@ -51,22 +52,6 @@ function TileSkeleton() {
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </TileContent>
-    </Tile>
-  )
-}
-
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Backups</TileTitle>
-        <TileDescription>Backup recency and reachability</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="backup-tile-error" className="text-destructive text-sm">
-          Could not load backup facts.
-        </p>
       </TileContent>
     </Tile>
   )
@@ -269,14 +254,22 @@ function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
  * a failure.
  */
 export function BackupTile() {
-  const { data: response, isPending, isError } = useBackupFacts()
+  const q = useBackupFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Backups" description="Backup recency and reachability"
+      errorMessage="Could not load backup facts." errorTestId="backup-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <BackupContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function BackupContent({ response }: {
+  response: NonNullable<ReturnType<typeof useBackupFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.backup_source_reachable) {
+  if (!facts.backup_source_reachable) {
     return (
       <Tile degraded>
         <TileHeader>

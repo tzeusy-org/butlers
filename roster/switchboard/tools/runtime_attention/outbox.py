@@ -460,7 +460,7 @@ class RuntimeAttentionOutbox:
         ``delivery_error_class``/``delivery_error_detail`` are set to the
         fixed ``('transport_uncertain', 'worker_recovery')`` pair
         ``ck_runtime_attention_outbox_delivery_evidence`` reserves for exactly
-        this recovery-fenced path (mirrors ``routing.transport.WORKER_RECOVERY``).
+        this recovery-fenced path (mirrors ``switchboard.transport.WORKER_RECOVERY``).
         ``notification_ref`` stays NULL: no delivery was observed here, so
         there is no notification to link.
         """

@@ -205,8 +205,7 @@ function supersedingIdentityVersion(condition: ConditionEntry): number | null {
  * still standing. A deadline in the past on an already-resolved commitment is
  * history, not a warning, so only a still-standing commitment can be overdue.
  *
- * A standalone module-level function (same shape as DecisionsPage's
- * resolveExportAsOfIsWarn and ButlerActivityTab's window helper) so the
+ * A standalone module-level function, like ButlerActivityTab's window helper, so the
  * react-hooks/purity rule does not flag a direct Date.now() call inside a
  * component body. Reading the clock here rather than threading a `now` prop
  * down from the tile also keeps the freshness of the comparison local to the
@@ -313,6 +312,8 @@ const ATTENTION_COPY: Record<string, { label: string; warn: boolean }> = {
   failed: { label: "Owner alert not delivered", warn: true },
   uncertain: { label: "Owner alert may not have arrived; it is not resent automatically", warn: true },
   unavailable: { label: "Owner alert status unknown", warn: true },
+  not_raised: { label: "No owner alert has been raised for this condition", warn: true },
+  within_grace: { label: "Owner alert waits for the attention grace", warn: false },
 }
 
 function attentionCopy(status: string): { label: string; warn: boolean } {
@@ -597,9 +598,12 @@ export function StandingConditionsTile() {
     condition,
     commitment: commitmentFields(condition),
   }))
-  // A source that could not report alert delivery is a degraded read, never calm.
+  // A source that could not report alert delivery, or an active paging condition that no
+  // alert covers, is a degraded read, never calm.
   const attentionUnavailable = merged.some(
-    (condition) => condition.attention?.status === "unavailable",
+    (condition) =>
+      condition.attention?.status === "unavailable" ||
+      (condition.attention?.status === "not_raised" && condition.state !== "resolved"),
   )
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>

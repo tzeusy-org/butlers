@@ -25,7 +25,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from butlers.api.deps import get_db as _sessions_get_db
 from butlers.api.routers.sessions import _resolve_success_filter
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 

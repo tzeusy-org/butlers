@@ -20,6 +20,10 @@ from butlers.core.approval_delivery_transport import (
 )
 from butlers.core.approval_review import review_from_notify_refusal
 from butlers.core.tool_call_capture import get_current_runtime_session_id
+from butlers.tools.switchboard.contracts import (
+    NotifyRequestV1,
+    parse_notify_request,
+)
 from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
@@ -30,13 +34,11 @@ from butlers.tools.switchboard.registry.registry import (
     resolve_control_plane_target,
 )
 from butlers.tools.switchboard.routing.contracts import (
-    NotifyRequestV1,
     RouteRequestContextV1,
-    parse_notify_request,
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.route import route
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     PROVIDER_REJECTED,
     TRANSPORT_CONNECTION_LOST,
     TransportResult,

@@ -22,6 +22,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.ingestion_bearer_scrub import scrub_message_text
 
 
@@ -135,6 +136,15 @@ def build_voice_envelope(
                 "discretion_reason": discretion_reason,
             },
             "normalized_text": transcript,
+            **(
+                {"untrusted_spans": spans}
+                if (
+                    spans := email_untrusted_spans(
+                        transcript, subject="", has_attached_message=False
+                    )
+                )
+                else {}
+            ),
         },
         "control": {
             "idempotency_key": idempotency_key,

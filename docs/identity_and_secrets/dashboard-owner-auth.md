@@ -334,3 +334,9 @@ The canonical origin, RP ID, and forwarded-header checks remain required.
 - Bitwarden's WebAuthn wrapper can return `credProps: undefined` unrequested. Treat undefined
   optional outputs as absent, keep rejecting defined extension data, and send
   `clientExtensionResults: {}`.
+- The WebAuthn adapter loads the installed vendor server implementation into a private module
+  namespace with a private disabled publisher. Its methods retain that namespace throughout
+  verification, including concurrent reloads of the canonical vendor module during `to_thread`
+  execution. Rebinding the canonical module logger at entry cannot protect an in-flight call.
+  Keep ordinary application and capture sinks active; never retain library credential messages
+  or reflect library exception arguments.

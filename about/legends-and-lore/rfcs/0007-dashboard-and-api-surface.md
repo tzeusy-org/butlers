@@ -355,46 +355,16 @@ Conformance with RFC 0005 (observability and telemetry):
 
 ---
 
-## Amendment 2: Snapshot-backed Bead Detail
+## Amendment 2: Snapshot-backed Bead Detail (withdrawn)
 
-**Date:** 2026-08-13
-**Status:** Accepted
-**Implementing change:** `openspec/changes/add-dashboard-bead-detail/` (bu-7a74e)
+**Date:** 2026-08-13; withdrawn by owner decision bu-g2zuv2 = A (2026-10-21).
 
-The dashboard adds a single read-only Bead drill-down without expanding its
-tracker trust boundary.
-
-### API Surface
-
-`GET /api/beads/{id}` returns `ApiResponse<BeadDetail>` only from the existing
-read-only Beads JSONL export bind mount. There is no live `bd`, Dolt, GitHub,
-database, credential, external-network, or tracker-mutation bridge. Successful
-responses include `meta.export_as_of`, the source file mtime.
-
-`BeadDetail` is an explicit allowlist: `id`, `title`, `status`, `priority`,
-`type`, `description`, `design`, `acceptance_criteria`, `labels`,
-`created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`, bounded direct
-`dependencies`, and `external_ref`. A dependency summary is limited to 20
-source-order records and contains only `id`, `title`, `status`, `priority`, and
-`type`. Notes, metadata, comments, identities, credentials, raw records, raw
-edges, and arbitrary href values are never materialized.
-
-The endpoint fully verifies bounded source readability before looking up the
-ID. Only a readable, sufficiently fresh snapshot with no matching ID returns
-`404 ErrorResponse{code: "BEAD_NOT_FOUND"}`. A missing, stale, oversized,
-unreadable, or malformed snapshot returns `503
-ErrorResponse{code: "BEAD_SNAPSHOT_UNAVAILABLE"}` with
-`error.details.export_as_of`, including `null` when no mtime is known. This
-prevents an unavailable source from becoming a fabricated not-found claim.
-
-### Frontend Route and Navigation
-
-`/beads/:id` is a same-origin, read-only detail route. It uses the standard
-detail shell and semantic, rule-separated content; it exposes source freshness
-and distinct loading, not-found, and unavailable states. It has no tracker
-mutation affordance. Decisions and escalation blockers build their targets
-only as `/beads/${encodeURIComponent(id)}`. `external_ref` is inert displayed
-text, never a link or fetched target.
+The former bead-detail API and frontend destination are retired in source under
+bu-99t5s3.6. Their historical contract is available in Git history. No runtime
+snapshot mount, tracker reader or mutation interface remains authorized by this
+amendment. Approvals, QA and dashboard owner authentication retain their
+existing contracts. Retained decision tables require a separately reviewed
+drop only after code removal is deployed and all old readers and writers stop.
 
 ---
 

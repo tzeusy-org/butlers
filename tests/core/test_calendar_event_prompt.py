@@ -147,7 +147,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt, "display_title": kwargs.get("display_title")})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -177,7 +179,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -202,7 +206,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -228,7 +234,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -253,7 +261,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)

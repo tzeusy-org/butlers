@@ -139,13 +139,19 @@ class TestImportTransactionsToolRegistration:
         module = _FakeModule(blob_store=blob_store)
         fake_data_import = _make_fake_data_import(import_fn)
 
-        # Inject the fake data_import into sys.modules so _try_import finds it.
+        # register_tools does ``from butlers.tools.finance import data_import``, which reads the
+        # package attribute, so the fake goes on the package as well as into sys.modules.
+        import butlers.tools.finance as finance_tools
+
         data_import_key = "butlers.tools.finance.data_import"
         original = sys.modules.get(data_import_key, None)
+        original_attr = finance_tools.data_import
         sys.modules[data_import_key] = fake_data_import
+        finance_tools.data_import = fake_data_import
         try:
             register_tools(mcp, module)
         finally:
+            finance_tools.data_import = original_attr
             if original is None:
                 sys.modules.pop(data_import_key, None)
             else:

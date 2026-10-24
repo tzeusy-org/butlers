@@ -16,20 +16,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.telegram_bot import TelegramBotConnector
-from butlers.tools.switchboard.ingestion import ingest as ingest_module
-from butlers.tools.switchboard.ingestion.ingest import (
-    _compute_content_hash_key,
-    _compute_dedupe_key,
-    _dedupe_text,
-    ingest_v1,
-)
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestControlV1,
     IngestEnvelopeV1,
     IngestEventV1,
     IngestPayloadV1,
     IngestSenderV1,
     IngestSourceV1,
+)
+from butlers.tools.switchboard.ingestion import ingest as ingest_module
+from butlers.tools.switchboard.ingestion.ingest import (
+    _compute_content_hash_key,
+    _compute_dedupe_key,
+    _dedupe_text,
+    ingest_v1,
 )
 
 pytestmark = pytest.mark.unit

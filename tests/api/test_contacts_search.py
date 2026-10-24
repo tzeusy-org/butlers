@@ -25,7 +25,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.contacts import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -61,7 +61,7 @@ def _wire(app: FastAPI, *, name_rows=None, id_rows=None, id_error=None, shared_p
     mock_db = MagicMock(spec=DatabaseManager)
     if shared_pool_error is not None:
         mock_db.credential_shared_pool.side_effect = shared_pool_error
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_db] = lambda: mock_db
         return None
 
     pool = AsyncMock()
@@ -75,7 +75,7 @@ def _wire(app: FastAPI, *, name_rows=None, id_rows=None, id_error=None, shared_p
 
     pool.fetch = AsyncMock(side_effect=_fetch)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return pool
 
 

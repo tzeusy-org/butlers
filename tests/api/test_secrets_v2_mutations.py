@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 import butlers.api.routers.secrets_v2 as _secrets_v2
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.secrets_v2 import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -220,7 +220,7 @@ def _make_db(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -307,7 +307,7 @@ def test_user_mutations_do_not_require_detail_audit_history(
 
     shared_pool.fetch = AsyncMock(side_effect=_fetch)
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app, raise_server_exceptions=False)
 
     response = client.post(path, json=payload)
@@ -686,7 +686,7 @@ def test_reauthorize_does_not_require_detail_audit_history():
 
     shared_pool.fetch = AsyncMock(side_effect=_fetch)
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app, raise_server_exceptions=False)
 
     response = client.post("/api/secrets/user/google/reauthorize")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -20,6 +21,8 @@ from butlers.modules.calendar_response import (
     CalendarResponseUncertainError,
     invitation_snapshot,
 )
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = pytest.mark.unit
 
@@ -542,7 +545,7 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
         with monkeypatch.context() as race:
             real_read = pool.fetchrow
 
-            async def missing_prelock(sql, *values):
+            async def missing_prelock(sql, *values, real_read=real_read):
                 if "idempotency_key" in sql:
                     return None
                 return await real_read(sql, *values)
@@ -641,42 +644,131 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
 async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(monkeypatch):
     # REQ-module-calendar-029: actual installed registry/startup, not a mocked
     # apply_approval_gates result. Missing gate and executor are planted refusals.
-    from pathlib import Path
+    import asyncio
+    import uuid
+    from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
     from fastmcp import FastMCP
 
+    from butlers.config import load_config
     from butlers.daemon import ButlerDaemon
+    from butlers.lifecycle import StartupState, _startup_module_startup
     from butlers.modules.approvals.module import ApprovalsModule
     from butlers.modules.calendar import CalendarModule
 
-    module = CalendarModule()
-    module._config = CalendarConfig(provider="google", response_enabled=True)
-    module._butler_name = "response-test"
-    db = SimpleNamespace(pool=AsyncMock())
-    module._db = db
-    mcp = FastMCP("actual-calendar-startup")
-    await module.register_tools(
-        mcp, {"provider": "google", "response_enabled": True}, db, "response-test"
+    entity_id = uuid.uuid4()
+    account = SimpleNamespace(
+        entity_id=entity_id,
+        email="owner@example.test",
+        status="active",
+        is_primary=True,
+        granted_scopes=["https://www.googleapis.com/auth/calendar"],
     )
+    lookup = AsyncMock(return_value=account)
+    monkeypatch.setattr("butlers.google_account_registry.get_google_account", lookup)
+    # Exercise canonical credential resolution against the fake DB boundary,
+    # while constructing the real lazy Google provider and OAuth client.
+    connection = SimpleNamespace(fetchrow=AsyncMock(return_value={"value": "test-refresh"}))
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    db = SimpleNamespace(pool=AsyncMock(), schema="messenger")
+    db.pool.acquire = acquire
+    db.pool.execute.side_effect = AssertionError("response startup must not write")
+    credentials = SimpleNamespace(
+        resolve=AsyncMock(side_effect=["test-client", "test-secret"]),
+        load_shared=AsyncMock(side_effect=AssertionError("no target restoration")),
+        store_shared=AsyncMock(side_effect=AssertionError("no calendar persistence")),
+    )
+    module = CalendarModule()
+    forbidden = {}
+    for name in (
+        "_resolve_startup_calendar_id",
+        "_discover_and_register_all_calendars",
+        "_purge_invalid_probe_sources",
+        "_purge_obsolete_internal_sources",
+        "_projection_tables_available",
+        "_recover_force_sync_commands",
+        "_run_sync_poller",
+        "_run_force_sync_queue_worker",
+        "_run_internal_projection_poller",
+    ):
+        forbidden[name] = AsyncMock(side_effect=AssertionError(f"unexpected startup work: {name}"))
+        monkeypatch.setattr(module, name, forbidden[name])
+    request = AsyncMock(side_effect=AssertionError("response startup must not contact Google"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", request)
+    mcp = FastMCP("actual-calendar-startup")
     approvals = ApprovalsModule()
-    daemon = ButlerDaemon(Path(__file__).resolve().parents[2] / "roster" / "messenger", db=db)
+    daemon = ButlerDaemon(_THIS_FILE.parents[2] / "roster" / "messenger", db=db)
     daemon.mcp = mcp
+    response_config = {
+        **load_config(_THIS_FILE.parents[2] / "roster" / "messenger").modules["calendar"],
+        "account": account.email,
+    }
     daemon.config = SimpleNamespace(
-        name="response-test",
+        name="messenger",
         modules={
+            "calendar": response_config,
             "approvals": {
                 "enabled": True,
                 "gated_tools": {"calendar_respond": {"risk_tier": "medium"}},
-            }
+            },
         },
     )
+    daemon._modules = [module]
+    daemon._module_configs = {"calendar": CalendarConfig(**response_config)}
+    state = StartupState(credential_store=credentials)
+    before_tasks = asyncio.all_tasks()
+    await _startup_module_startup(daemon, state)
+    assert state.started_modules == [module]
+    assert not daemon._module_statuses
+    assert isinstance(module._provider, _GoogleProvider)
+    assert module._provider._oauth._access_token is None
+    assert module._response_credential_entity_id == entity_id
+    assert module._resolved_calendar_id is None
+    assert module._all_provider_calendar_ids == []
+    assert module._provider_calendar_discovery_completed is False
+    assert module._default_target_calendar_id is None
+    assert (
+        module._sync_task
+        is module._force_sync_queue_task
+        is module._internal_projection_task
+        is None
+    )
+    assert not module._force_sync_event.is_set()
+    assert asyncio.all_tasks() == before_tasks
+    for spy in forbidden.values():
+        spy.assert_not_awaited()
+    request.assert_not_awaited()
+    db.pool.execute.assert_not_awaited()
+    credentials.load_shared.assert_not_awaited()
+    credentials.store_shared.assert_not_awaited()
+    assert credentials.resolve.await_args_list == [
+        (("GOOGLE_OAUTH_CLIENT_ID",), {"env_fallback": False}),
+        (("GOOGLE_OAUTH_CLIENT_SECRET",), {"env_fallback": False}),
+    ]
+    connection.fetchrow.assert_awaited_once()
+    await module.register_tools(mcp, response_config, db, "messenger")
+    assert {tool.name for tool in await mcp.list_tools()} == {
+        "calendar_respond",
+        "calendar_response_fence_status",
+    }
+    original = (await mcp.get_tool("calendar_respond")).fn
+    assert original.__module__ == "butlers.modules.calendar.response_tools"
+    assert module.canonical_approval_preparers() == {
+        "calendar_respond": module._response_coordinator
+    }
     daemon._modules = [module, approvals]
     monkeypatch.setattr(daemon, "_build_approval_push_runtime", lambda: None)
     originals = await daemon._apply_approval_gates()
     assert set(originals) == {"calendar_respond"}
+    assert originals["calendar_respond"] is original
     assert module._response_ready is True
     assert callable(approvals._tool_executor)
+    assert approvals._tool_executor.__kwdefaults__["_originals"] is originals
     with pytest.raises(RuntimeError, match="response_approval_required"):
         await approvals._tool_executor(
             "calendar_respond",
@@ -696,29 +788,16 @@ async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(
     # Restored real registration uses a new registry rather than double wrapping
     # the previous gate. The public capability is opt-in and only declared by
     # the two actual server-configured response owners.
-    from butlers.config import load_config
-
-    root = Path(__file__).resolve().parents[2]
+    root = _THIS_FILE.parents[2]
     for name in ("messenger", "relationship"):
         config = load_config(root / "roster" / name)
         assert config.modules["calendar"]["response_enabled"] is True
         assert "calendar_respond" in config.modules["approvals"]["gated_tools"]
     assert CalendarModule().canonical_approval_preparers() == {}
 
-    import uuid
-
-    entity_id = uuid.uuid4()
-    account = SimpleNamespace(
-        entity_id=entity_id,
-        email="owner@example.test",
-        status="active",
-        is_primary=True,
-        granted_scopes=["https://www.googleapis.com/auth/calendar"],
-    )
+    module._config.account = None  # Preserve the implicit-primary revalidation population.
     module._response_credential_entity_id = entity_id
     db.pool.fetchrow.return_value = {"granted": True}
-    lookup = AsyncMock(return_value=account)
-    monkeypatch.setattr("butlers.google_account_registry.get_google_account", lookup)
     assert await module._verified_response_account() == {
         "entity_id": str(entity_id),
         "email": account.email,
@@ -743,6 +822,7 @@ async def test_real_daemon_binds_canonical_response_to_captured_owning_executor(
     db.pool.fetchrow.side_effect = None
     db.pool.fetchrow.return_value = {"granted": True}
     assert (await module._verified_response_account())["entity_id"] == str(entity_id)
+    await module.on_shutdown()
 
 
 async def test_response_fence_requires_complete_historical_owner_census(tmp_path):

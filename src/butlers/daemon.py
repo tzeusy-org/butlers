@@ -218,6 +218,7 @@ class ButlerDaemon:
         *,
         butler_name: str | None = None,
         db: Database | None = None,
+        control_profile: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
@@ -230,6 +231,7 @@ class ButlerDaemon:
         else:
             self.config_dir = config_dir  # type: ignore
 
+        self._control_profile = control_profile
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -298,15 +300,6 @@ class ButlerDaemon:
             if m.name not in self._module_statuses
             or self._module_statuses[m.name].status == "active"
         ]
-
-    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Admit explicit declarations and reject unknown names before DB work."""
-        if self.config is None:
-            return modules
-        unknown = sorted(set(self.config.modules) - {mod.name for mod in modules})
-        if unknown:
-            raise ValueError(f"Unknown modules configured: {', '.join(unknown)}")
-        return [mod for mod in modules if mod.name in self.config.modules]
 
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
@@ -555,6 +548,15 @@ class ButlerDaemon:
         while not self._shutting_down and self._boot_epoch is None:
             await asyncio.sleep(delay_s)
             if await self._register_boot_epoch() and not self._shutting_down:
+                from butlers.core.catalog_publication import start_catalog_publication
+
+                try:
+                    await start_catalog_publication(self, self.db.pool)
+                except Exception:
+                    # No acceptance from a partial/uncertain publication. Its
+                    # retained operation is available to bounded shutdown.
+                    self._catalog_publication_failed = True
+                    return
                 self._accepting_connections = True
                 logger.info("Boot epoch committed for butler=%s", self.config.name)
                 return
@@ -1297,7 +1299,7 @@ class ButlerDaemon:
             # 3. Fallback to module class property
             mod = loaded_modules.get(mod_name)
             if mod is not None:
-                env_list = getattr(mod, "credentials_env", [])
+                env_list = mod.credentials_env
                 if env_list:
                     creds[mod_name] = list(env_list)
         return creds
@@ -1536,6 +1538,16 @@ class ButlerDaemon:
         if current is not None and current.generation_digest == candidate.generation_digest:
             return current
         self._tool_catalog = candidate
+        # Republish a real definition replacement, never renew an old digest
+        # against a changed registry. The role-bound owner is created only by
+        # the explicitly enabled final-startup publication hook.
+        publication = getattr(self, "_catalog_publication", None)
+        if publication is not None:
+            try:
+                await publication.publish(candidate)
+            except BaseException:
+                await publication.retire()
+                raise
         return candidate
 
     @property
@@ -1657,12 +1669,10 @@ class ButlerDaemon:
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}
         for mod in self._modules:
-            on_ready = getattr(mod, "on_all_modules_ready", None)
-            if on_ready is not None:
-                try:
-                    on_ready(module_map)
-                except Exception as exc:
-                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+            try:
+                mod.on_all_modules_ready(module_map)
+            except Exception as exc:
+                logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
 
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.

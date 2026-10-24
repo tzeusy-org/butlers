@@ -2,163 +2,55 @@
 
 ## Purpose
 
-The Decisions lane makes open owner decision beads visible as a read-only,
-source-honest dashboard surface backed solely by the exported Beads snapshot.
+Owner decision bu-g2zuv2 = A (2026-10-21) removes engineering tracker tooling
+from the personal-assistant product. Frontend entry points, the Helm bridge and the backend readers and writers
+are retired in source. Stored intent history remains until the removal is
+actually deployed and a separately reviewed deployment-safe migration runs.
 
 ## Requirements
 
-### Requirement: Decisions Page Route and Navigation
+### Requirement: Engineering Tracker Product Entry Points Retired
 
-The dashboard SHALL expose a routed `/decisions` page registered in the
-sidebar Main section with a dedicated icon and a navigation indicator driven by
-the read-only Decisions digest. A readable digest with one or more open
-decision records SHALL render its positive numeric count. A readable digest
-with zero open decision records SHALL render no badge. When
-`meta.decisions_available` is `false`, or the Decisions query errors directly,
-the sidebar SHALL render an accessible unavailable marker instead of a numeric
-zero. The marker SHALL be labelled `Decisions digest unavailable` and SHALL
-appear consistently in rail, expanded desktop, and mobile sidebar variants.
+ID: REQ-dashboard-decisions-002
+Source: owner decision bu-g2zuv2 = A; bu-99t5s3.6 steps 1-3
+Scope: Dashboard, API, jobs, transports and tracker bridge source retirement
 
-#### Scenario: Decisions page is reachable from the sidebar
+The dashboard SHALL NOT expose Decision Desk or bead-detail pages, navigation,
+palette entries, chords, prefetches or digest badge queries. Engineering
+choices remain in `bd` or an owner session. The Helm chart SHALL NOT run the
+tracker bridge or mount its export into runtime pods. Compose and deployment
+helpers SHALL NOT materialize or mount tracker exports. The API SHALL NOT
+register decision or bead-detail operations; jobs, schedule configuration and
+Telegram transports SHALL NOT read, offer or apply engineering decisions. Removing the bridge
+MUST preserve the existing effective runtime-to-tracker network confinement.
+Approvals, their callbacks, QA and owner authentication SHALL retain their
+existing product behavior and authorization boundaries.
 
-- **WHEN** the owner opens the sidebar and the readable digest contains open
-  decision records
-- **THEN** a Decisions entry links to `/decisions`
-- **AND** its indicator renders the positive open-decision count
+#### Scenario: Retired destinations are absent
 
-#### Scenario: Available empty digest remains quiet
+- **WHEN** the dashboard route and command registries are built
+- **THEN** `/decisions` and `/beads/:beadId` are absent
+- **AND** no decision digest badge query or prefetch runs from the shared shell
+- **AND** Approvals and QA retain their existing destinations and badges
 
-- **WHEN** the Decisions digest is readable and contains zero open decision
-  records
-- **THEN** the Decisions entry renders no numeric badge or unavailable marker
+#### Scenario: Bridge retirement preserves tracker confinement
 
-#### Scenario: Degraded digest renders an accessible unavailable marker
+- **WHEN** the Helm chart renders with its existing dev tracker deny enabled
+- **THEN** no tracker bridge workload, export PVC, tracker credential sync or export mount is rendered
+- **AND** all runtime pods remain denied the configured tracker IPv4 addresses
+- **AND** missing tracker CIDRs refuse rendering rather than relax isolation
 
-- **WHEN** `meta.decisions_available` is `false`
-- **THEN** the Decisions entry renders an unavailable marker labelled
-  `Decisions digest unavailable`
-- **AND** it does not render a numeric zero
+#### Scenario: Retired backend and callback destinations have no product authority
 
-#### Scenario: Direct query failure renders an accessible unavailable marker
+- **WHEN** the API registry and Switchboard schedule configuration are built
+- **THEN** no engineering decision or bead-detail operation or job is registered
+- **AND** approval callbacks and their owner and credential checks remain unchanged
+- **AND** stale decision callbacks cannot choose an option or enter ingestion
+- **AND** unmatched API request audit bodies omit raw bearer payloads, including malformed and truncated JSON
 
-- **WHEN** the Decisions query errors before a usable digest is available
-- **THEN** the Decisions entry renders an unavailable marker labelled
-  `Decisions digest unavailable`
-- **AND** it does not render a numeric zero
+#### Scenario: Source retirement does not claim data removal
 
-#### Scenario: Availability state is consistent across sidebar variants
-
-- **WHEN** the Decisions digest is unavailable
-- **THEN** the rail, expanded desktop sidebar, and mobile sidebar each render
-  the labelled unavailable marker
-- **AND** a positive available count remains numeric in each variant
-
-### Requirement: Decisions Verdict Opener
-
-The `/decisions` page SHALL render a verdict opener from the decision digest:
-`N decision(s) waiting, oldest Xd`, plus an escalation clause when one or more
-records block a P1 bug or deploy. When the digest is unavailable or the query
-errors, the opener MUST name that condition and MUST NOT render the calm
-all-clear line.
-
-#### Scenario: Genuine all-clear
-
-- **WHEN** the digest is available and contains zero open decisions
-- **THEN** the opener renders `No decisions waiting.`
-
-#### Scenario: Degraded digest suppresses the all-clear
-
-- **WHEN** `meta.decisions_available` is `false`
-- **THEN** the opener names the digest as unavailable
-- **AND** it does not render `No decisions waiting.`
-
-### Requirement: Read-Only Decision Detail and Selection
-
-The `/decisions` page SHALL render eligible decisions as a rule-separated,
-keyboard-operable row list with id, title, priority when present, age, and
-escalation state. The list SHALL retain j/k roving selection through
-`useListTriage`, publish its existing footer hints, and expand only the
-selected row inline. Click and keyboard selection SHALL remain usable without
-introducing approve, deny, close, default-application, or Telegram controls.
-
-When a selected decision has `structured_details_available: true`, its detail
-SHALL render the exported description when present, options in API order, the
-matching default distinctly, and the native due timestamp. When structured
-details are unavailable, its detail SHALL name the unavailable/malformed reason
-and MUST NOT imply that the decision has no options or invent a default. The
-existing created-at and escalation details SHALL remain visible.
-
-The `bead` query parameter SHALL deep-link selection: `/decisions?bead=<id>`
-selects and expands a record only when that id occurs in the current digest. An
-unknown id SHALL leave the normal list visible and unselected; it MUST NOT
-create a fabricated record or hide usable rows.
-
-#### Scenario: Valid detail remains read-only
-
-- **WHEN** the owner selects a record with valid structured details
-- **THEN** its inline panel shows the description, ordered options, default,
-  native deadline, created-at, and any escalation detail
-- **AND** no decision mutation control is rendered
-
-#### Scenario: Malformed metadata is named instead of calming the owner
-
-- **WHEN** the owner selects a record with
-  `structured_details_available: false` because metadata is malformed
-- **THEN** its inline panel names structured details as unavailable/malformed
-- **AND** it does not render a calm no-options message or a fabricated default
-
-#### Scenario: Present deep link selects the matching record
-
-- **WHEN** the owner opens `/decisions?bead=bu-present` and `bu-present` is in
-  the current digest
-- **THEN** only that record expands inline
-
-#### Scenario: Unknown deep link leaves the list usable
-
-- **WHEN** the owner opens `/decisions?bead=bu-unknown` and that id is absent
-- **THEN** no record is fabricated or auto-expanded
-- **AND** the owner can still select any listed record by click or j/k
-
-#### Scenario: Degraded digest names itself instead of a calm empty state
-
-- **WHEN** `meta.decisions_available` is `false`
-- **THEN** the list area renders a named Decisions degraded note instead of
-  `No decisions waiting.`
-
-### Requirement: Export As-Of Plaque
-
-The `/decisions` page SHALL render an export-as-of plaque whenever
-`meta.export_as_of` is known. A recently refreshed export SHALL use muted
-styling, while an aging but still available export SHALL use a warning tint.
-The plaque SHALL remain visible beside a degraded note when the mtime is known
-and SHALL be omitted only when no export mtime exists.
-
-#### Scenario: Plaque persists alongside a stale-export note
-
-- **WHEN** `decisions_available` is `false` for a stale export and
-  `export_as_of` is known
-- **THEN** the page renders both the named degraded note and the export-as-of
-  plaque
-
-### Requirement: Decision and blocker drill-downs stay same-origin
-
-The Decisions lane SHALL provide an explicit same-origin detail route for each
-listed decision and each escalation blocker. Each target SHALL be constructed
-only from the safe Bead ID as `/beads/:id`; it MUST NOT use a source-derived
-external URL, `external_ref`, tracker URL, or arbitrary href. Existing inline
-selection, j/k roving behavior, and read-only decision context SHALL remain
-available.
-
-#### Scenario: A decision row opens the safe detail route
-
-- **WHEN** an owner encounters a decision row in `/decisions`
-- **THEN** its detail link targets `/beads/<encoded-decision-id>` on the same
-  origin
-- **AND** the row's selection control remains keyboard-operable
-
-#### Scenario: An escalation blocker opens the safe detail route
-
-- **WHEN** a selected decision displays an escalation blocker
-- **THEN** its blocker link targets `/beads/<encoded-blocker-id>` on the same
-  origin
-- **AND** no external tracker link is rendered
+- **WHEN** the source retirement has landed without its deployment
+- **THEN** stored intent and prompt tables and migration ancestry remain intact
+- **AND** a later drop requires removal to be deployed and all old readers and writers stopped
+- **AND** the engineering decision-bead convention and local linter remain available

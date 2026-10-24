@@ -100,13 +100,13 @@ def _patch_infra():
         "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter",
             return_value=type(
                 "MockAdapter",
                 (),
                 {"binary_name": "claude", "__init__": lambda self, **kwargs: None},
-            ),
+            )(),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -146,7 +146,7 @@ async def _start_daemon_capture_tools(
         patches["sync_schedules"],
         patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["recover_route_inbox"],

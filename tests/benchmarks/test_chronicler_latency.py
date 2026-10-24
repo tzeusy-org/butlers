@@ -38,6 +38,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 # ---------------------------------------------------------------------------
@@ -196,9 +197,9 @@ def chronicler_app(chronicler_pool):
 
     app = create_app(api_key="")
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app

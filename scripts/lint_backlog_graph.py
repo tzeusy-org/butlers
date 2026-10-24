@@ -95,13 +95,13 @@ def load_issues(path: Path | None) -> list[dict[str, Any]]:
             raise InputUnavailableError("snapshot unreadable") from exc
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         try:
             data = [json.loads(line) for line in text.splitlines() if line.strip()]
         except json.JSONDecodeError as exc:
             raise InputUnavailableError("invalid JSON/JSONL snapshot") from exc
         if not data:
-            raise InputUnavailableError("empty snapshot")
+            raise InputUnavailableError("empty snapshot") from exc
     return _validate_records(data)
 
 

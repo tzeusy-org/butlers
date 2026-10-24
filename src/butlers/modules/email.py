@@ -121,17 +121,11 @@ class EmailModule(Module):
         # DB pool for OAuth status queries (public.google_accounts).
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "email"
+    name = "email"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return EmailConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     @property
     def credentials_env(self) -> list[str]:
@@ -141,9 +135,6 @@ class EmailModule(Module):
             envs.extend([self._config.bot.address_env, self._config.bot.password_env])
         # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
-
-    def migration_revisions(self) -> str | None:
-        return None  # No custom tables needed
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the recipient address as a safety-critical argument.
@@ -239,9 +230,6 @@ class EmailModule(Module):
                     value = await credential_store.resolve(env_key)
                     if value is not None:
                         self._resolved_credentials[env_key] = value
-
-    async def on_shutdown(self) -> None:
-        """No persistent connections to clean up."""
 
     async def extra_status_fields(self) -> dict[str, Any]:
         """Return OAuth/credential health fields for the email module status entry.

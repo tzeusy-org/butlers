@@ -18,7 +18,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from butlers.api.read_models.timeline_v1 import (
+from butlers.api.deps import get_db
+from butlers.api.read_models.timeline import (
     query_timeline_attention_notifications_single,
     query_timeline_notification_histogram_single,
     query_timeline_notifications_single,
@@ -456,8 +457,6 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
 
     from butlers.api.approval_review import resolve_messenger_reviews
     from butlers.api.db import DatabaseManager
-    from butlers.api.routers import approvals as approval_routes
-    from butlers.api.routers import notifications as notification_routes
     from butlers.core.approval_review import ApprovalReview
     from butlers.tools.switchboard.notification.log import (
         _log_notification_with_review,
@@ -527,8 +526,8 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
         for name, modules in db._butler_modules.items():
             db.register_configured_modules(name, modules)
         app = create_authenticated_domain_app()
-        app.dependency_overrides[notification_routes._get_db_manager] = lambda: db
-        app.dependency_overrides[approval_routes._get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         async def write_and_read(writer=_log_notification_with_review):
             notification_id = await writer(

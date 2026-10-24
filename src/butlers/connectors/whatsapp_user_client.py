@@ -91,6 +91,7 @@ from butlers.credential_store import (
 )
 from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,22 @@ class WhatsAppUserClientConnectorConfig:
 # ---------------------------------------------------------------------------
 # Message type normalization
 # ---------------------------------------------------------------------------
+
+
+def _is_forwarded(event: dict[str, Any]) -> bool:
+    """Whether the bridge marked the message as forwarded (``content.is_forwarded``).
+
+    WhatsApp does not name a forward's original author, so the span carries no origin. A quoted
+    reply arrives only as ``quoted_message_id`` without the quoted text, so nothing in
+    ``normalized_text`` is quoted content.
+    """
+    return (event.get("content") or {}).get("is_forwarded") is True
+
+
+def _quoted_ref(event: dict[str, Any]) -> str | None:
+    content = event.get("content")
+    value = content.get("quoted_message_id") if isinstance(content, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def normalize_message_text(event: dict[str, Any]) -> str:
@@ -1451,7 +1468,7 @@ class WhatsAppUserClientConnector:
             *(self._flush_chat_buffer(jid) for jid in chat_jids),
             return_exceptions=True,
         )
-        for jid, result in zip(chat_jids, results):
+        for jid, result in zip(chat_jids, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",
@@ -1523,6 +1540,7 @@ class WhatsAppUserClientConnector:
                         "block",
                         _ip_decision.matched_rule_type or "unknown",
                     ),
+                    events=buffered_events,
                 )
                 await self._flush_and_drain()
                 return
@@ -1543,6 +1561,7 @@ class WhatsAppUserClientConnector:
                         "skip",
                         _gp_decision.matched_rule_type or "unknown",
                     ),
+                    events=buffered_events,
                 )
                 await self._flush_and_drain()
                 return
@@ -1588,6 +1607,7 @@ class WhatsAppUserClientConnector:
                         batch_event_id=batch_event_id,
                         filter_reason=FilteredEventBuffer.reason_discretion_ignore(ignore_kind),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
+                        events=buffered_events,
                     )
                     await self._flush_and_drain()
                     return
@@ -1620,6 +1640,7 @@ class WhatsAppUserClientConnector:
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
                 error_detail=failure_class,
+                events=buffered_events,
             )
             await self._flush_and_drain()
 
@@ -1632,6 +1653,7 @@ class WhatsAppUserClientConnector:
         subject_or_preview: str | None = None,
         status: str = "filtered",
         error_detail: str | None = None,
+        events: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record a filtered or errored batch event."""
         self._filtered_event_buffer.record(
@@ -1650,6 +1672,20 @@ class WhatsAppUserClientConnector:
                 reply_target_ref=chat_jid or None,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender_identity,
+                in_reply_to_ref=_quoted_ref(events[0]) if events and len(events) == 1 else None,
+                untrusted_spans=(
+                    [
+                        whole_text_span("forwarded", "")
+                        for event in events or []
+                        if _is_forwarded(event)
+                    ]
+                    + [
+                        whole_text_span("quoted", "")
+                        for event in events or []
+                        if len(events or []) > 1 and _quoted_ref(event)
+                    ]
+                )
+                or None,
                 raw={},
             ),
             status=status,
@@ -1929,15 +1965,33 @@ class WhatsAppUserClientConnector:
         # Build message lines
         sender_projection = self._project_batch_senders(buffered_events)
         text_parts: list[str] = []
+        # Forwarded messages inside the batch, as (line index, text start, text end, origin).
+        forwarded_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
+        quoted_lines: list[tuple[int, int, int, dict[str, str | None]]] = []
         for event in buffered_events:
             message_id = str(event.get("message_id") or event.get("id"))
             _, sender_label = sender_projection[message_id]
             msg_text = normalize_message_text(event)
-            text_parts.append(f"[{sender_label}]: {msg_text}")
+            line = f"[{sender_label}]: {msg_text}"
+            if _is_forwarded(event):
+                forwarded_lines.append((len(text_parts), len(line) - len(msg_text), len(line), {}))
+            if len(buffered_events) > 1 and _quoted_ref(event):
+                # One aggregate event cannot resolve several per-message reply
+                # locators. Preserve known quote exposure on that message's line.
+                quoted_lines.append((len(text_parts), len(line) - len(msg_text), len(line), {}))
+            text_parts.append(line)
 
         footer_lines = ["---", f"Messages: {len(buffered_events)} new"]
 
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
+        untrusted_spans = forwarded_line_spans(
+            normalized_text, header_lines, text_parts, forwarded_lines
+        ) + [
+            dict(span, kind="quoted")
+            for span in forwarded_line_spans(
+                normalized_text, header_lines, text_parts, quoted_lines
+            )
+        ]
 
         flush_ts = datetime.now(UTC).isoformat()
 
@@ -1985,6 +2039,11 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": batch_event_id,
+                **(
+                    {"in_reply_to_ref": ref}
+                    if len(buffered_events) == 1 and (ref := _quoted_ref(buffered_events[0]))
+                    else {}
+                ),
                 "external_conversation_id": whatsapp_conversation_id(chat_jid),
                 "reply_target_ref": chat_jid,
                 "observed_at": flush_ts,
@@ -1999,6 +2058,7 @@ class WhatsAppUserClientConnector:
             "payload": {
                 "raw": raw_payload,
                 "normalized_text": normalized_text,
+                **({"untrusted_spans": untrusted_spans} if untrusted_spans else {}),
             },
             "control": {
                 "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
@@ -2076,6 +2136,7 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": msg_id,
+                **({"in_reply_to_ref": ref} if (ref := _quoted_ref(event)) else {}),
                 "external_conversation_id": (
                     whatsapp_conversation_id(chat_jid) if chat_jid else None
                 ),
@@ -2090,6 +2151,12 @@ class WhatsAppUserClientConnector:
             "payload": {
                 "raw": event,
                 "normalized_text": normalized_text,
+                # A forwarded message is someone else's text in full (RFC 0038 D5).
+                **(
+                    {"untrusted_spans": [whole_text_span("forwarded", normalized_text)]}
+                    if _is_forwarded(event)
+                    else {}
+                ),
             },
             "control": {
                 "idempotency_key": idempotency_key,

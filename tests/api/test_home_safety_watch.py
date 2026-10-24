@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.owner_control import require_dashboard_owner_control
 
 pytestmark = pytest.mark.unit
@@ -26,9 +27,9 @@ _ROW = {
 def _client(app, pool: AsyncMock) -> httpx.AsyncClient:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    for butler_name, router_module in app.state.butler_routers:
+    for butler_name, _router_module in app.state.butler_routers:
         if butler_name == "home":
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            app.dependency_overrides[get_db] = lambda: mock_db
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 

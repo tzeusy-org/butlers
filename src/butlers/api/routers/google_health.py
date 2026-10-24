@@ -56,8 +56,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.google_health import (
     AccountStatus,
     GoogleHealthConnectorState,
@@ -105,16 +106,11 @@ _TEST_MODE_TOKEN_LIFETIME = timedelta(days=7)
 
 
 # ---------------------------------------------------------------------------
-# DB manager dependency — stubbed out here; overridden by wire_db_dependencies
+# Optional shared database dependency
 # at app startup. Returns None when the shared DB pool is unavailable so
 # endpoints degrade gracefully (returning not_configured state) instead of
 # raising 500s during tests that don't boot the full application.
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by ``wire_db_dependencies()``."""
-    return None
 
 
 def _make_shared_pool(db_manager: Any) -> Any | None:
@@ -731,7 +727,8 @@ async def _build_account_status(
 @router.get("/status", response_model=GoogleHealthStatusResponse)
 async def get_google_health_status(
     request: Request,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> GoogleHealthStatusResponse:
     """Return the current Google Health connector state.
 
@@ -899,7 +896,8 @@ async def get_google_health_status(
 @router.delete("/disconnect", response_model=GoogleHealthDisconnectResponse)
 async def disconnect_google_health(
     request: Request,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
     account_email: str | None = Query(
         default=None,
         description=(

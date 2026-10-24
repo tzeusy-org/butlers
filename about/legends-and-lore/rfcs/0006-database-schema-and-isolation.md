@@ -281,8 +281,8 @@ executor or provide its secret. See the [operator procedure](../../../docs/data_
 #### Execution Order at Startup
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module with non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks applied revisions per-chain in the `alembic_version` table within the target schema.
 
@@ -372,7 +372,7 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 ## Integration
 
 - **RFC 0001:** Database provisioning occurs at phase 6, core migrations at phase 7, module migrations at phase 8, credential store creation at phase 8b.
-- **RFC 0002:** Modules declare their migration chains via `migration_revisions()`.
+- **RFC 0002:** CLI and daemon select declared modules' chains from recognized non-empty directories; roster-root aliases and private schemas are preserved.
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
 - **RFC 0004:** All identity tables reside in the `public` schema with the access model described there.
 - **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.

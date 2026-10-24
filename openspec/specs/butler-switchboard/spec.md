@@ -86,7 +86,9 @@ The Switchboard SHALL expose a `correct_route` MCP tool that accepts a misroute 
 
 ### Requirement: Cross-Container MCP Endpoint Resolution
 
-`route()` (and everything built on it, including `switchboard.notification.deliver.deliver()`) SHALL resolve a target butler's registered MCP endpoint to a host reachable from the CALLER's own container, not only from `butlers-up` (the container every butler daemon self-registers itself into via `http://localhost:<port>`). When the `BUTLERS_HOST` environment variable is set to a value other than `localhost` (Docker Compose sets this on the `dashboard-api` / `dashboard-api-hotreload` containers, which host processes — e.g. `butlers.jobs.secrets_lifecycle` — that are NOT part of `butlers-up`), an exact `localhost` host in the resolved endpoint SHALL be rewritten to that value before the MCP connection is attempted. When `BUTLERS_HOST` is unset or equals `localhost` (the case inside `butlers-up` itself), resolution SHALL be unchanged (a no-op).
+`route()` (and everything built on it, including `switchboard.notification.deliver.deliver()`) SHALL resolve a target butler's registered MCP endpoint to a host reachable from the CALLER's own container, not only from `butlers-up` (the container every butler daemon self-registers itself into via `http://localhost:<port>`). When the `BUTLERS_HOST` environment variable is set to a value other than `localhost` (Docker Compose sets this on the `dashboard-api` / `dashboard-api-hotreload` containers, which host processes — e.g. `butlers.jobs.secrets_lifecycle` — that are NOT part of `butlers-up`), an exact `localhost` host in the resolved endpoint SHALL be rewritten to that value before the MCP connection is attempted. When `BUTLERS_HOST` is unset or equals `localhost` (the case inside `butlers-up` itself), resolution SHALL be unchanged (a no-op). When `SWITCHBOARD_MCP_URL` is configured, an exact registered `localhost:41100` Switchboard endpoint SHALL use that HTTP(S) URL's network destination instead of `BUTLERS_HOST`, preserving the registered path and query. This applies to dashboard, notify, relay and runtime MCP callers; domain endpoints SHALL continue to use `BUTLERS_HOST`. An invalid configured Switchboard URL SHALL refuse resolution.
+
+Configuration loading SHALL apply this canonical Switchboard destination resolution to an explicit `[butler.switchboard].url` on `localhost:41100` before notify/connect, heartbeat reconnect, fact-authority admission/recovery and runtime source-endpoint consumers receive the config. It SHALL preserve the configured path/query, explicit remote or noncanonical endpoints, and unsplit localhost behavior when cross-container settings are absent.
 
 #### Scenario: In-container caller reaches the registered endpoint unchanged
 - **WHEN** a butler daemon running inside `butlers-up` calls `route()` to reach a sibling butler
@@ -98,6 +100,12 @@ The Switchboard SHALL expose a `correct_route` MCP tool that accepts a misroute 
 - **AND** `BUTLERS_HOST=butlers-up` is set (as Docker Compose configures on this container)
 - **THEN** the MCP connection targets `http://butlers-up:<port>/mcp`, not `http://localhost:<port>/mcp`
 - **AND** the delivery SHALL succeed rather than failing to connect
+
+#### Scenario: A separated Switchboard remains reachable from domain and dashboard callers
+- **WHEN** a caller resolves `http://localhost:41100/mcp` with `SWITCHBOARD_MCP_URL=http://butlers-control:41100/sse` and `BUTLERS_HOST=butlers-up`
+- **THEN** its destination SHALL be `http://butlers-control:41100/mcp`
+- **AND** a registered domain endpoint on port 41104 SHALL resolve to `butlers-up:41104` and remote registered hosts SHALL remain unchanged
+
 
 ### Requirement: Wellness Source Channel and Google Health Provider Registration
 

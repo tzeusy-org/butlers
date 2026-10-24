@@ -21,76 +21,6 @@
       "scenario": "Inventory rows are content-blind"
     }
   ],
-  "beads-projection-exporter/dashboard-api/Decisions Digest Endpoint": [
-    {
-      "digest": "2a1dc7aa3ec9",
-      "excerpt": "The dashboard API SHALL expose `GET /api/decisions` as a read-only `ApiResponse<DecisionBeadSummary[]>` wrapper aroun...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "bb99230cc5c6",
-      "excerpt": "- `description`: the exported string description or `null` when it is absent or not a string",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "185c06fb7c6b",
-      "excerpt": "- `options`: the ordered exported `metadata.decision.options` strings or `null` when they cannot be trusted",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "63834707996b",
-      "excerpt": "- `default`: the exported `metadata.decision.default` string or `null` when it cannot be trusted",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "5edf0dbffd2b",
-      "excerpt": "- `due_at`: the exported native Beads `due_at` timestamp or `null` when it is absent or invalid",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "20ee9cb45d7c",
-      "excerpt": "- `structured_details_available`: whether the governed decision metadata and native deadline are valid; and",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "9aabbd0aaa20",
-      "excerpt": "- `structured_details_unavailable_reason`: `null` when details are available, otherwise a named missing or malformed ...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "0d938be63b0a",
-      "excerpt": "The projection SHALL preserve option order. It SHALL mark structured details available only when `metadata.decision.o...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "2621acd6074a",
-      "excerpt": "The response `meta` SHALL retain `decisions_available: boolean`. Missing, stale, or unreadable exports SHALL return `...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "35a8697968af",
-      "excerpt": "- **WHEN** a readable export contains an eligible decision with no `metadata.decision` mapping",
-      "kind": "clause",
-      "scenario": "Missing structured metadata is distinct from malformed metadata"
-    }
-  ],
-  "beads-projection-exporter/dashboard-decisions/Export As-Of Plaque": [
-    {
-      "digest": "69f6cfc81da6",
-      "excerpt": "The `/decisions` page SHALL render an export-as-of plaque whenever `meta.export_as_of` is known. A recently refreshed...",
-      "kind": "prose",
-      "scenario": null
-    }
-  ],
   "canonical-dnd-generation-guard/context-bus/Write Permissions": [
     {
       "digest": "a3b707a77712",
@@ -365,12 +295,6 @@
       "excerpt": "Conversation endpoint API response models SHALL provide typed response shapes",
       "kind": "prose",
       "scenario": null
-    },
-    {
-      "digest": "30a04520e1ed",
-      "excerpt": "\"ConversationMessage model\" is not in the block",
-      "kind": "scenario",
-      "scenario": "ConversationMessage model"
     },
     {
       "digest": "f3b43fd26691",
@@ -1315,20 +1239,6 @@
       "excerpt": "- **WHEN** a runtime instance is spawned for the relationship butler",
       "kind": "clause",
       "scenario": "Exact current registered inventory"
-    }
-  ],
-  "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Schedules": [
-    {
-      "digest": "a48dc00791e9",
-      "excerpt": "- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, prompt-based: check birthdays/anniversaries in the next 7 ...",
-      "kind": "clause",
-      "scenario": "Scheduled task inventory"
-    },
-    {
-      "digest": "ea8e4da5c28f",
-      "excerpt": "- **AND** the existing scheduled prompt SHALL instruct no reminder or all-clear on that failed read",
-      "kind": "clause",
-      "scenario": "Posture read failure cannot produce a reminder"
     }
   ],
   "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Tool Surface \u2014 Dunbar Tier": [
@@ -2559,10 +2469,10 @@
   ],
   "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
     {
-      "kind": "prose",
-      "scenario": null,
       "digest": "982c41ec33eb",
-      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
@@ -3471,6 +3381,66 @@
       "excerpt": "The Codex adapter SHALL perform live Codex device-auth reconciliation before evaluating token freshness, creating its...",
       "kind": "prose",
       "scenario": null
+    },
+    {
+      "digest": "eefe5944faa6",
+      "excerpt": "- **WHEN** a Codex adapter with a credential store invokes a new runtime session and a canonical home directory is av...",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "fb5dca133406",
+      "excerpt": "- **THEN** it SHALL await live device-auth reconciliation before starting the Codex CLI subprocess",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "b1e30c4d235f",
+      "excerpt": "- **AND** it SHALL continue the existing local-auth subprocess path without consuming the session runtime timeout for...",
+      "kind": "clause",
+      "scenario": "Unavailable auth synchronization does not consume session time"
+    },
+    {
+      "digest": "2302a9266626",
+      "excerpt": "- **THEN** the adapter SHALL retain its existing post-invocation rotation detection and persistence behavior",
+      "kind": "clause",
+      "scenario": "Existing local CLI rotation persistence remains intact"
+    },
+    {
+      "digest": "0f358f1b4f53",
+      "excerpt": "- **WHEN** a Codex invocation retries internally and successive attempts rotate the canonical auth file",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "843c4deb144e",
+      "excerpt": "- **AND** the invocation finalizer SHALL conditionally persist the final file state against the last attempt's captur...",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "571fbd2c5e7f",
+      "excerpt": "- **THEN** the adapter SHALL reconcile canonical auth before `codex login status` can run",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "3cb20ed3ddfb",
+      "excerpt": "- **AND** it SHALL finalize afterward using the prewarm's captured authority snapshot so a prewarm-caused rotation is...",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "24e7d4761f6f",
+      "excerpt": "- **WHEN** dashboard device authentication succeeds for Codex and its post-login prewarm modifies `auth.json`",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
+    },
+    {
+      "digest": "7b1fb0a8ba6e",
+      "excerpt": "- **THEN** the dashboard callback SHALL finalize the final file through the same authority-safe path using the snapsh...",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
     }
   ],
   "harden-runtime-auth-and-breaker-attention/core-credentials/Live Codex Device-Auth Reconciliation": [
@@ -4551,6 +4521,496 @@
       "scenario": "Reactive findings between patrols"
     }
   ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Complete eleven-input independent coverage reporting": [
+    {
+      "digest": "72060a9e28e4",
+      "excerpt": "The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/re...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a56e3461fb37",
+      "excerpt": "ID: REQ-ci-shard-assurance-006 Source: bu-ly3lv5.6 P9; original complete S1-S5 and ten folded source objects; adopted...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "45c123a8c981",
+      "excerpt": "- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest ...",
+      "kind": "clause",
+      "scenario": "Eleven real valid inputs pass the actual reader"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Deterministic whole-file weighted assignment": [
+    {
+      "digest": "dd40f19c68d5",
+      "excerpt": "The partitioner SHALL assign each freshly selected lane file exactly once to five unit or six integration shards usin...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "703d7cbd674c",
+      "excerpt": "ID: REQ-ci-shard-assurance-002 Source: bu-ly3lv5.6 P4/P12; original complete S1-S5 and ten folded source objects; ado...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "1d97a40495e7",
+      "excerpt": "- **WHEN** the same inventory and weights are supplied in different input iteration orders",
+      "kind": "clause",
+      "scenario": "Identical inputs give identical assignment"
+    },
+    {
+      "digest": "95c81b818a50",
+      "excerpt": "- **THEN** canonical output is identical, each required shard is nonempty and union/disjointness match the fresh file...",
+      "kind": "clause",
+      "scenario": "Identical inputs give identical assignment"
+    },
+    {
+      "digest": "b09f1a60578f",
+      "excerpt": "- **WHEN** an eligible file has missing, zero, NaN, infinite, stale or incompatible cost evidence",
+      "kind": "clause",
+      "scenario": "Unknown durations cannot drop a file"
+    },
+    {
+      "digest": "f11a5e4ea49f",
+      "excerpt": "- **THEN** the finite median-or-one default assigns it normally and advisory degradation never changes membership",
+      "kind": "clause",
+      "scenario": "Unknown durations cannot drop a file"
+    },
+    {
+      "digest": "010de435017c",
+      "excerpt": "- **THEN** unchanged test files retain compatible measured costs, changed or new files receive finite median-or-one d...",
+      "kind": "clause",
+      "scenario": "Source changes preserve compatible cost hints"
+    },
+    {
+      "digest": "2517abca747f",
+      "excerpt": "- **AND** incompatible runtime, dependency, selector, age or tracing profiles never supply hints for the current assi...",
+      "kind": "clause",
+      "scenario": "Source changes preserve compatible cost hints"
+    },
+    {
+      "digest": "250b633da082",
+      "excerpt": "- **THEN** the file is whole in each lane while each actual eligible item is executed exactly once in its own lane",
+      "kind": "clause",
+      "scenario": "Mixed markers retain their two lane homes"
+    },
+    {
+      "digest": "7b0f6980409f",
+      "excerpt": "- **WHEN** the bounded scheduled observer finishes or fails",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    },
+    {
+      "digest": "43f62dd00617",
+      "excerpt": "- **THEN** it emits provenance-bound candidate weights or UNKNOWN without source commits, test-population changes or ...",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    },
+    {
+      "digest": "9ae56ccb716e",
+      "excerpt": "- **AND** an inventory consumer MAY restore a runtime-compatible profile from the latest successful main-branch obser...",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Fail-closed matrix routing and event policy": [
+    {
+      "digest": "5995919a7a75",
+      "excerpt": "Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate a...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "8fd979909da9",
+      "excerpt": "ID: REQ-ci-shard-assurance-004 Source: bu-ly3lv5.6 P6-P7; original complete S1-S5 and ten folded source objects; adop...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "e94560f13c46",
+      "excerpt": "- **THEN** fresh inventory, five unit and six integration children, guards and independent preflight must succeed; an...",
+      "kind": "clause",
+      "scenario": "A full terminal tree requires eleven backend carriers"
+    },
+    {
+      "digest": "132805d95efe",
+      "excerpt": "- **THEN** the dedicated inventory job performs complete inventory/budget while existing heavy/preflight post-queue s...",
+      "kind": "clause",
+      "scenario": "Main push retains fresh inventory without rerunning heavy lanes"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Fresh collected membership and one inventory": [
+    {
+      "digest": "3b5fff55fe87",
+      "excerpt": "The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and p...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "ee5d7323af0e",
+      "excerpt": "ID: REQ-ci-shard-assurance-001 Source: bu-ly3lv5.6 P1-P3; original complete S1-S5 and ten folded source objects; adop...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a3e3759ddc61",
+      "excerpt": "- **WHEN** the source-owned collector processes actual items under both roots",
+      "kind": "clause",
+      "scenario": "Both lane populations preserve their actual selectors"
+    },
+    {
+      "digest": "810b6251d422",
+      "excerpt": "- **THEN** the unit and integration opaque identity sets equal independent unchanged-selector controls, including inh...",
+      "kind": "clause",
+      "scenario": "Both lane populations preserve their actual selectors"
+    },
+    {
+      "digest": "932dab4a9b34",
+      "excerpt": "- **WHEN** five seeded new files and a conftest-only change alter the collected corpus",
+      "kind": "clause",
+      "scenario": "New files are included without registration"
+    },
+    {
+      "digest": "65bce1886f38",
+      "excerpt": "- **THEN** all eligible identities appear once in the correct lanes without .github registration edits and conftest c...",
+      "kind": "clause",
+      "scenario": "New files are included without registration"
+    },
+    {
+      "digest": "66592f54348d",
+      "excerpt": "- **WHEN** collection fails, is empty unexpectedly or has malformed/stale identity/config evidence",
+      "kind": "clause",
+      "scenario": "Unknown collection cannot become a budget pass"
+    },
+    {
+      "digest": "a7c1083d18f3",
+      "excerpt": "- **THEN** the inventory job refuses both inventory and budget success and required check fails",
+      "kind": "clause",
+      "scenario": "Unknown collection cannot become a budget pass"
+    },
+    {
+      "digest": "565c762d1975",
+      "excerpt": "- **WHEN** dated17501 or budget-update17522/4935 counts are presented",
+      "kind": "clause",
+      "scenario": "Historical counts do not replace current population"
+    },
+    {
+      "digest": "4ced253eb1fb",
+      "excerpt": "- **THEN** the actual fresh source population governs equality and historical counts remain provenance only",
+      "kind": "clause",
+      "scenario": "Historical counts do not replace current population"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Frontend static test and browser evidence is complete": [
+    {
+      "digest": "ddc7ec664f04",
+      "excerpt": "ID: REQ-ci-shard-assurance-007 Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopte...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "9905537014cc",
+      "excerpt": "- **WHEN** the guards-built dist has valid source/run/attempt/config/lock digests and nonempty contents",
+      "kind": "clause",
+      "scenario": "Browser reuses a genuine build only"
+    },
+    {
+      "digest": "27a45018e781",
+      "excerpt": "- **THEN** browser tests use it without a second build while locked browser and OS dependencies remain verified",
+      "kind": "clause",
+      "scenario": "Browser reuses a genuine build only"
+    },
+    {
+      "digest": "9c4accb257b7",
+      "excerpt": "- **WHEN** dist is empty, missing, stale, tampered or belongs to another attempt",
+      "kind": "clause",
+      "scenario": "Stale or absent build is not readiness"
+    },
+    {
+      "digest": "715d14548d86",
+      "excerpt": "- **THEN** the browser proof is unavailable/non-passing rather than a fabricated cache hit",
+      "kind": "clause",
+      "scenario": "Stale or absent build is not readiness"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Independent complete-identity execution reconciliation": [
+    {
+      "digest": "d5e19664d037",
+      "excerpt": "Every required matrix child SHALL produce source/run/attempt-bound collected and executed opaque item receipts indepe...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "fdc432ad252c",
+      "excerpt": "ID: REQ-ci-shard-assurance-003 Source: bu-ly3lv5.6 P5; original complete S1-S5 and ten folded source objects; adopted...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a12d70940fa3",
+      "excerpt": "- **WHEN** one carrier substitutes a different parameter identity while preserving file counts and masked JUnit names",
+      "kind": "clause",
+      "scenario": "Same counts with different parameters fail"
+    },
+    {
+      "digest": "4395aaf44a10",
+      "excerpt": "- **THEN** the reconciler fails by complete opaque identity comparison",
+      "kind": "clause",
+      "scenario": "Same counts with different parameters fail"
+    },
+    {
+      "digest": "735ee22e8214",
+      "excerpt": "- **WHEN** one logical item starts twice or one whole file is forced into two shards",
+      "kind": "clause",
+      "scenario": "Duplicate execution fails independently of assignment"
+    },
+    {
+      "digest": "c87a1000ecc9",
+      "excerpt": "- **THEN** reconciliation and required check fail while the genuine exactly-once companion passes",
+      "kind": "clause",
+      "scenario": "Duplicate execution fails independently of assignment"
+    },
+    {
+      "digest": "977f92438618",
+      "excerpt": "- **WHEN** a child is skipped, missing, cancelled, truncated or emits no complete receipt",
+      "kind": "clause",
+      "scenario": "Missing and partial children cannot hide behind matrix success"
+    },
+    {
+      "digest": "3607595eaee6",
+      "excerpt": "- **THEN** all eleven expected child identities are checked and preflight cannot report success",
+      "kind": "clause",
+      "scenario": "Missing and partial children cannot hide behind matrix success"
+    },
+    {
+      "digest": "05ce5073d381",
+      "excerpt": "- **WHEN** a later attempt or malicious payload supplies raw parameter/provider strings or mismatched nonce/head/config",
+      "kind": "clause",
+      "scenario": "Retry identity and privacy remain exact"
+    },
+    {
+      "digest": "796437a4d480",
+      "excerpt": "- **THEN** the artifact is rejected without logging raw values and ordinary same-attempt sanitized evidence passes",
+      "kind": "clause",
+      "scenario": "Retry identity and privacy remain exact"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Measured efficiency and owned integration remain explicit": [
+    {
+      "digest": "71c0841ebb02",
+      "excerpt": "The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conv...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "8824063779bc",
+      "excerpt": "ID: REQ-ci-shard-assurance-008 Source: bu-ly3lv5.6 P11-P12; original complete S1-S5 and ten folded source objects; ad...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "3eaca6d6d986",
+      "excerpt": "- **THEN** dependencies bound peak14 and account for20 full-mode expanded rows and21 total declared expanded rows, in...",
+      "kind": "clause",
+      "scenario": "Concurrent capacity follows the actual DAG"
+    },
+    {
+      "digest": "3fa4f3927c04",
+      "excerpt": "- **WHEN** route/guards/spread/lane performance observations are incomplete",
+      "kind": "clause",
+      "scenario": "Metrics retain their full ten-run windows"
+    },
+    {
+      "digest": "6a42c3dfa4d3",
+      "excerpt": "- **THEN** the15s/180s/<15%/five-minute promises remain UNMET and no seven-minute amendment or fabricated samples are...",
+      "kind": "clause",
+      "scenario": "Metrics retain their full ten-run windows"
+    },
+    {
+      "digest": "0b2db96fcab7",
+      "excerpt": "- **WHEN** planner/manifests/inventory/budget/smoke/static/build/reporting enforcement moves",
+      "kind": "clause",
+      "scenario": "Every moved checker has an enforcing survivor"
+    },
+    {
+      "digest": "93ec138a164a",
+      "excerpt": "- **THEN** a command/scope/failure-mutation map identifies its actual mandatory survivor with positive and negative c...",
+      "kind": "clause",
+      "scenario": "Every moved checker has an enforcing survivor"
+    }
+  ],
+  "shard-lanes-with-pytest-split/testing/CI Shard Ordering and Complete Timing Evidence": [
+    {
+      "digest": "3dae981fa92e",
+      "excerpt": "CI shard preparation SHALL preserve every manifest file, selected item identity, marker, loadfile fixture boundary, n...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "97b586b5f82f",
+      "excerpt": "- **WHEN** complete compatible timing evidence exists for the exact selected file and node population",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "8a1484eea264",
+      "excerpt": "- **THEN** the same files execute in stable duration-descending order with original loadfile grouping",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "81ae7bf5ae27",
+      "excerpt": "- **AND** restoring the actual scheduler reordering defeats the positioned order assertion while the corrected schedu...",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "4451fbc352c2",
+      "excerpt": "- **WHEN** evidence is missing, stale, incomplete, nonfinite, negative, duplicated or incompatible with source, lane,...",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "2cda79830036",
+      "excerpt": "- **THEN** the original lexical schedule and full selected population remain",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "9310077f5114",
+      "excerpt": "- **AND** the receipt reports UNKNOWN rather than a guessed weight or a performance pass",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "cc444620ffee",
+      "excerpt": "- **WHEN** the pinned inherited loadfile scheduler is exercised with planted unequal file duration and item-count groups",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "df31f2d09a02",
+      "excerpt": "- **THEN** the selected no-reorder mechanism preserves duration order without splitting file fixtures",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "b1ce250ac642",
+      "excerpt": "- **AND** a default-reorder causal control reaches the wrong order and every original item still executes",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "714e5f9795b3",
+      "excerpt": "- **WHEN** the actual selected pytest items execute and their JUnit is later sanitized",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "be14f4d249df",
+      "excerpt": "- **THEN** stable complete-node digest multiplicities, phase outcomes and selected-population equality are recorded f...",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "5f0934863f94",
+      "excerpt": "- **AND** redacted parameter names and identical aggregate counts are not treated as exact identity proof",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "061562bfac2c",
+      "excerpt": "- **WHEN** a complete named run supplies wrapper start and item phase/completion observations",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "3e830c4fae17",
+      "excerpt": "- **THEN** job setup, first actual result, first one percent and final five percent are measured from actual timestamps",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "4b55f9461e98",
+      "excerpt": "- **AND** missing progress, observer failure, cancellation or early maxfail leaves the affected metric UNKNOWN",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "645d8e5dfc76",
+      "excerpt": "- **THEN** existing item, job, UV and browser bounds, finalizers and known healthy-workload floors survive until genu...",
+      "kind": "clause",
+      "scenario": "Watchdogs retain complete healthy-workload compatibility"
+    },
+    {
+      "digest": "008fed1ac1c4",
+      "excerpt": "- **AND** a helper timeout/cancellation negative and successful healthy companion test actual reachability; twice a f...",
+      "kind": "clause",
+      "scenario": "Watchdogs retain complete healthy-workload compatibility"
+    },
+    {
+      "digest": "ba3b3ad64039",
+      "excerpt": "- **WHEN** the observer collects actual timing or falls back for unavailable data",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    },
+    {
+      "digest": "f7fddb753f31",
+      "excerpt": "- **THEN** the original ten manifests and full selected item multiplicities remain unchanged",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    },
+    {
+      "digest": "60068430b922",
+      "excerpt": "- **AND** it does not adopt .6 replacement inventory, planner exemptions or extra shard membership",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    }
+  ],
+  "shard-lanes-with-pytest-split/testing/Composed read-only local pre-push refusal": [
+    {
+      "digest": "7a687a76ff2d",
+      "excerpt": "- **WHEN** a partition or collected-budget check requires current test membership",
+      "kind": "clause",
+      "scenario": "Fresh collection-dependent predicate preserves actual population"
+    },
+    {
+      "digest": "d1b99f161b3b",
+      "excerpt": "- **THEN** the real collect-only path and current predicates execute against the complete fresh population",
+      "kind": "clause",
+      "scenario": "Fresh collection-dependent predicate preserves actual population"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Module Abstract Base Class": [
+    {
+      "digest": "6e6e3e700063",
+      "excerpt": "Every pluggable module MUST subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a8d9e984e63d",
+      "excerpt": "- **WHEN** a module subclass omits one or more abstract members",
+      "kind": "clause",
+      "scenario": "Incomplete module implementation fails"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Tool Group Filtering": [
+    {
+      "digest": "f1b5036f2e2c",
+      "excerpt": "Inside `register_tools()`, modules define a local `_tool(group)` helper that returns `mcp.tool()` when the group is e...",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
+    },
+    {
+      "digest": "dec0e5a0eea7",
+      "excerpt": "```python def _tool(group: str): if group_enabled(config, group): return mcp.tool() return lambda fn: fn",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
+    }
+  ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [
     {
       "digest": "1ba03738c9e6",
@@ -4605,6 +5065,12 @@
       "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
       "kind": "clause",
       "scenario": "AGENTS.md composes shared instructions"
+    },
+    {
+      "digest": "e69f93fa9eaa",
+      "excerpt": "- **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md",
+      "kind": "clause",
+      "scenario": "Interactive response mode"
     }
   ],
   "specify-roster-identity-owner-operations-overlay/core-spawner/System Prompt Composition": [

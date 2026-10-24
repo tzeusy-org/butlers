@@ -15,10 +15,11 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.tools.finance.expected_signals import sanitized_metadata
 
@@ -58,11 +59,6 @@ router = APIRouter(prefix="/api/finance", tags=["finance"])
 BUTLER_DB = "finance"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the finance butler's connection pool.
 
@@ -70,11 +66,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Finance butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +184,8 @@ def _overlay_transaction_model(r) -> TransactionModel:
 
 @router.get("/expected-signals", response_model=FinanceExpectedSignalsResponse)
 async def get_finance_expected_signals(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> FinanceExpectedSignalsResponse:
     """Return state-only recurrence truth without implying payment behavior."""
     pool = _pool(db)
@@ -247,7 +244,8 @@ async def list_transactions(
     max_amount: float | None = Query(None, description="Filter by maximum amount"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TransactionModel]:
     """List transactions with optional filters."""
     pool = _pool(db)
@@ -339,7 +337,8 @@ async def list_subscriptions(
     status: str | None = Query(None, description="Filter by status (active, cancelled, paused)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[SubscriptionModel]:
     """List subscriptions with optional status filter."""
     pool = _pool(db)
@@ -406,7 +405,8 @@ async def list_subscriptions(
 
 @router.get("/obligations", response_model=ObligationsResponse)
 async def list_obligations(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ObligationsResponse:
     """List the forward obligation ledger, denormalized with each active
     subscription's service/amount and cancellation-door status.
@@ -478,7 +478,8 @@ async def list_bills(
     payee: str | None = Query(None, description="Filter by payee (case-insensitive substring)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[BillModel]:
     """List bills with optional status and payee filters."""
     pool = _pool(db)
@@ -555,7 +556,8 @@ async def list_cost_claims(
     state: str | None = Query(None, description="Filter by reconciliation state"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[CostClaimModel]:
     """List shared claims without granting Finance access to a sibling schema."""
     pool = _pool(db)
@@ -626,7 +628,8 @@ async def list_accounts(
     type: str | None = Query(None, description="Filter by account type"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[AccountModel]:
     """List accounts with optional type filter."""
     pool = _pool(db)
@@ -701,7 +704,8 @@ async def get_spending_summary(
     end_date: str | None = Query(None, description="End date (YYYY-MM-DD, inclusive)"),
     group_by: str = Query("category", description="Group by: category, merchant, week, month"),
     account_id: str | None = Query(None, description="Filter by account ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SpendingSummaryModel:
     """Aggregate debit spending over a date range, grouped by the specified dimension."""
     pool = _pool(db)
@@ -831,7 +835,8 @@ async def get_spending_summary(
 async def get_upcoming_bills(
     days_ahead: int = Query(14, ge=1, le=365, description="Look-ahead window in days"),
     include_overdue: bool = Query(True, description="Include overdue bills"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """List bills due within the look-ahead window, with urgency classification."""
     pool = _pool(db)
@@ -941,7 +946,8 @@ async def get_upcoming_bills(
 async def bulk_ingest_transactions(
     http_request: Request,
     request: BulkTransactionRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> BulkTransactionResponse:
     """Bulk-ingest normalized transaction objects.
 
@@ -1037,7 +1043,8 @@ async def list_distinct_merchants(
     unnormalized_only: bool = Query(False, description="Only merchants without normalization"),
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=1000),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DistinctMerchantModel]:
     """Return distinct merchants from active transaction facts with aggregate stats."""
     pool = _pool(db)
@@ -1078,7 +1085,8 @@ async def list_distinct_merchants(
 async def bulk_update_transactions(
     http_request: Request,
     request: BulkUpdateRequestModel = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> BulkUpdateResponseModel:
     """Apply bulk metadata overlay to matching transaction facts.
 

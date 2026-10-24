@@ -14,14 +14,15 @@
 
 ## 2. Adoption Gates
 
-- [ ] 2.1 Independent semantic review returns GO on the exact draft head or actionable corrections
-      are applied and reviewed again.
-- [ ] 2.2 Owner approves the exact artifact commit or digest, including
-      `OWNER-DECISION-NAV-001` and `OWNER-DECISION-NAV-002`.
+- [x] 2.1 Independent semantic review returns GO on the exact draft head or actionable corrections
+      are applied and reviewed again. (Evidence: artifact a872ca26 review, recorded on bu-2jtfw.15.)
+- [x] 2.2 Owner approves the exact artifact commit or digest, including
+      `OWNER-DECISION-NAV-001` and `OWNER-DECISION-NAV-002`. (Evidence: 2026-09-13 owner
+      implementation release, recorded on bu-2jtfw.15.)
 
 ## 3. Future Implementation, Outside This Change
 
-- [ ] 3.1 After PR #4042 and `bu-8cdl1.13` are terminal, run a fresh overlap/readiness scan and
+- [x] 3.1 After PR #4042 and `bu-8cdl1.13` are terminal, run a fresh overlap/readiness scan and
       authorize a separate implementation packet.
-- [ ] 3.2 Implement and behavior-test the unified primitive, migrate all named callers atomically,
+- [x] 3.2 Implement and behavior-test the unified primitive, migrate all named callers atomically,
       remove both predecessor hooks, and pass the exact-head frontend gates.

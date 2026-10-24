@@ -8,6 +8,12 @@ system-global generation-fenced authority boundary used by runtime code.  Direct
 and revoke are serialized owner mutations; device-auth and probe completion are
 conditional exact-operation outcomes.  A route SHALL fail closed before child
 launch or mutation when the selected authority is unavailable or unprovable.
+Runtime OAuth synchronization, probe, and CLI login transport SHALL go through
+the control plane's service listener to the session-host credential volume.
+The session host SHALL expose no inbound dashboard port, SHALL NOT read the
+database/credential store, and SHALL receive no domain or connector credentials.
+The trusted control-plane caller SHALL retain the generation-fenced authority
+operation; no domain daemon SHALL receive goal provider credentials.
 The existing owner-only Codex rotate response SHALL remain the documented
 one-time `{fingerprint, value}` shape, and Codex inventory/detail responses
 SHALL retain their on-read display `fingerprint` without a raw value. The raw
@@ -77,9 +83,13 @@ prepare a durable device-auth operation against the exact current generation
 through the normal operation entry point, or call the distinct
 owner-authorized bootstrap entry point for the documented never-initialized
 owner bootstrap path. The session SHALL carry that preparation into a
-two-phase sandbox launch: the platform launcher first creates and seeds only
+two-phase session-host sandbox launch through the control-plane service
+listener and authenticated control channel: the platform launcher first
+creates and seeds only
 that operation's private stage, the operation is conditionally marked launched,
-and only then may the same prepared sandbox create its child. After complete
+and only then may the same prepared sandbox create its child. Listener/channel
+failure SHALL refuse launch or finalization safely without a dashboard-local
+or domain-local credential/subprocess fallback. After complete
 containment and strict staged-output validation, the callback SHALL
 conditionally complete that same operation and remove its stage. It SHALL not
 use the dashboard session ID, device code, child PID, local file timestamp, or

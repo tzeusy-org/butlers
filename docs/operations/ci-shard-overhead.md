@@ -1,5 +1,12 @@
 # CI shard overhead and evidence
 
+> **Superseded (bu-29wkwj.2).** The backend lanes now run as pytest-split groups over the
+> committed `.test_durations` (`scripts/ci_lanes.py`). The `inventory` and `coverage-inventory`
+> jobs, the weight observer (`ci_weight_candidates.py`, `ci-shard-weights.yml`) and the preflight
+> receipt reconciler are retired; check-preflight compares each lane's group counts with one fresh
+> `--collect-only` count instead. This page records the retired computed-partition design and
+> its measurements; `ci_partition.py` survives only for the manual watchdog diagnostic.
+
 The backend has five unit and six integration computed file shards, independent
 preflight and affected paths, and the always-running fail-closed fan-in. All
 existing watchdogs and healthy-workload floors remain. This change claims no
@@ -166,8 +173,8 @@ separate witnesses; a lock or ENV label cannot supply them. The retired Python
 pgvector and qrcode packages have no Python runtime/entrypoint consumers. The
 PostgreSQL vector extension, Pillow, Go WhatsApp QR encoder/bridge and unrelated
 extras remain. Both Dockerfiles install this same frozen project without the
-obsolete WhatsApp extra or UV_TORCH_BACKEND selector. Route A retains its
-required digest-bound offline dependency cache and its existing admission gates.
+obsolete WhatsApp extra or UV_TORCH_BACKEND selector. (The separate Route A
+meeting-prep evidence image and its launcher were deleted in bu-99t5s3.2.)
 
 ## Advisory environment and duration caches
 
@@ -217,38 +224,34 @@ unmet until genuine named hosted observations demonstrate them.
 
 ## Owned full coverage assurance
 
-The `CI coverage assurance` workflow in `.github/workflows/ci-coverage.yml`
-executes daily at 19:37 UTC, supports manual invocation, and validates coverage
-pipeline changes through an explicit PR path filter. Its job names are distinct
-from the protected CI contexts. Each run records its actual schedule, manual or
-PR event throughout inventory, execution and coverage metadata. No merge-group
-identity is borrowed to authorize a different event.
+Full coverage runs in the nightly workflow (`.github/workflows/nightly.yml`), on
+its 02:00 UTC schedule and on manual dispatch (owner decision bu-w72da2 = A; the
+former `ci-coverage.yml` and its pull-request path filter are retired). Its job
+names are distinct from the protected CI contexts. Each run records its actual
+schedule or manual event throughout inventory, execution and coverage metadata.
+No merge-group identity is borrowed to authorize a different event.
 
 Four job stages preserve the complete proof: one fresh installed inventory and
 both budgets; an explicit five-unit/six-integration covered matrix; independent
 eleven-child execution reconciliation with the existing real smoke fallback;
 and strict eleven-input CoverageData validation before combination, report
-upload or badge output. Failed, skipped, cancelled, missing or unknown
-prerequisites fail the always-running preflight/report gates. Every input keeps
-its current checkout, assignment, run and attempt binding. A genuine pipeline
-PR produces a full report but cannot update the main badge. Only a successful
-scheduled or manual main run can publish the badge.
+upload (the `ci-combined-coverage-report` artifact) or badge output. Failed,
+skipped, cancelled, missing or unknown prerequisites fail the always-running
+preflight/report gates. Every input keeps its current checkout, assignment, run
+and attempt binding. Only a successful scheduled or manual main run can publish
+the badge; dispatching the nightly workflow on a branch validates a coverage
+pipeline change without updating it.
 
 The local `ci-python-environment` composite retains the existing exact Python
 identity, bounded UV installer, advisory cache key and mandatory frozen editable
-repair. Test consumers request the same file-access observer. Unit and
-integration rows retain their complete 28/36-minute watchdogs; inventory,
-preflight and report retain 35/27/16 minutes. New-workflow bounds are provisional
-until separately observed. The covered matrix has eleven concurrent children;
-its concurrency group does not cancel the protected CI run. The one validation
-PR may therefore consume extra runner capacity and is not a natural timing
-sample for the queue optimization.
+repair. Unit and integration rows retain their complete 28/36-minute watchdogs;
+inventory, preflight and report retain 35/27/16 minutes. These bounds are
+provisional until separately observed.
 
 Required CI runs all eleven protected queue shards without coverage instrumentation
 (`CI_COVERAGE=0`), retaining the same selected tests, workers, markers, timeouts,
-execution receipts, smoke reconciliation and mandatory fan-in. Its former reporter,
-raw coverage paths and uploads are retired. Full coverage belongs to the owned
-daily/manual and pipeline-PR workflow (`CI_COVERAGE=1`); standalone calls still
+execution receipts, smoke reconciliation and mandatory fan-in. Full coverage
+belongs to the nightly coverage jobs (`CI_COVERAGE=1`); standalone calls still
 default to covered execution.
 
 [Covered PR validation run 38672598762](https://github.com/tzeusy-org/butlers/actions/runs/38672598762)
@@ -319,16 +322,12 @@ the subsequent frozen environment repair and real-environment checks remain
 mandatory. These are execution bounds, not a diagnosis of a particular hosted
 network stall or a claim of healthy setup latency.
 
-The existing Migration Chain Integrity workflow has an optional boolean
-`image-size-diagnostic` dispatch input, default false. Push and ordinary manual
-migration checks retain their original job/command. An explicit true dispatch
-runs only the bounded diagnostic job at the exact dispatched SHA, comparing the
-fixed original e7b7812a3fa65c80f3f070d38ee43f7fa6474881 checkout with that SHA.
-Root dispatches it after source review. It never pushes an image, uses registry
-credentials, runs a full pytest suite, changes a deployment or invokes a model
-provider. The original 25 caps remain; its separate provisional 60-minute cap
-covers the existing two 640-second installer envelopes, a 1800-second diagnostic
-and 520 seconds of checkout/cleanup/upload reserve. No healthy p95 is claimed.
+The image-size diagnostic was a manual `image-size-diagnostic` dispatch on the
+retired Migration Chain Integrity workflow, comparing the fixed original
+e7b7812a3fa65c80f3f070d38ee43f7fa6474881 checkout with a dispatched SHA. That
+workflow was deleted by bu-29wkwj.1 with no remaining caller, and its script,
+the Route A launcher and the Route A Dockerfiles were deleted by bu-99t5s3.2
+(recoverable from git history). The record below describes what it measured.
 
 The diagnostic builds both real normal and Route A application Dockerfiles,
 records actual Docker image bytes and source stamps, and runs CPU tensor,

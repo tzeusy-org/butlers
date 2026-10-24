@@ -39,22 +39,32 @@ previously sent message's text and removing its inline keyboard
 
 ### Requirement: Inline Approval Buttons
 
+ID: REQ-module-telegram-001
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1
+Scope: v1-mandatory
+
 The module SHALL support sending an approval-request message with an inline
 keyboard so the owner can approve or reject a pending action directly from the
 notification. Buttons carry single-purpose signed callback tokens bound to the
 pending action (format `apr1:<action_id>:<verb_char>:<hmac>` using
 single-character verb codes such as `a` for approve and `r` for reject); button
 presses resolve to the corresponding pending-action verb in the approvals system
-via the bot connector's callback ingestion. An "Open" button deep-links the
+via the bot connector's callback ingestion. Approve and Reject are attached
+only when the message shows the whole stored call; otherwise only the "Open"
+button is attached. A press whose stored call no longer matches the call the
+card showed executes nothing. An "Open" button deep-links the
 dashboard action detail for edit-then-approve.
 
 #### Scenario: Approval message carries inline buttons
 
 - **WHEN** the Messenger delivers an approval-request notification to the owner
   over telegram
-- **THEN** the message includes Approve and Reject inline buttons whose
-  `callback_data` are signed tokens bound to the pending action's id, plus an
-  Open deep link to the dashboard action detail
+- **THEN** when the card shows the whole stored call, the message includes
+  Approve and Reject inline buttons whose `callback_data` are signed tokens
+  bound to the pending action's id, plus an Open deep link to the dashboard
+  action detail
+- **AND** when the card cannot show the whole call, only the Open deep link is
+  attached
 
 #### Scenario: Button press resolves the pending action
 

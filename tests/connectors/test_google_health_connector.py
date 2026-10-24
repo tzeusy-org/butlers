@@ -57,7 +57,7 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)

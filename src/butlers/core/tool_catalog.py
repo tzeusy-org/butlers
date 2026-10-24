@@ -7,6 +7,7 @@ import inspect
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -22,12 +23,19 @@ AUTHORIZATION_FIELDS = (
     "output_trust",
     "output_sensitivity",
     "resource_params",
+    "selection_bound",
     "safety_args",
     "approval_policy",
     "idempotency",
     "owner_authority",
     "recipient_params",
 )
+
+
+class OwnerNotifyBranch(StrEnum):
+    """Closed native admission eligibility, never resolved recipient authority."""
+
+    TELEGRAM_SEND_INSIGHT_WITHOUT_PARTY = "telegram_send_insight_without_party"
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,17 +51,28 @@ class RecipientParameters:
     undeterminable: bool = False
     default_owner_condition: str | None = None
     undeterminable_condition: str | None = None
+    owner_notify_branch: OwnerNotifyBranch | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_names", tuple(self.argument_names))
+        if self.owner_notify_branch is not None:
+            # Decode the same closed value after JSON publication. Unknown
+            # strings/bools refuse; descriptive condition prose is not parsed.
+            object.__setattr__(
+                self, "owner_notify_branch", OwnerNotifyBranch(self.owner_notify_branch)
+            )
 
     def as_mapping(self) -> Mapping[str, Any]:
-        return {
+        result = {
             "argument_names": self.argument_names,
             "undeterminable": self.undeterminable,
             "default_owner_condition": self.default_owner_condition,
             "undeterminable_condition": self.undeterminable_condition,
         }
+        # Preserve historical publications/digests when no branch was declared.
+        if self.owner_notify_branch is not None:
+            result["owner_notify_branch"] = self.owner_notify_branch.value
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +100,7 @@ class ToolMetadata(Protocol):
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -128,6 +148,7 @@ class ToolPresentation:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -200,6 +221,7 @@ class ToolDescriptor:
     output_trust: OutputTrust | None = None
     output_sensitivity: OutputSensitivity | None = None
     resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
     safety_args: tuple[str, ...] | None = None
     approval_policy: Mapping[str, Any] | None = None
     idempotency: Idempotency | None = None
@@ -366,6 +388,15 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
     if not isinstance(descriptor.approval_policy, Mapping):
         problems.append("approval_policy")
     properties = descriptor.input_schema.get("properties", {})
+    selection = descriptor.selection_bound
+    resource_params = descriptor.resource_params
+    if (
+        not isinstance(selection, Mapping)
+        or not isinstance(resource_params, tuple)
+        or set(selection) != set(resource_params)
+        or any(not isinstance(flag, bool) for flag in selection.values())
+    ):
+        problems.append("selection_bound")
     for name in ("resource_params", "safety_args"):
         value = getattr(descriptor, name)
         if (
@@ -501,7 +532,8 @@ async def build_tool_catalog(
                 **{
                     field_name: (
                         _freeze(getattr(declared, field_name, None))
-                        if field_name in {"approval_policy", "resource_params", "safety_args"}
+                        if field_name
+                        in {"approval_policy", "resource_params", "selection_bound", "safety_args"}
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS

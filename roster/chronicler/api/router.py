@@ -28,7 +28,7 @@ from opentelemetry import trace
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiResponse,
     ErrorDetail,
@@ -140,11 +140,6 @@ router = APIRouter(prefix="/api/chronicler", tags=["chronicler"])
 BUTLER_DB = "chronicler"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 class DayCloseDispatchCallable(Protocol):
     """Protocol for the day-close dispatch callable injected via _get_day_close_dispatch_fn.
 
@@ -170,11 +165,11 @@ def _get_day_close_dispatch_fn() -> DayCloseDispatchCallable | None:
 def _pool(db: DatabaseManager):
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Chronicler butler database is not available",
-        )
+        ) from exc
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -285,7 +280,8 @@ async def list_events(
     include_tombstoned: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ChroniclerPointEvent]:
     pool = _pool(db)
 
@@ -353,7 +349,8 @@ async def list_episodes(
     include_tombstoned: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ChroniclerEpisode]:
     if (overlaps_start is None) != (overlaps_end is None):
         raise HTTPException(
@@ -427,7 +424,8 @@ async def list_episodes(
 async def get_episode(
     episode_id: UUID,
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclerEpisode:
     pool = _pool(db)
     clause = "" if include_tombstoned else "AND tombstone_at IS NULL"
@@ -449,7 +447,8 @@ async def get_episode(
 )
 async def list_episode_events(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ChroniclerPointEvent]:
     pool = _pool(db)
     # 404 if episode doesn't exist.
@@ -482,7 +481,8 @@ async def list_episode_events(
 )
 async def list_episode_corrections(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ChroniclerOverride]:
     pool = _pool(db)
     exists = await pool.fetchval(
@@ -515,7 +515,8 @@ async def submit_episode_correction(
     episode_id: UUID,
     request: Request,
     body: SubmitCorrectionRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclerOverride:
     """Record an owner correction for one episode.
 
@@ -701,7 +702,8 @@ def _build_episode_bundle(
 async def explain_episode(
     episode_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
 ) -> EpisodeExplainResponse:
     """Invoke a Tier-2 LLM drilldown for a specific episode (rate-limited: 1 per 24 h per episode).
@@ -979,7 +981,8 @@ def _rows_to_source_state(
 
 @router.get("/source-state", response_model=ApiResponse[list[SourceStateRow]])
 async def list_source_state(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[SourceStateRow]]:
     """Return one record per registered source adapter joined with its projection checkpoints.
 
@@ -1038,7 +1041,8 @@ async def list_ops_sessions(
     since: datetime | None = Query(None, description="started_at >= since"),
     until: datetime | None = Query(None, description="started_at < until"),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[OpsSessionRow]:
     """Return operational sessions excluded from the user-facing Chronicles.
 
@@ -1118,7 +1122,8 @@ async def list_ops_sessions(
 
 @router.get("/projection-health", response_model=ApiResponse[list[ProjectionHealthRow]])
 async def projection_health(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ProjectionHealthRow]]:
     """Return per-checkpoint projection health from ``projection_checkpoints``.
 
@@ -1187,7 +1192,8 @@ async def aggregate_by_category(
         ),
     ),
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CategoryBuckets]:
     """Return total episode duration bucketed by category across the requested window.
 
@@ -1476,7 +1482,8 @@ async def aggregate_by_day(
         ),
     ),
     include_tombstoned: bool = Query(False),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AggregateByDayRow]:
     """Return time-bucketed episode durations grouped by (day, category).
 
@@ -1795,7 +1802,8 @@ async def get_rollups(
         None,
         description="Inclusive range end (local calendar day). Must be paired with start_date.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RollupsResponse]:
     """Return daily rollups + deterministic anomaly flags for one day or a range.
 
@@ -2050,7 +2058,8 @@ async def get_daily_balance(
         le=_BALANCE_MAX_LOOKBACK_DAYS,
         description="Trailing local-day window (excluding today) used for the 'usual' baseline",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BalanceResponse]:
     """Return the target day's per-lane totals annotated against the owner's
     rolling baseline ("vs usual").
@@ -2149,7 +2158,8 @@ async def get_trends(
         le=_BALANCE_MAX_LOOKBACK_DAYS,
         description="Trailing local-day window used for each day's 'usual' baseline.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TrendsResponse]:
     """Return week/month-grained per-lane balance trends, streaks, and anomalies.
 
@@ -2327,7 +2337,8 @@ async def get_who_you_were_with(
     start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
     end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
     tz: str = Query("UTC", description="IANA timezone for display purposes"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WhoYouWereWithResponse]:
     """Return the resolved people the owner spent time with in the window.
 
@@ -2535,7 +2546,8 @@ async def get_day_close_cache(
         description="Required exact IANA timezone for the requested local day",
         include_in_schema=False,
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DayCloseFreshResponse | DayCloseStaleResponse | DayCloseInvalidResponse | JSONResponse:
     """Return cached day-close prose, a stale marker, or an invalid marker.
 
@@ -2871,7 +2883,8 @@ def _today_in_timezone(
 async def refresh_day_close(
     request: Request,
     body: DayCloseRefreshRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> DayCloseRefreshResponse | DayCloseRefreshQuietResponse | JSONResponse:
     """Re-invoke the day-close Tier-2 path on demand (rate-limited per local-day tuple).
@@ -3232,7 +3245,8 @@ async def get_briefing(
         None,
         description="IANA timezone name. Defaults to Chronicler's stable fallback.",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChroniclesBriefing:
     """Editorial briefing for a single day window.
 
@@ -3289,7 +3303,8 @@ async def get_attention(
         None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
     ),
     tz: str | None = Query(None),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ChroniclesAttentionItem]]:
     """Attention list for a single day window.
 
@@ -3310,7 +3325,8 @@ async def get_kpi(
         None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
     ),
     tz: str | None = Query(None),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ChroniclesKpi]:
     """KPI snapshot for a single day window.
 
@@ -3357,7 +3373,8 @@ def _coerce_ref_list(value: Any) -> list[str]:
 )
 async def get_evidence_chain(
     episode_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ActivityEvidenceChain:
     """Return the evidence chain backing an activity — "why is this counted?".
 
@@ -3425,7 +3442,8 @@ async def list_correction_prompts(
     end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
     tz: str = Query("UTC", description="IANA timezone for display purposes"),
     limit: int = Query(100, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CorrectionPrompts]:
     """Surface the window's low-confidence activities as correction prompts.
 
@@ -3571,13 +3589,13 @@ def _validate_routine_window(window_start: dt_time, window_end: dt_time) -> None
 def _validate_routine_timezone(tz: str) -> None:
     try:
         zoneinfo.ZoneInfo(tz)
-    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError):
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError) as exc:
         # ValueError covers an empty/malformed key ("" -> "keys must be
         # normalized relative paths"); without it a blank timezone would 500.
         raise HTTPException(
             status_code=400,
             detail=f"Unrecognized IANA timezone: {tz!r}",
-        )
+        ) from exc
 
 
 def _routine_to_row(routine: Any) -> RoutineRow:
@@ -3606,7 +3624,8 @@ def _routine_to_row(routine: Any) -> RoutineRow:
 @router.get("/routines", response_model=ApiResponse[list[RoutineRow]])
 async def list_chronicler_routines(
     enabled_only: bool = Query(False, description="Only return enabled routines."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[RoutineRow]]:
     """List owner-reviewable weekly routines, ordered by dow_mask then window start.
 
@@ -3623,7 +3642,8 @@ async def list_chronicler_routines(
 async def create_chronicler_routine(
     request: Request,
     body: CreateRoutineRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RoutineRow:
     """Declare an owner work schedule (``origin='declared'``, bu-whhll.11).
 
@@ -3666,7 +3686,8 @@ async def patch_chronicler_routine(
     routine_id: UUID,
     request: Request,
     body: UpdateRoutineRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> RoutineRow:
     """Owner review/edit: enable/disable, rename, or re-schedule a routine.
 
@@ -3742,7 +3763,8 @@ async def patch_chronicler_routine(
 async def delete_chronicler_routine(
     routine_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Delete an owner-declared routine (bu-whhll.11).
 
@@ -3782,7 +3804,8 @@ async def delete_chronicler_routine(
 @router.post("/gap-interview/resolve")
 async def resolve_gap_interview(
     body: ResolveGapInterviewRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Apply a one-tap gap-interview answer (bu-whhll.12).
 

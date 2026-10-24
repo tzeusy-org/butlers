@@ -81,8 +81,8 @@ class _FakeRow(dict):
     def __getattr__(self, name: str):
         try:
             return self[name]
-        except KeyError:
-            raise AttributeError(name)
+        except KeyError as exc:
+            raise AttributeError(name) from exc
 
 
 # ---------------------------------------------------------------------------
