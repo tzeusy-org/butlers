@@ -285,7 +285,7 @@ async def backfill_list(
 
     Returns:
         List of job summary dicts, ordered by created_at descending.
-        Each summary includes all fields from docs/roles/switchboard_butler.md §16.1.
+        Summary fields follow the backfill contract in docs/connectors/gmail.md.
     """
     conditions: list[str] = []
     params: list[Any] = []

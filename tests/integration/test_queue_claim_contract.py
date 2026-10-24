@@ -11,37 +11,11 @@ import uuid
 import asyncpg
 import pytest
 
-from butlers.core.queue_claim import ClaimQueue, claim_batch, fail_claimed
+from butlers.core.queue_claim import claim_batch, fail_claimed
 from butlers.modules.memory.consolidation import _EPISODE_CLAIMS
+from butlers.tools.switchboard.runtime_attention.outbox import _OUTBOX_CLAIMS as _OUTBOX
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
-
-_OUTBOX = ClaimQueue(
-    table="public.runtime_attention_outbox",
-    key="id",
-    eligible="q.lifecycle_state='pending' AND q.next_attempt_at<=now()",
-    order_by="q.next_attempt_at, q.created_at, q.id",
-    claim_set=(
-        ("lifecycle_state", "'sending'"),
-        ("claim_token", "{arg0}::uuid"),
-        ("claim_epoch", "q.claim_epoch+1"),
-        ("delivery_lease_epoch", "{arg1}::bigint"),
-        ("claimed_by_instance", "{owner}"),
-        ("claimed_at", "now()"),
-        ("claim_expires_at", "now()+make_interval(secs=>{lease_seconds})"),
-    ),
-    returning=(
-        "id",
-        "lifecycle_state",
-        "claim_token",
-        "claim_epoch",
-        "delivery_lease_epoch",
-        "claimed_by_instance",
-        "claimed_at",
-        "claim_expires_at",
-    ),
-    reclaim_expired=False,
-)
 
 _SCHEMA = """
 CREATE TABLE episodes (
@@ -54,7 +28,8 @@ CREATE TABLE episodes (
  dead_letter_reason text, next_consolidation_retry_at timestamptz
 );
 CREATE TABLE runtime_attention_outbox (
- id uuid PRIMARY KEY, lifecycle_state text DEFAULT 'pending', next_attempt_at timestamptz DEFAULT now(),
+ id uuid PRIMARY KEY, source text DEFAULT 'model_breaker', source_snapshot jsonb DEFAULT '{}',
+ payload jsonb DEFAULT '{}', lifecycle_state text DEFAULT 'pending', next_attempt_at timestamptz DEFAULT now(),
  created_at timestamptz DEFAULT now(), claim_token uuid, claim_epoch bigint DEFAULT 0,
  delivery_lease_epoch bigint, claimed_by_instance text, claimed_at timestamptz,
  claim_expires_at timestamptz
