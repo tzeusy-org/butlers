@@ -1,0 +1,62 @@
+{
+  "subject_head": "4cbf30c8e7290e7c86fd38ce9502820b70b88f5a",
+  "subject_tree": "8f91eb7ab6d627152d4abafd78bc7af52890a23e",
+  "offset": "+45d",
+  "owner_path": "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py",
+  "names": [
+    "test_record_and_flush_round_trips_full_payload_as_object",
+    "test_drain_replay_pending_handles_clean_object_row",
+    "test_drain_replay_pending_handles_legacy_string_shaped_row",
+    "test_buggy_write_path_would_have_corrupted_full_payload_into_a_string",
+    "test_dropped_known_summary_counts_open_marked_drops_only",
+    "test_replay_of_marked_drop_submits_clean_envelope"
+  ],
+  "source_bindings": {
+    "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": {
+      "sha256": "648b552c165e4f80a4e1c6394ef494cb2f46acdfab50c4ba1d7ad3e9f2a8d665",
+      "bytes": 63496,
+      "blob": "69ca32d8b5ee6686731466844c0620f2ee96d3bd"
+    },
+    "scripts/scrub_filtered_event_previews.py": {
+      "sha256": "e0912c5ab2c7bc464cbb9593e25eddb598a29c57438d6ae42de67ba09748f7a2",
+      "bytes": 8466,
+      "blob": "bcca6f231db3fb54bf62c0fc1421905da2407d6f"
+    },
+    "src/butlers/testing/migration.py": {
+      "sha256": "a518a4010f99bcb36fec9fc0d86e553eacadfd770ad455da8a26cb17c8f6d7e7",
+      "bytes": 18179,
+      "blob": "e2dbf053d0d90cd8ca27cb1d389e51beab338678"
+    },
+    "src/butlers/migrations.py": {
+      "sha256": "cd50bb799fd06dd776a74c72b83a9b709da05d358ac0d9b1e0a3a0ec748fa31f",
+      "bytes": 14846,
+      "blob": "748da37a686a81803bc2f32850bd5a0a85fecf87"
+    },
+    "conftest.py": {
+      "sha256": "a3327a8e166bbe0c0d133694a48867b41bfd4eb9219933be3dee968ae1c8ed25",
+      "bytes": 24748,
+      "blob": "944fa175413e54fa283b583007e0285983950141"
+    },
+    "pyproject.toml": {
+      "sha256": "f64ed352a56bf05f26822d2345ade33b123ffb4b89b7b00cd4159fbccdca2ec7",
+      "bytes": 11919,
+      "blob": "abbf3bdf7413b11cebdb3e7972826c196365e8b4"
+    },
+    "uv.lock": {
+      "sha256": "df9a821879334207e4eb424dba8d6b8e64137fbc76aa4f3a543ca5a0e5e77222",
+      "bytes": 723968,
+      "blob": "82b90d9db3cd0ccdffda7fcf95243b1071a9d9ce"
+    },
+    ".github/workflows/nightly.yml": {
+      "sha256": "f241578facecfd3bf6661015b5f4de02e29336ffaccf57d2975b30ee9e3b9a8e",
+      "bytes": 38612,
+      "blob": "9d2fc3f187a35700b2ead1db55840502ada2576f"
+    }
+  },
+  "receipt_scope": "DIAGNOSTIC_ONLY",
+  "observational_pass": false,
+  "trace_record_cap_per_process": 160,
+  "trace_byte_cap_per_process": 24576,
+  "max_process_files": 16,
+  "raw_logs_upload": false
+}

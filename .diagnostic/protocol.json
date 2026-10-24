@@ -1,0 +1,89 @@
+{
+  "scope": "DIAGNOSTIC_ONLY",
+  "observational_pass": false,
+  "events": {
+    "0": "observer configured (fixed source/offset/preload admitted)",
+    "1": "exact six selected owner identities observed; c=6",
+    "2": "protocol entry; n=case ordinal0..5",
+    "3": "authoritative pytest report: p=setup0/call1/teardown2, o=passed0/failed1/skipped2, x=none0/AssertionError1/TimeoutError2/OTHER3",
+    "4": "fixed source line reached once per point; n=0; p=point map",
+    "5": "original held-probe ScrubReceipt returned: s=none0/55P03(LOCK)1/57014(STATEMENT)2/42501(PRIVILEGE)3/OTHER4; v=COMPLETE0/INCOMPLETE1/UNKNOWN2/DRY-RUN3/OTHER4",
+    "6": "first-target tracer restored to original object; r0/1",
+    "7": "fixture boundary: f=postgres_container0/migrated_db_url1/pool2; p=setup-enter0/setup-return1; x=fault0/1 only on return",
+    "8": "session footer x=actual exit0..5/OTHER6,c=collection-observed0/1,a=trace-point-observed0/1,f=observer-fault0/1",
+    "9": "reserved cap/fault sentinel ->UNKNOWN"
+  },
+  "point_map": {
+    "1": "first target body entered",
+    "2": "before initial buffer flush",
+    "3": "after initial flush / first fetch",
+    "4": "after initial fetch",
+    "5": "historical-control import boundary",
+    "6": "before independent pool lock connection",
+    "7": "before holder transaction start",
+    "8": "before holder row acquisition",
+    "9": "holder acquired; before blocked scrub",
+    "10": "blocked scrub returned",
+    "11": "before holder rollback",
+    "12": "holder rollback returned; recovery scrub",
+    "13": "later ordinary-role boundary",
+    "14": "before same-disposable-DB admin connect",
+    "15": "admin cleanup",
+    "16": "final target assertion boundary",
+    "20": "module migrated DB helper entered",
+    "21": "pool construction boundary",
+    "22": "pool initial truncate boundary",
+    "23": "pool yield",
+    "24": "pool close",
+    "25": "before fresh DB/bootstrap helper",
+    "26": "before migration chain run",
+    "27": "all migration chains returned",
+    "28": "run_migrations chain validation",
+    "29": "run_migrations bootstrap check",
+    "30": "run_migrations Alembic configuration",
+    "31": "run_migrations upgrade call",
+    "40": "held-probe lock timeout setup",
+    "41": "held-probe statement timeout setup",
+    "42": "held-probe blocking SELECT entered",
+    "43": "held-probe SELECT returned",
+    "44": "held-probe exception handler",
+    "45": "held-probe receipt return"
+  },
+  "case_ordinals": {
+    "0": "test_record_and_flush_round_trips_full_payload_as_object",
+    "1": "test_drain_replay_pending_handles_clean_object_row",
+    "2": "test_drain_replay_pending_handles_legacy_string_shaped_row",
+    "3": "test_buggy_write_path_would_have_corrupted_full_payload_into_a_string",
+    "4": "test_dropped_known_summary_counts_open_marked_drops_only",
+    "5": "test_replay_of_marked_drop_submits_clean_envelope"
+  },
+  "private_ownership_cleanup": "One cached synthetic fixture ID is written privately0600 outside both checkouts, never published. Post-exit fixed hosted Unix-socket GET/version (capped16KiB internal only) plus exact-ID inspect only; HTTP404 after successful discovery =>CONFIRMED_ABSENT, found=>PRESENT, missing/error/timeout=>UNKNOWN. No stop/remove/list/prune. Private ID is removed; launcher separately reports observed raw/ID-file absence. Observer fault changes only observation completeness, not subject outcome.",
+  "record_properties": "All normal events include integer monotonic elapsed ms only. No wall timestamps, frame locals, args, SQL text, paths, PID, owner identity, exception text, token, health value or data body.",
+  "closed_ranges": {
+    "process_files": 16,
+    "worker_index": [
+      0,
+      14
+    ],
+    "records_per_file": 160,
+    "bytes_per_file": 24576,
+    "returned_sqlstate_category": [
+      0,
+      4
+    ],
+    "returned_verdict_category": [
+      0,
+      4
+    ]
+  },
+  "activation": "Qualification is per-process and per-target protocol, never global any-record union: exactly one target protocol, same-process collection, body activation point1, one held-probe return and restoration after setup/call/teardown reports. Source points unique per target, held returns<=1. Missing/partial/setup failure/ambiguous witnesses remain UNKNOWN.",
+  "receipt_lifecycle": {
+    "elapsed": "integer ms >=0 and nondecreasing per process; original upper bound unchanged",
+    "per_process": "exactly one initial configure and final footer, at most one collection/restoration; collection before protocols; footer collection/trace flags match that process records; fault flags retain UNKNOWN",
+    "target": "all target point/held-return/restoration records must occur inside that same process target protocol before restoration; no point/return after restoration/footer; duplicate points/returns/restoration/protocols refused",
+    "population": "one protocol per each of six native identities plus existing unique18 phase reports; target setup/call/teardown must precede its restoration; idle controller/worker streams allowed with consistent flags",
+    "no_point_sequence": "No demand for all34 points or numeric point ordering; point IDs are names. Fixture points may precede body activation. Return must have actual target body activation in that lifecycle.",
+    "qualified_summary_flags": "Summary activation/collection/restoration flags describe a qualified correlated target lifecycle, not isolated raw record existence. Raw closed records and UNKNOWN reasons remain retained.",
+    "partial": "Interrupted/missing traces or genuine setup/fixture failure may still preserve records, but observation_complete=false. No ordinary test or original both-offset admission."
+  }
+}
