@@ -516,11 +516,14 @@ async def test_resolve_endpoint_unknown_interview_is_graceful(full_pool) -> None
 @pytest.fixture(scope="module")
 def gap_shared_credentials_db(postgres_container):
     """A genuine separate shared database, initialized before any async test body."""
+    from urllib.parse import urlparse
+
     from butlers.testing.migration import migration_bootstrap_db_url
 
     name = migration_db_name()
     url = create_migrated_test_db(postgres_container, name, chains=["core"])
-    return url, migration_bootstrap_db_url(postgres_container, name)
+    bootstrap_url = urlparse(migration_bootstrap_db_url(postgres_container, name))
+    return url, bootstrap_url._replace(scheme="postgresql").geturl()
 
 
 @pytest.mark.parametrize("mode", ["shared", "local", "missing", "denied"])
