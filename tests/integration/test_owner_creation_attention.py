@@ -383,58 +383,78 @@ async def test_current_auth_fence_refuses_unconsumed_ticket_without_effects(atte
     raw = {"name": "fence_" + uuid4().hex}
     _, claim = await issue(env, raw)
     pending = None
-    if change == "concurrent_revoke":
-        async with env.admin.acquire() as holder, holder.transaction():
-            await holder.execute(
-                "SELECT singleton FROM dashboard_auth.instance WHERE singleton FOR UPDATE"
-            )
-            pending = asyncio.create_task(create(env, claim, name=raw["name"]))
-            try:
-
-                async def wait_for_real_auth_fence():
-                    while not await env.admin.fetchval(
-                        "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE application_name=$1 "
-                        "AND wait_event_type='Lock' AND query LIKE '%dashboard_attention.consume%')",
-                        env.application_name,
-                    ):
-                        if pending.done():
-                            raise AssertionError("Creation did not wait for the auth fence")
-                        await asyncio.sleep(0.01)
-
-                await asyncio.wait_for(wait_for_real_auth_fence(), 5)
+    original_epoch = None
+    try:
+        if change == "concurrent_revoke":
+            async with env.admin.acquire() as holder, holder.transaction():
                 await holder.execute(
-                    "UPDATE dashboard_auth.sessions SET revoked=true WHERE digest=$1",
-                    claim.session_digest,
+                    "SELECT singleton FROM dashboard_auth.instance WHERE singleton FOR UPDATE"
                 )
-            except BaseException:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
-                raise
-    elif change == "session_revoke":
-        await env.admin.execute(
-            "UPDATE dashboard_auth.sessions SET revoked=true WHERE digest=$1", claim.session_digest
+                pending = asyncio.create_task(create(env, claim, name=raw["name"]))
+                try:
+
+                    async def wait_for_real_auth_fence():
+                        while not await env.admin.fetchval(
+                            "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE application_name=$1 "
+                            "AND wait_event_type='Lock' AND query LIKE '%dashboard_attention.consume%')",
+                            env.application_name,
+                        ):
+                            if pending.done():
+                                raise AssertionError("Creation did not wait for the auth fence")
+                            await asyncio.sleep(0.01)
+
+                    await asyncio.wait_for(wait_for_real_auth_fence(), 5)
+                    await holder.execute(
+                        "UPDATE dashboard_auth.sessions SET revoked=true WHERE digest=$1",
+                        claim.session_digest,
+                    )
+                except BaseException:
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    raise
+        elif change == "session_revoke":
+            await env.admin.execute(
+                "UPDATE dashboard_auth.sessions SET revoked=true WHERE digest=$1",
+                claim.session_digest,
+            )
+        elif change == "credential_epoch":
+            original_epoch = await env.admin.fetchval(
+                "SELECT credential_epoch FROM dashboard_auth.instance WHERE singleton"
+            )
+            await env.admin.execute(
+                "UPDATE dashboard_auth.instance SET credential_epoch=credential_epoch+1 WHERE singleton"
+            )
+        else:
+            await env.admin.execute(
+                "UPDATE dashboard_attention.tickets SET expires_at=clock_timestamp()-interval '1 second' WHERE operation=$1",
+                UUID(claim.operation),
+            )
+        with pytest.raises(ValueError, match="Owner creation refused"):
+            if pending is None:
+                await create(env, claim, name=raw["name"])
+            else:
+                await asyncio.wait_for(pending, 5)
+        assert not await env.admin.fetchval(
+            "SELECT EXISTS(SELECT FROM general.scheduled_tasks WHERE name=$1)", raw["name"]
         )
-    elif change == "credential_epoch":
-        await env.admin.execute(
-            "UPDATE dashboard_auth.instance SET credential_epoch=credential_epoch+1 WHERE singleton"
-        )
-    else:
-        await env.admin.execute(
-            "UPDATE dashboard_attention.tickets SET expires_at=clock_timestamp()-interval '1 second' WHERE operation=$1",
+        assert not await env.admin.fetchval(
+            "SELECT EXISTS(SELECT FROM dashboard_attention.stamps WHERE operation=$1)",
             UUID(claim.operation),
         )
-    with pytest.raises(ValueError, match="Owner creation refused"):
-        if pending is None:
-            await create(env, claim, name=raw["name"])
-        else:
-            await asyncio.wait_for(pending, 5)
-    assert not await env.admin.fetchval(
-        "SELECT EXISTS(SELECT FROM general.scheduled_tasks WHERE name=$1)", raw["name"]
-    )
-    assert not await env.admin.fetchval(
-        "SELECT EXISTS(SELECT FROM dashboard_attention.stamps WHERE operation=$1)",
-        UUID(claim.operation),
-    )
+    finally:
+        if original_epoch is not None:
+            # The negative must refuse before cleanup; never leave this
+            # module-scoped auth database enrolled at an impossible epoch.
+            await env.admin.execute(
+                "UPDATE dashboard_auth.instance SET credential_epoch=$1 WHERE singleton",
+                original_epoch,
+            )
+            assert (
+                await env.admin.fetchval(
+                    "SELECT credential_epoch FROM dashboard_auth.instance WHERE singleton"
+                )
+                == original_epoch
+            )
 
 
 async def test_actual_clause_authoring_scope_current_revoke_and_immutable_creation_definition(

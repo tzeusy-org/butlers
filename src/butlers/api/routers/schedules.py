@@ -22,6 +22,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastmcp.client.client import CallToolResult
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from butlers.api.audit_emit import authenticated_principal
@@ -179,16 +180,30 @@ async def _call_mcp_tool(
             detail=f"MCP call to '{butler_name}' failed: {exc}",
         ) from exc
 
-    # FastMCP call_tool returns a list of content blocks; extract text
-    if result and hasattr(result, "__iter__"):
-        for block in result:
+    unavailable = "Owner creation unavailable; retry the same operation"
+    if isinstance(result, CallToolResult):
+        if result.is_error:
+            raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
+        blocks = result.content
+    else:
+        # Legacy clients return the content list directly.
+        blocks = result
+    if isinstance(blocks, list):
+        for block in blocks:
             text = getattr(block, "text", None)
             if text:
                 try:
-                    return json.loads(text)
+                    payload = json.loads(text)
                 except (json.JSONDecodeError, TypeError):
+                    if meta is not None:
+                        raise HTTPException(503, unavailable) from None
                     return {"result": text}
-    return {"result": str(result)}
+                if meta is not None and not isinstance(payload, dict):
+                    raise HTTPException(503, unavailable)
+                return payload
+    if meta is not None:
+        raise HTTPException(503, unavailable)
+    return {"result": str(blocks)}
 
 
 async def _log_legacy_schedule_mutation(
