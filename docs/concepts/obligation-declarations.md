@@ -821,6 +821,12 @@ configured module's real registered default entry, current owning scheduled row
 and configuration. Its explicit version-1 declaration has an empty capability
 set: no native narrative writer is registered. It cannot borrow day-close
 read/notify capabilities, synthesize a creator/Grant, or admit a reasoning goal.
+Actual module/config/handler resolution belongs to the scheduled-job assembly
+boundary, which binds its fixed private reader without source or database IO.
+The core source adapter invokes that held reader again at its existing
+currentness barriers and refuses if assembly has not bound it. Core imports
+neither the module registry nor scheduled-job assembly; no caller or wire field
+selects the reader or substitutes cached registration material.
 
 One fresh Chronicler-role transaction takes inventory, command and source locks,
 then locks the scheduled row and all underlying reduced-material tables through

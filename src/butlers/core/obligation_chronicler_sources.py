@@ -10,17 +10,16 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
-from pathlib import Path
 from uuid import UUID, uuid5
 from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from asyncpg import Pool
 
-from butlers.config import load_config, obligation_config_material_digest
 from butlers.core.goal_admission import digest
 from butlers.core.obligation_admission import (
     DarkSubmission,
@@ -33,13 +32,15 @@ from butlers.core.obligation_sources import (
     ObligationSourceRepository,
     SourceConflict,
 )
-from butlers.core.obligations import parse_declaration
+from butlers.core.obligations import ObligationDeclaration
 
 JOB = "chronicler_narrate_daily"
 KIND = "chronicler_narration_v1"
 PREPARATION_SECONDS = 5
 _SCHEDULE_FIELDS = "id,name,cron,dispatch_mode,prompt,job_name,job_args,enabled,timezone,source"
 _OWNERS = WeakKeyDictionary()
+type _RegistrationReader = Callable[[], tuple[ObligationDeclaration, dict[str, object]]]
+_registration_reader: _RegistrationReader | None = None
 
 
 class _ChroniclerPreparationOwner:
@@ -182,38 +183,19 @@ def _json(value):
         raise SourceConflict("chronicler_material_invalid") from None
 
 
-def _load_registration():
-    """Re-read the actual registered module entry and local config, not a DTO."""
-    from butlers.core.obligation_git_sources import _registered_model_job_handler
-    from butlers.modules.registry import default_registry
-    from butlers.scheduled_jobs import _run_chronicler_narrate_daily_job
-
-    config = load_config(Path(__file__).resolve().parents[3] / "roster" / "chronicler")
-    modules = default_registry().load_from_config(config.modules)
-    module = next(m for m in modules if m.name == "chronicler")
-    entries = [
-        e for e in sys.modules[type(module).__module__]._DEFAULT_SCHEDULES if e["name"] == JOB
-    ]
-    if (
-        len(entries) != 1
-        or entries[0]["job_name"] != JOB
-        or config.name != "chronicler"
-        or _registered_model_job_handler("chronicler", JOB) is not _run_chronicler_narrate_daily_job
-    ):
-        raise SourceConflict("chronicler_registration_changed")
-    declaration = parse_declaration(entries[0].get("obligation"))
-    if declaration.capabilities:
-        raise SourceConflict("chronicler_writer_unavailable")
-    return declaration, {
-        "entry": json.loads(_json(entries[0])),
-        "source_sha": config.source_sha256,
-        "config_digest": obligation_config_material_digest(config),
-    }
+def _bind_chronicler_registration_reader(reader: _RegistrationReader) -> _RegistrationReader:
+    """Private server assembly hook; binding performs no source/config or DB IO."""
+    global _registration_reader
+    _registration_reader = reader
+    return reader
 
 
 def _registration():
+    """Re-read through the real resolver held by server assembly, never a DTO."""
+    if _registration_reader is None:
+        raise SourceConflict("chronicler_registration_unavailable")
     try:
-        return _load_registration()
+        return _registration_reader()
     except SourceConflict:
         raise
     except (StopIteration, KeyError, TypeError, ValueError, OSError):

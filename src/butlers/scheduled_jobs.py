@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 import asyncpg
 
+from butlers.core.obligation_chronicler_sources import _bind_chronicler_registration_reader
+
 logger = logging.getLogger(__name__)
 
 # Sentinel used when a retention policy row explicitly sets max_rows = NULL
@@ -1983,6 +1985,41 @@ async def _run_chronicler_rollup_daily_job(
     from butlers.chronicler.jobs import run_rollup_daily
 
     return await run_rollup_daily(pool, job_args)
+
+
+@_bind_chronicler_registration_reader
+def _read_chronicler_narration_registration():
+    """Resolve the actual module/config/handler here; return no caller authority."""
+    import json
+
+    from butlers.config import load_config, obligation_config_material_digest
+    from butlers.core.obligation_chronicler_sources import JOB, _json
+    from butlers.core.obligation_git_sources import _registered_model_job_handler
+    from butlers.core.obligation_sources import SourceConflict
+    from butlers.core.obligations import parse_declaration
+    from butlers.modules.registry import default_registry
+
+    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "chronicler")
+    modules = default_registry().load_from_config(config.modules)
+    module = next(m for m in modules if m.name == "chronicler")
+    entries = [
+        e for e in sys.modules[type(module).__module__]._DEFAULT_SCHEDULES if e["name"] == JOB
+    ]
+    if (
+        len(entries) != 1
+        or entries[0]["job_name"] != JOB
+        or config.name != "chronicler"
+        or _registered_model_job_handler("chronicler", JOB) is not _run_chronicler_narrate_daily_job
+    ):
+        raise SourceConflict("chronicler_registration_changed")
+    declaration = parse_declaration(entries[0].get("obligation"))
+    if declaration.capabilities:
+        raise SourceConflict("chronicler_writer_unavailable")
+    return declaration, {
+        "entry": json.loads(_json(entries[0])),
+        "source_sha": config.source_sha256,
+        "config_digest": obligation_config_material_digest(config),
+    }
 
 
 async def _run_chronicler_narrate_daily_job(

@@ -433,6 +433,7 @@ async def test_chronicler_source_selector_registration_and_reconciliation(monkey
     import copy
     import sys
 
+    import butlers.core.obligation_chronicler_sources as source
     from butlers.config import load_config
     from butlers.core.obligation_chronicler_sources import (
         ChroniclerPreparation,
@@ -450,6 +451,11 @@ async def test_chronicler_source_selector_registration_and_reconciliation(monkey
     pool = _chronicler_source_pool()
     monkeypatch.delenv("BUTLERS_CHRONICLER_DARK_PREPARATION", raising=False)
     assert configured_chronicler_preparer(pool, {}) is None and pool.connection.calls == []
+    with monkeypatch.context() as absent:
+        absent.setattr(source, "_registration_reader", None)
+        assert configured_chronicler_preparer(pool, {}) is None
+        with pytest.raises(SourceConflict, match="registration_unavailable"):
+            _registration()
     declaration, _ = _registration()
     assert declaration.capabilities == ()
     first = await ChroniclerPreparation(pool, None).prepare_committed(**await _source_inputs(pool))
@@ -463,6 +469,24 @@ async def test_chronicler_source_selector_registration_and_reconciliation(monkey
     with pytest.raises(SourceConflict, match="writer_unavailable"):
         _registration()
     monkeypatch.setattr(module, "_DEFAULT_SCHEDULES", original)
+
+    changed = _chronicler_source_pool()
+    inputs = await _source_inputs(changed)
+    fetch = changed.connection.fetch
+
+    async def change_registration_after_row_lock(sql, *args):
+        result = await fetch(sql, *args)
+        if "FROM chronicler.scheduled_tasks" in sql:
+            monkeypatch.setattr(module, "_DEFAULT_SCHEDULES", wrong)
+        return result
+
+    changed.connection.fetch = change_registration_after_row_lock
+    with pytest.raises(SourceConflict, match="writer_unavailable"):
+        await ChroniclerPreparation(changed, None).prepare_committed(**inputs)
+    assert not changed.connection.definitions and not changed.connection.occurrences
+    assert changed.connection.depth == 0
+    monkeypatch.setattr(module, "_DEFAULT_SCHEDULES", original)
+
     config = load_config(_CHRONICLER_CONFIG)
     snapshot = capture_loaded_git_sources(
         config, RuntimeConfig("chronicler"), await _complete_core_catalog("chronicler")

@@ -271,8 +271,11 @@ async def chronicler_sources(postgres_container):
     import psycopg2
 
     from butlers.db import Database
+    from butlers.scheduled_jobs import _read_chronicler_narration_registration
     from butlers.testing.migration import init_db_sql_for_dbapi, migration_bootstrap_db_url
 
+    # Use the real server assembly before direct core adapter/readback calls.
+    _read_chronicler_narration_registration()
     name = migration_db_name()
     url = await asyncio.to_thread(
         create_migrated_test_db,
