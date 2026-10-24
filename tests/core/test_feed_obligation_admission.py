@@ -617,14 +617,35 @@ async def test_real_daemon_release_continues_after_feed_incomplete(
                 await shutdown
         else:
             await shutdown
-        assert calls == ["module", "blob", "audit", "credentials", "db"]
         retained = daemon._catalog_shutdown_task
         assert retained.done()
         if outcome == "expired":
+            # A retained admission may still own a connection. Independent
+            # cleanup proceeds, but closing its shared DB would terminate it.
+            assert calls == ["module", "blob", "audit", "credentials"]
+            pending_admission = set(runtime._pending)
+            deferred = set(daemon._admission_cleanup_tasks)
+            assert pending_admission and pending_admission <= owned
+            assert deferred and all(not task.done() for task in deferred)
+            with pytest.raises(RuntimeError, match="cleanup_incomplete"):
+                await daemon.shutdown()
+            assert calls == ["module", "blob", "audit", "credentials"]
+            assert set(runtime._pending) == pending_admission
+            assert set(daemon._admission_cleanup_tasks) == deferred
+            release.set()
+            settling = owned | deferred
+            done, pending = await asyncio.wait(settling, timeout=1)
+            assert done == settling and not pending
+            await asyncio.gather(*done, return_exceptions=True)
+            assert not runtime._pending and not runtime._watchers
+            assert not daemon._admission_cleanup_tasks
+            # Eventual release does not change the original finite outcome or
+            # allow a second shutdown owner / DB close.
             with pytest.raises(RuntimeError, match="cleanup_incomplete"):
                 await daemon.shutdown()
         else:
             await daemon.shutdown()
+        assert calls == ["module", "blob", "audit", "credentials", "db"]
         assert daemon._catalog_shutdown_task is retained
         assert calls == ["module", "blob", "audit", "credentials", "db"]
     finally:
@@ -632,6 +653,12 @@ async def test_real_daemon_release_continues_after_feed_incomplete(
         if owned:
             done, pending = await asyncio.wait(owned, timeout=1)
             assert not pending
+            await asyncio.gather(*done, return_exceptions=True)
+        await asyncio.gather(shutdown, return_exceptions=True)
+        downstream = set(getattr(daemon, "_admission_cleanup_tasks", ()))
+        if downstream:
+            done, pending = await asyncio.wait(downstream, timeout=1)
+            assert done == downstream and not pending
             await asyncio.gather(*done, return_exceptions=True)
         await runtime.aclose()
 

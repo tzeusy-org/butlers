@@ -1551,13 +1551,15 @@ async def test_insight_selected_source_real_role_commit_reply_and_observed_edit_
 
 # Reuse the existing migrated core+Switchboard database producer. No new
 # migration/privilege fixture or local PostgreSQL execution is introduced.
-from tests.integration.test_git_obligation_admission import git_admission_url  # noqa: E402,F401
+from tests.integration import test_git_obligation_admission as _git_admission_fixtures  # noqa: E402
+
+git_admission_url = _git_admission_fixtures.git_admission_url
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("fault", ["healthy", "changed", "rollback", "lost_reply", "race"])
 async def test_insight_actual_admission_role_readback_and_candidate_fence(
-    request, monkeypatch, fault
+    git_admission_url, monkeypatch, fault
 ):
     """Actual SQL/roles/fleet/locks, AUTHOR+COLLECTONLY until hosted execution.
 
@@ -1589,7 +1591,9 @@ async def test_insight_actual_admission_role_readback_and_candidate_fence(
     from tests.switchboard.goal_admission_fixtures import limits
     from tests.switchboard.goal_ledger_fixtures import configure
 
-    url = request.getfixturevalue("git_admission_url")
+    # Resolve the synchronous migrated-DB fixture before entering this async
+    # body: its real bootstrap/migration producer owns asyncio.run().
+    url = git_admission_url
     registry = await _complete_core_catalog("switchboard")
     assert "notify" not in registry
     loaded = capture_loaded_git_sources(
