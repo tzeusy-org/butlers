@@ -78,6 +78,7 @@ from typing import Any, Literal
 import asyncpg
 
 from butlers.core.approvals_policy import (
+    AttentionReadUnavailable,
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
 )
@@ -544,10 +545,10 @@ async def get_suppressing_context(
     """Return the active context hold and its latest suppressor expiry.
 
     Deterministic, non-LLM read of ``public.user_context`` via the existing
-    context-bus module (``butlers.context_bus.get_active_context``). Fails
-    open (returns None) on any error, consistent with every other
-    context-bus reader in this codebase (see
-    ``spawner_context.fetch_situational_context_preamble``).
+    context-bus module (``butlers.context_bus.get_active_context``). A failed
+    read or absent pool raises ``AttentionReadUnavailable``; only a successful
+    empty read means no suppressor. Prompt decoration has a separate fallback
+    and never supplies delivery authority.
 
     ``now`` is the instant the hold is evaluated at, defaulting to the wall
     clock. A signal only holds while it is unexpired *at that instant*: the
@@ -558,19 +559,15 @@ async def get_suppressing_context(
     calculation (``roster/switchboard/tools/insight/broker.py``).
     """
     if pool is None:
-        return None
+        raise AttentionReadUnavailable("context_store_unavailable")
     if now is None:
         now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
         signals = await get_active_context(pool)
-    except Exception:
-        logger.debug(
-            "get_suppressing_context: context bus unavailable; failing open",
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("context_store_unavailable") from exc
 
     suppressing = [
         signal
@@ -631,9 +628,10 @@ async def check_owner_notify_suppression(
     """
     try:
         policy = await get_approvals_policy_quiet_hours(pool)
-    except Exception:
-        logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
-        policy = None
+    except Exception as exc:
+        # Callers must retain pending work or surface failure, never record a
+        # destructive suppression or continue to a provider on an unreadable store.
+        raise AttentionReadUnavailable("attention_policy_unavailable") from exc
 
     if now is None:
         now = datetime.now(UTC)

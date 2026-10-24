@@ -349,7 +349,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     description=(
                         "Notification priority for quiet-hours enforcement. "
                         "Allowed values: high | medium | low. Default: medium. "
-                        "high — always delivers immediately (bypasses quiet hours). "
+                        "high — does not establish authority to bypass owner attention policy. "
                         "medium — deferred during quiet hours. "
                         "low — deferred during quiet hours."
                     )
@@ -1057,13 +1057,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # implicit-owner notifications.  They intentionally remain after
             # delivery-preference deferral so the latter retains its existing
             # per-butler behaviour unchanged.
-            if (
-                _notify_pool is not None
-                and entity_id is None
-                and recipient is None
-                and intent in {"send", "insight"}
-                and priority != "high"
-            ):
+            if entity_id is None and recipient is None and intent in {"send", "insight"}:
                 from datetime import UTC as _PUTC
                 from datetime import datetime as _pdatetime
 
@@ -1079,11 +1073,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 try:
                     _policy = await get_approvals_policy_quiet_hours(_notify_pool)
                 except Exception:
-                    logger.debug(
-                        "notify() failed to fetch approvals_policy; failing open",
-                        exc_info=True,
-                    )
-                    _policy = None
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_policy_unavailable", "retryable": True},
+                        "retryable": True,
+                    }
 
                 _policy_deliver_at = None
                 if _policy is not None:
@@ -1092,20 +1086,22 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             _policy, now=_deferred_at
                         )
                     except Exception:
-                        logger.debug(
-                            "notify() could not calculate approvals-policy delivery time; "
-                            "failing open",
-                            exc_info=True,
-                        )
+                        return {
+                            "status": "error",
+                            "error": {"code": "attention_policy_unavailable", "retryable": True},
+                            "retryable": True,
+                        }
 
                 try:
                     _context_suppression = await get_suppressing_context(_notify_pool)
                 except Exception:
-                    logger.debug(
-                        "notify() failed to fetch suppressing context; failing open",
-                        exc_info=True,
-                    )
-                    _context_suppression = None
+                    # No finite anchor was confirmed for this attempt. Refuse
+                    # without sending, inventing a wake time, or dropping work.
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_context_unavailable", "retryable": True},
+                        "retryable": True,
+                    }
 
                 _context_deliver_at = (
                     _context_suppression.expires_at if _context_suppression is not None else None

@@ -56,7 +56,7 @@ async def _capture_scheduler_notify_fn(pool, client):
             butler_name="health",
             tick_fn=capture_tick,
             get_switchboard_client=lambda: client,
-            get_db=lambda: None,
+            get_db=lambda: SimpleNamespace(pool=pool),
         )
     )
     await asyncio.wait_for(notify_fn_ready.wait(), timeout=1)
@@ -139,6 +139,18 @@ class TestDeliveryPreferencesDB:
             migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
         )
         await p.execute("TRUNCATE deferred_notifications, delivery_preferences CASCADE")
+        await p.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
+        await p.execute("""
+            INSERT INTO public.approvals_policy
+                (id, quiet_start_hour, quiet_end_hour, timezone)
+            VALUES (1, NULL, NULL, 'UTC')
+            ON CONFLICT (id) DO UPDATE
+                SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC'
+        """)
         yield p
         await p.close()
 

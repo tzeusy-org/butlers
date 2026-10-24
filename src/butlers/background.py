@@ -290,6 +290,18 @@ async def scheduler_loop(
 
     async def _scheduler_notify_fn(envelope: dict) -> None:
         """Deliver a deferred notify.v1 envelope via the standard notify pipeline."""
+        # Stored envelopes must re-read current attention state before release.
+        # A failed/active read raises, so the existing flush keeps the original
+        # pending row and deadline; no label in the envelope is bypass authority.
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+        from butlers.core.attention_ledger import check_owner_notify_suppression
+
+        db = get_db()
+        if db is None or db.pool is None:
+            raise AttentionReadUnavailable("attention_store_unavailable")
+        reason = await check_owner_notify_suppression(db.pool, log_context="deferred_notify")
+        if reason is not None:
+            raise AttentionReadUnavailable("deferred_attention_hold")
         _client = get_switchboard_client()
         _db = get_db()
         if _client is None and butler_name != "switchboard":
