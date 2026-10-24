@@ -70,3 +70,51 @@ def test_burst_modes_hold_the_first_three_then_emit_one_digest() -> None:
     assert select_approval_push_mode(park_count=3, digest_already_emitted=False) == "single"
     assert select_approval_push_mode(park_count=4, digest_already_emitted=False) == "burst_digest"
     assert select_approval_push_mode(park_count=5, digest_already_emitted=True) == "collapsed"
+
+
+def test_choose_and_labels_are_refused_on_approval_requests() -> None:
+    from pydantic import ValidationError
+
+    from butlers.tools.switchboard.contracts import parse_notify_request
+
+    approval_url = "https://dashboard.example.test/approvals/x"
+    base = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Approval needed.",
+            "recipient": "100200300",
+        },
+    }
+    approve = {"verb": "approve", "callback_token": "apr1:x", "dashboard_url": approval_url}
+    reject = {"verb": "reject", "callback_token": "apr1:y", "dashboard_url": approval_url}
+    with pytest.raises(ValidationError):
+        parse_notify_request(
+            {
+                **base,
+                "actions": [
+                    approve,
+                    reject,
+                    {
+                        "verb": "choose",
+                        "label": "Ship",
+                        "callback_token": "dsk1:retired",
+                        "dashboard_url": approval_url,
+                    },
+                    {"verb": "open_dashboard", "dashboard_url": approval_url},
+                ],
+            }
+        )
+    with pytest.raises(ValidationError, match="label"):
+        parse_notify_request(
+            {
+                **base,
+                "actions": [
+                    {**approve, "label": "Yes"},
+                    reject,
+                    {"verb": "open_dashboard", "dashboard_url": approval_url},
+                ],
+            }
+        )

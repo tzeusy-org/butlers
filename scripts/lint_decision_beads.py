@@ -27,8 +27,7 @@ with that template and misdescribe a *pending* decision as an already-made
 one. ``due_at`` is bd's own deadline field (filterable via ``--due-before``/
 ``--overdue``); reusing it avoids inventing a second, text-only deadline
 format. ``metadata`` gives real structured data (a list + a scalar) instead
-of a markdown blob a future consumer (the dashboard Decisions lane, the
-Telegram one-tap-close flow in bu-ckkpz.3) would have to regex back apart.
+of a markdown blob local engineering tools would have to regex back apart.
 
 This script does not touch bd's own ``bd lint`` (which is unaware of the
 ``decision`` label and cannot be extended with custom per-label section
@@ -45,18 +44,9 @@ By default this script only checks issues that ALREADY carry the
 queue where zero beads have adopted the label yet, it discovers zero rows
 and reports a vacuous "clean" pass. ``--check-unlabeled-markers`` widens
 *discovery only* (never explicit issue IDs, which are always checked as
-given) to include only live (``open``, ``in_progress``, or ``blocked``)
-labeled decisions and non-epic beads whose titles match a legacy decision
-marker (``DECISION REQUIRED``, ``OWNER-GATED``, ``OWNER DECISION``,
-``ARCHITECTURAL DECISION``, ``OWNER:``) but lack the label -- see
-:data:`_DECISION_TITLE_MARKERS` and :func:`is_unlabeled_marker_match`.
-Those beads then fail :func:`lint_issue`'s existing "missing 'decision'
-label" check the same way a labeled-but-incomplete bead fails its other
-checks, which is what makes the lint non-vacuous against a live,
-pre-migration queue without resurfacing closed history in the weekly owner
-alert. This is also what ``src/butlers/jobs/decision_review.py``'s weekly
-digest job runs (via ``--issues-json-file`` against the mounted export) to
-flag an attention-ledger row when the convention has unmigrated adopters.
+given) to include live (``open``, ``in_progress``, or ``blocked``) labeled
+decisions and non-epic beads with legacy decision-title prefixes. Those beads
+fail the existing missing-label check rather than silently passing.
 
 Usage:
   python3 scripts/lint_decision_beads.py                  # lint all open decision beads
@@ -87,18 +77,9 @@ from typing import Any
 
 DECISION_LABEL = "decision"
 
-# The title-marker regex now lives ONLY here: bu-uo37y retired the runtime
-# copy in src/butlers/jobs/decision_review.py (that module classifies decisions
-# by the `decision` label alone). This lint keeps the regex as the safety net
-# that catches a decision-shaped bead filed WITHOUT the label, surfaced to the
-# owner via decision_review.py's weekly `--check-unlabeled-markers` pass (it is
-# an advisory nudge, not a CI gate). `_OPEN_STATUSES` still mirrors the same
-# frozenset in decision_review.py -- keep that one in sync if either changes.
-# The regex is kept inline rather than imported so this script runs standalone
-# (offline `--issues-json-file` mode) without the `butlers` package's
-# DB-touching import chain. Only an actual title prefix is decision-shaped;
-# quoted marker text in meta/dev titles is explanatory prose. The optional
-# ``[`` preserves legacy ``[OWNER-GATED]`` marker titles.
+# Keep legacy title-prefix discovery in the standalone CLI. Quoted marker text
+# in meta/dev titles is explanatory prose; the optional opening bracket keeps
+# legacy OWNER-GATED markers discoverable without importing runtime code.
 _DECISION_TITLE_MARKERS = re.compile(
     r"^\s*\[?(?:DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:)",
     re.IGNORECASE,
@@ -113,9 +94,7 @@ def is_unlabeled_marker_match(issue: Any) -> bool:
     This is ``--check-unlabeled-markers``'s discovery predicate: it widens
     the checked set beyond labeled beads so the convention lint is
     non-vacuous against a queue that still has pre-convention, title-marker
-    decision beads. Excludes epics for the same reason
-    ``decision_review.py::_is_decision_bead`` does -- a container epic (e.g.
-    "Owner Decision Desk...") is not itself a single decision the owner
+    decision beads. A container epic is not itself a single decision the owner
     resolves in one step, even when its title happens to match.
     """
     if not isinstance(issue, dict):
@@ -187,8 +166,8 @@ def _estimate_timestamp(value: Any) -> datetime | None:
 def _estimated_prompt_length(issue: dict[str, Any], *, now: datetime) -> tuple[int, bool] | None:
     """Return (characters, lower_bound), retaining the standalone stdlib CLI.
 
-    This mirrors decision_routing.compose_prompt_message's literal lengths,
-    not routing eligibility. Cross-seam behavior tests guard template drift.
+    This preserves the historical fixed-template lengths, not delivery
+    eligibility. Independent captured receipts guard all nine formatting cases.
     Missing dates use the shortest age and omit the due suffix. Never invent
     options or a default when the structured layout itself is unavailable.
     """
@@ -372,14 +351,9 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
     list of issues, or one issue object) or newline-delimited JSON (one
     issue object per line).
 
-    bu-hmdqz.6: the weekly decision_review job feeds this straight from the
-    mounted ``issues.export.jsonl`` file, which is ``bd export``'s own
-    format -- JSONL, not a single JSON array (`bd export --help`: "Each line
-    is a complete JSON object"). Without this fallback, that real input
-    would raise ``json.JSONDecodeError: Extra data`` on the second line and
-    the weekly lint check would silently degrade to "could not obtain issue
-    data" every single run. Tries the single-document parse first so
-    existing offline fixtures (a plain JSON array/object) are unaffected.
+    Native ``bd export`` input is one object per line. Try a whole-document
+    parse first to preserve offline array/object fixtures, then JSONL so a
+    valid multi-row export does not become an acquisition failure.
     """
     try:
         text = path.read_text(encoding="utf-8")

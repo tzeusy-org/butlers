@@ -1,3 +1,7 @@
+> Historical plan: withdrawn by owner decision bu-g2zuv2 = A (2026-10-21).
+> No implementation or activation is authorized; see RFC0025 and the current
+> engineering tracker retirement boundary.
+
 # Beads Projection Exporter Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use

@@ -228,13 +228,6 @@ services:
       - ./logs:/app/logs
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
-      # bu-hmdqz.6: same read-only single-file mount as butlers-up/
-      # butlers-up-hotreload below -- GET /api/decisions
-      # (src/butlers/api/routers/decisions.py) runs in THIS container and
-      # calls compute_decision_digest() in-process, so without this mount
-      # it is permanently decisions_available=False. Never mount the whole
-      # .beads/ dir (see butlers-up's own volumes block for why).
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
@@ -663,13 +656,6 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-      # bu-ckkpz.4: read-only mount of ONLY the bd JSONL export (never the
-      # whole .beads/ dir -- that also holds .beads-credential-key, which
-      # must never enter a container). Feeds Switchboard's
-      # decision-review-digest / decision-escalation-check jobs; see
-      # butlers.jobs.decision_review's module docstring for why this is the
-      # only path from beads issue data into the running system today.
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -740,13 +726,6 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-      # bu-ckkpz.4: read-only mount of ONLY the bd JSONL export (never the
-      # whole .beads/ dir -- that also holds .beads-credential-key, which
-      # must never enter a container). Feeds Switchboard's
-      # decision-review-digest / decision-escalation-check jobs; see
-      # butlers.jobs.decision_review's module docstring for why this is the
-      # only path from beads issue data into the running system today.
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -888,9 +867,6 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-      # bu-ckkpz.4: see butlers-up's own volumes block above for why only
-      # this one file is mounted, never the whole .beads/ dir.
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -948,9 +924,6 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-      # bu-ckkpz.4: see butlers-up's own volumes block above for why only
-      # this one file is mounted, never the whole .beads/ dir.
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -1016,8 +989,6 @@ services:
       - uv_cache:/root/.cache/uv
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
-      # bu-hmdqz.6: see dashboard-api's own volumes block above for why.
-      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
     # side, so it is the only service that receives the private signer.  The
     # keyring below is public and shared with every verifying process; the

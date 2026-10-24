@@ -1,8 +1,9 @@
-"""Full S1 registration survivor captured executing main at 8168021c8e15.
+"""Full registration survivor after the five-operation Desk retirement.
 
 The digest covers the entire normalized OpenAPI document and ordered route table,
 including hidden routes, operation IDs, tags, schemas and middleware order. The
-full before/after JSON is retained with the author verification receipts.
+full before/after JSON at base9aac956 is retained with the author verification
+receipts; all surviving operations, components and middleware are identical.
 """
 
 from __future__ import annotations
@@ -54,12 +55,16 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "e321d49b42e8145dbf1a6a37518a90f534514e2c7d8376fd6b296c68fef01eb0"
+        "1bb7b12d3ac27b181c90448300d68a5b4cd0274094693ea8cac119a5430bfaa2"
     )
-    assert len(snapshot["routes"]) == 622
-    assert len(snapshot["openapi"]["paths"]) == 531
+    assert len(snapshot["routes"]) == 617
+    assert len(snapshot["openapi"]["paths"]) == 526
     assert snapshot["routes"][-1] == {"path": "", "name": "frontend", "type": "Mount"}
     assert any(row.get("include_in_schema") is False for row in snapshot["routes"])
+
+    assert not any(
+        row["path"].startswith(("/api/decisions", "/api/beads")) for row in snapshot["routes"]
+    )
 
     registry = app.state.router_registry
     assert registry == build_router_registry()
@@ -96,6 +101,18 @@ async def test_public_db_dependencies_preserve_uninitialized_http_policies(monke
         optional = await client.get("/api/ingestion/pipeline")
         assert optional.status_code == 200
         assert optional.json()["aggregates_available"] is False
+
+        # Exercise production routing as an owner, beyond the OpenAPI inventory.
+        for method, target in (
+            ("GET", "/api/decisions"),
+            ("GET", "/api/beads/historical-bead"),
+            ("POST", "/api/decisions/historical-bead/intent"),
+            ("GET", "/api/decisions/prompts/12345678-1234-5678-1234-567812345678"),
+            ("POST", "/api/decisions/prompts/12345678-1234-5678-1234-567812345678/choose"),
+        ):
+            retired = await client.request(method, target)
+            assert retired.status_code == 404
+            assert retired.json() == {"detail": "Not Found"}
 
     manager = MagicMock(spec=DatabaseManager)
     monkeypatch.setattr(deps, "_db_manager", manager)
