@@ -17,9 +17,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.core.insight_premise import probe_premise
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight import broker, premises
 
 _docker_available = shutil.which("docker") is not None
@@ -44,13 +47,6 @@ def _load(path: Path, name: str):
 
 def _health_jobs():
     return _load(_REPO / "roster/health/jobs/health_jobs.py", "_health_jobs_refill_premise")
-
-
-def _migration():
-    return _load(
-        _REPO / "alembic/versions/core/core_272_health_refill_premise_probe.py",
-        "_core_272_under_test",
-    )
 
 
 class TestRefillProducerBinding:
@@ -152,14 +148,22 @@ class TestRefillProbeVerdicts:
             assert await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS)) is None
 
 
+@pytest.fixture
+def refill_db_url(postgres_container) -> str:
+    """Migrate a fresh database before entering this case's async fixture loop."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 @pytest.mark.integration
 class TestRefillPremiseAgainstPostgres:
     @pytest.fixture
-    async def pool(self, provisioned_postgres_pool):
-        migration = _migration()
-        async with provisioned_postgres_pool() as pool:
+    async def pool(self, refill_db_url: str):
+        pool = await asyncpg.create_pool(
+            refill_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        )
+        try:
             await broker.create_insight_tables(pool)
             await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
             await pool.execute(
@@ -175,8 +179,9 @@ class TestRefillPremiseAgainstPostgres:
                 )
                 """
             )
-            await pool.execute(migration.CREATE_REFILL_FN)
             yield pool
+        finally:
+            await pool.close()
 
     async def _med(
         self,
