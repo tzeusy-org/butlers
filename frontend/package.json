@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --configLoader runner",
-    "build": "tsc -b && vite build --configLoader runner",
+    "build": "npm run typecheck:e2e && tsc -b && vite build --configLoader runner",
     "lint": "eslint . && npm run lint:draft-eligibility",
     "lint:draft-eligibility": "node scripts/check-draft-eligibility.mjs",
     "lint:emdash": "node scripts/check-em-dash-copy.mjs",
@@ -14,11 +14,12 @@
     "preview": "vite preview --configLoader runner",
     "test": "vitest run --configLoader runner",
     "story:test": "vitest run --configLoader runner --reporter=verbose src/**/*.a11y.test.tsx",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed",
+    "test:e2e": "npm run typecheck:e2e && playwright test",
+    "test:e2e:headed": "npm run typecheck:e2e && playwright test --headed",
     "test:e2e:install": "node scripts/install-playwright-browsers.mjs",
     "test:owner-auth": "playwright test --config playwright.owner-auth.config.ts",
-    "test:e2e:cache-version": "node scripts/playwright-cache-version.mjs"
+    "test:e2e:cache-version": "node scripts/playwright-cache-version.mjs",
+    "typecheck:e2e": "node --test --test-timeout=300000 scripts/check-e2e-api-mocks.node.mjs && node scripts/check-e2e-api-mocks.mjs && tsc -p tsconfig.e2e.json --noEmit"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",

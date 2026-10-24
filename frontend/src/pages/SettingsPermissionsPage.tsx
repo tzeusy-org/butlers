@@ -63,20 +63,20 @@ import { cn } from "@/lib/utils";
 // Types
 // ---------------------------------------------------------------------------
 
-interface PermissionCell {
+export interface PermissionCell {
   granted: boolean;
   reason: string | null;
   updated_at: string | null;
   inherited: boolean;
 }
 
-interface PermissionsMatrix {
+export interface PermissionsMatrix {
   butlers: string[];
   permissions: string[];
   cells: Record<string, Record<string, PermissionCell>>;
 }
 
-interface WebhookRow {
+export interface WebhookRow {
   id: string;
   endpoint: string;
   events: string[];
@@ -173,10 +173,12 @@ async function deleteWebhook(id: string): Promise<void> {
   }
 }
 
-async function testWebhook(id: string): Promise<{ ok: boolean; status_code: number | null; latency_ms: number | null }> {
+export type WebhookTestResult = { ok: boolean; status_code: number | null; latency_ms: number | null };
+
+async function testWebhook(id: string): Promise<WebhookTestResult> {
   try {
     const body = await apiFetch<{
-      data: { ok: boolean; status_code: number | null; latency_ms: number | null };
+      data: WebhookTestResult;
     }>(`/webhooks/${id}/test`, { method: "POST" });
     return body.data;
   } catch (err) {

@@ -1,17 +1,20 @@
+import { emptyApiJson, emptyBoard, butlerDetail, boardRow, condition } from "./fixtures/empty-api";
+import { mockJson, mockResponse, type ResponseOf } from "./fixtures/api-responses";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 // REQ-dashboard-shell-002, REQ-dashboard-shell-003, REQ-dashboard-shell-004,
 // REQ-dashboard-shell-006. Real browser storage; API fixtures provide no draft service.
 async function api(context: BrowserContext) {
   await context.route((url) => url.pathname.startsWith("/api/"), async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
     const expires = new Date(Date.now() + 3_600_000).toISOString();
-    let data: unknown = [];
-    if (pathname.endsWith("/auth/owner/status")) data = { state: "configured_key", authenticated: true, session_expires_at: expires };
-    else if (pathname.endsWith("/auth/owner/csrf")) data = { csrf_token: "browser-test-csrf", csrf_expires_at: expires, session_expires_at: expires };
-    else if (pathname === "/api/health") data = { status: "ok" };
-    else if (pathname === "/api/butlers/board") data = { rows: [], aggregates: {} };
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, meta: { total: 0, limit: 50, offset: 0 } }) });
+    const body = url.pathname.endsWith("/auth/owner/status")
+      ? mockJson("ownerStatus", { data: { state: "configured_key", authenticated: true, session_expires_at: expires } })
+      : url.pathname.endsWith("/auth/owner/csrf")
+        ? mockJson("ownerCsrf", { data: { csrf_token: "browser-test-csrf", csrf_expires_at: expires, session_expires_at: expires } })
+        : emptyApiJson(url, route.request().method());
+    if (body === undefined) await route.fallback();
+    else await route.fulfill({ status: 200, contentType: "application/json", body });
   });
 }
 async function form(page: Page) {
@@ -44,8 +47,8 @@ test("the enrolled research route restores its complete bundle and clears only a
   await context.route((url) => url.pathname === "/api/health/research", async (route) => {
     if (route.request().method() === "POST") {
       posts.push(route.request().postDataJSON());
-      await route.fulfill({ json: { id: "research-created" } });
-    } else await route.fulfill({ json: { data: [], meta: { total: 0, has_more: false } } });
+      await route.fulfill({ json: mockResponse("createResearch", { id: "research-created", title: "A browser research subject", content: "Complete research notes", tags: ["sleep", "reading"], source_url: "https://example.com/research", condition_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }) });
+    } else await route.fulfill({ json: mockResponse("getResearch", { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } }) });
   });
   await page.goto("/health/research");
   await page.getByRole("button", { name: "Add research", exact: true }).click();
@@ -172,7 +175,7 @@ test("late success cannot close a successor or erase byte-identical recreation a
   await context.route((url) => url.pathname === "/api/health/conditions", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
     posts++; await response;
-    await route.fulfill({ json: { data: { id: "created-condition" } } });
+    await route.fulfill({ json: mockResponse("createCondition", condition({ id: "created-condition" })) });
   });
   const dialog = await form(page);
   await dialog.getByLabel("Name", { exact: true }).fill("Identical content"); await named(page, "Identical content");
@@ -222,7 +225,7 @@ test("oversize edits remain visible without truncating or overwriting the last c
 
 test("changed edit source stays authoritative until the owner explicitly loads its draft", async ({ page, context }) => {
   const condition = { id: "stable-condition", name: "Server original", status: "active", notes: "Current server notes", diagnosed_at: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-  await context.route((url) => url.pathname === "/api/health/conditions", (route) => route.fulfill({ json: { data: [condition], meta: { total: 1, has_more: false } } }));
+  await context.route((url) => url.pathname === "/api/health/conditions", (route) => route.fulfill({ json: mockResponse("getConditions", { data: [condition], meta: { total: 1, offset: 0, limit: 50, has_more: false } }) }));
   await page.goto("/health/conditions"); await page.getByRole("button", { name: "Edit Server original", exact: true }).click();
   await page.getByLabel("Name", { exact: true }).fill("Unsubmitted edit"); await named(page, "Unsubmitted edit");
   condition.name = "Server changed";
@@ -309,7 +312,7 @@ test("actual owner-session loss retires stored content and advances the stale-wr
   let expired = false;
   await context.route((url) => url.pathname.endsWith("/auth/owner/status"), async (route) => {
     if (!expired) return route.fallback();
-    await route.fulfill({ json: { data: { state: "configured_key", authenticated: false, session_expires_at: null } } });
+    await route.fulfill({ json: mockResponse("ownerStatus", { data: { state: "configured_key", authenticated: false, session_expires_at: null } }) });
   });
   await context.route((url) => url.pathname === "/api/health/conditions", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
@@ -329,7 +332,7 @@ test("actual owner-session loss retires stored content and advances the stale-wr
 
 // REQ-dashboard-chat-ui-004: empty or whitespace text is an ordered deletion.
 test("whitespace-only chat edits tombstone committed text and never restore an affordance", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } } }));
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: { name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } }) }));
   for (const posture of ["page", "dock", "floating", "panel"] as const) {
     const open = async () => {
       await page.setViewportSize({ width: posture === "floating" || posture === "panel" ? 1100 : 1440, height: 900 });
@@ -366,7 +369,7 @@ test("explicit override creates a successor revision protected from an older suc
     if (route.request().method() !== "POST") return route.fallback();
     started = true;
     await new Promise<void>((resolve) => { accept = resolve; });
-    await route.fulfill({ json: { data: { id: "accepted-condition", name: "Submitted content", status: "active" } } });
+    await route.fulfill({ json: mockResponse("createCondition", condition({ id: "accepted-condition", name: "Submitted content", status: "active" })) });
   });
   const first = await form(page);
   await first.getByLabel("Name", { exact: true }).fill("Submitted content"); await named(page, "Submitted content");
@@ -447,7 +450,7 @@ test("a successful submit reconciles a queued other-tab successor before the nex
     if (route.request().method() !== "POST") return route.fallback();
     started = true;
     await new Promise<void>((resolve) => { accept = resolve; });
-    await route.fulfill({ json: { data: { id: "accepted-condition", name: "Submitted C", status: "active" } } });
+    await route.fulfill({ json: mockResponse("createCondition", condition({ id: "accepted-condition", name: "Submitted C", status: "active" })) });
   });
   const first = await form(page);
   await first.getByLabel("Name", { exact: true }).fill("Submitted C"); await named(page, "Submitted C");
@@ -488,7 +491,7 @@ test("a successful submit reconciles a queued other-tab successor before the nex
 
 // REQ-dashboard-shell-002/003: reopening a mounted create view cannot turn unsent input into its baseline.
 test("a kept state-create draft remains dirty on reopen and clearing the full bundle tombstones it", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: butlerDetail("switchboard") }) }));
   await page.goto("/butlers/switchboard?tab=system&section=state");
   await page.getByRole("button", { name: "Set value", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Set value", exact: true });
@@ -512,7 +515,7 @@ test("a kept state-create draft remains dirty on reopen and clearing the full bu
 
 // REQ-dashboard-shell-006: an old failure belongs to its retired view, not a reopened successor.
 test("a late state-save failure cannot announce into the reopened state form", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: butlerDetail("switchboard") }) }));
   let rejectSave: (() => void) | undefined; let started = false;
   await context.route((url) => url.pathname.startsWith("/api/butlers/switchboard/state/"), async (route) => {
     if (route.request().method() === "GET") return route.fallback();
@@ -540,12 +543,12 @@ test("a late state-save failure cannot announce into the reopened state form", a
 
 // REQ-dashboard-shell-006: parent-owned schedule feedback must use the submitted view's lifetime.
 test("a late schedule success cannot announce or close a reopened schedule", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: { data: { name: "switchboard", status: "running", modules: [], schedules: [], skills: [] } } }));
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: butlerDetail("switchboard") }) }));
   let finish: (() => void) | undefined; let started = false;
   await context.route((url) => url.pathname === "/api/butlers/switchboard/schedules", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
     started = true; await new Promise<void>((resolve) => { finish = resolve; });
-    await route.fulfill({ json: { data: { id: "created-schedule" } } });
+    await route.fulfill({ json: mockResponse("createButlerSchedule", { meta: {}, data: { id: "created-schedule" } }) });
   });
   await page.goto("/butlers/switchboard?tab=system&section=schedules");
   await page.getByRole("button", { name: "Add schedule", exact: true }).click();
@@ -578,15 +581,15 @@ test("a late schedule success cannot announce or close a reopened schedule", asy
 
 // REQ-dashboard-shell-006: the calendar parent must not announce retired dialog requests.
 test("late butler-calendar outcomes leave a reopened event draft alone", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/calendar/workspace/invitations", (route) => route.fulfill({ json: { data: { entries: [], issues_available: true, conflicts_available: true, sources_degraded: [], has_more: false, next_cursor: null } } }));
-  await context.route((url) => url.pathname === "/api/calendar/workspace/conflicts", (route) => route.fulfill({ json: { data: { issues: [], issues_available: true, sources_degraded: [] } } }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace/invitations", (route) => route.fulfill({ json: mockResponse("getCalendarInvitations", { meta: {}, data: { entries: [], issues_available: true, conflicts_available: true, sources_degraded: [], has_more: false, next_cursor: null } }) }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace/conflicts", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspaceConflicts", { meta: {}, data: { issues: [], issues_available: true, scan_window: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" } } }) }));
   const lane = { lane_id: "general", butler_name: "general", title: "General lane", source_keys: ["internal_reminders:general"] };
-  await context.route((url) => url.pathname === "/api/calendar/workspace/meta", (route) => route.fulfill({ json: { data: { capabilities: { views: ["user", "butler"], filters: {}, sync: { global: true, by_source: true } }, connected_sources: [], writable_calendars: [], lane_definitions: [lane], default_timezone: "UTC", primary_calendar_id: null } } }));
-  await context.route((url) => url.pathname === "/api/calendar/workspace", (route) => route.fulfill({ json: { data: { entries: [], source_freshness: [], lanes: [lane], next_cursor: null, has_more: false } } }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace/meta", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspaceMeta", { meta: {}, data: { capabilities: { views: ["user", "butler"], filters: {}, sync: { global: true, by_source: true } }, connected_sources: [], writable_calendars: [], lane_definitions: [lane], default_timezone: "UTC", primary_calendar_id: null } }) }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspace", { meta: {}, data: { entries: [], source_freshness: [], lanes: [lane], next_cursor: null, has_more: false } }) }));
   let release: (() => void) | undefined; let started = false;
   await context.route((url) => url.pathname === "/api/calendar/workspace/butler-events", async (route) => {
     started = true; await new Promise<void>((resolve) => { release = resolve; });
-    await route.fulfill({ json: { data: { result: { status: "ok" } } } });
+    await route.fulfill({ json: mockResponse("mutateCalendarWorkspaceButlerEvent", { meta: {}, data: { action: "create", tool_name: "calendar_create_event", request_id: null, result: { status: "ok" }, conflicts: [], suggested_slots: [], projection_version: null, staleness_ms: null, projection_freshness: null } }) });
   });
   await page.goto("/calendar?view=butler");
   await page.getByRole("button", { name: "Create butler event", exact: true }).click();
@@ -646,15 +649,15 @@ test("accepted Retry clears the failed submission's C and preserves a newer comp
 // Owning-butler identity must survive cached sibling navigation (REQ001/006).
 async function siblingButlers(context: BrowserContext) {
   await context.route((url) => url.pathname === "/api/butlers/board", async (route) => {
-    const board = ["switchboard", "general"].map((name) => ({
-      name, type: "butler", status: "running", activity: "idle", cell_tone: "neutral",
+    const board = ["switchboard", "general"].map((name): ResponseOf<"getButlersBoard">["data"]["rows"][number] => ({
+      ...boardRow(name), name, type: "butler", status: "running", activity: "idle", cell_tone: "neutral",
       eligibility: "active", sessions_24h: 0, cost_today: 0, active_session_count: 0,
       hourly_stripe: [], hourly_total: 0, heartbeat_unavailable: true, cadence_status: "unknown",
     }));
-    await route.fulfill({ json: { data: { rows: board, aggregates: {} } } });
+    await route.fulfill({ json: mockResponse("getButlersBoard", { meta: {}, data: { ...emptyBoard().data, rows: board, aggregates: { ...emptyBoard().data.aggregates, total: 2, butler_count: 2 } } }) });
   });
   await context.route((url) => /^\/api\/butlers\/(general|switchboard)$/.test(url.pathname), async (route) => {
-    await route.fulfill({ json: { data: { name: new URL(route.request().url()).pathname.split("/").at(-1), status: "running", modules: [], schedules: [], skills: [] } } });
+    await route.fulfill({ json: mockResponse("getButler", { meta: {}, data: butlerDetail(new URL(route.request().url()).pathname.split("/")[3]) }) });
   });
 }
 
@@ -693,9 +696,9 @@ test("cached butler navigation fences old schedule feedback and keeps current su
   let started!: () => void;
   const requested = new Promise<void>((resolve) => { started = resolve; });
   await context.route((url) => /^\/api\/butlers\/(switchboard|general)\/schedules$/.test(url.pathname), async (route) => {
-    if (route.request().method() !== "POST") { await route.fulfill({ json: { data: [] } }); return; }
+    if (route.request().method() !== "POST") { await route.fulfill({ json: mockResponse("getButlerSchedules", { meta: {}, data: [] }) }); return; }
     if (new URL(route.request().url()).pathname.includes("switchboard")) { started(); await held; }
-    await route.fulfill({ json: { data: { id: "created", ...route.request().postDataJSON() } } });
+    await route.fulfill({ json: mockResponse("createButlerSchedule", { meta: {}, data: { id: "created", ...route.request().postDataJSON() } }) });
   });
   await page.goto("/butlers/general?tab=system&section=schedules");
   await expect(page.getByRole("button", { name: "Add schedule", exact: true })).toBeVisible();
