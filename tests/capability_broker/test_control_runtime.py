@@ -134,6 +134,7 @@ async def test_actual_factory_current_catalog_signer_session_and_registered_read
             # This local signature check has no durable receiver replay store.
             assert runtime.broker.pool is controlled.pool
             assert dict(runtime.broker.approvals.clients) == {}
+            assert runtime._cancel_task is None
             refused = await client.post(
                 url,
                 headers={**headers, "Authorization": "Bearer invalid"},
@@ -651,3 +652,291 @@ async def test_replay_worker_and_private_clients_close_once_through_repeated_can
             closing.cancel()
         await asyncio.gather(closing, return_exceptions=True)
         await runtime.close()
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_constructed_runtime_cancels_registered_park_and_commits_exact_ACK(
+    tmp_path, monkeypatch, approved
+):
+    """Real producer composition; SQL/private wire are explicit software controls."""
+    import copy
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    from butlers.capability_broker.runtime import RuntimeConfig, build_runtime
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.protocol import request
+    from butlers.core.goal_stop import GoalStop
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from tests.capability_broker import test_broker as broker_owner
+    from tests.capability_broker.test_published_catalog import registered_health_record_broker
+    from tests.core.test_goal_stop import StopConnection
+    from tests.modules.approvals.test_goal_control import DurableStore
+
+    lock = asyncio.Lock()
+    acknowledged = asyncio.Event()
+
+    class Central(StopConnection):
+        @asynccontextmanager
+        async def transaction(self):
+            async with lock:
+                async with super().transaction():
+                    yield
+                if any(w["state"] == "acknowledged" for w in self.work.values()):
+                    acknowledged.set()
+
+        async def fetch(self, sql, *args):
+            if "SELECT a.goal_id,a.effect_id" in sql:
+                return []  # This goal is stopped, so it is not approved replay work.
+            if "SELECT w.goal_id,w.effect_id" in sql:
+                assert self.in_transaction and args[0] == 4
+                # Four older unconfigured owners cannot occupy the entire batch.
+                rows = [
+                    dict(self.effects[i], **self.associations[i])
+                    for i in self.work
+                    if self.work[i]["state"] == "pending"
+                ]
+                if len(args) == 2:
+                    assert "a.owning_domain=ANY($2::text[])" in sql
+                    rows = [r for r in rows if r["owning_domain"] in args[1]]
+                return rows[: args[0]]
+            return await super().fetch(sql, *args)
+
+    class Health(DurableStore):
+        async def fetchrow(self, sql, *args):
+            if "current_schema()" in sql and "current_user" in sql:
+                return dict(
+                    schema="health",
+                    role="butler_health_rw",
+                    unsafe=False,
+                    schemas=["pg_catalog", "health", "public"],
+                )
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(args[1]),
+                    park_authorization_digest=args[2],
+                    park_call_id=args[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            return await super().fetchrow(sql, *args)
+
+    monkeypatch.setattr(broker_owner, "Connection", Central)
+    (
+        controlled,
+        conn,
+        _,
+        token,
+        _,
+        catalog,
+        originals,
+        facts,
+    ) = await registered_health_record_broker(monkeypatch, park_only=True, approvals_enabled=True)
+    # The current-catalog helper delegates pg_class publication queries. Keep
+    # GoalStop's separate real schema-check protocol in this same connection.
+    catalog_fetch = conn.fetch
+
+    async def fetch(sql, *args):
+        if "FROM pg_class" in sql and "goal_stop_requests" in args[0]:
+            return await Central.fetch(conn, sql, *args)
+        return await catalog_fetch(sql, *args)
+
+    conn.fetch = fetch
+    config = key_config(tmp_path, "http://127.0.0.1:9/mcp")
+    config["approval_transports"] = {
+        "health": {
+            "enabled": True,
+            "role": "broker-control",
+            "domain": "health",
+            "endpoint": "https://localhost:4200/mcp",
+            "peer": {
+                "role": "owning-service",
+                "domain": "health",
+                "sans": ["DNS:localhost"],
+                "client_certificate": False,
+            },
+            "material": {
+                "ca_path": "/software-only/ca",
+                "certificate_path": "/software-only/cert",
+                "private_key_path": "/software-only/key",
+            },
+        }
+    }
+    # Only TLS exchange is controlled. The actual factory still validates and
+    # fixes the configured client, signer, current fleet and owning producer.
+    monkeypatch.setattr(
+        "butlers.capability_broker.transport.client.build_client",
+        lambda settings, context: PrivateClient(settings, None),
+    )
+    runtime = await build_runtime(
+        controlled.pool, RuntimeConfig.parse(config), host="127.0.0.1", port=0
+    )
+    store = Health()
+    store.goal_id = conn.goal
+    operation = GoalDispatch(
+        store,
+        "health",
+        catalog,
+        originals,
+        {runtime.broker.signer.kid: runtime.broker.signer.private_key.public_key()},
+    )
+    peer = SimpleNamespace(role="broker-control", domain="health")
+    sent = []
+
+    async def exchange(client, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        assert client is runtime.broker.approvals.clients["health"]
+        assert assertion is None
+        sent.append(value["operation"])
+        store.action_id = UUID(value["identity"]["action_id"])
+        return await operation(request(value, "health"), peer)
+
+    monkeypatch.setattr(PrivateClient, "call", exchange)
+    try:
+        parked = await runtime.broker.call(
+            conn.goal, token, "health__measurement_log", {"type": "weight", "value": 72.5}
+        )
+        assert parked.status == "parked" and store.row["status"] == "pending"
+        assert not facts and conn.used == 1 and sent == ["PARK"]
+        if approved:
+            from butlers.capability_broker.transport.protocol import identity
+            from butlers.modules.approvals.models import ActionStatus
+
+            await operation.owner.transition(
+                identity(
+                    dict(
+                        goal_id=str(conn.goal),
+                        effect_id=str(parked.effect_id),
+                        owning_domain="health",
+                        action_id=str(parked.effect_id),
+                        capability="health__measurement_log",
+                        args_digest=store.gate["args_digest"],
+                    )
+                ),
+                target_status=ActionStatus.APPROVED,
+                decided_by="human:owner",
+                event_actor="owner",
+                event_reason="controlled",
+            )
+            assert store.row["status"] == "approved"
+        # Older unconfigured hints are deliberately ahead of the configured one.
+        for _ in range(4):
+            other = conn.seed_effect()
+            conn.effects[other.effect_id]["capability"] = "travel__write"
+            conn.associations[other.effect_id]["owning_domain"] = "travel"
+        order = list(conn.effects)
+        conn.effects = {i: conn.effects[i] for i in order[1:] + order[:1]}
+        conn.associations = {i: conn.associations[i] for i in order[1:] + order[:1]}
+        local = await GoalStop(runtime.broker.pool).stop_goal(conn.goal, uuid4(), "b" * 64)
+        assert local.cancellation_work == 5 and local.owning_cancellation_pending
+        assert store.row["status"] == ("approved" if approved else "pending")
+        # Local Stop is not an owning receipt.
+        await runtime.start()
+        async with asyncio.timeout(2):
+            await acknowledged.wait()
+        assert conn.work[parked.effect_id]["state"] == "acknowledged"
+        receipt = next(r for r in store.receipts.values() if r["outcome"] == "cancelled")
+        assert store.row["status"] == "cancelled" and store.gate["stop_fenced"]
+        assert conn.work[parked.effect_id]["receipt_digest"] == receipt["digest"]
+        assert conn.effects[parked.effect_id]["status"] == "cancelled"
+        assert sent == ["PARK", "CANCEL"] and not facts and conn.used == 1
+        assert all(w["state"] == "pending" for i, w in conn.work.items() if i != parked.effect_id)
+    finally:
+        await runtime.close()
+        await AsyncPath(config["key_file"]).unlink()
+    assert runtime.listener.cleanup_complete
+
+
+@pytest.mark.parametrize("settles", [True, False])
+async def test_runtime_joins_both_consumers_before_client_close_with_one_deadline(settles):
+    from types import SimpleNamespace
+
+    from butlers.capability_broker.runtime import CentralRuntime
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def consumer():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            entered.set()
+            await release.wait()
+            observed.append("consumer_terminal")
+
+    class Client:
+        async def aclose(self):
+            assert runtime._replay_task.done() and runtime._cancel_task.done()
+            observed.append("client_closed")
+
+    class Listener:
+        async def close(self):
+            observed.append("listener_closed")
+
+    runtime = CentralRuntime(
+        SimpleNamespace(approvals=SimpleNamespace(clients={"health": Client()})), Listener()
+    )
+    runtime._replay_task = asyncio.create_task(consumer())
+    runtime._cancel_task = asyncio.create_task(consumer())
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(runtime.close())
+    try:
+        async with asyncio.timeout(8):
+            await entered.wait()
+            closing.cancel()
+            await asyncio.sleep(0)
+            closing.cancel()
+            await asyncio.sleep(0)
+            assert "client_closed" not in observed and not closing.done()
+            if settles:
+                release.set()
+            with pytest.raises(asyncio.CancelledError) as stopped:
+                await closing
+            if settles:
+                assert observed.count("consumer_terminal") == 2
+                assert observed[-1] == "client_closed"
+                await runtime.close()
+            else:
+                assert isinstance(stopped.value.__cause__, TimeoutError)
+                assert str(stopped.value.__cause__) == "central_runtime_cleanup_incomplete"
+                assert observed == ["listener_closed"]
+                assert not runtime._cancel_task.done() and not runtime._replay_task.done()
+                assert any(not t.done() for t in runtime._cleanup_children)
+                with pytest.raises(TimeoutError, match="central_runtime_cleanup_incomplete"):
+                    await runtime.close()  # Same failed close; no renewed grace.
+    finally:
+        release.set()
+        await asyncio.gather(*runtime._cleanup_children, return_exceptions=True)
+        await asyncio.gather(closing, return_exceptions=True)
+    assert observed.count("client_closed") == observed.count("listener_closed") == 1
+    assert all(t.done() for t in runtime._cleanup_children)
+
+
+async def test_stop_discovery_keeps_unfiltered_default_and_validates_fixed_filter():
+    from butlers.core.goal_stop import GoalStop
+    from tests.capability_broker.test_broker import Pool
+    from tests.core.test_goal_stop import StopConnection
+
+    calls = []
+
+    class Connection(StopConnection):
+        async def fetch(self, sql, *args):
+            if "SELECT w.goal_id,w.effect_id" in sql:
+                calls.append((sql, args))
+                return []
+            return await super().fetch(sql, *args)
+
+    stop = GoalStop(Pool(Connection()))
+    assert await stop.cancel_candidates() == ()
+    assert calls[-1][1] == (4,) and "ANY($2" not in calls[-1][0]
+    assert await stop.cancel_candidates(domains=("health",)) == ()
+    assert calls[-1][1] == (4, ["health"]) and "ANY($2::text[])" in calls[-1][0]
+    for invalid in (["health"], ("health", "health"), ([],), ("a__b",), ("",), (1,)):
+        before = len(calls)
+        with pytest.raises(ValueError, match="invalid_cancel_domains"):
+            await stop.cancel_candidates(domains=invalid)
+        assert len(calls) == before
+    for invalid in (0, 5, True):
+        with pytest.raises(ValueError, match="invalid_cancel_limit"):
+            await stop.cancel_candidates(limit=invalid)

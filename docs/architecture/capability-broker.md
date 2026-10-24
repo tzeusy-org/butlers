@@ -159,11 +159,16 @@ that production authority.
 claim identities under the existing role/schema checks and five-second local
 transaction bound. Discovery mutates/locks no work row; the later goal-first
 claim revalidates the actual stopped goal, dispatch witness, effect and tuple.
+The constructed `CentralRuntime` passes only its fixed configured client domains
+to discovery before `LIMIT`, so older unconfigured work cannot starve a configured
+owner. Existing callers can omit the filter; neither form grants claim authority.
 
 `CancellationWorker.run_batch()` is an explicitly invoked, sequential finite
-consumer. It constructs no transport, background task or scheduler. The isolated
-resource owner must provide actual purpose-bound `PrivateClient` instances for
-fixed domains. First-generation claims may CANCEL once; reclaimed generations
+consumer. It constructs no transport or scheduler. An enabled `CentralRuntime`
+with configured approval clients owns one cancellation task, using its existing
+central pool and fixed purpose-bound `PrivateClient` instances. Each completed
+batch is followed by a one-second idle interval; OFF and absent-client startup
+create no cancellation task. First-generation claims may CANCEL once; reclaimed generations
 first LOOKUP the original tuple. A fresh pending/approved or unknown/null LOOKUP
 may ask the owning A2 producer to atomically revalidate and CANCEL once. Unknown
 is never an absence or completion proof. Dispatched/committed/refused LOOKUP,
@@ -179,8 +184,14 @@ batch admission by 125 seconds. The worst-case reclaimed path need not make
 progress in one item: if the complete next phase plus ACK reserve does not fit,
 it remains unknown rather than clipping a transport timeout or refreshing grace.
 Client idle cleanup remains the resource owner's separate five-second phase,
-after the consumer is terminal. No automatic retry, lease renewal or release,
-new daemon/profile attachment, or global Stop-completed response is introduced.
+after both runtime consumers are terminal. Runtime shutdown cancels and joins
+approved replay and cancellation before closing their private clients, while
+attempting listener release independently. The existing absolute six-second
+runtime cleanup bound is not extended by either worker: incomplete settlement
+raises a timeout and retains unfinished tasks; it never closes a client under
+a live private call or reports Stop globally complete. Repeated caller
+cancellation does not renew that deadline. No claim lease renewal, manual
+transport retry, new daemon/profile or global Stop-completed response is added.
 
 Real TLS software controls exercise this bridge using explicitly synthetic
 owning receipts and a repository control. They establish neither A2 durable

@@ -1160,8 +1160,9 @@ async def test_cancellation_consumer_reclaims_exact_tuple_over_real_private_MCP(
                 raise RuntimeError("controlled_ACK_commit_unknown")
             self.acks.append((claim, receipt, outcome))
 
-        async def cancel_candidates(self, *, limit):
+        async def cancel_candidates(self, *, limit, domains):
             assert limit == 4
+            assert domains == ("health",)
             return (identity,)
 
     stop = StopControl()

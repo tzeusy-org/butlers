@@ -108,7 +108,7 @@ class CancellationWorker:
         """Discover up to four hints, processing only complete admitted items."""
         deadline = monotonic() + _BATCH_SECONDS
         try:
-            candidates = await self.stop.cancel_candidates(limit=4)
+            candidates = await self.stop.cancel_candidates(limit=4, domains=tuple(self.clients))
         except Exception:
             return ("unavailable",)
         results = []

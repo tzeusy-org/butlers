@@ -22,8 +22,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from butlers.core.catalog_reader import DOMAINS
 from butlers.core.goal_ledger import GoalLedger
+from butlers.core.goal_stop import GoalStop
 
 from .assertions import AssertionSigner
+from .cancel_worker import CancellationWorker
 from .catalog import PublishedAuthorities
 from .contracts import BrokerRefused, Reason
 from .forwarding import SignedMCPDomains
@@ -133,6 +135,7 @@ class CentralRuntime:
     listener: BrokerSessionListener
 
     _replay_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _cancel_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _close_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _cleanup_children: tuple = field(default=(), init=False, repr=False)
 
@@ -140,6 +143,7 @@ class CentralRuntime:
         await self.listener.start()
         if self.broker.approvals.clients:
             self._replay_task = asyncio.create_task(self._replay())
+            self._cancel_task = asyncio.create_task(self._cancel())
 
     async def _replay(self):
         while True:
@@ -163,15 +167,32 @@ class CentralRuntime:
                     pass
             await asyncio.sleep(1)
 
-    async def _release(self):
-        if self._replay_task is not None:
-            self._replay_task.cancel()
-        children = [asyncio.create_task(self.listener.close())]
-        children.extend(
+    async def _cancel(self):
+        worker = CancellationWorker(GoalStop(self.broker.pool), self.broker.approvals.clients)
+        while True:
+            await worker.run_batch()
+            await asyncio.sleep(1)
+
+    async def _close_clients(self, consumers):
+        # A private call retains its own cancellation cleanup. Never close its
+        # client underneath it, including after our outer six-second deadline.
+        await asyncio.gather(*consumers, return_exceptions=True)
+        clients = tuple(
             asyncio.create_task(c.aclose()) for c in self.broker.approvals.clients.values()
         )
-        if self._replay_task is not None:
-            children.append(self._replay_task)
+        self._cleanup_children += clients
+        results = await asyncio.gather(*clients, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+    async def _release(self):
+        consumers = tuple(t for t in (self._replay_task, self._cancel_task) if t is not None)
+        for task in consumers:
+            task.cancel()
+        children = [asyncio.create_task(self.listener.close())]
+        children.append(asyncio.create_task(self._close_clients(consumers)))
+        children.extend(consumers)
         self._cleanup_children = tuple(children)
         done, pending = await asyncio.wait(children, timeout=6)
         failure = None
@@ -179,7 +200,7 @@ class CentralRuntime:
             try:
                 child.result()
             except asyncio.CancelledError:
-                if child is not self._replay_task:
+                if child not in consumers:
                     failure = failure or RuntimeError("central_resource_cleanup_cancelled")
             except BaseException as exc:
                 failure = failure or exc

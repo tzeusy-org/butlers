@@ -654,7 +654,7 @@ async def test_real_native_email_identity_park_and_exact_owning_replay(
         )
         runtime = await cleanup.enter_async_context(runtime_pool(native_email_url, "switchboard"))
         admitted = await GoalAdmission(
-            runtime, Sources(Evidence("message", "controlled-owner", owner=True))
+            runtime, Sources(Evidence("message", f"native-email-owner:{owner_id}", owner=True))
         ).admit_submission(
             SourceRef("message", str(uuid4())),
             uuid4(),

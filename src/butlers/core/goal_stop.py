@@ -293,14 +293,27 @@ class GoalStop:
                 raise StopUnavailable("cancel_claim_conflict")
             return CancelClaim(identity, claim_id, claimed["generation"])
 
-    async def cancel_candidates(self, *, limit: int = 4) -> tuple[CancelIdentity, ...]:
+    async def cancel_candidates(
+        self, *, limit: int = 4, domains: tuple[str, ...] | None = None
+    ) -> tuple[CancelIdentity, ...]:
         """Read bounded stale-able work hints; only claim_cancel_work authorizes work.
 
         No row locks or mutations precede the later goal-first claim transaction.
         Discovery releases its connection before any owning-domain request.
+        A fixed transport owner may exclude unconfigured domains before LIMIT;
+        this queue filter grants no claim, cancellation or caller authority.
         """
         if type(limit) is not int or not 1 <= limit <= 4:
             raise ValueError("invalid_cancel_limit")
+        if domains is not None and (
+            type(domains) is not tuple
+            or len(domains) > 32
+            or any(type(d) is not str or not _DOMAIN.fullmatch(d) or "__" in d for d in domains)
+            or len(set(domains)) != len(domains)
+        ):
+            raise ValueError("invalid_cancel_domains")
+        domain_filter = "" if domains is None else "AND a.owning_domain=ANY($2::text[]) "
+        parameters = (limit,) if domains is None else (limit, list(domains))
         async with self._transaction() as connection:
             rows = await connection.fetch(
                 "SELECT w.goal_id,w.effect_id,a.owning_domain,a.action_id,"
@@ -312,8 +325,9 @@ class GoalStop:
                 "AND e.status IN ('requested','parked','approved','unknown') "
                 "AND (w.state='pending' OR "
                 "(w.state='claimed' AND w.lease_expires_at<=clock_timestamp())) "
-                "ORDER BY w.updated_at,w.effect_id LIMIT $1",
-                limit,
+                + domain_filter
+                + "ORDER BY w.updated_at,w.effect_id LIMIT $1",
+                *parameters,
             )
             return tuple(_identity(row) for row in rows)
 
