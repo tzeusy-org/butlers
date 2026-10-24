@@ -72,7 +72,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `restore-qa-remediation-loop` | qa-investigation-dispatch, staffer-qa | re-scope | QA launches, lineage and budgets become staffer goals with invocation-bound evidence. Incident admission maps onto goal admission. | `bu-6a9xxw` |
 | `scrub-before-hash-dedupe-keys` | connector-base-spec | archive-first | Ingest derives dedupe keys deterministically. | `bu-u5euwb` |
 | `specify-host-authorized-dashboard-enrollment` | butler-health | re-scope | Enrollment stays. The Health voice briefing becomes an obligation or owner goal. | `bu-7y7z2` |
-| `specify-improvement-proposal-spine` | core-skills | fold-in | Its ban on model tools writing AGENTS.md folds into this change's AGENTS.md requirement. Roster amendments stay owner-reviewed. | `bu-u5euwb`; blocks `bu-8cdl1.15` |
+| `specify-improvement-proposal-spine` | core-skills | fold-in | The whole AGENTS.md Read/Write Access block (`REQ-core-skills-004`) is folded here and removed from the source delta. The eight-name scenario union preserves pure tooling helpers, content/workflow boundaries, the goal/sandbox ban, and direct/thin-wrapper MCP prevention. Future tracked-roster amendments remain explicit-owner-accepted proposals through `propose_amendment` and the corresponding target adapter, distinct from D2 guidance-notes `record`. The source remains active with its other 20 requirements, 41 scenarios and historical/pending tasks; no archive or runtime completion is claimed. | `bu-u5euwb.20`; outstanding proposal-spine delivery `bu-8cdl1.15` |
 | `specify-messenger-voice-egress-contract` | core-notify | re-scope | Voice delivery stays Messenger service traffic. Narration belongs to a goal, and transcription is a D18 function. | `bu-7exe4.13` |
 | `specify-relationship-read-entity-group` | butler-relationship | archive-first | A read-only tool group becomes grant-scoped presentation. | `bu-h40h2b.16` |
 | `specify-roster-identity-owner-operations-overlay` | butler-base-spec, core-skills, core-spawner, staffer-archetype, staffer-qa | re-scope | Domain `CLAUDE.md` text becomes versioned guidance. The lead prompt comes from lead policy and the owner profile (D15). | `bu-u5euwb` |
@@ -112,7 +112,6 @@ surviving scenarios unless this change removes the requirement.
 | `restore-butler-control-plane-liveness` | butler-base-spec | Instance Facts Internal Interface | modifies |
 | `restore-butler-control-plane-liveness` | butler-base-spec | Staffers vs Domain Butlers | modifies |
 | `restore-qa-remediation-loop` | staffer-qa | Patrol Loop Lifecycle | modifies |
-| `specify-improvement-proposal-spine` | core-skills | AGENTS.md Read/Write Access | modifies |
 | `specify-roster-identity-owner-operations-overlay` | butler-base-spec | CLAUDE.md as System Prompt Entry Point | modifies |
 | `specify-roster-identity-owner-operations-overlay` | core-spawner | System Prompt Composition | modifies |
 | `specify-telegram-continuity-routed-context-contract` | butler-switchboard | Misroute Correction Re-dispatch | removes |
