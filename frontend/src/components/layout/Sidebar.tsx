@@ -9,6 +9,7 @@ import { useNavIntent } from '@/hooks/use-nav-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import { KbMono } from '@/components/ui/KbMono'
 import { StateDot } from '@/components/ui/StateDot'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import {
   Tooltip,
   TooltipContent,
@@ -558,12 +559,21 @@ function SidebarFooter({
   /** When true, render the status text alongside the dot (expanded sidebar). */
   expanded?: boolean
 }) {
-  const { data: costResponse } = useSpendSummary('today')
+  const { data: costResponse, isLoading: spendLoading, isError: spendError, refetch: refetchSpend } = useSpendSummary('today')
   const spendSourceError = costResponse?.data.source_error === true
   const spendUnpricedModels = costResponse?.data.unpriced_models ?? []
   const spendCoverageIncomplete = spendUnpricedModels.length > 0
   const unpricedModelNames = Array.from(new Set(spendUnpricedModels.map(({ model }) => model))).sort()
   const cost = spendSourceError || spendCoverageIncomplete ? null : costResponse?.data.total_cost_usd
+
+  const spendWarning = spendError ? (
+    <SourceDegradedNote
+      label="Spend"
+      detail={costResponse ? "unavailable; showing stale spend" : "unavailable"}
+      onRetry={() => void refetchSpend()}
+      className={expanded ? 'min-w-0 shrink-0' : 'border-0 p-0 [&>span]:sr-only'}
+    />
+  ) : null
 
   const containerClass = expanded
     ? 'flex items-center gap-2 border-t border-border px-4 py-3'
@@ -575,6 +585,7 @@ function SidebarFooter({
       <div className={containerClass} aria-label={titleText} title={expanded ? undefined : titleText}>
         <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden="true" />
         {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
+        {spendWarning}
       </div>
     )
   }
@@ -585,7 +596,7 @@ function SidebarFooter({
 
   const dotColor = hasError
     ? 'bg-destructive'
-    : hasDegraded || spendSourceError || spendCoverageIncomplete
+    : hasDegraded || spendError || spendLoading || spendSourceError || spendCoverageIncomplete
       ? 'bg-[var(--amber)]'
       : 'bg-[var(--green)]'
 
@@ -594,11 +605,13 @@ function SidebarFooter({
   const parts: string[] = []
   if (errorCount > 0) parts.push(`${errorCount} error${errorCount > 1 ? 's' : ''}`)
   if (degradedCount > 0) parts.push(`${degradedCount} degraded`)
+  if (spendLoading) parts.push('Loading spend')
+  if (spendError) parts.push(cost != null ? 'Spend unavailable; total is stale' : 'Spend unavailable')
   if (spendSourceError) parts.push('Spend source unavailable')
   if (spendCoverageIncomplete) {
     parts.push(`Spend coverage incomplete: ${unpricedModelNames.join(', ')}`)
   }
-  const costPart = cost != null ? `$${cost.toFixed(2)} today` : ''
+  const costPart = cost != null ? `$${cost.toFixed(2)} today${spendError ? ' (stale)' : ''}` : ''
   const allParts = [...parts, ...(costPart ? [costPart] : [])]
   const titleText = allParts.length > 0 ? allParts.join(' · ') : 'All systems ok'
 
@@ -606,6 +619,7 @@ function SidebarFooter({
     <div className={containerClass} aria-label={titleText} title={expanded ? undefined : titleText}>
       <span className={`h-2 w-2 shrink-0 rounded-full ${dotColor}`} aria-hidden="true" />
       {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
+      {spendWarning}
     </div>
   )
 }
