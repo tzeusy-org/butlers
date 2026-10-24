@@ -1335,3 +1335,32 @@ async def test_ungated_administer_never_dispatches_for_any_origin_or_depth(origi
         assert reservation.decision.disposition.value == "park"
         assert reservation.decision.allow_standing_rule
         assert reservation.principal.origin == origin and not reservation.principal.exposed
+
+
+def test_consequential_actuation_has_no_standing_rule_shortcut():
+    """Actual risk decision cannot be removed by owner origin or an unexposed rule."""
+    cap = Capability(
+        "home",
+        "ha_activate_scene",
+        "actuate",
+        "untrusted",
+        (("entity_id", False),),
+        recipient_params=RecipientParameters(),
+        resource_params=("entity_id",),
+        approvals_available=True,
+        native_actuation="home_scene",
+    )
+    for risk in ("consequential", "protected", "unknown"):
+        for exposed in (False, True):
+            for origin in ("owner", "obligation", "staffer", "third_party"):
+                principal = Principal(uuid4(), uuid4(), 0, origin, exposed, "current", ())
+                decision = decide(
+                    principal,
+                    cap,
+                    Grant(cap.identity),
+                    PolicyEvidence("none", standing_rule=True, actuation_risk=risk),
+                )
+                assert decision.disposition is (
+                    Disposition.REFUSE if origin == "third_party" else Disposition.PARK
+                )
+                assert not decision.allow_standing_rule

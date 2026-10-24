@@ -88,6 +88,12 @@ def decide(
     # No rule, owner-directed shortcut or inherited approval can remove park-only.
     if grant.park_only or capability.always_per_event:
         return Decision(Disposition.PARK)
+    if capability.effect_class == "actuate" and evidence.actuation_risk in {
+        "consequential",
+        "protected",
+        "unknown",
+    }:
+        return Decision(Disposition.PARK)
     permitted_rule = evidence.standing_rule and (
         not principal.exposed
         or (

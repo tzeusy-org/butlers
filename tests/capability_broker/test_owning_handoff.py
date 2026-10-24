@@ -16,6 +16,333 @@ from tests.capability_broker.test_service_transport import material as material
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
+@pytest.mark.parametrize("mode", ["stored", "edited", "null", "reply-loss", "http-loss"])
+async def test_native_scene_registered_factory_parks_and_replays_once(
+    monkeypatch, material, unused_tcp_port, mode
+):
+    """Real factory/registered scene; SQL and private HTTP are software controls."""
+    import asyncio
+    import base64
+    import copy
+    import time
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import UUID, uuid4
+
+    import httpx
+
+    from butlers.capability_broker import production
+    from butlers.capability_broker.catalog import project_catalog
+    from butlers.capability_broker.contracts import BrokerRefused, Decision, Reservation
+    from butlers.capability_broker.handoff import sign_handoff, verify_handoff
+    from butlers.capability_broker.ledger import BrokerLedger
+    from butlers.capability_broker.transport.protocol import identity, reply, request
+    from butlers.config import CapabilityBrokerTransportConfig
+    from butlers.modules.approvals.models import ActionStatus
+    from tests.capability_broker.test_published_catalog import registered_home_admin_broker
+    from tests.capability_broker.test_service_transport import CONTROL
+    from tests.modules.approvals.test_goal_control import RuleStore
+
+    class SceneStore(RuleStore):
+        def __init__(self):
+            super().__init__()
+            self.lock = asyncio.Lock()
+            self.in_transaction = False
+            self.commands = []
+            self.rule.update(tool_name="ha_activate_scene", arg_constraints={})
+
+        def is_in_transaction(self):
+            return self.in_transaction
+
+        @asynccontextmanager
+        async def transaction(self):
+            async with self.lock:
+                self.in_transaction = True
+                try:
+                    async with super().transaction():
+                        yield self
+                finally:
+                    self.in_transaction = False
+
+        async def fetch(self, sql, *args):
+            if "FROM approval_rules" in sql:
+                assert self.in_transaction and "FOR UPDATE" in sql
+                return [dict(self.rule)]
+            raise AssertionError("unsupported_scene_store_query")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM ha_command_log" in sql:
+                return next((r for r in self.commands if r["approval_id"] == args[0]), None)
+            if "current_schema()" in sql and "current_user" in sql:
+                return dict(
+                    schema="home",
+                    role="butler_home_rw",
+                    unsafe=False,
+                    schemas=["pg_catalog", "home", "public"],
+                )
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(args[1]),
+                    park_authorization_digest=args[2],
+                    park_call_id=args[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            if "SET phase='dispatch_intent'" in sql:
+                if self.gate["dispatch_intent_id"] is not None:
+                    return None
+                self.gate.update(
+                    phase="dispatch_intent",
+                    dispatch_intent_id=args[1],
+                    dispatch_snapshot_digest=args[2],
+                    dispatch_consumed_at=None,
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            if "SET dispatch_consumed_at=" in sql:
+                if self.gate["dispatch_consumed_at"] is not None:
+                    return None
+                self.gate.update(
+                    dispatch_consumed_at="software-observed-consume",
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return {"effect_id": args[0]}
+            return await super().fetchrow(sql, *args)
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO ha_command_log" in sql:
+                assert not self.in_transaction and self.gate["dispatch_consumed_at"] is not None
+                self.commands.append(
+                    dict(
+                        attempt_id=args[0],
+                        approval_id=args[8],
+                        status="attempting",
+                        result=None,
+                        observed_state=None,
+                        failure_reason=None,
+                    )
+                )
+                return "INSERT 0 1"
+            if "UPDATE ha_command_log" in sql:
+                self.commands[0].update(
+                    status=args[1], observed_state=args[2], result=args[3], failure_reason=args[5]
+                )
+                return "UPDATE 1"
+            return await super().execute(sql, *args)
+
+    store = SceneStore()
+    current = await registered_home_admin_broker(monkeypatch, pool=store)
+    native, broker, conn = current.native, current.broker, current.conn
+    conn.grants = (
+        Grant(
+            "home__ha_activate_scene",
+            resources=(("entity_id", ("scene.controlled", "scene.edited")),),
+        ),
+    )
+    store.goal_id = conn.goal
+    original = {"entity_id": "scene.controlled"}
+    if mode == "null":
+        original["transition"] = None
+    store.arguments, store.digest = original, arguments_digest(original)
+    facts = []
+    home = next(m for m in native.daemon._active_modules if m.name == "home_assistant")
+
+    async def post(path, **kwargs):
+        assert path == "/api/services/scene/turn_on"
+        assert store.commands[0]["approval_id"] == store.action_id
+        assert store.commands[0]["status"] == "attempting"
+        assert store.gate["dispatch_consumed_at"] is not None and not store.in_transaction
+        facts.append(copy.deepcopy(kwargs["json"]))
+        if mode == "http-loss":
+            raise httpx.ReadTimeout("controlled_scene_reply_loss")
+        return httpx.Response(200, json=[], request=httpx.Request("POST", "https://ha.invalid"))
+
+    home._client = SimpleNamespace(post=post, get=AsyncMock())
+    home._emit_actuation_event = AsyncMock()
+    now = int(time.time())
+    broker.clock = lambda: now
+    native.daemon.config.capability_broker_transport = (
+        CapabilityBrokerTransportConfig.model_validate(
+            {
+                "enabled": True,
+                "role": "owning-service",
+                "domain": "home",
+                "listen_host": "127.0.0.1",
+                "listen_port": unused_tcp_port,
+                "peer": {
+                    "role": "broker-control",
+                    "domain": "home",
+                    "sans": sorted(CONTROL.sans),
+                    "client_certificate": True,
+                },
+                "material": {
+                    "ca_path": "fixture-ca",
+                    "certificate_path": "fixture-cert",
+                    "private_key_path": "fixture-key",
+                },
+                "verification_keys": {
+                    broker.signer.kid: base64.b64encode(
+                        broker.signer.private_key.public_key().public_bytes_raw()
+                    ).decode()
+                },
+            }
+        )
+    )
+    server_context, _ = material()
+    monkeypatch.setattr(production, "material_context", lambda *a, **k: server_context)
+    await production.start_private_transport(native.daemon)
+    op = native.daemon._capability_transport_owner.server.app.operation
+    peer = SimpleNamespace(role="broker-control", domain="home")
+    seen = []
+
+    async def exchange(self, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        seen.append(copy.deepcopy(value))
+        store.action_id = UUID(value["identity"]["action_id"])
+        return await op(request(value, "home"), peer)
+
+    monkeypatch.setattr(PrivateClient, "call", exchange)
+    client = PrivateClient(
+        TransportConfig(
+            "https://localhost:4200/mcp",
+            PeerPolicy("owning-service", "home", frozenset({"DNS:localhost"})),
+        ),
+        None,
+    )
+    broker.approvals = PrivateApprovals({"home": client})
+    try:
+        result = await broker.call(conn.goal, current.token, "home__ha_activate_scene", original)
+        assert result.status == "parked" and conn.used == 1 and facts == []
+        parked = seen[0]
+        proof = verify_handoff(
+            parked["handoff"], keys=op.keys, audience="home", purpose="PARK", now=now
+        )
+        assert not proof.central_rule_match and store.row["status"] == "pending"
+        assert store.rule["use_count"] == 0 and store.row["tool_args"] == original
+        async with conn.transaction():
+            principal = await BrokerLedger(conn).authenticate(conn.goal, current.token)
+        cap = next(
+            c
+            for c in project_catalog(native.catalog, domain="home").capabilities
+            if c.identity == "home__ha_activate_scene"
+        )
+        reservation = Reservation(
+            principal,
+            cap,
+            Decision(Disposition.PARK),
+            UUID(proof.payload["d7"]["call_id"]),
+            result.effect_id,
+            store.digest,
+            conn.grants[0],
+        )
+
+        def envelope(purpose, res=reservation, version=None):
+            return request(
+                {
+                    "protocol": "broker-approvals-v2",
+                    "operation": purpose,
+                    "request_id": str(uuid4()),
+                    "identity": parked["identity"],
+                    "handoff": sign_handoff(
+                        broker.signer,
+                        res,
+                        purpose=purpose,
+                        issued_at=now,
+                        original_args_digest=store.digest,
+                        approval_ref=str(store.action_id) if version is not None else None,
+                        snapshot_version=version,
+                    ),
+                },
+                "home",
+            )
+
+        with pytest.raises((ValueError, BrokerRefused)):
+            await op(envelope("SNAPSHOT"), peer)
+        if mode == "edited":
+            store.row["tool_args"] = {"entity_id": "scene.edited", "transition": 1.5}
+        await op.owner.transition(
+            identity(parked["identity"]),
+            target_status=ActionStatus.APPROVED,
+            decided_by="human:owner",
+            event_actor="owner",
+            event_reason="record",
+        )
+        snap_request = envelope("SNAPSHOT")
+        snap = reply(await op(snap_request, peer), snap_request)["receipt"]
+        assert snap["call"]["args"] == store.row["tool_args"] and facts == []
+        async with conn.transaction():
+            checked, decision = await BrokerLedger(conn).resolve_call(
+                principal,
+                cap.identity,
+                snap["call"]["args"],
+                arguments_digest(snap["call"]["args"]),
+                broker.authorities,
+            )
+            assert checked == cap and decision.disposition is Disposition.PARK
+            narrowed = replace(
+                principal,
+                grants=(Grant(cap.identity, resources=(("entity_id", ("scene.outside",)),)),),
+            )
+            with pytest.raises(BrokerRefused):
+                await BrokerLedger(conn).resolve_call(
+                    narrowed,
+                    cap.identity,
+                    snap["call"]["args"],
+                    arguments_digest(snap["call"]["args"]),
+                    broker.authorities,
+                )
+        approved = replace(
+            reservation,
+            call_id=uuid4(),
+            args_digest=arguments_digest(store.row["tool_args"]),
+            decision=Decision(Disposition.DISPATCH),
+        )
+        stale = envelope(
+            "CLAIM",
+            replace(approved, args_digest=arguments_digest({"stale": True})),
+            snap["version"],
+        )
+        with pytest.raises((ValueError, BrokerRefused)):
+            await op(stale, peer)
+        assert facts == [] and store.gate["dispatch_intent_id"] is None
+        claim = envelope("CLAIM", approved, snap["version"])
+        witness = reply(await op(claim, peer), claim)["receipt"]
+        lookup = envelope("WITNESS", approved, snap["version"])
+        assert reply(await op(lookup, peer), lookup)["receipt"] == witness
+        execute = envelope("EXECUTE", approved, snap["version"])
+
+        async def invoke():
+            value = await op(execute, peer)
+            if mode == "reply-loss":
+                raise ConnectionError("controlled_scene_execute_reply_loss")
+            return value
+
+        outcomes = await asyncio.gather(invoke(), invoke(), return_exceptions=True)
+        assert not [
+            v
+            for v in outcomes
+            if isinstance(v, BaseException) and not isinstance(v, (ValueError, ConnectionError))
+        ], outcomes
+        assert len(facts) == 1 and len(store.commands) == 1
+        expected = {"target": {"entity_id": store.row["tool_args"]["entity_id"]}}
+        if mode == "edited":
+            expected["transition"] = 1.5
+        assert facts == [expected]
+        assert store.commands[0]["status"] == "unverified"
+        if mode == "http-loss":
+            assert "ReadTimeout" in store.commands[0]["failure_reason"]
+        assert sum(isinstance(v, dict) for v in outcomes) == int(mode != "reply-loss")
+        assert sum(isinstance(v, ConnectionError) for v in outcomes) == int(mode == "reply-loss")
+        assert store.gate["dispatch_intent_id"] == UUID(witness["intent_id"])
+        with pytest.raises((ValueError, BrokerRefused)):
+            await op(execute, peer)
+        assert len(facts) == 1 and current.domains.calls == []
+    finally:
+        await client.aclose()
+        await production.close_private_transport(native.daemon)
+
+
 async def test_committed_broker_park_carries_selected_grant_and_signed_purpose(monkeypatch):
     broker, connection, authorities, _, token = build()
     cap = replace(

@@ -1,5 +1,7 @@
 """Current published fleet authority and strict final-registration projection."""
 
+import math
+import re
 from collections.abc import Mapping
 
 from butlers.core.catalog_reader import PublishedCatalogProvider
@@ -10,6 +12,7 @@ from butlers.core.tool_catalog import (
     validate_authorization_catalog,
 )
 from butlers.core.tool_presentation_inventory import STORE_WRITERS
+from butlers.modules.home_actuation_risk import classify_actuation
 
 from .contracts import BrokerRefused, Capability, PolicyEvidence, Principal, Reason
 from .domains import Catalog
@@ -53,6 +56,30 @@ class PublishedAuthorities:
         if not connection.is_in_transaction():
             raise BrokerRefused(Reason.POLICY)
         parties = capability.recipient_params
+        if capability.native_actuation == "home_scene":
+            # The complete final native descriptor supplied this provenance;
+            # arguments may select only its one explicit granted scene entity.
+            if (
+                capability.identity != "home__ha_activate_scene"
+                or capability.effect_class != "actuate"
+                or parties != RecipientParameters()
+                or capability.resource_params != ("entity_id",)
+                or dict(capability.selection_bound) != {"entity_id": False}
+                or set(args) - {"entity_id", "transition"}
+                or type(args.get("entity_id")) is not str
+                or re.fullmatch(r"scene\.[a-z0-9_]+", args["entity_id"]) is None
+                or (
+                    args.get("transition") is not None
+                    and (
+                        type(args["transition"]) not in (int, float)
+                        or not math.isfinite(args["transition"])
+                    )
+                )
+            ):
+                raise BrokerRefused(Reason.POLICY)
+            return PolicyEvidence(
+                "none", actuation_risk=classify_actuation("scene", "turn_on").value
+            )
         if (
             (
                 capability.recipient_resolver == "calendar_response"
@@ -161,6 +188,30 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                 and mode in {"default", "always_per_event"}
                 and policy["configured_gate"]
             )
+            scene_schema = _mutable_json(descriptor.input_schema)
+            properties = scene_schema.get("properties", {})
+            native_scene = (
+                domain == "home"
+                and descriptor.canonical_name == "ha_activate_scene"
+                and descriptor.module_name == "home_assistant"
+                and descriptor.namespace == "home_assistant.core"
+                and descriptor.group_name == "core"
+                and descriptor.effect_class == "actuate"
+                and descriptor.output_trust == "untrusted"
+                and descriptor.resource_params == ("entity_id",)
+                and dict(descriptor.selection_bound) == {"entity_id": False}
+                and descriptor.recipient_params == RecipientParameters()
+                and descriptor.safety_args == ()
+                and not descriptor.owner_authority
+                and descriptor.idempotency == "none"
+                and mode in {"default", "always_per_event"}
+                and scene_schema.get("type") == "object"
+                and scene_schema.get("required") == ["entity_id"]
+                and set(properties) == {"entity_id", "transition"}
+                and properties["entity_id"].get("type") == "string"
+                and properties["transition"].get("anyOf") == [{"type": "number"}, {"type": "null"}]
+                and properties["transition"].get("default") is None
+            )
             capabilities.append(
                 Capability(
                     domain=domain,
@@ -185,6 +236,7 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                         if native_email
                         else "none"
                     ),
+                    native_actuation="home_scene" if native_scene else "none",
                     description=descriptor.description,
                     input_schema=_mutable_json(descriptor.input_schema),
                 )

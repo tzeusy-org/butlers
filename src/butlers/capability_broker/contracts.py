@@ -104,6 +104,7 @@ class Capability:
     idempotency: Literal["none", "key_required"] = "none"
     # Internal native-handler provenance; set only by the verified catalog adapter.
     recipient_resolver: Literal["none", "core_notify", "calendar_response", "native_email"] = "none"
+    native_actuation: Literal["none", "home_scene"] = "none"
     description: str = ""
     input_schema: dict = field(default_factory=lambda: {"type": "object"}, repr=False)
 
@@ -113,6 +114,7 @@ class Capability:
             not in {"read", "record", "communicate", "transact", "actuate", "administer"}
             or self.output_trust not in {"trusted", "untrusted", "stamped"}
             or self.idempotency not in {"none", "key_required"}
+            or self.native_actuation not in {"none", "home_scene"}
             or self.recipient_resolver
             not in {"none", "core_notify", "calendar_response", "native_email"}
             or any(

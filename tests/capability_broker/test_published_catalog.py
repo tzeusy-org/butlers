@@ -1038,3 +1038,176 @@ async def test_registered_administer_refuses_missing_current_authority(monkeypat
             {"name": "refused-admin", "cron": "0 8 * * *", "prompt": "owner"},
         )
     assert conn.used == 0 and conn.effect is None and native.domains.calls == []
+
+
+@pytest.mark.parametrize("restriction", ["plain", "rule", "exposed-rule", "park-only-rule"])
+async def test_registered_scene_commits_then_signed_per_event_park(monkeypatch, restriction):
+    """Actual production policy/PARK/owning rules; SQL state here is software only."""
+    import copy
+    import time
+    from types import SimpleNamespace
+
+    from butlers.capability_broker.owning import PrivateApprovals
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+    from butlers.core.capability_json import arguments_digest
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from tests.modules.approvals.test_goal_control import RuleStore
+
+    native = await registered_home_admin_broker(monkeypatch)
+    conn = native.conn
+    conn.grants = (
+        Grant("home__ha_activate_scene", resources=(("entity_id", ("scene.controlled",)),)),
+    )
+    conn, broker = native.conn, native.broker
+    descriptor = native.native.catalog["ha_activate_scene"]
+    assert descriptor.effect_class == "actuate"
+    assert descriptor.recipient_params == RecipientParameters()
+    assert {k: descriptor.approval_policy[k] for k in ("mode", "enabled", "configured_gate")} == {
+        "mode": "default",
+        "enabled": True,
+        "configured_gate": False,
+    }
+    conn.exposed = restriction == "exposed-rule"
+    if restriction == "park-only-rule":
+        conn.grants = (
+            Grant(
+                "home__ha_activate_scene",
+                resources=(("entity_id", ("scene.controlled",)),),
+                park_only=True,
+            ),
+        )
+    args = {"entity_id": "scene.controlled"}
+    conn.events.clear()
+
+    class Store(RuleStore):
+        async def fetchrow(self, sql, *values):
+            if "current_schema()" in sql and "current_user" in sql:
+                return {
+                    "schema": "home",
+                    "role": "butler_home_rw",
+                    "unsafe": False,
+                    "schemas": ["pg_catalog", "home", "public"],
+                }
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(values[1]),
+                    park_authorization_digest=values[2],
+                    park_call_id=values[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            return await super().fetchrow(sql, *values)
+
+    store = Store()
+    store.goal_id, store.arguments, store.digest = conn.goal, args, arguments_digest(args)
+    store.rule.update(
+        tool_name="ha_activate_scene",
+        active=restriction != "plain",
+        arg_constraints={k: {"type": "exact", "value": v} for k, v in args.items()},
+    )
+    now = int(time.time())
+    broker.clock = lambda: now
+    operation = GoalDispatch(
+        store,
+        "home",
+        native.native.catalog,
+        native.native.originals,
+        {broker.signer.kid: broker.signer.private_key.public_key()},
+        clock=lambda: now,
+    )
+    client = PrivateClient(
+        TransportConfig(
+            "https://localhost:4200/mcp",
+            PeerPolicy("owning-service", "home", frozenset({"DNS:localhost"})),
+        ),
+        None,
+    )
+    observed = []
+
+    async def call(self, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        assert value["operation"] == "PARK" and assertion is None
+        store.action_id = conn.effect
+        result = await operation(value, SimpleNamespace(role="broker-control", domain="home"))
+        observed.append(value)
+        return result
+
+    monkeypatch.setattr(PrivateClient, "call", call)
+    handler = AsyncMock()
+    monkeypatch.setattr("httpx.AsyncClient.post", handler)
+    broker.approvals = PrivateApprovals({"home": client})
+    try:
+        result = await broker.call(conn.goal, native.token, "home__ha_activate_scene", args)
+    finally:
+        await client.aclose()
+    assert result.status == "parked" and result.approval_ref == str(conn.effect)
+    assert len(observed) == 1 and observed[0]["arguments"] == args
+    assert conn.used == 1 and conn.events == ["effect", "commit", "parked", "commit"]
+    assert native.domains.calls == [] and handler.await_count == 0
+    assert store.row["goal_id"] == conn.goal and store.row["invocation_id"] == conn.invocation
+    assert store.row["goal_exposed"] == conn.exposed and store.row["goal_depth"] == 0
+    allowed = False
+    assert store.row["status"] == ("approved" if allowed else "pending")
+    assert store.rule["use_count"] == int(allowed)
+    assert {r["outcome"] for r in store.receipts.values()} == (
+        {"parked", "pending", "approved"} if allowed else {"parked", "pending"}
+    )
+
+
+async def test_native_scene_requires_exact_current_provenance_and_granted_entity(monkeypatch):
+    from butlers.core.tool_catalog import ToolCatalog
+
+    current = await registered_home_admin_broker(monkeypatch)
+    conn, broker = current.conn, current.broker
+    conn.grants = (
+        Grant("home__ha_activate_scene", resources=(("entity_id", ("scene.controlled",)),)),
+    )
+    descriptor = current.native.catalog["ha_activate_scene"]
+    args = {"entity_id": "scene.controlled"}
+    async with conn.transaction():
+        principal = await BrokerLedger(conn).authenticate(conn.goal, current.token)
+        for changes in (
+            {"module_name": "foreign"},
+            {"namespace": "foreign.core"},
+            {"group_name": "foreign"},
+            {"owner_authority": True},
+            {"recipient_params": RecipientParameters(("recipient",))},
+            {"selection_bound": {"entity_id": True}},
+            {"idempotency": "key_required"},
+        ):
+            foreign = replace(descriptor, **changes)
+            try:
+                cap = broker_catalog.project_catalog(
+                    ToolCatalog((foreign,), True, current.native.catalog.generation_digest),
+                    domain="home",
+                ).capabilities[0]
+            except BrokerRefused as exc:
+                assert exc.reason is Reason.CATALOG
+                continue
+            assert cap.native_actuation == "none"
+            with pytest.raises(BrokerRefused):
+                await broker.authorities.policy(conn, principal, cap, args)
+        generic = broker_catalog.project_catalog(current.native.catalog, domain="home")
+        gateway = next(c for c in generic.capabilities if c.name == "ha_call_service")
+        with pytest.raises(BrokerRefused):
+            await broker.authorities.policy(
+                conn, principal, gateway, {"domain": "scene", "service": "turn_on", "target": args}
+            )
+    for refused in (
+        {"entity_id": "scene.outside"},
+        {"entity_id": "light.controlled"},
+        {"entity_id": "scene.controlled", "recipient": "owner"},
+        {"entity_id": "scene.controlled", "target": {"entity_id": "scene.controlled"}},
+        {"entity_id": "scene.controlled", "transition": True},
+        {"entity_id": "scene.controlled", "transition": float("inf")},
+        {"entity_id": "scene.controlled", "transition": "1"},
+    ):
+        with pytest.raises((BrokerRefused, ValueError)):
+            await broker.call(conn.goal, current.token, "home__ha_activate_scene", refused)
+        assert conn.used == 0 and conn.effect is None and current.domains.calls == []
+    # The exact actual publication remains part of the locked goal identity.
+    current.fleet.current["home"]["live"] = False
+    with pytest.raises(BrokerRefused):
+        await broker.call(conn.goal, current.token, "home__ha_activate_scene", args)
+    assert conn.used == 0 and current.domains.calls == []

@@ -18,13 +18,15 @@ Transport layer:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from functools import wraps
 from typing import Any
 from urllib.parse import quote
 
@@ -40,7 +42,12 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
-from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.approvals.execution_context import (
+    approval_tool_args_digest,
+    get_approval_execution_context,
+    reset_approval_execution_context,
+    set_approval_execution_context,
+)
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 from .actuation import (
@@ -735,6 +742,36 @@ class HomeAssistantModule(Module):
             """
             return await module._maintenance_remove(name=name)
 
+        scene_signature = inspect.signature(ha_activate_scene)
+
+        @wraps(ha_activate_scene)
+        async def approved_scene(*args, **kwargs):
+            # Bind only arguments actually supplied to the registered original.
+            # Applying defaults here would conflate an omission with JSON null.
+            supplied = dict(scene_signature.bind(*args, **kwargs).arguments)
+            context = get_approval_execution_context(
+                tool_name="ha_activate_scene", tool_args=supplied
+            )
+            if context is None:
+                return await ha_activate_scene(*args, **kwargs)
+            transition = supplied.get("transition")
+            command = {
+                "domain": "scene",
+                "service": "turn_on",
+                "target": {"entity_id": supplied["entity_id"]},
+                "data": {"transition": transition} if transition is not None else None,
+            }
+            derived = replace(
+                context,
+                tool_name="ha_call_service",
+                tool_args_digest=approval_tool_args_digest(command),
+            )
+            token = set_approval_execution_context(derived)
+            try:
+                return await ha_activate_scene(*args, **kwargs)
+            finally:
+                reset_approval_execution_context(token)
+
         _tool("core")(ha_get_entity_state)
         _tool("core")(ha_list_entities)
         _tool("core")(ha_list_areas)
@@ -745,7 +782,7 @@ class HomeAssistantModule(Module):
         _tool("maintenance")(ha_maintenance_list)
         if not self._config.read_only:
             _tool("core")(ha_call_service)
-            _tool("core")(ha_activate_scene)
+            _tool("core")(approved_scene)
             _tool("maintenance")(ha_maintenance_create)
             _tool("maintenance")(ha_maintenance_complete)
             _tool("maintenance")(ha_maintenance_remove)

@@ -16,6 +16,7 @@ from butlers.modules.approvals.rules import (
     constraint_pins_value,
     match_rules_from_list,
 )
+from butlers.modules.home_actuation_risk import classify_actuation
 
 
 def _fully_pinned(descriptor, constraints, arguments):
@@ -67,6 +68,11 @@ async def matching_goal_rule(connection, request, catalog, grant):
         or lineage.goal_origin == "third_party"
         or (lineage.goal_depth == 1 and capability.effect_class == "administer")
         or (lineage.goal_exposed and capability.effect_class != "communicate")
+    ):
+        return None
+    if (
+        capability.native_actuation == "home_scene"
+        and classify_actuation("scene", "turn_on").requires_approval
     ):
         return None
     descriptor = next(d for d in catalog.descriptors if d.canonical_name == request.tool_name)

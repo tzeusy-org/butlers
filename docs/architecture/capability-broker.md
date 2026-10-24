@@ -576,6 +576,39 @@ Software controls exercise the actual Home registration with explicit SQL and
 transport collaborators. Separate migrated central/Home role, immutable history,
 rollback, duplicate, Stop, catalog-drift and stored/edited scheduling readbacks
 are authored for hosted PostgreSQL execution; local collection earns no database
-outcome. This increment supplies no Home risk, current selection or inert
+outcome. This administration increment supplies no Home risk, current selection or inert
 owner-notification producer, no generic D7/creator/runner authority, and no
 activation or whole-broker completion.
+
+## Native fixed Home scene
+
+Only the complete current Home `home_assistant.core.ha_activate_scene`
+registration receives the internal native-scene discriminator. Its explicit
+`entity_id` remains subject to the current Grant's exact resource ceiling.
+The broker consumes the same pure `ActuationRisk` enum, map and classifier that
+Home uses: fixed `scene.turn_on` is consequential, and unknown services remain
+protected. Neither arguments nor descriptive labels supply a risk decision.
+Generic `ha_call_service`, nested targets, party-bearing actuation and current
+selection remain unavailable to this adapter.
+
+Consequential, protected and unknown actuation requires central per-event PARK;
+the owning gate independently refuses standing-rule approval for the native
+scene, including unexposed owner calls. This does not change the legitimate
+unexposed administration rule described above. Approval stores the public scene
+arguments. Replay rechecks the current publication, Grant, resources and Stop
+state, then consumes the owning dispatch once before entering the original
+registered wrapper. The wrapper verifies the exact supplied arguments before
+defaulting: omitted `transition` and explicit null have different approval
+digests. Only then does it derive the fixed `scene.turn_on` command for the same
+task, restoring the outer execution context in `finally`. Other tools, changed
+arguments and inherited child tasks receive no such authority.
+
+Home's existing receipt precedes the HTTP request. A successful HTTP response
+does not verify a scene's physical outcome; ambiguous responses remain
+unverified and do not authorize retries. Software controls exercise actual
+registration, publication, signed owning PARK and stored/edited original replay
+with explicitly controlled SQL and transport collaborators. Separate migrated
+central/Home role, receipt/readback, race, Stop, rollback and reply-loss cases are
+authored for hosted execution; local collection proves no PostgreSQL outcome.
+This supplies no generic Home risk or selection producer, inert-notification
+authority, activation or whole-broker completion.
