@@ -91,3 +91,13 @@ verification retain their fail-closed boundaries. See
   files live outside current production source identity so coverage does not
   attribute old code to the current source population. Software ordering or
   collection alone is not PostgreSQL proof.
+
+### Dark perception surface
+
+Core `core_276` adds `perception_admin` to the finite read-only admission profile.
+The fixed privileged bootstrap stages its installer; finalized public/private
+perception tables have isolated ownership and forced RLS, and service identities
+remain separate from all ordinary runtime roles. A bootstrap rerun re-applies
+the fixed functions and revocations after the broad public grants. Source
+profiles begin unconfigured, and neither migration nor bootstrap activates a
+producer or consumer. See [the representation and role contract](perception.md).

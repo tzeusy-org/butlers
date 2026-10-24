@@ -36,6 +36,7 @@ _ADMINS = (
     ("restore_drill_executor_admin", "core_196_restore_drill_executor_boundary.py"),
     ("dnd_generation_admin", "core_197_canonical_dnd_generation_guard.py"),
     ("runtime_attention_admin", "core_198_runtime_attention_outbox.py"),
+    ("perception_admin", "core_276_dark_perception.py"),
 )
 
 
@@ -180,6 +181,12 @@ SELECT NOT EXISTS (
 # predicate instead. Bootstrap-only producer/control tables are not outbox
 # installation and therefore are intentionally not sentinels here.
 _INSTALLED = {
+    "perception_admin": """
+        SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname IN
+                ('situation_slots','timeline','owner_modes','perception_conditions','perception_suppressions'))
+    """,
     "restore_drill_executor_admin": """
         SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n
             WHERE n.nspname = 'restore_drill_executor' AND (
