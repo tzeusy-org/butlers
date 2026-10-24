@@ -313,6 +313,166 @@ def _toml_value(v: Any) -> str:
     return str(v)
 
 
+@pytest.mark.parametrize(
+    ("channel", "inert", "supported"),
+    [
+        ("telegram", True, True),
+        ("email", True, True),
+        ("whatsapp", True, False),
+        ("whatsapp", False, False),
+        ("telegram", False, True),
+        ("telegram", True, False),
+    ],
+)
+async def test_registered_recovery_enforces_inert_provider_contract(
+    tmp_path, monkeypatch, channel, inert, supported
+):
+    from types import SimpleNamespace
+
+    from fastmcp import FastMCP
+
+    from butlers.core import approval_delivery_authority as authority
+    from butlers.core.approval_delivery_transport import MessengerApprovalHandoffRepository
+    from butlers.core.approval_delivery_worker import HandoffResult
+    from butlers.modules.whatsapp import WhatsAppModule
+
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+        _patch_infra(),
+    )
+    modules = {module.name: module for module in daemon._modules}
+    whatsapp = WhatsAppModule()
+    whatsapp._send_message = AsyncMock(return_value={"status": "sent", "message_id": "991"})
+    daemon._modules.append(whatsapp)
+    modules["whatsapp"] = whatsapp
+    if channel == "telegram":
+        modules[channel].supports_inert_link_delivery = supported
+
+    principal = authority._PeerPrincipal(
+        "switchboard", "messenger:approval-recovery", "synthetic-epoch", lambda: True
+    )
+    monkeypatch.setattr(
+        authority,
+        "get_http_request",
+        lambda: SimpleNamespace(scope={"butlers.approval_peer": principal}),
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+        AsyncMock(return_value="owner-synthetic"),
+    )
+    for module_name in ("telegram", "email"):
+        monkeypatch.setattr(f"butlers.modules.{module_name}.require_permission", AsyncMock())
+        monkeypatch.setattr(f"butlers.modules.{module_name}.write_audit_entry", AsyncMock())
+
+    response = httpx.Response(
+        200,
+        json={"ok": True, "result": {"message_id": 991}},
+        request=httpx.Request("POST", "https://telegram.example.test/sendMessage"),
+    )
+    post = AsyncMock(return_value=response)
+    monkeypatch.setattr(modules["telegram"], "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(modules["telegram"], "_base_url", lambda: "https://telegram.example.test")
+    smtp = MagicMock(return_value={"status": "sent", "message_id": "991"})
+    monkeypatch.setattr(modules["email"], "_smtp_send", smtp)
+
+    # Stub only the ledger's DB boundary. The actual process method owns
+    # preflight, provider invocation/result classification and repeat handling.
+    # This is software evidence, not proof of PostgreSQL once-only persistence.
+    recorded = None
+    availability = []
+
+    async def admit(_self, _context, *, provider_available, preflight_reason):
+        availability.append(provider_available)
+        if recorded is not None:
+            return recorded
+        if not provider_available:
+            return HandoffResult("safe_retry", preflight_reason)
+        return "provider"
+
+    async def store(_self, _context, result):
+        nonlocal recorded
+        recorded = result
+        return result
+
+    monkeypatch.setattr(MessengerApprovalHandoffRepository, "_admit_or_classify", admit)
+    monkeypatch.setattr(MessengerApprovalHandoffRepository, "_store_result", store)
+    request = _recovery_notify_request()
+    request["render_links_inert"] = inert
+    request["delivery"].update(
+        channel=channel,
+        message="Read <b>https://example.test</b> @reader 😀",
+    )
+    if channel == "email":
+        request["delivery"]["subject"] = "Review https://example.test"
+    args = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_sender_identity="relationship"),
+        "input": {
+            "prompt": "Deliver approval",
+            "context": {
+                "notify_request": request,
+                "_trusted_approval_recovery": _trusted_recovery_context(),
+            },
+        },
+    }
+    registered_mcp = FastMCP("registered-recovery-provider")
+    registered_mcp.tool(name="route.execute")(route_execute)
+    registered = await registered_mcp.get_tool("route.execute")
+    result = await registered.fn(**args)
+    handoff = result["result"]["notify_response"]["handoff"]
+    if inert and not supported:
+        assert handoff == {"classification": "safe_retry", "reason_code": "transport_unavailable"}
+        assert availability == [False]
+        post.assert_not_awaited()
+        smtp.assert_not_called()
+        whatsapp._send_message.assert_not_awaited()
+        assert recorded is None
+        return
+
+    assert handoff["classification"] == "confirmed"
+    assert availability == [True]
+    if channel == "telegram":
+        payload = post.await_args.kwargs["json"]
+        assert payload["reply_markup"] == {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Open dashboard",
+                        "url": "https://dashboard.example.test",
+                    }
+                ]
+            ]
+        }
+        if inert:
+            assert "parse_mode" not in payload
+            assert payload["text"] == "[relationship] " + request["delivery"]["message"]
+            assert payload["entities"] == [
+                {
+                    "type": "pre",
+                    "offset": 0,
+                    "length": len(payload["text"].encode("utf-16-le")) // 2,
+                }
+            ]
+            assert payload["link_preview_options"] == {"is_disabled": True}
+        else:
+            assert payload["parse_mode"] == "HTML"
+    elif channel == "email":
+        smtp.assert_called_once_with(
+            "owner-synthetic",
+            "[relationship] Review https[:]//example[.]test",
+            "Read <b>https[:]//example[.]test</b> [@]reader 😀",
+        )
+    else:
+        whatsapp._send_message.assert_awaited_once_with(
+            recipient="owner-synthetic",
+            text="[relationship] " + request["delivery"]["message"],
+        )
+    # A confirmed handoff goes through the same real process without resending.
+    repeated = await registered.fn(**args)
+    assert repeated["result"]["notify_response"]["handoff"] == handoff
+    assert post.await_count + smtp.call_count + whatsapp._send_message.await_count == 1
+
+
 def _make_butler_toml(
     tmp_path: Path,
     *,

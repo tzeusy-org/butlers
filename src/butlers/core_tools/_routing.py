@@ -1665,6 +1665,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     )
                 if owner_channel is None:
                     preflight_reason = "owner_recipient_unavailable"
+                elif notify_request.render_links_inert and (
+                    getattr(modules_by_name.get(channel), "supports_inert_link_delivery", False)
+                    is not True
+                ):
+                    # This is already an approval presentation. Retain the
+                    # ledger's pre-provider safe retry instead of recursively
+                    # parking another approval or starting an unsafe send.
+                    preflight_reason = "transport_unavailable"
                 elif channel == "telegram" and (telegram_module := modules_by_name.get("telegram")):
                     rendered = notify_request.delivery.message
                     prefix = f"[{notify_request.origin_butler}]"
@@ -1677,6 +1685,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             rendered,
                             reply_markup=_approval_request_reply_markup(
                                 notify_request.actions or ()
+                            ),
+                            **(
+                                {"render_links_inert": True, "server_built_reply_markup": True}
+                                if notify_request.render_links_inert
+                                else {}
                             ),
                         )
 
@@ -1695,6 +1708,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             recipient,
                             subject,
                             notify_request.delivery.message,
+                            **(
+                                {"render_links_inert": True}
+                                if notify_request.render_links_inert
+                                else {}
+                            ),
                         )
 
                     provider_call = _email_provider_call
