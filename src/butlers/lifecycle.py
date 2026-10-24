@@ -817,6 +817,8 @@ async def run_shutdown(daemon: Any) -> None:
     another retirement or abandons their cleanup. Propagate cancellation after
     the retained lifetime settles, even if retirement also fails.
     """
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
     task = getattr(daemon, "_catalog_shutdown_task", None)
     if task is None:
         runtime = getattr(daemon, "obligation_schedule_runtime", None)
@@ -826,6 +828,8 @@ async def run_shutdown(daemon: Any) -> None:
             and getattr(daemon, "obligation_domain_runtime", None) is None
             and getattr(daemon, "obligation_feed_runtime", None) is None
             and getattr(daemon, "obligation_insight_admission", None) is None
+            and chronicler_preparation_owner(getattr(getattr(daemon, "db", None), "pool", None))
+            is None
         ):
             await _run_shutdown(daemon)
             return
@@ -965,11 +969,17 @@ async def _shutdown_resources(daemon: Any) -> None:
     domain_runtime = getattr(daemon, "obligation_domain_runtime", None)
     feed_runtime = getattr(daemon, "obligation_feed_runtime", None)
     insight_runtime = getattr(daemon, "obligation_insight_admission", None)
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
+    chronicler_runtime = chronicler_preparation_owner(
+        getattr(getattr(daemon, "db", None), "pool", None)
+    )
     bounded = (
         getattr(source_runtime, "admission", None) is not None
         or domain_runtime is not None
         or feed_runtime is not None
         or insight_runtime is not None
+        or chronicler_runtime is not None
     )
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
@@ -998,6 +1008,12 @@ async def _shutdown_resources(daemon: Any) -> None:
         except BaseException as exc:
             if admission_error is None:
                 admission_error = exc
+    if chronicler_runtime is not None:
+        try:
+            await chronicler_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
     await _shutdown_after_admission(daemon, admission_error, deadline if bounded else None)
 
 
@@ -1008,6 +1024,8 @@ async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> N
     cancellation-resistant releases beyond the single downstream deadline, or
     detach them and report success. Repeated shutdown joins the same owner.
     """
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
     errors = []
     retained = getattr(daemon, "_admission_cleanup_tasks", None)
     if deadline is not None and retained is None:
@@ -1107,6 +1125,7 @@ async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> N
             getattr(daemon, "obligation_domain_runtime", None),
             getattr(daemon, "obligation_feed_runtime", None),
             getattr(daemon, "obligation_insight_admission", None),
+            chronicler_preparation_owner(getattr(database, "pool", None)),
         )
         pending = {
             task

@@ -1091,9 +1091,9 @@
     {
       "family": "Chronicler text",
       "path": "src/butlers/chronicler/narration.py",
-      "anchor": "narrate_daily_rollup:339 / model:394; scheduled_jobs.py:1981",
+      "anchor": "narrate_daily_rollup / configured_chronicler_preparer; scheduled_jobs.py:_run_chronicler_narrate_daily_job",
       "required_mapping": "Day-close prompt plus direct narration job are both included; projections/rollups stay deterministic; do not edit frozen .2 or invent .3 completion.",
-      "proof": "STATIC_SOURCE_CONTRACT_ONLY; not an executing or complete runtime inventory claim"
+      "proof": "DEFAULT_OFF_REDUCED_MATERIAL_DARK_PREPARATION; registered caller software protocol controls only; authored PostgreSQL NOTRUN. Empty native-writer ceiling, no positive admission/creator authority or global daily model allowance."
     },
     {
       "family": "insight text",

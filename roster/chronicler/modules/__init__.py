@@ -107,6 +107,8 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "name": "chronicler_narrate_daily",
         "cron": "20 1 * * *",
         "job_name": "chronicler_narrate_daily",
+        # Preparation-only: no native narrative writer is registered.
+        "obligation": {"version": 1, "capabilities": []},
     },
 )
 

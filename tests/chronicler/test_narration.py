@@ -405,3 +405,33 @@ async def test_narrate_daily_rollup_never_writes_unknown_flag_label(monkeypatch)
     assert result["flags_labeled"] == []
     assert written["flag_narratives"] == {}
     assert written["day_narrative"] == "Busy day."
+
+
+@pytest.mark.parametrize("state", ["disabled", "no_data", "feeder_dark"])
+async def test_dark_preparation_respects_actual_narration_skip_boundaries(monkeypatch, state):
+    """Skip decisions precede staging and model; no actor/source authority is inferred."""
+    import butlers.chronicler.narration as narration
+
+    preparation = AsyncMock()
+    dispatcher = AsyncMock()
+    monkeypatch.setattr(narration, "DiscretionDispatcher", dispatcher)
+    monkeypatch.setenv("CHRONICLER_NARRATION_ENABLED", "false" if state == "disabled" else "true")
+    rows = [] if state == "no_data" else [DailyRollup(local_date=_LOCAL_DATE, lane="work")]
+    flags = (
+        [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_FEEDER_DARK)]
+        if state == "feeder_dark"
+        else []
+    )
+    monkeypatch.setattr(narration, "list_daily_rollups", AsyncMock(return_value=rows))
+    monkeypatch.setattr(narration, "list_daily_rollup_flags", AsyncMock(return_value=flags))
+    result = await narrate_daily_rollup(object(), local_date=_LOCAL_DATE, preparation=preparation)
+    assert (
+        result["status"]
+        == {
+            "disabled": "disabled",
+            "no_data": "skipped_no_rollup_data",
+            "feeder_dark": "skipped_feeder_dark",
+        }[state]
+    )
+    preparation.assert_not_awaited()
+    dispatcher.assert_not_called()

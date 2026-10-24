@@ -307,6 +307,14 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/obligation_chronicler_sources.py",
+        "chronicler.scheduled_tasks",
+    ): (
+        "sanctioned:RFC0038-D18: fixed Chronicler module-default model-job source; "
+        "the Chronicler owning-role guard and inventory/source locks precede this "
+        "same-transaction scheduled-row read; no foreign role or authority grant"
+    ),
+    (
         "src/butlers/core/obligation_git_sources.py",
         "<dynamic:{table}>",
     ): "sanctioned:RFC-0038-D5: own-domain Git scheduled-row reconciliation under exact owning role/schema/relation guards in one source transaction; no cross-domain schema access",

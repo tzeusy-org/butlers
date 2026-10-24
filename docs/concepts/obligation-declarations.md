@@ -803,3 +803,52 @@ The new migrated-role/concurrency/readback cases are authored and collected
 locally only. A goal reference and ceiling are not runner prompt execution or
 Home domain recording. The original full nine criteria, real creator/cause,
 runner, hosted PostgreSQL and delivery obligations remain separate.
+
+
+## Chronicler reduced-material dark preparation
+
+The existing registered `chronicler_narrate_daily` handler optionally selects a
+private preparer with `BUTLERS_CHRONICLER_DARK_PREPARATION=1`. The default is off
+before any added configuration, source or catalog IO; job arguments cannot enable
+it. Narration still applies its original disabled, no-data and feeder-dark
+skips, builds the same reduced prompt, and uses the existing discretionary model
+call and narrative writes. Source refusal is content-free and does not change
+that legacy result. Cancellation propagates.
+
+After those skips, the preparer captures the closed local date/timezone, actual
+rollups/flags, capped selected titles and complete prompt. It verifies the
+configured module's real registered default entry, current owning scheduled row
+and configuration. Its explicit version-1 declaration has an empty capability
+set: no native narrative writer is registered. It cannot borrow day-close
+read/notify capabilities, synthesize a creator/Grant, or admit a reasoning goal.
+
+One fresh Chronicler-role transaction takes inventory, command and source locks,
+then locks the scheduled row and all underlying reduced-material tables through
+commit. Temporary material shadows refuse. Re-reading actual storage helpers on
+that connection must reproduce the captured input; a digest or caller DTO alone
+is insufficient. The existing repository commits a typed `model_job` revision,
+occurrence, claim and content-free outbox reference. The passed-connection
+readback repeats those fences. Reconciliation handles only this exact Chronicler
+subtype and preserves the separate Insight subtype.
+
+The private caller has one five-second absolute bound, including its cleanup
+wait. A fixed pool-scoped owner retains the transaction and the actual pool
+release until settlement, including asyncpg's shielded holder reset. Timeout or
+repeated cancellation never returns a committed reference while release is
+incomplete, and quarantines further preparation. Daemon shutdown closes that
+owner and defers shared-pool close until all its retained work has settled;
+an expired deadline earns no new grace and reports incomplete cleanup. OFF
+creates no owner and preserves legacy narration. The native asyncpg pool is not
+weak-referenceable; its unique pool-owned queue anchors the weak owner registry
+through close. The registry has no strong edge to that queue or pool, and a
+discarded settled pool does not leak an owner. A lost commit acknowledgement is unavailable;
+retry reconciles the same captured day, command, occurrence and claim rather than
+creating another attempt. Changed material cannot silently renew that identity.
+These identities do not enforce a global once-per-day model allowance across
+legacy retries, replacements or recovery; that remains a real gap.
+
+The new controls prove software repository-protocol behavior and collect authored
+migrated-role PostgreSQL cases only. Actual PostgreSQL outcomes, a native writer
+and verified current catalog/admission remain unearned for this increment.
+The inventory remains 99 schedules / 19 families; this preparation-only path does
+not certify the full original eight functional criteria or their test estimate.

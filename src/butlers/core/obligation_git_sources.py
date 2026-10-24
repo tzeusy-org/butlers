@@ -201,11 +201,17 @@ async def reconcile_loaded_git_sources(
         # deletion. A real full-config removal below requires its actual row.
         row_ids = {row["id"] for row in rows}
         for source in sorted(source_ids - row_ids, key=lambda value: value.int):
+            from butlers.core.obligation_chronicler_sources import reconcile_chronicler_source
             from butlers.core.obligation_insight_sources import reconcile_selected_source
 
-            await reconcile_selected_source(
-                repository, current[source], snapshot, selected_commands[source]
+            # Exact owner/subtype validation occurs inside each fixed reader;
+            # unknown or marker-only model jobs still refuse reconciliation.
+            reconcile_source = (
+                reconcile_chronicler_source
+                if repository.owner_domain == "chronicler"
+                else reconcile_selected_source
             )
+            await reconcile_source(repository, current[source], snapshot, selected_commands[source])
         results = []
         for definition in sorted(snapshot.definitions, key=lambda item: item.schedule["name"]):
             name = definition.schedule["name"]

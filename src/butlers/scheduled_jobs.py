@@ -1991,8 +1991,11 @@ async def _run_chronicler_narrate_daily_job(
 ) -> dict[str, Any]:
     """Run Chronicler's bounded once-daily LLM rollup-labeling pass (bu-v9y18)."""
     from butlers.chronicler.jobs import run_narrate_daily
+    from butlers.core.obligation_chronicler_sources import configured_chronicler_preparer
 
-    return await run_narrate_daily(pool, job_args)
+    preparation = configured_chronicler_preparer(pool, job_args)
+    kwargs = {} if preparation is None else {"preparation": preparation}
+    return await run_narrate_daily(pool, job_args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
