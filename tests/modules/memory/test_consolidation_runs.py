@@ -137,14 +137,28 @@ class _FakeAcquire:
 class _FakeConn:
     """Connection used during the FOR UPDATE SKIP LOCKED claim phase."""
 
-    def __init__(self, claim_rows: list[dict]):
+    def __init__(self, claim_rows: list[dict], statements: list[tuple]):
         self._claim_rows = claim_rows
+        self._statements = statements
         self.executes: list[tuple] = []
+
+    def is_in_transaction(self):
+        return True
 
     def transaction(self):
         return _FakeTransaction()
 
-    async def fetch(self, *args, **kwargs):
+    async def fetch(self, query, *args, **kwargs):
+        if "last_consolidation_error=" in query:
+            self._statements.append((query, args))
+            return [
+                dict(
+                    row,
+                    consolidation_status="failed",
+                    consolidation_attempts=row["consolidation_attempts"] + 1,
+                )
+                for row in self._claim_rows
+            ]
         return self._claim_rows
 
     async def execute(self, *args, **kwargs):
@@ -156,8 +170,8 @@ class _FakePool:
     """Records every execute() call so audit-row INSERTs can be asserted."""
 
     def __init__(self, claim_rows: list[dict], *, execute_should_raise: bool = False):
-        self._conn = _FakeConn(claim_rows)
         self.executes: list[tuple] = []
+        self._conn = _FakeConn(claim_rows, self.executes)
         self.fetch_results: list[list[dict]] = []
         self._execute_should_raise = execute_should_raise
 

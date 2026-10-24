@@ -173,6 +173,22 @@ The Gmail connector implements the optional backfill polling protocol for dashbo
 - Switchboard enforces the job's `daily_cost_cap_cents` and transitions it to `cost_capped` when
   exceeded (`roster/switchboard/tools/backfill/connector.py`).
 
+### Lifecycle Controls
+
+HTTP and MCP pause/cancel/resume delegate to
+`roster/switchboard/tools/backfill/controls.py`. Each transition compares the
+observed status atomically, so a concurrent terminal transition cannot be overwritten.
+
+| Action | Allowed current states | Result | Idempotent current state |
+| --- | --- | --- | --- |
+| Pause | pending, active | paused | paused |
+| Cancel | pending, active, paused, error, cost_capped | cancelled (sets completed_at) | cancelled |
+| Resume | paused | pending | none |
+
+Resume refuses cost-capped jobs on both surfaces; it cannot bypass the cost cap.
+HTTP malformed IDs return 422, missing jobs 404, state conflicts 409 and database
+failures 503. Successful HTTP lifecycle requests retain dashboard audit events.
+
 ### Backfill Modes
 
 - **Selective batch** (primary): Category-targeted windows (e.g., finance last 7 years, health all history).
