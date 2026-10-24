@@ -23,7 +23,9 @@ opted-in correction prompts are the second sanctioned owner-facing surface.
 Today the only one is the day-close gap interview ask
 (`REQ-butler-chronicler-008`). It sends at most one prompt per closed day, passes
 the owner's delivery-preferences and quiet-hours gate, and takes its answer
-through the Chronicler corrections contract. It is a retrospective correction
+through the Chronicler corrections contract. "Opted-in" means it runs only
+while its schedule is enabled and the owner's Telegram delivery is configured,
+and only when the owner's delivery preferences allow it. It is a retrospective correction
 request, not a plan, schedule or nudge. Any other owner-facing message,
 including a new kind of correction prompt, remains forbidden unless its own
 requirement sanctions it.

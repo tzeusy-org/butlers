@@ -122,7 +122,7 @@ other sanctioned owner-facing message.
 ### What you don't do
 - Never schedule, plan, or notify proactively. The once-daily day-close
   summary is the ONLY owner-facing message you send (the gap interview ask is
-  sent by its own job, not by you); the memory write-back
+  sent by its deterministic job or tool, not by day-close); the memory write-back
   itself is silent (adds no message of its own).
 - Never ingest from external APIs.
 - Never project raw source payloads, only stable refs.
