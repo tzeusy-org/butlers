@@ -1,3 +1,12 @@
+## RFC 0038 conformance and evidence boundary
+
+These checkbox states are preserved historical implementation records. They
+do not establish goal-runtime conversion, authorize live activation, or close
+an unresolved scope/sign-off item. The adopted collision disposition requires
+this change to describe deterministic projections plus a declared Chronicler
+narration obligation before archive; conforming text needs no new owner
+exact-text sign-off. The switch, runtime evidence and archive remain separate.
+
 ## 1. Owner sign-off (gate)
 
 - [ ] 1.1 Confirm the scope split vs. `bu-whhll`: this change is the
@@ -73,16 +82,29 @@
 
 ## 7. Optional bounded LLM labeling pass (depends on §5)
 
-- [x] 7.1 One LLM call per local day, invoked after rollup + flags are
-  written, input = reduced rollup/flag rows + top episode titles only.
+RFC 0038 D2/D5/D18 re-scopes the model-backed work below as a declared
+Chronicler obligation goal. The existing checked states are legacy delivery
+history, not a claim that the obligation admission, broker/grant custody,
+D6 source-stamp/exposure/taint or D10 budget conversion has executed.
+
+- [x] 7.1 At most one model call per local day, within the admitted Chronicler
+  obligation goal after rollup + flags are written; input = reduced
+  rollup/flag rows + top episode titles only. The call bound includes all
+  turns, retries and recovery, even across invocations/goals; failure cannot
+  authorize a second model call. The git declaration and trusted admission
+  context determine capabilities, origin/cause, ceiling, exposure and budget.
   (bu-v9y18 — `narration.py::narrate_daily_rollup`, scheduled job
   `chronicler_narrate_daily` at 01:20 local, after the `chronicler_rollup_daily`
   hourly tick and `chronicler_day_close`'s 01:05 prompt task)
 - [x] 7.2 Output written back to `daily_rollups.narrative` (day summary) and
   `daily_rollup_flags.narrative` (per-flag label — migration `chronicler_020`);
   owner-toggleable via `CHRONICLER_NARRATION_ENABLED`; disabling it, a skip
-  (no rollup data / `feeder_dark`), or a failed LLM call never affects
-  rollup/flag correctness. **[decision]** dedicated `narrative` columns on
+  (no rollup data / `feeder_dark`), admission refusal, budget exhaustion,
+  Stop or a failed model call never affects rollup/flag correctness. The
+  obligation's declared broker-scoped record capabilities govern narrative
+  writes, preserving source provenance, privacy, tenant isolation and taint;
+  absent narration remains a normal null, not a degraded source.
+  **[decision]** dedicated `narrative` columns on
   both tables rather than folding the per-flag label into the existing
   `daily_rollup_flags.detail` JSONB: `flags.py`'s hourly reconciliation fully
   overwrites `detail` on every re-run, which would silently wipe a label
