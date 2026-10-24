@@ -120,3 +120,20 @@ Scope: v1-mandatory
 #### Scenario: Pre-cutover route sessions keep their identifiers
 - **WHEN** a deployment carries route sessions recorded before cutover
 - **THEN** their `ingestion_event_id` values are preserved and remain readable
+
+## ADDED Requirements
+
+### Requirement: Epoch receipts reconstruct bounded continuation
+Session receipts SHALL bind goal/epoch/predecessor, immutable plan and label/grant/context digests, wake intent and honest outcome using S2/S5. These SHALL reference the sole goal ledger and preserve existing purpose/prompt/delivery audit rather than creating a second session authority.
+
+ID: REQ-core-sessions-002
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2/S5; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: A replacement lead is reconstructed
+- **WHEN** lease loss or escalation replaces a lead
+- **THEN** the receipt names the predecessor/new epoch and unchanged effects/budget/labels, with no stale token accepted
+
+#### Scenario: A context source fails during recovery
+- **WHEN** a prior receipt exists but its source is unavailable
+- **THEN** the source remains explicitly unavailable; no fabricated empty context, lost label or false successful delivery is recorded

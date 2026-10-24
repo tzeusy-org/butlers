@@ -8,6 +8,92 @@ handler runs. The design is RFC 0038.
 
 ## ADDED Requirements
 
+### Requirement: Invocation labels join without widening authority
+The broker and every producer/store/deferred reader SHALL implement the complete S1 versioned I/D/C label and descriptor contract, including the exact six-category set, unknown fail-closed representation, same-transaction joins, predecessor recovery and writer/exposure-cause lineage. Labels SHALL NOT authenticate an origin, grant a capability or enable a typed-value/cited-label exception. The goal aggregate SHALL remain reporting evidence, not a replacement for the invoking chain. Existing always-per-event and owner-selection requirements SHALL remain unchanged.
+
+ID: REQ-capability-authorization-019
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S1; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Concurrent reads retain both labels
+- **WHEN** two authorized reads with different provenance/categories race in one invocation
+- **THEN** the committed invocation/store label contains both joins before either result is consumed, with no lost category
+
+#### Scenario: Clean siblings and recovered predecessors retain their actual inputs
+- **WHEN** one running sibling reads untrusted text while a separate sibling has not, and a later lead replaces the exposed predecessor
+- **THEN** the independent sibling does not inherit a reporting-only aggregate, but the replacement inherits predecessor/inbox/effect labels and cannot reset exposure
+
+#### Scenario: Legacy and deferred stamps cannot become trusted by omission
+- **WHEN** a legacy Boolean-exposed row or a deferred receipt has missing/unreadable labels
+- **THEN** it retains at least its old restriction, resolves unknown provenance to world and unknown sensitivity to all six categories, and never silently becomes authoritative
+
+#### Scenario: Typed shapes do not release held semantics
+- **WHEN** an exposed invocation reads a typed date or a saved citation
+- **THEN** first-switch D6 exposure remains, with no reminder-date or cited-label steering exemption
+
+#### Scenario: A failed label write aborts its effect
+- **WHEN** persistence of labels/lineage fails after authorization but before commit
+- **THEN** the associated write/effect does not commit without its restriction and receipt
+
+### Requirement: Tighten-only policy versions fence the next call
+The broker SHALL apply S1's owner-only CAS policy schema and deterministic constraint order on every call, emitting typed term/version receipts. The API SHALL NOT be grantable to goals or accept model/source text as owner authority. The structural constraint slots SHALL consume .18 policy wording without inventing a mode, urgency or step-up grant.
+
+ID: REQ-capability-authorization-020
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S1; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Never and always ask do not grant
+- **WHEN** an owner term says never or always_ask for a call
+- **THEN** never refuses and always_ask parks only an otherwise permitted exact call; neither bypasses origin/grant/exposure, selection or always-per-event rules
+
+#### Scenario: Tightening wins the next effect fence
+- **WHEN** a policy CAS update races an invocation between calls
+- **THEN** the next call sees the committed version and records every constraining term while past committed effects remain honest
+
+#### Scenario: Unreadable or expired policy cannot widen a grant
+- **WHEN** policy state is unavailable, or a finite term expires
+- **THEN** unavailable state refuses; expiry removes only that term and does not revive revoked authority
+
+#### Scenario: Policy retry is not a second mutation
+- **WHEN** the owner retries the same expected-version change or a stale client submits it
+- **THEN** the same action has one receipt, while a conflicting version refuses without overwrite
+
+### Requirement: Declared gateway interfaces cannot widen workload egress
+Gateway consumers SHALL implement S7's workload/profile identity, destination, redirect, static-key custody, denial and bounded-recovery interfaces. Static-key eligibility SHALL be registered and gateway-owned; it SHALL NOT grant a model, caller or unregistered analysis workload credentials, hosts or a runtime widening path.
+S7's authenticated internal-peer route SHALL require exact source/destination principal, discovery identity, protocol and port with default deny. External private/IP/metadata/LAN/tailnet/redirect/rebinding refusal applies to the external gateway route and SHALL NOT become a broad private-range exemption or deny a separately authorized exact internal peer. No peer or host is authorized merely by this interface.
+
+ID: REQ-capability-authorization-021
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S7; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: A host or redirect escapes the declared destination
+- **WHEN** an external gateway request targets an undeclared host, IP literal, private/metadata/LAN/tailnet destination, mismatched SNI or redirect
+- **THEN** the request is refused with a content-free receipt and no redirected connection or credential forwarding
+
+#### Scenario: Unavailable gateway preserves owned work
+- **WHEN** the gateway is down while a connector has an uncommitted cursor
+- **THEN** external egress stays denied, the cursor is retained and only finite backoff/retry is scheduled
+
+#### Scenario: Static key eligibility is absent
+- **WHEN** a caller names a key/header or endpoint lacking its registered provider and custody proof
+- **THEN** no credential is supplied and there is no caller-key, other-workload or arbitrary-URL fallback
+
+#### Scenario: Rollback does not restore an open path
+- **WHEN** a profile or gateway release must be rolled back
+- **THEN** affected workloads remain held/disabled unless their reviewed previous restrictive profile is proven, including additive policy union
+
+#### Scenario: A declared internal peer retains its exact allowed leg
+- **WHEN** an existing reviewed profile authorizes both authenticated principals and the exact internal control-plane or Dolt service protocol/port
+- **THEN** only that identity-bound internal connection is allowed despite its private address; all ordinary service authority remains
+
+#### Scenario: An internal address alone grants nothing
+- **WHEN** a caller names an undeclared peer, wrong port/protocol, mismatched service identity or spoofed source header
+- **THEN** the internal route denies it without fallback or CIDR-wide allowance
+
+#### Scenario: External redirection cannot become internal routing
+- **WHEN** an external public hostname redirects/rebinds to a private peer or metadata/LAN/tailnet/IP endpoint
+- **THEN** the gateway refuses before redirected connection/credential forwarding even if another profile separately authorizes that peer internally
+
 ### Requirement: Sessions run in a sandbox that reaches only the broker
 The goal runner SHALL launch every lead and child invocation on a session host
 separate from the domain and control-plane processes, each in its own
