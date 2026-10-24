@@ -26,9 +26,11 @@ from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_codex_auth_authority,
+    reset_current_credential_store,
     reset_current_switchboard_client,
     set_current_approval_push_runtime,
     set_current_codex_auth_authority,
+    set_current_credential_store,
     set_current_switchboard_client,
 )
 from butlers.scheduled_jobs import (
@@ -83,6 +85,7 @@ async def dispatch_scheduled_task(
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
     approval_push_runtime: Any | None = None,
+    credential_store: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -162,6 +165,7 @@ async def dispatch_scheduled_task(
         _codex_authority_token = set_current_codex_auth_authority(
             getattr(spawner, "codex_auth_authority", None),
         )
+        _store_token = set_current_credential_store(credential_store)
         try:
             with bind_memory_maintenance_dispatch(
                 butler_name=butler_name,
@@ -169,6 +173,7 @@ async def dispatch_scheduled_task(
             ):
                 return await handler(pool, job_args)
         finally:
+            reset_current_credential_store(_store_token)
             reset_current_codex_auth_authority(_codex_authority_token)
             reset_current_approval_push_runtime(_push_token)
             reset_current_switchboard_client(_client_token)
