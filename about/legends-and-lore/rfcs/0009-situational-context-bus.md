@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
-**Proposed amendment (bu-dhloi1.17):** The Owner Attention Policy Sleep Producer, Context Preamble, Bound Owner Context Mutation and Bounded Suppression Read Failures clauses below are reviewable replacement text, pending independent conformance review and exact-text owner adoption. The existing RFC remains accepted outside this pending amendment; this draft does not authorize implementation or activation.
+**Proposed amendment (bu-dhloi1.17):** The response-building integration example under How Butlers Use Context, plus the Owner Attention Policy Sleep Producer, Context Preamble, Bound Owner Context Mutation and Bounded Suppression Read Failures clauses below, are reviewable replacement text, pending independent conformance review and exact-text owner adoption. The existing RFC remains accepted outside this pending amendment; this draft does not authorize implementation or activation.
 Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (the context bus is a named v1 capability).
 
 ## Summary
@@ -481,7 +481,7 @@ Typical integration patterns:
 
 1. **Before sending a notification:** Check for `dnd`, `sleeping`, `meeting`, `focused`. If active, defer or suppress.
 2. **Before scheduling a prompt:** Check for `traveling`, `sick`. If active, adjust timing or content.
-3. **When building a response:** Include relevant context in the LLM prompt preamble (e.g., "The user is currently traveling in Paris").
+3. **When building a response:** Use the typed Context Preamble projection below (e.g., `[User Context: traveling (explicit)]`), omitting traveling values and metadata.
 4. **In scheduler tick handlers:** Check context before executing scheduled prompts. A health check-in can be skipped if the user is in a meeting.
 
 A butler is NOT required to check context. It is an opt-in enhancement. Butlers that do not check context continue to work exactly as they do today.
