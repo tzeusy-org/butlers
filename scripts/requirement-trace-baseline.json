@@ -166,7 +166,6 @@
   "generalist-lead-focused-delegation/core-modules/MCP Tools Raise on Invalid Input": "17a27dbe7f88333343931fd3ae0db1328f4e0f51e716f83651183623e7963605",
   "generalist-lead-focused-delegation/core-modules/Tool Metadata for Approvals": "8c3a44b6d9eb5282e6794d92d9d17a67cf0640d136b48c27cc8c5c5db7521b1f",
   "generalist-lead-focused-delegation/core-notify/Messenger route.execute Approval Gate (Defense-in-Depth)": "3348ad35138db4de7ca9f02f9e57f2355067077e68620fa57d1ed0f3643c9746",
-  "generalist-lead-focused-delegation/core-notify/Notify Tool Registration": "8e206cb3d7a2ae0dac543ceeb93ad2dc1737ad45e672dd2d283c2ec0a19c6349",
   "generalist-lead-focused-delegation/core-notify/Request Context Propagation": "c712a70c2be007f39c16208981aa6436e807bf90e5ba5a521fa9529971e297da",
   "generalist-lead-focused-delegation/core-notify/Role-Based Approval Gating for Notify": "67c9c20142d5debb14d6873b7ae8d48ceeb5b5622ef0ee654030168942f1ea49",
   "generalist-lead-focused-delegation/core-notify/Runtime Session Correlation for notify() Ledger Rows": "174cac3f811b5aa48ee5a5897d2a2b4c765d553c9464d4ba4846f19f1724197b",
