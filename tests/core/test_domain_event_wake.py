@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from asyncpg.pgproto.pgproto import UUID as NativeUUID
 
 from butlers.core import domain_event_wake
 from butlers.core.domain_event_wake import (
@@ -268,7 +269,9 @@ class TestWakePromptClosesTheLoop:
         assert "report_event_reaction" not in fence
 
 
-async def domain_source_consumer(tmp_path, monkeypatch, *, mode="dark", owning_pool=None):
+async def domain_source_consumer(
+    tmp_path, monkeypatch, *, mode="dark", owning_pool=None, uuid_type=uuid.UUID
+):
     """Real startup/registrar/receive/wake/source SQL; software, never PG proof."""
     import copy
     from types import SimpleNamespace
@@ -287,19 +290,19 @@ async def domain_source_consumer(tmp_path, monkeypatch, *, mode="dark", owning_p
         def __init__(self):
             super().__init__()
             self.event = {
-                "id": uuid.UUID(int=901),
+                "id": uuid_type(str(uuid.UUID(int=901))),
                 "event_type": "travel.trip_booked",
                 "source_butler": "travel",
                 "payload": {"trip": "reference"},
             }
             self.subscription = {
-                "id": uuid.UUID(int=902),
+                "id": uuid_type(str(uuid.UUID(int=902))),
                 "subscriber_butler": "health",
                 "event_type": "travel.trip_booked",
                 "active": True,
             }
             self.delivery = {
-                "id": uuid.UUID(int=903),
+                "id": uuid_type(str(uuid.UUID(int=903))),
                 "event_id": self.event["id"],
                 "subscriber_butler": "health",
                 "status": "pending",
@@ -310,7 +313,7 @@ async def domain_source_consumer(tmp_path, monkeypatch, *, mode="dark", owning_p
 
         async def fetchval(self, sql, *args):
             if "INSERT INTO scheduled_tasks" in sql:
-                key = uuid.uuid4()
+                key = uuid_type(str(uuid.uuid4()))
                 keys = [
                     "name",
                     "cron",
@@ -418,10 +421,11 @@ capabilities=[{{capability="health__entity_graph_walk"}}]
     return daemon, pool, receive
 
 
+@pytest.mark.parametrize("uuid_type", [uuid.UUID, NativeUUID], ids=["stdlib", "asyncpg"])
 async def test_registered_receive_commits_full_domain_material_then_revalidates(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, uuid_type
 ):
-    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch)
+    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch, uuid_type=uuid_type)
     c = pool.connection
     args = {
         "event_id": str(c.event["id"]),
@@ -432,12 +436,17 @@ async def test_registered_receive_commits_full_domain_material_then_revalidates(
     result = await receive(**args)
     assert result["state"] == "task_created" and len(c.rows) == 1
     assert len(c.occurrences) == 1, "successful registered receive must commit its dark source"
+    assert type(c.event["id"]) is type(c.subscription["id"]) is uuid_type
+    assert type(c.delivery["id"]) is type(next(iter(c.rows))) is uuid_type
     runtime = daemon.obligation_domain_runtime
     submitted = await runtime.read_committed(uuid.UUID(result["task_id"]), **args)
     assert submitted.dark.obligation.created_exposed is True
     assert submitted.dark.source.kind == "domain" and c.depth == 0
     assert json.loads(submitted.material_json)["event"]["payload"] == c.event["payload"]
     assert "reference" not in json.dumps(c.outbox, default=str)
+    # Fan-out marks delivery after receive returns. Both its initial NULL and
+    # its later driver-native task UUID must preserve the same committed bind.
+    c.delivery["task_id"] = uuid_type(result["task_id"])
     assert await receive(**args) == result | {"reconciled": True}
     assert len(c.occurrences) == 1
     assert await runtime.read_committed(uuid.UUID(result["task_id"]), **args) == submitted
@@ -447,6 +456,60 @@ async def test_registered_receive_commits_full_domain_material_then_revalidates(
 
     with pytest.raises(SourceConflict, match="domain_task_mismatch"):
         await runtime.read_committed(uuid.UUID(result["task_id"]), **args)
+    await runtime.aclose()
+
+
+async def test_domain_database_uuid_strings_and_duck_types_cannot_rebind_material(
+    tmp_path, monkeypatch
+):
+    import copy
+
+    from butlers.core.obligation_sources import SourceConflict
+
+    class UUIDLookalike:
+        def __init__(self, value):
+            self.value = value
+            self.bytes = value.bytes
+
+        def __str__(self):
+            return str(self.value)
+
+    daemon, pool, receive = await domain_source_consumer(
+        tmp_path, monkeypatch, uuid_type=NativeUUID
+    )
+    c, runtime = pool.connection, daemon.obligation_domain_runtime
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": c.event["payload"],
+    }
+    result = await receive(**args)
+    task_id = NativeUUID(result["task_id"])
+    c.delivery["task_id"] = task_id
+    submitted = await runtime.read_committed(task_id, **args)
+    original = copy.deepcopy((c.definitions, c.revisions, c.occurrences, c.outbox))
+    for row_name, key in (
+        ("event", "id"),
+        ("subscription", "id"),
+        ("delivery", "id"),
+        ("delivery", "event_id"),
+        ("delivery", "task_id"),
+        ("task", "id"),
+    ):
+        for invalid in (str, UUIDLookalike):
+            # The rollback-aware collaborator replaces stored task rows after
+            # refusal; mutate the current row, never a pre-rollback copy.
+            row = c.rows[task_id] if row_name == "task" else getattr(c, row_name)
+            value = row[key]
+            row[key] = invalid(value)
+            with pytest.raises(SourceConflict, match="domain_database_identity_invalid"):
+                await runtime.read_committed(task_id, **args)
+            assert (c.definitions, c.revisions, c.occurrences, c.outbox) == original
+            row = c.rows[task_id] if row_name == "task" else getattr(c, row_name)
+            row[key] = value
+    assert await runtime.read_committed(task_id, **args) == submitted
+    assert len(c.rows) == len(c.occurrences) == 1
     await runtime.aclose()
 
 

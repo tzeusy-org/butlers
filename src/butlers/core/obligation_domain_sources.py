@@ -33,7 +33,7 @@ def _json(value):
     def encode(item):
         if isinstance(item, (date, datetime)):
             return item.isoformat()
-        if type(item) is UUID:
+        if isinstance(item, UUID):
             return str(item)
         raise TypeError
 
@@ -46,6 +46,25 @@ def _json(value):
         return text
     except (TypeError, ValueError, RecursionError):
         raise SourceConflict("domain_material_invalid") from None
+
+
+def _database_row(row, *identities, nullable=()):
+    """Copy actual UUID columns into the repository's exact stdlib value type.
+
+    asyncpg's UUID is a genuine UUID subclass. Strings and UUID-shaped objects
+    from a collaborator are not database identities and must still refuse.
+    """
+    if row is None:
+        return None
+    result = dict(row)
+    for name in identities:
+        value = result[name]
+        if value is None and name in nullable:
+            continue
+        if not isinstance(value, UUID):
+            raise SourceConflict("domain_database_identity_invalid")
+        result[name] = UUID(bytes=value.bytes)
+    return result
 
 
 class DomainWakeRuntime:
@@ -126,6 +145,9 @@ class DomainWakeRuntime:
             event_id,
             self.owner_domain,
         )
+        event = _database_row(event, "id")
+        subscription = _database_row(subscription, "id")
+        delivery = _database_row(delivery, "id", "event_id", "task_id", nullable=("task_id",))
         if event is not None:
             event = dict(event)
             stored_payload = event["payload"]
@@ -172,6 +194,7 @@ class DomainWakeRuntime:
             f'FROM "{self.owner_domain}".scheduled_tasks WHERE id=$1 FOR UPDATE',
             task_id,
         )
+        task = _database_row(task, "id")
         prompt = _build_wake_task_prompt(
             event_id=event_id,
             event_type=event_type,
