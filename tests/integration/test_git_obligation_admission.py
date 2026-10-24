@@ -46,7 +46,7 @@ def git_admission_url(postgres_container):
     )
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def git_admission(git_admission_url, tmp_path):
     url = git_admission_url
     # Explicit owning test configuration, not production activation. The actual

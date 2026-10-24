@@ -1473,23 +1473,46 @@ async def test_insight_selected_source_real_role_commit_reply_and_observed_edit_
         # the producer waiting on THAT backend before releasing, not gather-as-race.
         pending = await candidates()
         source = _identity("insight_delivery_cycle", pending)
-        async with pool.acquire() as holder, holder.transaction():
+        contender_pids = []
+
+        class ContenderPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    contender_pids.append(connection.get_server_pid())
+                    yield connection
+
+        async with (
+            owning_sources.administrator() as monitor,
+            pool.acquire() as holder,
+            holder.transaction(),
+        ):
             pid = await holder.fetchval("SELECT pg_backend_pid()")
             await holder.fetchrow(
                 "SELECT id FROM public.insight_candidates WHERE id=$1 FOR UPDATE", pending[0]["id"]
             )
             task = asyncio.create_task(
-                configured_insight_preparer(pool, "insight_delivery_cycle")(
+                configured_insight_preparer(ContenderPool(), "insight_delivery_cycle")(
                     pending, copy.deepcopy(pending), context(pending)
                 )
             )
 
             async def blocked_on_holder():
-                async with pool.acquire() as observer:
-                    return await observer.fetchval(
-                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')",
-                        pid,
+                if task.done():
+                    await task
+                    raise AssertionError(
+                        "Insight contender completed before its row-lock wait was observed"
                     )
+                if not contender_pids:
+                    return False
+                assert len(contender_pids) == 1 and contender_pids[0] != pid
+                return await monitor.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity "
+                    "WHERE pid=$1 AND datname=current_database() "
+                    "AND $2=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')",
+                    contender_pids[0],
+                    pid,
+                )
 
             async with asyncio.timeout(3):
                 await poll_until(blocked_on_holder, interval_s=0.01)
