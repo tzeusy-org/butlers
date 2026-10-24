@@ -10838,7 +10838,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.api.conversations.conversation_create",
                 "butlers.api.conversations.conversation_get_or_create_by_thread",
                 "butlers.api.conversations.conversation_message_count_increment",
-                "butlers.api.conversations.conversation_reply_create",
+                "butlers.conversation_messages.conversation_reply_create",
                 "butlers.core.conversation_sessions.conversation_set_provider_session",
                 "butlers.api.conversations.conversation_set_routed_butler",
                 "butlers.api.conversations.conversation_unarchive_if_needed",
@@ -10849,7 +10849,7 @@ STORE_WRITERS = MappingProxyType(
         "public.dashboard_messages": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.api.conversations.message_create",
+                "butlers.conversation_messages.message_create",
                 "butlers.api.conversations.message_create_idempotent",
                 "butlers.api.conversations.message_set_session_id_if_null",
                 "butlers.api.routers.conversations._persist_dashboard_user_message",

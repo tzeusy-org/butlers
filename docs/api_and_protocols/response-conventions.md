@@ -14,6 +14,13 @@ timeline and relationship) return unwrapped typed payloads; each route's `respon
 authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
 clients branch on `error.code`, never on `message`.
 
+Shared query and persistence primitives live below the API package. The insights read-model
+re-exports `butlers.insight_delivery_state`; sessions re-exports its unchanged legacy cursor from
+`butlers.session_cursor`; `butlers.api.conversations` re-exports shared message/reply writers from
+`butlers.conversation_messages`. Request-scoped NOTIFY publication lives in
+`butlers.chat_stream_events`, while SSE listening remains in `butlers.api.chat_stream`.
+These API facades retain existing consumers without making modules depend on the HTTP layer.
+
 API routes do not redirect on a trailing slash (`redirect_slashes = False` in
 `src/butlers/api/app.py`): register and call the exact path.
 
