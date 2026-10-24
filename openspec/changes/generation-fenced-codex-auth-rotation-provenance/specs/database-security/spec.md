@@ -48,7 +48,7 @@ reserved-row direct-DML guard SHALL make an attempted legacy/raw mutation
 unprovable or reject it rather than silently retaining a stale generation
 binding. Existing non-Codex credential storage semantics remain unchanged.
 
-ID: REQ-database-security-013
+ID: REQ-database-security-014
 Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
 Scope: v1-mandatory
 
