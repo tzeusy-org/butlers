@@ -1,4 +1,5 @@
 import { ownerFetch } from "./owner-session";
+import { standingRuleHeaders } from "./approval-step-up";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -3476,12 +3477,13 @@ export function getApprovalGatedTools(): Promise<ApiResponse<ApprovalGatedTool[]
   return apiFetch<ApiResponse<ApprovalGatedTool[]>>("/approvals/gated-tools");
 }
 
-export function createApprovalRule(
+export async function createApprovalRule(
   request: ApprovalRuleCreateRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("create", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3494,12 +3496,13 @@ export function getApprovalRuleSuggestions(
   );
 }
 
-export function createApprovalRuleFromAction(
+export async function createApprovalRuleFromAction(
   request: ApprovalRuleFromActionRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("from_action", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3673,12 +3676,13 @@ export function getAutonomySuggestions(
   );
 }
 
-export function confirmAutonomySuggestion(
+export async function confirmAutonomySuggestion(
   suggestionId: string,
 ): Promise<ApiResponse<AutonomySuggestion>> {
+  const proof = await standingRuleHeaders("promotion", { suggestion_id: suggestionId });
   return apiFetch<ApiResponse<AutonomySuggestion>>(
     `/approvals/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
-    { method: "POST" },
+    { method: "POST", headers: proof },
   );
 }
 

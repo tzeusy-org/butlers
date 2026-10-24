@@ -5833,3 +5833,341 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- D13 fixed step-up interface. Roles/objects are staged ONLY by this existing
+-- privileged bootstrap; ordinary core_277 can invoke no-input installers only.
+DO $stepup_bootstrap$
+DECLARE owner_name name; migration_name name := COALESCE(NULLIF(
+ current_setting('butlers.connecting_user',true),''),'butlers')::name;
+BEGIN
+ IF current_user=migration_name OR NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user)
+  THEN RAISE EXCEPTION 'step-up bootstrap requires the distinct privileged bootstrap'; END IF;
+ IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='dashboard_stepup_owner') THEN
+  CREATE ROLE dashboard_stepup_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  COMMENT ON ROLE dashboard_stepup_owner IS 'butlers:dashboard-stepup:core_277';
+ END IF;
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='dashboard_stepup_owner' AND
+  (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls
+   OR shobj_description(oid,'pg_authid') IS DISTINCT FROM 'butlers:dashboard-stepup:core_277'))
+  OR EXISTS(SELECT FROM pg_auth_members WHERE roleid='dashboard_stepup_owner'::regrole
+   OR member='dashboard_stepup_owner'::regrole) THEN
+  RAISE EXCEPTION 'step-up owner must be isolated'; END IF;
+ IF to_regnamespace('dashboard_stepup') IS NULL THEN
+  CREATE SCHEMA dashboard_stepup;
+  COMMENT ON SCHEMA dashboard_stepup IS 'butlers:dashboard-stepup:core_277';
+ ELSE
+  SELECT r.rolname INTO owner_name FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner
+   WHERE n.nspname='dashboard_stepup' AND r.rolsuper
+    AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-stepup:core_277';
+  IF owner_name IS NULL THEN RAISE EXCEPTION 'step-up bootstrap schema is untrusted'; END IF;
+  PERFORM set_config('role',owner_name,false);
+ END IF;
+ REVOKE ALL ON SCHEMA dashboard_stepup FROM PUBLIC;
+ IF to_regclass('dashboard_stepup.bootstrap_configuration') IS NOT NULL AND EXISTS(
+  SELECT FROM pg_class WHERE oid=to_regclass('dashboard_stepup.bootstrap_configuration')
+   AND (relkind<>'r' OR relowner<>(SELECT nspowner FROM pg_namespace WHERE nspname='dashboard_stepup')))
+  THEN RAISE EXCEPTION 'step-up bootstrap configuration is untrusted'; END IF;
+ CREATE TABLE IF NOT EXISTS dashboard_stepup.bootstrap_configuration(
+  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), migration_role name NOT NULL,
+  bootstrap_role name NOT NULL
+ );
+ REVOKE ALL ON TABLE dashboard_stepup.bootstrap_configuration FROM PUBLIC;
+ INSERT INTO dashboard_stepup.bootstrap_configuration(singleton,migration_role,bootstrap_role)
+  VALUES(true,migration_name,current_user) ON CONFLICT(singleton) DO NOTHING;
+ IF NOT EXISTS(SELECT FROM dashboard_stepup.bootstrap_configuration WHERE singleton
+  AND migration_role=migration_name AND bootstrap_role=current_user)
+  THEN RAISE EXCEPTION 'step-up bootstrap identity changed'; END IF;
+ -- Never replace an ordinary-login-owned function or adopt hostile objects.
+ IF EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='dashboard_stepup' AND p.proowner NOT IN(n.nspowner,'dashboard_stepup_owner'::regrole))
+  OR EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='dashboard_stepup' AND c.relkind IN('r','p')
+   AND c.relowner NOT IN(n.nspowner,'dashboard_stepup_owner'::regrole)) THEN
+  RAISE EXCEPTION 'step-up object ownership is untrusted'; END IF;
+END $stepup_bootstrap$;
+
+CREATE OR REPLACE FUNCTION dashboard_stepup.finalize_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $finalize$
+DECLARE migration_name name; grantee name; schema_owner oid; owner_oid oid;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
+ SELECT nspowner INTO STRICT schema_owner FROM pg_namespace WHERE nspname='dashboard_stepup';
+ owner_oid := 'dashboard_stepup_owner'::regrole;
+ IF NOT (SELECT rolsuper FROM pg_roles WHERE oid=schema_owner)
+  OR EXISTS(SELECT FROM pg_roles WHERE oid=owner_oid AND
+   (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+  OR EXISTS(SELECT FROM pg_auth_members WHERE roleid=owner_oid OR member=owner_oid)
+  THEN RAISE EXCEPTION 'step-up owner is untrusted'; END IF;
+ IF to_regclass('dashboard_stepup.bindings') IS NULL
+  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NULL
+  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NULL
+  THEN RAISE EXCEPTION 'step-up interface is incomplete'; END IF;
+ IF EXISTS(SELECT FROM pg_class WHERE oid='dashboard_stepup.bindings'::regclass
+   AND (relkind<>'r' OR relowner<>owner_oid))
+  OR EXISTS(SELECT FROM pg_proc WHERE oid IN(
+   'dashboard_stepup.ceremony(text,jsonb)'::regprocedure,
+   'dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)'::regprocedure)
+   AND (proowner<>owner_oid OR NOT prosecdef OR
+    proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']::text[]))
+  THEN RAISE EXCEPTION 'step-up interface provenance is untrusted'; END IF;
+ -- Existing auth state is only a projection/locking input. New runtime roles
+ -- receive no auth API, host, private table or credential access.
+ GRANT USAGE ON SCHEMA dashboard_auth TO dashboard_stepup_owner;
+ GRANT SELECT ON dashboard_auth.instance,dashboard_auth.sessions,
+  dashboard_auth.credentials,dashboard_auth.ceremonies TO dashboard_stepup_owner;
+ GRANT UPDATE(singleton) ON dashboard_auth.instance TO dashboard_stepup_owner;
+ GRANT UPDATE(counter,backup_state) ON dashboard_auth.credentials TO dashboard_stepup_owner;
+ GRANT INSERT,UPDATE ON dashboard_auth.ceremonies TO dashboard_stepup_owner;
+ GRANT USAGE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner,dashboard_auth_api;
+ REVOKE CREATE ON SCHEMA dashboard_stepup FROM dashboard_stepup_owner,dashboard_auth_api;
+ FOR grantee IN
+  SELECT DISTINCT r.rolname FROM pg_class c
+   CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+   JOIN pg_roles r ON r.oid=a.grantee
+   WHERE c.oid='dashboard_stepup.bindings'::regclass AND a.grantee<>owner_oid
+ LOOP
+  EXECUTE format('REVOKE ALL ON TABLE dashboard_stepup.bindings FROM %I',grantee);
+ END LOOP;
+ FOR grantee IN
+  SELECT DISTINCT r.rolname FROM pg_proc p
+   CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+   JOIN pg_roles r ON r.oid=a.grantee
+   WHERE p.oid IN('dashboard_stepup.ceremony(text,jsonb)'::regprocedure,
+    'dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)'::regprocedure)
+    AND a.grantee<>owner_oid
+ LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION dashboard_stepup.ceremony(text,jsonb),dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM %I',grantee);
+ END LOOP;
+ REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_stepup.ceremony(text,jsonb) FROM PUBLIC;
+ GRANT EXECUTE ON FUNCTION dashboard_stepup.ceremony(text,jsonb) TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM PUBLIC,dashboard_auth_api;
+ FOR grantee IN SELECT rolname FROM pg_roles WHERE rolname=migration_name OR rolname IN(
+  'butler_chronicler_rw','butler_concierge_rw','butler_education_rw','butler_finance_rw',
+  'butler_general_rw','butler_health_rw','butler_home_rw','butler_lifestyle_rw',
+  'butler_messenger_rw','butler_qa_rw','butler_relationship_rw','butler_switchboard_rw',
+  'butler_travel_rw','butler_calendar_rw') LOOP
+  EXECUTE format('GRANT USAGE ON SCHEMA dashboard_stepup TO %I',grantee);
+  EXECUTE format('REVOKE ALL ON TABLE dashboard_stepup.bindings FROM %I',grantee);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) TO %I',grantee);
+ END LOOP;
+ -- Hashed authorization bindings and closed durable result references only: no
+ -- raw nonce, challenge, credential or new private application payload. The
+ -- unchanged ordinary dump can preserve ALL rows without a read-policy bypass.
+ EXECUTE format('GRANT SELECT ON TABLE dashboard_stepup.bindings,dashboard_stepup.bootstrap_configuration TO %I',migration_name);
+ EXECUTE format('GRANT USAGE ON SCHEMA dashboard_stepup TO %I',migration_name);
+ GRANT SELECT ON dashboard_stepup.bootstrap_configuration TO dashboard_stepup_owner;
+END $finalize$;
+REVOKE ALL ON FUNCTION dashboard_stepup.finalize_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION dashboard_stepup.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
+DECLARE auth_owner oid; migration_name name;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
+ SELECT nspowner INTO auth_owner FROM pg_namespace WHERE nspname='dashboard_auth'
+  AND obj_description(oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
+ IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
+  AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
+  OR to_regclass('dashboard_auth.instance') IS NULL OR to_regclass('dashboard_auth.sessions') IS NULL
+  OR to_regclass('dashboard_auth.credentials') IS NULL OR to_regclass('dashboard_auth.ceremonies') IS NULL
+  THEN RAISE EXCEPTION 'step-up requires existing trusted owner authentication'; END IF;
+ IF to_regclass('dashboard_stepup.bindings') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NOT NULL
+  THEN RAISE EXCEPTION 'step-up interface must be absent before first installation'; END IF;
+ GRANT CREATE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner;
+CREATE TABLE dashboard_stepup.bindings (
+ id text PRIMARY KEY,
+ session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
+ credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
+ kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion')),
+ target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
+ namespace text NOT NULL, expires_at timestamptz NOT NULL,
+ nonce_digest text UNIQUE CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
+ revoked boolean NOT NULL DEFAULT false,
+ consumed_at timestamptz, consumed_tx bigint, result jsonb,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ CHECK((consumed_at IS NULL)=(consumed_tx IS NULL)),
+ CHECK(result IS NULL OR (consumed_at IS NOT NULL AND jsonb_typeof(result)='object'))
+);
+ALTER TABLE dashboard_stepup.bindings OWNER TO dashboard_stepup_owner;
+REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
+
+CREATE FUNCTION dashboard_stepup.ceremony(action text,p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $ceremony$
+DECLARE
+ s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
+ q dashboard_auth.ceremonies%ROWTYPE; k dashboard_auth.credentials%ROWTYPE;
+ b dashboard_stepup.bindings%ROWTYPE; t timestamptz;
+BEGIN
+ -- The same singleton serializes login/logout, recovery, issuance and consume.
+ SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+ t := clock_timestamp();
+ IF NOT FOUND OR s.state<>'keyless_enrolled' OR s.key_generation IS NOT NULL
+  OR s.origin IS DISTINCT FROM p->>'origin' OR s.rp_id IS DISTINCT FROM p->>'rp_id'
+  OR s.origin IS NULL OR p->>'key_generation' IS NOT NULL THEN
+  RETURN '{"error":"FORBIDDEN"}'; END IF;
+ SELECT * INTO se FROM dashboard_auth.sessions WHERE digest=p->>'session_digest';
+ IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
+  OR se.session_epoch<>s.session_epoch THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+ SELECT * INTO k FROM dashboard_auth.credentials
+  WHERE active AND credential_epoch=s.credential_epoch FOR UPDATE;
+ IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF action='options' THEN
+  IF NOT p ?& ARRAY['kind','request_digest','action_digest','ceremony_id','challenge','target','namespace']
+   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion')
+   OR p->>'request_digest' !~ '^[0-9a-f]{64}$' OR p->>'action_digest' !~ '^[0-9a-f]{64}$'
+   OR p->>'ceremony_id' !~ '^[A-Za-z0-9_-]{43}$' OR p->>'challenge' !~ '^[A-Za-z0-9_-]{43}$'
+   OR length(p->>'target') NOT BETWEEN 1 AND 128
+   OR length(p->>'namespace') NOT BETWEEN 3 AND 256
+   OR left(p->>'namespace',length(current_database())+1)
+      IS DISTINCT FROM current_database()||':' THEN
+   RETURN '{"error":"BAD_REQUEST"}'; END IF;
+  IF (SELECT count(*) FROM dashboard_stepup.bindings WHERE expires_at>t
+        AND consumed_at IS NULL AND NOT revoked AND session_digest=se.digest)>=16
+   OR (SELECT count(*) FROM dashboard_stepup.bindings WHERE expires_at>t
+        AND consumed_at IS NULL AND NOT revoked)>=256 THEN
+   RETURN '{"error":"RATE_LIMITED"}'; END IF;
+  INSERT INTO dashboard_auth.ceremonies(id,context_digest,operation,credential_epoch,
+   session_epoch,challenge,user_handle,expires_at)
+  VALUES(p->>'ceremony_id',se.digest,'login',s.credential_epoch,s.session_epoch,
+   p->>'challenge',k.user_handle,LEAST(se.expires_at,t+interval '5 minutes')) RETURNING * INTO q;
+  INSERT INTO dashboard_stepup.bindings(id,session_digest,credential_epoch,session_epoch,
+   kind,target,request_digest,action_digest,namespace,expires_at)
+  VALUES(q.id,se.digest,s.credential_epoch,s.session_epoch,p->>'kind',p->>'target',
+   p->>'request_digest',p->>'action_digest',p->>'namespace',q.expires_at);
+  RETURN to_jsonb(q);
+ END IF;
+ IF action='revoke' THEN
+  UPDATE dashboard_stepup.bindings SET revoked=true
+   WHERE session_digest=se.digest AND nonce_digest=p->>'nonce_digest';
+  RETURN '{}';
+ END IF;
+ IF action NOT IN ('snapshot','finish') THEN RETURN '{"error":"BAD_REQUEST"}'; END IF;
+ SELECT * INTO b FROM dashboard_stepup.bindings WHERE id=p->>'ceremony_id' FOR UPDATE;
+ t := clock_timestamp();
+ IF NOT FOUND OR b.session_digest<>se.digest OR b.revoked OR b.nonce_digest IS NOT NULL
+  OR b.expires_at<=t OR b.credential_epoch<>s.credential_epoch OR b.session_epoch<>s.session_epoch
+  THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
+ SELECT * INTO q FROM dashboard_auth.ceremonies WHERE id=b.id FOR UPDATE;
+ t := clock_timestamp();
+ IF NOT FOUND OR q.consumed OR q.context_digest<>se.digest OR q.operation<>'login'
+  OR q.credential_epoch<>s.credential_epoch OR q.session_epoch<>s.session_epoch
+  OR q.expires_at<=t OR se.expires_at<=t THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
+ IF action='snapshot' THEN
+  RETURN jsonb_build_object('ceremony',to_jsonb(q),'credential',to_jsonb(k));
+ END IF;
+ IF NOT p ?& ARRAY['challenge','credential_epoch','credential_id','backup_eligible','backup_state','counter','nonce_digest']
+  OR p->>'challenge' IS DISTINCT FROM q.challenge
+  OR (p->>'credential_epoch')::bigint IS DISTINCT FROM s.credential_epoch
+  OR p->>'credential_id' IS DISTINCT FROM k.credential_id
+  OR (p->>'backup_eligible')::boolean IS DISTINCT FROM k.backup_eligible
+  OR ((p->>'backup_state')::boolean AND NOT k.backup_eligible)
+  OR (p->>'counter')::bigint<0
+  OR (NOT k.backup_eligible AND (k.counter>0 OR (p->>'counter')::bigint>0)
+      AND (p->>'counter')::bigint<=k.counter)
+  OR p->>'nonce_digest' !~ '^[0-9a-f]{64}$' THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+ -- These fields are accepted only from the restricted crypto-verifying service.
+ UPDATE dashboard_auth.credentials SET counter=GREATEST(counter,(p->>'counter')::bigint),
+  backup_state=(p->>'backup_state')::boolean WHERE credential_epoch=s.credential_epoch;
+ UPDATE dashboard_auth.ceremonies SET consumed=true WHERE id=q.id;
+ UPDATE dashboard_stepup.bindings SET nonce_digest=p->>'nonce_digest' WHERE id=b.id;
+ RETURN jsonb_build_object('expires_at',b.expires_at);
+END $ceremony$;
+ALTER FUNCTION dashboard_stepup.ceremony(text,jsonb) OWNER TO dashboard_stepup_owner;
+REVOKE ALL ON FUNCTION dashboard_stepup.ceremony(text,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION dashboard_stepup.ceremony(text,jsonb) TO dashboard_auth_api;
+
+CREATE FUNCTION dashboard_stepup.consume(
+ phase text,raw_nonce text,session_digest text,kind text,target text,
+ request_digest text,action_digest text,result jsonb
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $consume$
+DECLARE s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
+ b dashboard_stepup.bindings%ROWTYPE; t timestamptz;
+BEGIN
+ -- A stored hash is never bearer authority. Only the unpersisted 32-byte nonce
+ -- from a completed fresh WebAuthn assertion can reach its hash-indexed row.
+ IF raw_nonce IS NULL OR raw_nonce !~ '^[A-Za-z0-9_-]{43}$'
+  OR phase NOT IN ('begin','finish') THEN RETURN '{"state":"refused"}'; END IF;
+ SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR SHARE;
+ t := clock_timestamp();
+ IF NOT FOUND OR s.state<>'keyless_enrolled' OR s.key_generation IS NOT NULL
+  THEN RETURN '{"state":"refused"}'; END IF;
+ SELECT * INTO se FROM dashboard_auth.sessions x WHERE x.digest=consume.session_digest;
+ IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
+  OR se.session_epoch<>s.session_epoch THEN RETURN '{"state":"refused"}'; END IF;
+ SELECT * INTO b FROM dashboard_stepup.bindings x
+  WHERE x.nonce_digest=encode(sha256(convert_to(raw_nonce,'UTF8')),'hex') FOR UPDATE;
+ t := clock_timestamp();
+ IF NOT FOUND OR b.session_digest<>se.digest OR b.revoked OR se.expires_at<=t
+  OR b.credential_epoch<>s.credential_epoch OR b.session_epoch<>s.session_epoch
+  OR b.kind IS DISTINCT FROM kind OR b.target IS DISTINCT FROM target
+  OR b.request_digest IS DISTINCT FROM request_digest THEN RETURN '{"state":"refused"}'; END IF;
+ -- Own successful source-state changes do not hide the immutable receipt.
+ -- No new transition occurs on this path, even if the nonce has since expired.
+ IF phase='begin' AND b.result IS NOT NULL THEN
+  RETURN jsonb_build_object('state','completed','result',b.result);
+ END IF;
+ IF b.expires_at<=t OR b.action_digest IS DISTINCT FROM action_digest
+  THEN RETURN '{"state":"refused"}'; END IF;
+ IF phase='begin' THEN
+  IF b.consumed_at IS NOT NULL THEN RETURN '{"state":"refused"}'; END IF;
+  UPDATE dashboard_stepup.bindings SET consumed_at=t,consumed_tx=txid_current() WHERE id=b.id;
+  RETURN '{"state":"admitted"}';
+ END IF;
+ IF b.consumed_tx IS DISTINCT FROM txid_current() OR b.result IS NOT NULL
+  OR result IS NULL OR jsonb_typeof(result)<>'object' OR octet_length(result::text)>512
+  OR (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(result) k)
+     IS DISTINCT FROM ARRAY['id','kind','rule_id','version']::text[]
+  OR result->'version' IS DISTINCT FROM '1'::jsonb
+  OR jsonb_typeof(result->'id') IS DISTINCT FROM 'string'
+  OR jsonb_typeof(result->'rule_id') IS DISTINCT FROM 'string'
+  OR jsonb_typeof(result->'kind') IS DISTINCT FROM 'string'
+  OR result->>'kind' IS DISTINCT FROM kind
+  OR result->>'id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  OR result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  OR (kind IN ('create','from_action') AND result->>'id' IS DISTINCT FROM result->>'rule_id')
+  OR (kind IN ('approve_with_rule','promotion') AND result->>'id' IS DISTINCT FROM target)
+  THEN RETURN '{"state":"refused"}'; END IF;
+ UPDATE dashboard_stepup.bindings x SET result=consume.result WHERE x.id=b.id;
+ RETURN jsonb_build_object('state','completed');
+END $consume$;
+ALTER FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)
+ OWNER TO dashboard_stepup_owner;
+REVOKE ALL ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM PUBLIC,dashboard_auth_api;
+
+ PERFORM dashboard_stepup.finalize_interface();
+END $install$;
+REVOKE ALL ON FUNCTION dashboard_stepup.install_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION dashboard_stepup.deactivate_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $deactivate$
+DECLARE grantee name;
+BEGIN
+ -- Durable past receipts survive rollback; no old nonce can become a fresh
+ -- authorization on reinstallation. No old image is authorized by downgrade.
+ UPDATE dashboard_stepup.bindings SET revoked=true WHERE result IS NULL;
+ FOR grantee IN SELECT DISTINCT r.rolname FROM pg_proc p
+  CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+  JOIN pg_roles r ON r.oid=a.grantee WHERE
+  p.oid='dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)'::regprocedure
+  AND r.rolname<>'dashboard_stepup_owner' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM %I',grantee);
+ END LOOP;
+END $deactivate$;
+REVOKE ALL ON FUNCTION dashboard_stepup.deactivate_interface() FROM PUBLIC;
+
+DO $stepup_grant$
+DECLARE migration_name name;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
+ EXECUTE format('GRANT USAGE ON SCHEMA dashboard_stepup TO %I',migration_name);
+ EXECUTE format('GRANT SELECT ON TABLE dashboard_stepup.bootstrap_configuration TO %I',migration_name);
+ EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_stepup.install_interface(),dashboard_stepup.finalize_interface(),dashboard_stepup.deactivate_interface() TO %I',migration_name);
+ IF to_regclass('dashboard_stepup.bindings') IS NOT NULL THEN
+  PERFORM dashboard_stepup.finalize_interface();
+ END IF;
+END $stepup_grant$;
+RESET ROLE;

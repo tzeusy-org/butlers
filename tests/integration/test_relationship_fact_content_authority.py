@@ -98,6 +98,18 @@ async def _tcp(app):
         listener.close()
 
 
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
+
+
 @pytest.fixture(scope="module")
 async def env(postgres_container):
     # Real lifecycle topology: core in public and both daemons, then their
