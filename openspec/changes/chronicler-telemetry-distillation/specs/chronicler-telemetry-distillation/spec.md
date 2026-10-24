@@ -202,6 +202,10 @@ and fail-closed accounting SHALL apply without resetting across retries or
 recovery. These controls neither add capabilities nor introduce a new
 subscription or owner-facing message.
 
+ID: REQ-chronicler-telemetry-distillation-005
+Source: RFC 0014 D5; RFC 0038 D2, D5, D6, D7, D10 and D18
+Scope: v1-mandatory
+
 #### Scenario: At most one LLM call per local day
 
 - **WHEN** the labeling pass runs for a local day
