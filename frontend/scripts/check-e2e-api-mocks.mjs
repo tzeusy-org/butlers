@@ -25,8 +25,9 @@ export function projectModel(source, route, model) {
   const fields = [];
   let inDocstring = false;
   for (const line of lines.slice(start + 1)) {
-    if (line && !line.startsWith(" ")) break;
+    // Comments do not end a Python suite, even at column zero.
     if (!line.trim() || line.trim().startsWith("#")) continue;
+    if (!line.startsWith(" ")) break;
     if (line.trim().startsWith('"""')) {
       if (!line.trim().slice(3).includes('"""')) inDocstring = !inDocstring;
       continue;

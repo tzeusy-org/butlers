@@ -23,7 +23,9 @@ test("projects the actual bound spend ceiling model, including float", () => {
 });
 
 test("new required primitive fields enter the checked response type", () => {
-  assert.match(project(changeField("    granted: bool\n    new_field: str")), /new_field: string;/);
+  for (const separator of ["", "# A column-zero comment does not end the class.\n"]) {
+    assert.match(project(changeField(`    granted: bool\n${separator}    new_field: str`)), /new_field: string;/);
+  }
 });
 
 for (const [name, replacement] of [
@@ -34,7 +36,9 @@ for (const [name, replacement] of [
   ["class validator", "    granted: bool\n    def validate(self): pass"],
 ]) {
   test(`refuses unsupported ${name} instead of omitting its semantics`, () => {
-    assert.throws(() => project(changeField(replacement)), /Unsupported/);
+    for (const separator of ["", "# A column-zero comment does not end the class.\n"]) {
+      assert.throws(() => project(changeField(separator + replacement)), /Unsupported/);
+    }
   });
 }
 
