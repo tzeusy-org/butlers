@@ -112,7 +112,7 @@ ID: REQ-core-spawner-016
 #### Scenario: Gemini adapter invocation
 - **WHEN** the selected runtime type is `gemini`
 - **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
-- **AND** passes only the environment its launcher provides plus its own file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config and pointers such as `GEMINI_CLI_SYSTEM_SETTINGS_PATH` that name files staged inside the invocation's sandbox
+- **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the selected runtime type is `opencode`
@@ -230,7 +230,7 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential, its MCP config and adapter-owned file pointers, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. An adapter-owned file pointer is a variable the runtime adapter sets whose value is only the path of a file or directory staged inside that invocation's own sandbox; its value SHALL NOT be secret, and the files it names SHALL hold no secret other than the staged model credential. Undeclared env vars SHALL NOT leak through.
+The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential, its MCP config and adapter-owned file pointers, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. An adapter-owned file pointer is a variable the runtime adapter sets whose value is only the path of a file or directory staged inside that invocation's own sandbox; its value SHALL NOT be secret, and the files it names SHALL hold no secret other than the staged model credential and the invocation's own MCP config. Undeclared env vars SHALL NOT leak through.
 
 Until the RFC 0038 goal-runtime cutover, ordinary legacy sessions retain the following isolation contract; it grants no additional credentials to goal invocations or engineering executors:
 
@@ -273,7 +273,7 @@ ID: REQ-core-spawner-010
 
 #### Scenario: Goal invocations admit only non-secret pointers into their own sandbox
 - **WHEN** a runtime adapter adds a variable to a goal invocation's environment beyond `PATH`, the staged model credential and the MCP config
-- **THEN** the variable is admitted only if its value is the path of a file or directory staged inside that invocation's own sandbox and the named files hold no secret other than the staged model credential
+- **THEN** the variable is admitted only if its value is the path of a file or directory staged inside that invocation's own sandbox and the named files hold no secret other than the staged model credential and the invocation's own MCP config
 - **AND** a variable that points outside the sandbox, or whose value or named file carries any other secret, makes that adapter ineligible for goal invocations
 
 ### Requirement: System Prompt Composition
