@@ -141,6 +141,13 @@ traps for that subsystem. Read it before changing the subsystem.
 - OpenSpec validate/archive traps: the `doctrine` skill's spec-and-spine
   `references/openspec-gotchas.md`.
 
+### Durable queue claims
+
+- Claim through `butlers.core.queue_claim` inside the adapter's transaction. Queue SQL
+  fragments are reviewed code constants and values are bound. No-reclaim queues must
+  never reclaim expired sending work; runtime attention retains its at-most-once
+  transport and existing uncertain-outcome recovery.
+
 ### Cross-cutting test rules
 
 The rest of the test traps are in [test traps](docs/testing/test-traps.md). These three apply to every
