@@ -287,6 +287,38 @@ def test_all_four_states_and_expiry_preserve_last_evidence(db):
     # Configured healthy absence is an explicit typed assertion, not missing data.
     write(db, request(kind="owner.suppression"), "perception_attention_writer")
     assert read(db, kind="owner.suppression")["value"] == {"active": False, "record_ref": None}
+    restricted = {
+        "state": "unknown",
+        "busy_until": None,
+        "availability_reason": "detail_restricted",
+    }
+    assert read(db, role="perception_availability_reader") == restricted
+    active = request(
+        key="active-suppression",
+        kind="owner.suppression",
+        generation=1,
+        minute=1,
+        value={"active": True, "record_ref": str(EVIDENCE)},
+    )
+    write(db, active, "perception_attention_writer")
+    private = read(db, kind="owner.suppression", at=AT + timedelta(minutes=2))
+    assert read(db, at=AT + timedelta(minutes=2), role="perception_availability_reader") == {
+        **restricted,
+        "busy_until": private["fresh_until"],
+    }
+    # The exposed response has exactly the three permitted fields, even when
+    # the private suppression record exists. Future/stale evidence cannot leak
+    # a busy-until assertion, and an explicit inactive value stays inactive.
+    assert read(db, at=AT, role="perception_availability_reader") == restricted
+    assert read(db, at=AT + timedelta(hours=2), role="perception_availability_reader") == restricted
+    write(
+        db,
+        request(key="inactive-suppression", kind="owner.suppression", generation=2, minute=2),
+        "perception_attention_writer",
+    )
+    assert (
+        read(db, at=AT + timedelta(minutes=3), role="perception_availability_reader") == restricted
+    )
 
 
 def test_late_historical_input_does_not_roll_current_state_back(db):
@@ -546,6 +578,114 @@ def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
     )
     assert counts(db) == (0, 0, 0)  # no slot/CAS, subscriber, evaluator, effect or activation
 
+    # Exercise the real registration gateway, not a Python replica of the SQL
+    # validator. A fresh binding identity prevents immutable replay refusal from
+    # masking acceptance of an invalid predicate or undeclared source.
+    leaves = [
+        b["predicate"],
+        {
+            "tag": "transition",
+            "kind": "system.dep",
+            "subject": None,
+            "from": "unknown",
+            "to": "known",
+        },
+        {
+            "tag": "transition",
+            "kind": "owner.place",
+            "subject": str(OWNER),
+            "from": "known",
+            "to": "unknown",
+        },
+        {"tag": "decision", "subject_id": str(OWNER), "outcome": "approved"},
+        {"tag": "owner_input", "goal_id": b["goal_ref"], "binding_ref": str(EVIDENCE)},
+        {
+            "tag": "effect_settled",
+            "effect_id": str(EVIDENCE),
+            "status_set": ["succeeded", "failed", "cancelled", "unknown"],
+        },
+    ]
+    for predicate in [
+        *leaves,
+        {"tag": "all", "children": leaves},
+        {"tag": "any", "children": leaves},
+    ]:
+        valid = {**b, "id": str(uuid.uuid4()), "predicate": predicate}
+        receipt = bind(valid)
+        assert receipt["state"] == "open"
+        assert bind(valid) == receipt
+
+    invalid_predicates = []
+    for predicate in leaves:
+        for field in predicate:
+            if field == "tag":
+                continue
+            for invalid in (None, False, 1, [], {}):
+                # The identity contract permits precisely this null subject;
+                # the separate non-null UUID variant above must still pass.
+                if predicate["tag"] == "transition" and field == "subject" and invalid is None:
+                    continue
+                invalid_predicates.append({**predicate, field: invalid})
+        for field in predicate:
+            if field not in {"subject", "subject_id", "goal_id", "binding_ref", "effect_id"}:
+                continue
+            invalid_predicates.append({**predicate, field: "not-a-uuid"})
+    invalid_predicates.extend(
+        [
+            {**leaves[1], "from": "not-a-state"},
+            {**leaves[1], "to": "not-a-state"},
+            {**leaves[3], "outcome": "not-an-outcome"},
+            *[
+                {**leaves[5], "status_set": value}
+                for value in (
+                    [None],
+                    ["succeeded", None],
+                    [False],
+                    [1],
+                    ["not-a-status"],
+                    ["succeeded", {}],
+                )
+            ],
+            *[
+                {"tag": tag, "children": value}
+                for tag in ("all", "any")
+                for value in (None, [], [None], [leaves[0], None])
+            ],
+        ]
+    )
+    registered = db.execute(
+        text(
+            "SELECT (SELECT count(*) FROM public.perception_conditions),(SELECT count(*) FROM public.perception_suppressions)"
+        )
+    ).one()
+    invalid_bindings = [{**b, "predicate": predicate} for predicate in invalid_predicates]
+    invalid_bindings.extend(
+        {**b, "source_boundary": value}
+        for value in (
+            None,
+            [None],
+            ["fixture.evidence", None],
+            [1],
+            [False],
+            [{}],
+            [["fixture.evidence"]],
+            ["fixture.evidence", 1],
+            ["undeclared"],
+        )
+    )
+    for invalid in invalid_bindings:
+        with pytest.raises(DBAPIError):
+            bind({**invalid, "id": str(uuid.uuid4())})
+        assert (
+            db.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM public.perception_conditions),(SELECT count(*) FROM public.perception_suppressions)"
+                )
+            ).one()
+            == registered
+        )
+        assert counts(db) == (0, 0, 0)
+
 
 def test_bootstrap_replay_after_seed_restores_effective_role_boundary(db, database):
     write(db, request())
@@ -604,6 +744,34 @@ def test_core_only_second_schema_and_empty_downgrade_reupgrade(postgres_containe
                     )
                 ).scalar_one()
                 == 1
+            )
+            # Reject an actual existing table with hostile ownership; a safe
+            # missing-table lookup must not turn into automatic adoption.
+            ownership = c.begin_nested()
+            try:
+                migration_role = urlparse(url).username
+                c.execute(text(f'ALTER TABLE public.situation_slots OWNER TO "{migration_role}"'))
+                with pytest.raises(DBAPIError, match="untrusted preexisting perception table"):
+                    with c.begin_nested():
+                        c.execute(text("SELECT perception_admin.install_interface()"))
+                assert (
+                    c.execute(
+                        text(
+                            "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.situation_slots'::regclass"
+                        )
+                    ).scalar_one()
+                    == migration_role
+                )
+            finally:
+                ownership.rollback()
+            c.execute(text("SELECT perception_admin.install_interface()"))
+            assert (
+                c.execute(
+                    text(
+                        "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.situation_slots'::regclass"
+                    )
+                ).scalar_one()
+                == "perception_owner"
             )
     finally:
         engine.dispose()

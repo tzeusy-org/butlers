@@ -3890,8 +3890,7 @@ BEGIN
         'perception_health_writer','perception_expect_writer','perception_sensing_writer',
         'perception_attention_writer'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r) THEN
-            EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS '
-                'NOCREATEDB NOCREATEROLE NOREPLICATION',r);
+            EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION',r);
         END IF;
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r AND
             ((r='perception_owner' AND rolcanlogin) OR rolinherit OR rolsuper OR rolbypassrls OR rolcreatedb
@@ -3927,7 +3926,7 @@ ON CONFLICT(singleton) DO UPDATE SET migration_role=excluded.migration_role,
 CREATE OR REPLACE FUNCTION perception_admin.install_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
 AS $perception_install$
-DECLARE t text; f regprocedure; r text;
+DECLARE t text; table_oid oid; f regprocedure; r text;
 BEGIN
     IF to_regnamespace('perception_private') IS NULL THEN
         CREATE SCHEMA perception_private AUTHORIZATION perception_owner;
@@ -3939,7 +3938,8 @@ BEGIN
     FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
         'public.perception_conditions','public.perception_suppressions',
         'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
-        IF to_regclass(t) IS NOT NULL AND (SELECT relowner FROM pg_class WHERE oid=t::regclass)
+        table_oid:=to_regclass(t);
+        IF table_oid IS NOT NULL AND (SELECT relowner FROM pg_class WHERE oid=table_oid)
             <> 'perception_owner'::regrole THEN
             RAISE EXCEPTION 'untrusted preexisting perception table';
         END IF;
@@ -4401,7 +4401,7 @@ BEGIN
         END IF;
         IF actor='perception_availability_reader' THEN
             -- No detail, source membership or history oracle for exposed readers.
-            SELECT fresh_until,state,typed_value INTO slot FROM public.situation_slots
+            SELECT fresh_until,observed_at,state,typed_value INTO slot FROM public.situation_slots
                 WHERE kind='owner.suppression' AND subject_entity IS NOT DISTINCT FROM subj;
             RETURN jsonb_build_object('state','unknown','availability_reason','detail_restricted',
                 'busy_until',CASE WHEN slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of
@@ -4469,11 +4469,14 @@ BEGIN
     RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
     DECLARE fields text[]; child jsonb;
     BEGIN
-        IF depth>2 OR jsonb_typeof(p)<>'object' OR octet_length(p::text)>8192 THEN RETURN false; END IF;
+        IF depth>2 OR jsonb_typeof(p) IS DISTINCT FROM 'object'
+            OR jsonb_typeof(p->'tag') IS DISTINCT FROM 'string'
+            OR octet_length(p::text)>8192 THEN RETURN false; END IF;
         CASE p->>'tag'
         WHEN 'all','any' THEN
-            IF p-ARRAY['tag','children']<>'{}'::jsonb OR jsonb_typeof(p->'children')<>'array'
-                OR jsonb_array_length(p->'children') NOT BETWEEN 1 AND 16 THEN RETURN false; END IF;
+            IF p-ARRAY['tag','children']<>'{}'::jsonb
+                OR jsonb_typeof(p->'children') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            IF jsonb_array_length(p->'children') NOT BETWEEN 1 AND 16 THEN RETURN false; END IF;
             FOR child IN SELECT value FROM jsonb_array_elements(p->'children') LOOP
                 IF NOT COALESCE(perception_private.valid_predicate(child,depth+1),false) THEN RETURN false; END IF;
             END LOOP;
@@ -4481,25 +4484,42 @@ BEGIN
         WHEN 'at' THEN
             fields:=ARRAY['tag','instant','zone'];
             PERFORM perception_private.instant(p->'instant');
-            IF NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p->>'zone') THEN RETURN false; END IF;
+            IF jsonb_typeof(p->'zone') IS DISTINCT FROM 'string'
+                OR NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p->>'zone') THEN RETURN false; END IF;
         WHEN 'transition' THEN
             fields:=ARRAY['tag','kind','subject','from','to'];
-            IF NOT COALESCE(p->>'kind' IN ('owner.place','owner.activity','owner.clock','system.dep','expect.window',
+            IF jsonb_typeof(p->'kind') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'from') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'to') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'kind' IN ('owner.place','owner.activity','owner.clock','system.dep','expect.window',
                 'home.sensing','owner.mode','owner.suppression'),false) OR
-                p->>'from' NOT IN ('known','unknown','unmeasurable','unconfigured') OR
-                p->>'to' NOT IN ('known','unknown','unmeasurable','unconfigured') THEN RETURN false; END IF;
-            PERFORM (p->>'subject')::uuid;
+                NOT COALESCE(p->>'from' IN ('known','unknown','unmeasurable','unconfigured'),false) OR
+                NOT COALESCE(p->>'to' IN ('known','unknown','unmeasurable','unconfigured'),false) THEN RETURN false; END IF;
+            IF p->'subject' IS DISTINCT FROM 'null'::jsonb THEN
+                IF jsonb_typeof(p->'subject') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+                PERFORM (p->>'subject')::uuid;
+            END IF;
         WHEN 'decision' THEN
-            fields:=ARRAY['tag','subject_id','outcome']; PERFORM (p->>'subject_id')::uuid;
-            IF NOT COALESCE(p->>'outcome' IN ('approved','rejected','expired','cancelled'),false) THEN RETURN false; END IF;
+            fields:=ARRAY['tag','subject_id','outcome'];
+            IF jsonb_typeof(p->'subject_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'outcome') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'outcome' IN ('approved','rejected','expired','cancelled'),false) THEN RETURN false; END IF;
+            PERFORM (p->>'subject_id')::uuid;
         WHEN 'owner_input' THEN
-            fields:=ARRAY['tag','goal_id','binding_ref']; PERFORM (p->>'goal_id')::uuid;
+            fields:=ARRAY['tag','goal_id','binding_ref'];
+            IF jsonb_typeof(p->'goal_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'binding_ref') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+            PERFORM (p->>'goal_id')::uuid;
             PERFORM (p->>'binding_ref')::uuid;
         WHEN 'effect_settled' THEN
-            fields:=ARRAY['tag','effect_id','status_set']; PERFORM (p->>'effect_id')::uuid;
-            IF jsonb_typeof(p->'status_set')<>'array' OR jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
-                OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(p->'status_set') x
-                    WHERE x NOT IN ('succeeded','failed','cancelled','unknown')) THEN RETURN false; END IF;
+            fields:=ARRAY['tag','effect_id','status_set'];
+            IF jsonb_typeof(p->'effect_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'status_set') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            PERFORM (p->>'effect_id')::uuid;
+            IF jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
+                OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
+                    WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                        OR NOT COALESCE((value#>>'{}') IN ('succeeded','failed','cancelled','unknown'),false)) THEN RETURN false; END IF;
         ELSE RETURN false;
         END CASE;
         RETURN p-fields='{}'::jsonb AND (SELECT count(*) FROM jsonb_object_keys(p))=cardinality(fields);
@@ -4525,9 +4545,10 @@ BEGIN
             RAISE EXCEPTION 'perception binding authority required' USING ERRCODE='42501';
         END IF;
         boundary:=b->'source_boundary';
-        IF jsonb_typeof(boundary)<>'array' OR jsonb_array_length(boundary) NOT BETWEEN 1 AND 16
-            OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(boundary) x
-                WHERE NOT x=ANY(profile.evidence_sources)) OR
+        IF jsonb_typeof(boundary) IS DISTINCT FROM 'array' OR jsonb_array_length(boundary) NOT BETWEEN 1 AND 16
+            OR EXISTS(SELECT 1 FROM jsonb_array_elements(boundary) entries(value)
+                WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                    OR NOT COALESCE((value#>>'{}')=ANY(profile.evidence_sources),false)) OR
             jsonb_typeof(b->'evidence_refs')<>'array' OR jsonb_array_length(b->'evidence_refs') NOT BETWEEN 1 AND 32 THEN
             RAISE EXCEPTION 'perception source boundary required' USING ERRCODE='22023';
         END IF;
