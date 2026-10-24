@@ -112,7 +112,12 @@ jobs:
     # exits non-zero (a real 'failure', not a silent cancel) -- turning the
     # next hang into actionable stacks well inside this budget. timeout-minutes
     # is the outer backstop should the watchdog itself be defeated.
-    timeout-minutes: 75
+    # bu-29wkwj.11: historical run39802115884 completed in 2378s/+45d and
+    # 3271s/+120d. Provisional job floor: ceil((2*3271 + UV640 + frozen
+    # dependencies640 + setup/evidence300 + ABRT cleanup30)/60) = 136min.
+    # Preserve the whole observed job, including setup and finalization;
+    # N=1 per offset is not current p95 or a completed long-tail calibration.
+    timeout-minutes: 136
     runs-on: ubuntu-latest
 
     strategy:
@@ -209,8 +214,13 @@ jobs:
           # SIGKILLs any straggler that blocks SIGABRT. `timeout` exits non-zero
           # on fire, so the leg concludes 'failure' (preserving the
           # scheduled-failure email) instead of a silent job-level 'cancelled'.
-          # WATCHDOG_SECONDS is ~3x the observed healthy runtime (~20 min to
-          # 100%) and comfortably inside the 75-min job bound.
+          # bu-29wkwj.11: run39802115884's named suite steps took 2198s/+45d
+          # and 3173s/+120d after the shared Postgres clock shift. Retain twice
+          # the maximum, rounded up to a minute: ceil(2*3173/60)*60 = 6360s.
+          # The 136min job leaves 1770s beyond this suite cap plus 30s KILL:
+          # UV640 + frozen dependencies640 + setup/evidence300 + the largest
+          # observed other-job time180, with 10s rounding room. These are
+          # provisional reserves, not measured current setup or p95.
           # bu-tegqi: `not faketime_fragile` drops the pure-concurrency tests
           # whose progress DEPENDS on a timed thread-sync primitive expiring
           # (e.g. threading.Event.wait(timeout)). CPython implements those via a
@@ -224,7 +234,7 @@ jobs:
           # adds tests needing a live TLS handshake (uv fetching from PyPI):
           # certificate validity is checked against the shifted clock, so the
           # +120d leg fails whenever the real certificate expires inside it.
-          WATCHDOG_SECONDS=3600
+          WATCHDOG_SECONDS=6360
           timeout --signal=SIGABRT --kill-after=30s "${WATCHDOG_SECONDS}" \
             env LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
             PYTHONFAULTHANDLER=1 \

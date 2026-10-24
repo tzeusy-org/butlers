@@ -2292,11 +2292,55 @@ else:
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]
-    assert nightly["timeout-minutes"] == 75
+    assert nightly["timeout-minutes"] == 136
     nightly_shell = "\n".join(step.get("run", "") for step in nightly["steps"])
-    assert "WATCHDOG_SECONDS=3600" in nightly_shell
+    assert "WATCHDOG_SECONDS=6360" in nightly_shell
     assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
     assert "--timeout=300 --timeout-method=thread" in nightly_shell
+    faketime_budget = next(row for row in register["jobs"] if row["job"] == "faketime-matrix")
+    assert faketime_budget["successful_sample_n"] == 2 and faketime_budget["p95_s"] is None
+    observations = faketime_budget["healthy_job_observations"]
+    assert {observation["offset"] for observation in observations} == {"+45d", "+120d"}
+    assert len(observations) == 2  # One historical observation per distinct offset, not p95.
+    assert all(
+        observation["run_id"] == 39802115884
+        and observation["head_sha"] == "d5132bdeb7f12a49d969ac04a6459b29d7584d5b"
+        for observation in observations
+    )
+    assert sorted(observation["test_step_elapsed_s"] for observation in observations) == [
+        2198,
+        3173,
+    ]
+    assert faketime_budget["provisional_healthy_envelope_s"] == 3271
+    suite_envelope_s = max(observation["test_step_elapsed_s"] for observation in observations)
+    assert (
+        faketime_budget["installed_suite_watchdog_s"] == math.ceil(2 * suite_envelope_s / 60) * 60
+    )
+    assert faketime_budget["installed_suite_watchdog_s"] == 6360
+    assert faketime_budget["review_uv_nominal_envelope_s"] == 640
+    assert faketime_budget["review_browser_hard_retry_interval_s"] == 0
+    reserves = faketime_budget["provisional_extra_reserves_s"]
+    assert reserves == {"frozen_dependencies": 640, "setup_and_evidence": 300, "abort_cleanup": 30}
+    assert faketime_budget["additional_provisional_cold_dependency_allowance_s"] == sum(
+        reserves.values()
+    )
+    assert nightly["timeout-minutes"] == math.ceil((2 * 3271 + 640 + sum(reserves.values())) / 60)
+    # Even a suite reaching its own cap retains the full extra reserves and
+    # the largest observed setup/finalization time; no first-attempt subtraction.
+    observed_other_job_s = max(
+        (
+            datetime.fromisoformat(observation["completed_at"])
+            - datetime.fromisoformat(observation["started_at"])
+        ).total_seconds()
+        - observation["test_step_elapsed_s"]
+        for observation in observations
+    )
+    assert nightly["timeout-minutes"] * 60 >= (
+        faketime_budget["installed_suite_watchdog_s"]
+        + faketime_budget["review_uv_nominal_envelope_s"]
+        + sum(reserves.values())
+        + observed_other_job_s
+    )
 
     for browser_job in [jobs["frontend-e2e"]]:
         version_step = _workflow_step(job=browser_job, name="Resolve locked Playwright version")
