@@ -454,3 +454,28 @@ and lost-reply durability require genuine PostgreSQL execution; software protoco
 controls do not provide that proof. Production remains default OFF. Genuine runner
 invocation admission, generic domain D7 replay verification and authoritative
 effect producers retain their separate contracts and remaining delivery work.
+
+### Calendar D13 preparation boundary
+
+Native Calendar responses enter canonical owning PARK through the final
+registered `CalendarResponseCoordinator`, with provider preparation outside
+central/owning locks and prepared command plus goal gate/action committed on
+one owning connection. The original P/effect identity survives server preparation
+and subsequent owner semantic edits. Calendar remains `always_per_event` even
+for an unexposed goal or a park-only Grant; standing rules cannot approve it.
+
+A distinct default-OFF dashboard-owner mTLS service can append a candidate, but
+only the authenticated API's independent current central Grant/catalog read and
+owning goal-first locks/CAS/audit may attach it. No generic callback parser,
+caller-selected private operation, ordinary MCP identity or candidate reply is
+authority. The refreshed safe preview is derived from the selected stored
+command and its displayed-args digest; unavailable previews are Open only. A
+new explicit approval binds A′. Existing stored replay then requires the same
+current authority and one-winner consumption before the original handler; C′
+receipt/inverse selection never grants a second forward after ambiguity.
+
+The local software transport/transaction controls are not PostgreSQL or provider
+proof. Migrated runtime-role Calendar edit, race, rollback and independent
+readback cases are authored for hosted execution. No local activation, new
+selection/recipient authority, generic D7 verifier or full broker nine-criterion
+completion follows from this source increment.

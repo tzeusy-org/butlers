@@ -15,7 +15,13 @@ class ProductionTransportUnavailable(RuntimeError):
     """Closed refusal before private material, factories or listeners."""
 
 
+def _has_approvals(daemon):
+    # The actual daemon filters failed modules here, after final registration.
+    return any(module.name == "approvals" for module in daemon._active_modules)
+
+
 async def start_private_transport(daemon) -> None:
+    await _start_calendar_prepare(daemon)
     settings = getattr(daemon.config, "capability_broker_transport", None)
     if settings is None:
         return
@@ -37,13 +43,21 @@ async def start_private_transport(daemon) -> None:
         settings.role != "owning-service"
         or settings.domain != daemon.config.name
         or not settings.verification_keys
-        or "approvals" not in daemon._modules
+        or not _has_approvals(daemon)
     ):
         raise ProductionTransportUnavailable("private_transport_prerequisites_unavailable")
     keys = decode_verification_keys(settings.verification_keys)
     catalog = daemon.tool_catalog
     handlers = await daemon._broker_owning_originals()
-    operation = GoalDispatch(daemon._db, settings.domain, catalog, handlers, keys)
+    preparers = {}
+    for module in daemon._active_modules:
+        from butlers.modules.calendar import CalendarModule
+
+        if type(module) is CalendarModule:
+            preparers.update(module.canonical_approval_preparers())
+    operation = GoalDispatch(
+        daemon.db, settings.domain, catalog, handlers, keys, preparers=preparers
+    )
     # Verify the actual configured runtime role and installed019 before binding.
     async with operation.owner._transaction():
         pass
@@ -196,11 +210,23 @@ class _TransportOwner:
 
 async def close_private_transport(daemon) -> None:
     owner = vars(daemon).get("_capability_transport_owner")
-    if owner is None:
+    calendar_owner = vars(daemon).get("_calendar_prepare_owner")
+    if owner is None and calendar_owner is None:
         return
     task = vars(daemon).get("_capability_transport_cleanup")
     if task is None:
-        task = asyncio.create_task(owner.aclose())
+
+        async def release():
+            async with asyncio.timeout(5):
+                results = await asyncio.gather(
+                    *(item.aclose() for item in (owner, calendar_owner) if item is not None),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+
+        task = asyncio.create_task(release())
         daemon._capability_transport_cleanup = task
     cancellation = None
     while not task.done():
@@ -208,8 +234,14 @@ async def close_private_transport(daemon) -> None:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
             cancellation = cancellation or exc
-    task.result()  # failure remains retained and visible on repeated shutdown
+    try:
+        task.result()  # failure remains retained and visible on repeated shutdown
+    except BaseException as failure:
+        if cancellation is not None:
+            raise cancellation from failure
+        raise
     daemon._capability_transport_owner = None
+    daemon._calendar_prepare_owner = None
     if cancellation is not None:
         raise cancellation
 
@@ -230,3 +262,41 @@ def material_context(material, *, server=False):
     context.set_alpn_protocols(["http/1.1"])
     context.load_cert_chain(material.certificate_path, material.private_key_path)
     return context
+
+
+async def _start_calendar_prepare(daemon):
+    settings = getattr(daemon.config, "calendar_owner_prepare", None)
+    if settings is None or not settings.enabled:
+        return
+    from butlers.config import CalendarOwnerPrepareConfig
+    from butlers.modules.calendar import CalendarModule
+
+    from .transport.calendar_prepare import CalendarPrepareApp
+    from .transport.config import PeerPolicy
+    from .transport.server import PrivateServer
+
+    if type(settings) is not CalendarOwnerPrepareConfig or settings.domain != daemon.config.name:
+        raise ProductionTransportUnavailable("invalid_calendar_prepare_configuration")
+    preparers = [
+        module.canonical_approval_preparers().get("calendar_respond")
+        for module in daemon._active_modules
+        if type(module) is CalendarModule
+    ]
+    preparers = [item for item in preparers if item is not None]
+    if len(preparers) != 1 or not _has_approvals(daemon):
+        raise ProductionTransportUnavailable("calendar_prepare_unavailable")
+    peer_config = settings.dashboard_peer
+    peer = PeerPolicy(peer_config.role, settings.domain, frozenset(peer_config.sans), True)
+
+    def factory(_):
+        return PrivateServer(
+            CalendarPrepareApp(settings.domain, preparers[0]),
+            material_context(settings.service_material, server=True),
+            peer,
+            host=settings.listen_host,
+            port=settings.listen_port,
+        )
+
+    daemon._calendar_prepare_owner = await _TransportOwner.open(
+        server_config=peer, server_factory=factory
+    )

@@ -282,8 +282,9 @@ async def test_fixed_owning_consumer_commits_witness_then_consumes_once_before_h
                 )
                 daemon = SimpleNamespace(
                     config=SimpleNamespace(name="mail", capability_broker_transport=settings),
-                    _db=store,
-                    _modules={"approvals": object()},
+                    db=store,
+                    _modules=[SimpleNamespace(name="approvals")],
+                    _active_modules=[SimpleNamespace(name="approvals")],
                     tool_catalog=catalog,
                     _gated_tool_originals={"send": handler},
                 )

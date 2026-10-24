@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
@@ -642,3 +642,95 @@ def wire_qa_credentials(app: FastAPI) -> None:
     app.dependency_overrides[qa._get_credentials_status_fn] = qa.make_credentials_status_fn(
         get_db_manager
     )
+
+
+class CalendarPreparationClients:
+    """Dedicated dashboard mTLS clients, separate from ordinary/model MCP."""
+
+    def __init__(self):
+        self.clients = {}
+
+    async def initialize(self, roster_dir=None):
+        try:
+            self._initialize(roster_dir)
+        except BaseException as original:
+            try:
+                await self.aclose()
+            except BaseException as cleanup:
+                raise original from cleanup
+            raise
+
+    def _initialize(self, roster_dir=None):
+        root = roster_dir or _DEFAULT_ROSTER_DIR
+        for entry in sorted(root.iterdir()):
+            if not (entry / "butler.toml").is_file():
+                continue
+            # An OFF owner channel must not resolve unrelated module settings
+            # or read material. Validate its own closed shape independently.
+            import tomllib
+
+            from butlers.config import CalendarOwnerPrepareConfig
+
+            raw = (
+                tomllib.loads((entry / "butler.toml").read_text())
+                .get("butler", {})
+                .get("calendar_owner_prepare", {})
+            )
+            if raw.get("enabled", False) is False:
+                CalendarOwnerPrepareConfig.model_validate(raw)
+                continue
+            config_owner = load_config(entry)
+            settings = config_owner.calendar_owner_prepare
+            if settings.domain != config_owner.name or settings.domain in self.clients:
+                raise ValueError("calendar_prepare_owner_mismatch")
+            from butlers.capability_broker.production import material_context
+            from butlers.capability_broker.transport.calendar_prepare import CalendarPrepareClient
+            from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+
+            peer = settings.service_peer
+            config = TransportConfig(
+                settings.endpoint,
+                PeerPolicy(peer.role, peer.domain, frozenset(peer.sans), peer.client_certificate),
+            )
+            self.clients[settings.domain] = CalendarPrepareClient(
+                config, material_context(settings.dashboard_material)
+            )
+
+    async def aclose(self):
+        import asyncio
+
+        task = getattr(self, "_close_task", None)
+        if task is None:
+
+            async def release():
+                async with asyncio.timeout(5):
+                    results = await asyncio.gather(
+                        *(client.aclose() for client in self.clients.values()),
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+
+            task = self._close_task = asyncio.create_task(release())
+        cancellation = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        try:
+            task.result()
+        except BaseException as failure:
+            if cancellation is not None:
+                raise cancellation from failure
+            raise
+        self.clients.clear()
+        if cancellation is not None:
+            raise cancellation
+
+
+def get_calendar_preparation_clients(request: Request):
+    if not isinstance(request, Request):
+        raise RuntimeError("request_required")
+    return request.app.state.calendar_preparation_clients

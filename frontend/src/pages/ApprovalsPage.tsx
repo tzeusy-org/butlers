@@ -33,7 +33,7 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -47,7 +47,8 @@ import {
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
-import type { DisplayedApprovalCall } from "@/api/types";
+import { useCalendarReprepare } from "@/hooks/use-approval-decisions";
+import type { ApprovalCallPreview, DisplayedApprovalCall } from "@/api/types";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -89,6 +90,8 @@ import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { TONE_COLORS } from "@/components/ui/StateDot";
 import { Time } from "@/components/ui/time";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -639,6 +642,16 @@ function Dossier({
   pendingVerb?: DecisionVerb | null;
   onCancelPending?: () => void;
 }) {
+  const [calendarEditing, setCalendarEditing] = useState(false);
+  const [calendarResponse, setCalendarResponse] = useState<"accepted" | "declined" | "tentative">("accepted");
+  const [calendarUpdates, setCalendarUpdates] = useState<"none" | "all" | "externalOnly">("none");
+  const [calendarEntry, setCalendarEntry] = useState("");
+  const [preparedReview, setPreparedCall] = useState<{ id: string; preview: ApprovalCallPreview } | null>(null);
+  const preparationGeneration = useRef(0);
+  const reprepare = useCalendarReprepare();
+  // The existing Dossier key resets editor/preview state per action. The
+  // cleanup invalidates only late responses; it does not cascade state updates.
+  useEffect(() => { preparationGeneration.current += 1; return () => { preparationGeneration.current += 1; }; }, [actionId]);
   const [deferHours, setDeferHours] = useState("24");
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
@@ -651,11 +664,14 @@ function Dossier({
     retry: reviewSource !== undefined ? false : undefined,
   });
 
-  const shownDetail = verifiedDetail ?? data?.data;
+  const loadedDetail = verifiedDetail ?? data?.data;
+  const preparedCall = preparedReview?.id === actionId ? preparedReview.preview : null;
+  const shownDetail = useMemo(() => loadedDetail && preparedCall
+    ? { ...loadedDetail, call_preview: preparedCall } : loadedDetail, [loadedDetail, preparedCall]);
   const dossierLoading = !verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching));
   const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
   const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
-    shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
+    shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls && !calendarEditing && !reprepare.isPending;
   useLayoutEffect(() => {
     // Query data can survive a hidden loading/error pane. Only hand the
     // keyboard a call whose safe preview is actually rendered in this pane,
@@ -688,7 +704,7 @@ function Dossier({
     );
   }
 
-  const detail = verifiedDetail ?? data?.data;
+  const detail = shownDetail;
   if ((!verifiedDetail && error) || !detail) {
     return (
       <div
@@ -726,6 +742,49 @@ function Dossier({
           </div>)}
         </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
       </section>
+      {detail.status === "pending" && detail.proposed_action.tool_name === "calendar_respond" && detail.call_preview && (
+        <section aria-label="Change calendar response" className="mb-6 space-y-3">
+          {!calendarEditing ? <Button variant="outline" onClick={() => {
+            const facts = detail.call_preview?.facts ?? [];
+            const fact = (label: string) => facts.find((item) => item.label === label)?.value;
+            const response = fact("Response");
+            setCalendarResponse(response === "declined" || response === "tentative" ? response : "accepted");
+            const updates = fact("Send updates");
+            setCalendarUpdates(updates === "all" || updates === "externalOnly" ? updates : "none");
+            setCalendarEntry(fact("Workspace entry") ?? "");
+            setCalendarEditing(true);
+          }}>Change response</Button> : <form className="space-y-3" onSubmit={async (event) => {
+            event.preventDefault();
+            if (!detail.call_preview || reprepare.isPending) return;
+            const generation = preparationGeneration.current;
+            const result = await reprepare.mutateAsync({ id: actionId, request: {
+              displayed_call: detail.call_preview.displayed_call,
+              entry_id: calendarEntry, response_status: calendarResponse, send_updates: calendarUpdates,
+            } }).catch(() => null);
+            if (generation === preparationGeneration.current && result?.data.id === actionId && result.data.review_required) {
+              setPreparedCall({ id: actionId, preview: result.data.call_preview });
+              setCalendarEditing(false);
+            }
+          }}>
+            <p>Preparing changes does not approve or send a response.</p>
+            <label className="block" htmlFor={`calendar-entry-${actionId}`}>Workspace entry
+              <Input id={`calendar-entry-${actionId}`} aria-label="Calendar workspace entry" disabled={reprepare.isPending} value={calendarEntry} onChange={(event) => setCalendarEntry(event.target.value)} required />
+            </label>
+            <label className="block">Response
+              <select aria-label="Calendar response" disabled={reprepare.isPending} value={calendarResponse} onChange={(event) => setCalendarResponse(event.target.value as typeof calendarResponse)}>
+                <option value="accepted">Accept</option><option value="declined">Decline</option><option value="tentative">Tentative</option>
+              </select>
+            </label>
+            <label className="block">Notify participants
+              <select aria-label="Send calendar updates" disabled={reprepare.isPending} value={calendarUpdates} onChange={(event) => setCalendarUpdates(event.target.value as typeof calendarUpdates)}>
+                <option value="none">No updates</option><option value="all">All participants</option><option value="externalOnly">External participants</option>
+              </select>
+            </label>
+            <Button type="submit" disabled={reprepare.isPending}>{reprepare.isPending ? "Preparing changes…" : "Prepare changes"}</Button>
+            <Button type="button" variant="outline" disabled={reprepare.isPending} onClick={() => setCalendarEditing(false)}>Cancel changes</Button>
+          </form>}
+        </section>
+      )}
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
@@ -752,7 +811,7 @@ function Dossier({
                 <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
                   <button
                     onClick={() => { if (detail.id === actionId && detail.call_preview) onApprove({ ...detail.call_preview.displayed_call }); }}
-                    disabled={approvePending || detail.id !== actionId || !detail.call_preview}
+                    disabled={approvePending || detail.id !== actionId || !detail.call_preview || calendarEditing || reprepare.isPending}
                     className={[
                       "py-1.5 px-4 rounded font-medium text-sm max-md:min-h-11 max-md:min-w-11",
                       "bg-foreground text-background",

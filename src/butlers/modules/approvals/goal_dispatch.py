@@ -64,7 +64,7 @@ def decode_call(value):
 class GoalDispatch:
     """Constructed only from the owning daemon's final catalog and originals."""
 
-    def __init__(self, pool, domain, catalog, handlers, keys, *, clock=time.time):
+    def __init__(self, pool, domain, catalog, handlers, keys, *, clock=time.time, preparers=None):
         from butlers.core.tool_catalog import ToolCatalog
 
         if type(catalog) is not ToolCatalog or not keys:
@@ -73,6 +73,7 @@ class GoalDispatch:
         self.domain, self.catalog = domain, catalog
         self.handlers, self.keys = MappingProxyType(dict(handlers)), MappingProxyType(dict(keys))
         self.clock = clock
+        self.preparers = MappingProxyType(dict(preparers or {}))
 
     def _verify(self, envelope, peer):
         if peer.role != "broker-control" or peer.domain != self.domain:
@@ -155,10 +156,20 @@ class GoalDispatch:
                 )
                 if arguments_digest(request.tool_args) != proof.args_digest:
                     raise GoalApprovalsUnavailable("owning_arguments_changed")
+                preparer = self.preparers.get(request.tool_name)
+                prepared = None
+                if request.tool_name == "calendar_respond":
+                    from butlers.modules.calendar_response import CalendarResponseCoordinator
+
+                    if type(preparer) is not CalendarResponseCoordinator:
+                        raise GoalApprovalsUnavailable("canonical_preparer_unavailable")
+                    prepared = await preparer.prepare_public(request.tool_args, identity.action_id)
                 _, receipt = await self.owner.park(
                     request,
                     grant=proof.grant,
                     authorization=proof,
+                    prepared=prepared,
+                    preparer=preparer,
                 )
                 outcome = "parked"
             elif op == "SNAPSHOT":

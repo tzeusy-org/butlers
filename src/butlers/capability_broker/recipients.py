@@ -58,7 +58,11 @@ async def resolve_recipient_binding(
         and set(r.argument_names) == {"recipient", "entity_id", "request_context"}
     )
     targets, default_owner, unknown = [], False, not native
-    if native:
+    if capability.recipient_resolver == "calendar_response":
+        # entry_id is an event locator, never an owner identity. Inherited
+        # provider recipients remain unknown and therefore per-event PARK.
+        targets = [None for _ in present]
+    elif native:
         channel = snapshot.get("channel") or "telegram"
         intent = snapshot.get("intent", "send")
         # Context can select an inherited endpoint. Caller text, even an

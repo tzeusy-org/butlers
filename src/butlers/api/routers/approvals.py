@@ -60,6 +60,7 @@ from butlers.api.models.approval import (
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
+    CalendarReprepareRequest,
     DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
@@ -611,6 +612,7 @@ def _pending_action_to_detail(
     *,
     denial_reason: str | None = None,
     delivery: ApprovalDeliveryTruth | None = None,
+    stored_preview: dict | None = None,
 ) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
@@ -630,7 +632,9 @@ def _pending_action_to_detail(
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         proposed_action=proposed_action,
-        call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
+        call_preview=stored_preview
+        if action.tool_name == "calendar_respond"
+        else dashboard_call_preview(action.tool_name, action.tool_args),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
@@ -3052,6 +3056,13 @@ async def get_approval_detail(
                         raise HTTPException(
                             status_code=409, detail="response_review_binding_unverified"
                         )
+                    from butlers.modules.approvals.previews import stored_calendar_preview
+
+                    stored_preview = (
+                        await stored_calendar_preview(conn, pa.id, pa.tool_args)
+                        if pa.tool_name == "calendar_respond"
+                        else None
+                    )
                     denial_reason = (
                         await _latest_rejection_reason(conn, pa.id)
                         if pa.status.value == "rejected"
@@ -3068,6 +3079,7 @@ async def get_approval_detail(
                         referenced_entities,
                         denial_reason=denial_reason,
                         delivery=_delivery_truth(row, pa),
+                        stored_preview=stored_preview,
                     )
                 )
         except Exception as exc:
@@ -3215,7 +3227,7 @@ async def approve_owning_action(
 
         if require_displayed_call:
             preview = (
-                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
+                await _owning_call_preview(conn, parsed_id, action_row)
                 if action_row is not None
                 else None
             )
@@ -3673,3 +3685,216 @@ async def abandon_approval(
         reason=request.reason.strip(),
     )
     return ApiResponse(data=action)
+
+
+async def _owning_call_preview(conn, action_id, row):
+    if row["tool_name"] == "calendar_respond":
+        from butlers.modules.approvals.previews import stored_calendar_preview
+
+        return await stored_calendar_preview(conn, action_id, row["tool_args"])
+    return dashboard_call_preview(row["tool_name"], row["tool_args"])
+
+
+@router.post("/{action_id}/calendar-reprepare")
+async def reprepare_calendar_approval(
+    action_id: str, request: CalendarReprepareRequest, http_request: Request, *, db_mgr: Db
+):
+    async with asyncio.timeout(15):
+        return await _reprepare_calendar_approval(action_id, request, http_request, db_mgr=db_mgr)
+
+
+async def _reprepare_calendar_approval(
+    action_id: str, request: CalendarReprepareRequest, http_request: Request, *, db_mgr: Db
+):
+    """Prepare outside locks, attach only under current central and owning fences.
+
+    A successful response means review required; it never approves or dispatches.
+    The subsequent approval must present the newly read stored-call digest.
+    """
+    from contextlib import AsyncExitStack
+
+    from butlers.api.deps import get_calendar_preparation_clients
+    from butlers.modules.approvals.goal_control import lock_goal_decision
+    from butlers.modules.approvals.previews import stored_calendar_preview
+    from butlers.modules.calendar_response import read_response_binding
+
+    principal = authenticated_principal()
+    actor = _decision_actor_id(None, callback_authenticated=False)
+    if not principal or getattr(http_request.state, "approval_callback_authenticated", False):
+        raise HTTPException(status_code=403, detail="owner_preparation_required")
+    try:
+        root_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_approval_id") from None
+    found = await _find_action_pool(db_mgr, root_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="approval_not_found")
+    domain, pool = found
+    current = await pool.fetchrow("SELECT * FROM pending_actions WHERE id=$1", root_id)
+    if (
+        current is None
+        or current["status"] != "pending"
+        or current["tool_name"] != "calendar_respond"
+    ):
+        raise HTTPException(status_code=409, detail="response_edit_no_longer_pending")
+    args = current["tool_args"]
+    preview = await stored_calendar_preview(pool, root_id, args)
+    if preview is None or request.displayed_call.model_dump() != preview["displayed_call"]:
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    parent = await read_response_binding(pool, root_id, args)
+    edits = request.model_dump(exclude_none=True, exclude={"displayed_call"})
+    clients = get_calendar_preparation_clients(http_request)
+    client = clients.clients.get(domain)
+    if client is None:
+        raise HTTPException(status_code=503, detail="calendar_preparation_unavailable")
+    # No owning or central transaction remains open across provider preparation.
+    result = await client.prepare(
+        {
+            "protocol": "calendar-owner-prepare-v1",
+            "domain": domain,
+            "root_id": str(root_id),
+            "parent_id": args["_command_id"],
+            "parent_digest": parent["digest"],
+            "expected_args_digest": args_digest(args),
+            "edits": edits,
+        }
+    )
+    async with asyncio.timeout(5), AsyncExitStack() as stack:
+        # Actual central rows select the Grant. Neither candidate DTO nor mTLS is
+        # an authorization source. Keep these locks until owning COMMIT.
+        central = None
+        if current.get("goal_id") is not None:
+            central = await stack.enter_async_context(db_mgr.pool("switchboard").acquire())
+            await stack.enter_async_context(central.transaction())
+            await central.execute("SET LOCAL lock_timeout='5s'")
+            await central.execute("SET LOCAL statement_timeout='5s'")
+            from butlers.capability_broker.approved import parked_reservation
+            from butlers.capability_broker.catalog import PublishedAuthorities
+            from butlers.core.goal_ledger import GoalLedger
+
+            await GoalLedger(central).verify_role()
+            reservation = await parked_reservation(
+                central, current["goal_id"], current["goal_effect_id"], PublishedAuthorities()
+            )
+            if (
+                reservation.capability.domain != domain
+                or reservation.capability.name != "calendar_respond"
+                or reservation.effect_id != root_id
+                or reservation.principal.invocation_id != current["invocation_id"]
+            ):
+                raise HTTPException(status_code=409, detail="response_current_authority_changed")
+        conn = await stack.enter_async_context(pool.acquire())
+        await stack.enter_async_context(conn.transaction())
+        binding = await lock_goal_decision(conn, domain, root_id)
+        locked = await conn.fetchrow(
+            "SELECT * FROM pending_actions WHERE id=$1 FOR UPDATE", root_id
+        )
+        if (
+            locked is None
+            or locked["status"] != "pending"
+            or locked["tool_name"] != "calendar_respond"
+            or locked["tool_args"] != args
+            or (binding is None) != (central is None)
+        ):
+            raise HTTPException(status_code=409, detail="response_edit_stale")
+        if locked["expires_at"] is not None and await conn.fetchval(
+            "SELECT $1<=clock_timestamp()", locked["expires_at"]
+        ):
+            raise HTTPException(status_code=409, detail="response_edit_expired")
+        await read_response_binding(conn, root_id, args)
+        candidate_id = UUID(result["candidate_id"])
+        candidate = await conn.fetchrow(
+            "SELECT * FROM calendar_action_log WHERE id=$1 FOR UPDATE", candidate_id
+        )
+        payload = candidate["action_payload"] if candidate else {}
+        command = payload.get("command", {})
+        expected_public = {**parent["command"]["arguments"], **edits}
+        from butlers.core.capability_json import arguments_digest
+
+        if (
+            result["root_id"] != str(root_id)
+            or payload.get("root_id") != str(root_id)
+            or payload.get("parent_id") != args["_command_id"]
+            or payload.get("parent_digest") != parent["digest"]
+            or payload.get("edit_digest") != arguments_digest(edits)
+            or payload.get("original_request_digest")
+            != parent.get("original_request_digest", parent["request_digest"])
+            or payload.get("digest") != result["candidate_digest"]
+            or command.get("owner") != domain
+            or command.get("arguments") != expected_public
+            or payload.get("phase") != "prepared"
+            or candidate["action_result"]
+        ):
+            raise HTTPException(status_code=409, detail="response_candidate_unverified")
+        revision_key = (
+            "respond-revision:"
+            + str(root_id)
+            + ":"
+            + parent["digest"]
+            + ":"
+            + arguments_digest(edits)
+        )
+        from uuid import uuid5
+
+        if (
+            candidate_id != uuid5(root_id, revision_key)
+            or candidate["idempotency_key"] != revision_key
+        ):
+            raise HTTPException(status_code=409, detail="response_candidate_unverified")
+        new_args = {
+            **expected_public,
+            "_command_id": str(candidate_id),
+            "_command_digest": payload["digest"],
+        }
+        await read_response_binding(conn, root_id, new_args)
+        if central is not None:
+            from butlers.capability_broker.handoff import registration_digest
+            from butlers.capability_broker.ledger import BrokerLedger
+
+            cap, _ = await BrokerLedger(central).resolve_call(
+                reservation.principal,
+                domain + "__calendar_respond",
+                expected_public,
+                arguments_digest(expected_public),
+                PublishedAuthorities(),
+            )
+            gate = await binding[0]._gate(conn, binding[1])
+            proof = gate["park_authorization"]
+            from butlers.core.goal_admission import encode_grants
+
+            if (
+                proof["grant"] != encode_grants((reservation.selected_grant,))[0]
+                or proof["registration_digest"] != registration_digest(cap)
+                or proof["catalog_digest"] != reservation.principal.catalog_digest
+            ):
+                raise HTTPException(status_code=409, detail="response_current_authority_changed")
+        if await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM calendar_action_log "
+            "WHERE (id=$1 OR action_payload->>'root_id'=$2) "
+            "AND action_payload->>'phase' IN ('egress_started','uncertain'))",
+            root_id,
+            str(root_id),
+        ):
+            raise HTTPException(status_code=409, detail="response_original_uncertain")
+        changed = await conn.fetchval(
+            "UPDATE pending_actions SET tool_args=$2 "
+            "WHERE id=$1 AND status='pending' AND tool_args=$3 RETURNING id",
+            root_id,
+            new_args,
+            args,
+        )
+        if changed != root_id:
+            raise HTTPException(status_code=409, detail="response_edit_stale")
+        await audit_router.append(
+            conn,
+            _decision_audit_actor(actor),
+            "approval.calendar_reprepare",
+            target=str(root_id),
+            result="success",
+        )
+        refreshed = await stored_calendar_preview(conn, root_id, new_args)
+        if refreshed is None:
+            raise HTTPException(status_code=409, detail="response_preview_unavailable")
+    return ApiResponse(
+        data={"id": str(root_id), "review_required": True, "call_preview": refreshed}
+    )

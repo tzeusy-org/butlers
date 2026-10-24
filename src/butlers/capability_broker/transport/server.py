@@ -27,6 +27,11 @@ from .tls import HeadGate, verify_peer
 
 
 class PrivateApp:
+    required_peer_role = "broker-control"
+
+    def _validate_rpc(self, value):
+        return rpc_request(value, self.domain)
+
     def __init__(self, domain, operation):
         self.domain, self.operation = domain, operation
         self.sentinel = object()
@@ -142,7 +147,7 @@ class PrivateApp:
                     raise ProtocolError("request_limit")
                 if not msg.get("more_body", False):
                     break
-            rpc_request(strict_json(bytes(body)), self.domain)
+            self._validate_rpc(strict_json(bytes(body)))
 
             async def body_receive():
                 return {"type": "http.request", "body": bytes(body), "more_body": False}
@@ -166,7 +171,7 @@ class PrivateServer:
     ):
         if (
             context.verify_mode != ssl.CERT_REQUIRED
-            or peer.role != "broker-control"
+            or peer.role != app.required_peer_role
             or not peer.client_certificate
         ):
             raise ValueError("mutual_tls_required")

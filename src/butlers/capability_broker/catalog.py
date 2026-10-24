@@ -53,6 +53,13 @@ class PublishedAuthorities:
             raise BrokerRefused(Reason.POLICY)
         parties = capability.recipient_params
         if (
+            capability.recipient_resolver == "calendar_response"
+            and capability.name == "calendar_respond"
+            and capability.effect_class == "communicate"
+            and capability.always_per_event
+            and parties.argument_names == ("entry_id",)
+            and parties.undeterminable
+        ) or (
             capability.recipient_resolver == "core_notify"
             and capability.name == "notify"
             and capability.effect_class == "communicate"
@@ -114,6 +121,19 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                 and set(descriptor.recipient_params.argument_names)
                 == {"recipient", "entity_id", "request_context"}
             )
+            native_calendar = (
+                descriptor.canonical_name == "calendar_respond"
+                and descriptor.module_name == "calendar"
+                and descriptor.namespace == "calendar.response"
+                and descriptor.group_name == "response"
+                and descriptor.effect_class == "communicate"
+                and mode == "always_per_event"
+                and policy["configured_gate"]
+                and descriptor.resource_params == ("entry_id",)
+                and descriptor.recipient_params.argument_names == ("entry_id",)
+                and descriptor.recipient_params.undeterminable
+                and descriptor.idempotency == "key_required"
+            )
             capabilities.append(
                 Capability(
                     domain=domain,
@@ -129,7 +149,13 @@ def project_catalog(registration: ToolCatalog, *, domain: str) -> Catalog:
                     approvals_available=available,
                     approval_required=available and policy["configured_gate"],
                     idempotency=descriptor.idempotency,
-                    recipient_resolver="core_notify" if native_notify else "none",
+                    recipient_resolver=(
+                        "core_notify"
+                        if native_notify
+                        else "calendar_response"
+                        if native_calendar
+                        else "none"
+                    ),
                     description=descriptor.description,
                     input_schema=_mutable_json(descriptor.input_schema),
                 )

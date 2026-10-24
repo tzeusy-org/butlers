@@ -40,6 +40,12 @@ class PrivateHTTPTransport(httpx.AsyncBaseTransport):
             retries=0,
         )
 
+    def _validate_rpc(self, value):
+        return rpc_request(value, self.config.peer.domain)
+
+    def _validate_result(self, raw, outgoing):
+        return rpc_result(raw, outgoing, self.config.peer.domain)
+
     def abort(self):
         for stream in tuple(self.backend.streams):
             stream.abort()
@@ -53,7 +59,7 @@ class PrivateHTTPTransport(httpx.AsyncBaseTransport):
                 body.extend(chunk)
                 if len(body) > REQUEST_LIMIT:
                     raise ProtocolError("request_limit")
-            rpc = rpc_request(strict_json(bytes(body)), self.config.peer.domain)
+            rpc = self._validate_rpc(strict_json(bytes(body)))
             notification = rpc["method"] == "notifications/initialized"
             # Do not forward caller sni_hostname/trace/proxy transport extensions.
             headers = [
@@ -92,7 +98,7 @@ class PrivateHTTPTransport(httpx.AsyncBaseTransport):
                 else:
                     if response.status != 200:
                         raise ProtocolError("http_status")
-                    rpc_result(bytes(raw), rpc, self.config.peer.domain)
+                    self._validate_result(bytes(raw), rpc)
                 return httpx.Response(response.status, headers=response.headers, content=bytes(raw))
             finally:
                 await response.aclose()

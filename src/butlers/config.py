@@ -434,7 +434,7 @@ class StorageConfig(_StrictModel):
 class CapabilityTransportPeerConfig(_StrictModel):
     """Closed certificate identity policy, never a source of peer authority."""
 
-    role: Literal["broker-control", "owning-service"]
+    role: Literal["broker-control", "owning-service", "dashboard-owner"]
     domain: str = Field(strict=True, pattern=r"^[a-zA-Z0-9_.-]+$")
     sans: list[str] = Field(min_length=1)
     client_certificate: StrictBool = False
@@ -509,6 +509,56 @@ class CapabilityBrokerTransportConfig(_StrictModel):
         return self
 
 
+class CalendarOwnerPrepareConfig(_StrictModel):
+    """Separate dark owner service. Paths are resolved only by the enabled owner."""
+
+    enabled: StrictBool = False
+    domain: str | None = Field(default=None, strict=True, pattern=r"^[a-zA-Z0-9_.-]+$")
+    listen_host: str | None = Field(default=None, strict=True, min_length=1)
+    listen_port: StrictInt | None = Field(default=None, ge=1, le=65535)
+    dashboard_peer: CapabilityTransportPeerConfig | None = None
+    service_peer: CapabilityTransportPeerConfig | None = None
+    service_material: CapabilityTransportMaterialConfig | None = None
+    dashboard_material: CapabilityTransportMaterialConfig | None = None
+    endpoint: str | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def _enabled_shape(self) -> Self:
+        if not self.enabled:
+            return self
+        from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+
+        if (
+            self.domain is None
+            or "__" in self.domain
+            or self.listen_host is None
+            or self.listen_port is None
+            or self.dashboard_peer is None
+            or self.service_peer is None
+            or self.service_material is None
+            or self.dashboard_material is None
+            or self.endpoint is None
+        ):
+            raise ValueError("incomplete_calendar_prepare_configuration")
+        if (
+            self.dashboard_peer.role != "dashboard-owner"
+            or not self.dashboard_peer.client_certificate
+            or self.dashboard_peer.domain != self.domain
+            or self.service_peer.domain != self.domain
+        ):
+            raise ValueError("invalid_calendar_prepare_peer")
+        TransportConfig(
+            self.endpoint,
+            PeerPolicy(
+                self.service_peer.role,
+                self.domain,
+                frozenset(self.service_peer.sans),
+                self.service_peer.client_certificate,
+            ),
+        )
+        return self
+
+
 @dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
@@ -524,6 +574,9 @@ class ButlerConfig:
     runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
     capability_broker_transport: CapabilityBrokerTransportConfig = field(
         default_factory=CapabilityBrokerTransportConfig
+    )
+    calendar_owner_prepare: CalendarOwnerPrepareConfig = field(
+        default_factory=CalendarOwnerPrepareConfig
     )
     schedules: list[ScheduleSpec] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
@@ -885,6 +938,9 @@ class _ButlerSection(_StrictModel):
     capability_broker_transport: CapabilityBrokerTransportConfig = Field(
         default_factory=CapabilityBrokerTransportConfig
     )
+    calendar_owner_prepare: CalendarOwnerPrepareConfig = Field(
+        default_factory=CalendarOwnerPrepareConfig
+    )
     schedule: list[ScheduleSpec] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -1006,7 +1062,14 @@ def load_config(config_dir: Path) -> ButlerConfig:
             section_data.pop("capability_broker_transport")
             data = {**data, "butler": section_data}
             private_detached = True
+    calendar_raw = data.get("butler", {}).get("calendar_owner_prepare")
+    calendar_detached = type(calendar_raw) is dict and calendar_raw.get("enabled", False) is False
+    if calendar_detached:
+        data = {**data, "butler": dict(data["butler"])}
+        data["butler"].pop("calendar_owner_prepare")
     data = resolve_env_vars(data)
+    if calendar_detached:
+        data["butler"]["calendar_owner_prepare"] = calendar_raw
     if private_detached:
         # Restore the unchanged raw shape for strict validation; unknown keys
         # and wrong types must still refuse even when the feature is OFF.
@@ -1067,6 +1130,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         logging=section.logging,
         runtime_seed=section.runtime_seed,
         capability_broker_transport=section.capability_broker_transport,
+        calendar_owner_prepare=section.calendar_owner_prepare,
         schedules=section.schedule,
         modules=parsed.modules,
         env_required=section.env.required,

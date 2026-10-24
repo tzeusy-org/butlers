@@ -17,7 +17,7 @@ class PeerPolicy:
     def __post_init__(self):
         if (
             type(self.role) is not str
-            or self.role not in {"broker-control", "owning-service"}
+            or self.role not in {"broker-control", "owning-service", "dashboard-owner"}
             or type(self.domain) is not str
             or not re.fullmatch(r"[a-zA-Z0-9_.-]+", self.domain)
             or "__" in self.domain

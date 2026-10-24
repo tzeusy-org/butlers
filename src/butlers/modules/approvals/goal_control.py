@@ -256,7 +256,7 @@ class OwningGoalApprovals:
         return value
 
     async def park(
-        self, request: ParkRequest, *, grant=None, authorization=None
+        self, request: ParkRequest, *, grant=None, authorization=None, prepared=None, preparer=None
     ) -> tuple[object, dict]:
         """Commit the actual action/delivery/gate and two stable receipt aliases.
 
@@ -365,6 +365,19 @@ class OwningGoalApprovals:
                 return admission, value
             if gate["phase"] not in {"absent", "pending"}:
                 raise ValueError("goal_park_no_longer_pending")
+            if prepared is not None:
+                from butlers.modules.calendar_response import CalendarResponseCoordinator
+
+                if (
+                    type(preparer) is not CalendarResponseCoordinator
+                    or request.tool_name != "calendar_respond"
+                    or authorization is None
+                    or prepared["id"] != identity.action_id
+                    or prepared["payload"]["command"]["arguments"] != preparer.public_args(snapshot)
+                ):
+                    raise GoalApprovalsUnavailable("canonical_preparation_unverified")
+                stored_args = await preparer.persist_prepared(conn, prepared)
+                request = replace(request, tool_args=stored_args)
             rollout = await conn.fetchrow(
                 "SELECT admission_enabled,worker_enabled FROM approval_delivery_rollout "
                 "WHERE singleton IS TRUE FOR SHARE"

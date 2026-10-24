@@ -140,7 +140,7 @@ def _track_background_task(task: asyncio.Task) -> asyncio.Task:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     """Startup/shutdown lifecycle for DB pools and MCP clients.
 
     On startup: initialize resources (will be implemented in future tasks)
@@ -527,6 +527,30 @@ async def lifespan(app: FastAPI):
         app.state.owner_auth_service = None
     await shutdown_db_manager()
     await shutdown_dependencies()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Own the separate optional channel across every application startup,
+    # shutdown and cancellation path, including failures before yield.
+    from butlers.api.deps import CalendarPreparationClients
+
+    clients = app.state.calendar_preparation_clients = CalendarPreparationClients()
+    original = None
+    try:
+        await clients.initialize()
+        async with _application_lifespan(app):
+            yield
+    except BaseException as exc:
+        original = exc
+        raise
+    finally:
+        try:
+            await clients.aclose()
+        except BaseException as cleanup:
+            if original is not None:
+                raise original from cleanup
+            raise
 
 
 def create_app(

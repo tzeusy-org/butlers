@@ -368,3 +368,151 @@ async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_mcp_manager, None)
+
+
+async def test_calendar_semantic_edit_appends_candidate_then_requires_fresh_review(
+    app, monkeypatch
+):
+    """Real authenticated HTTP/owning attach; SQL carrier is SOFTWARE, not PG."""
+    import copy
+
+    from butlers.api.routers import approvals as route
+    from butlers.modules.approvals import goal_control
+    from butlers.modules.approvals.previews import stored_calendar_preview
+    from butlers.modules.calendar import CalendarConfig, CalendarModule
+    from tests.modules.test_calendar_response import _CommandConnection, _CommandPool, _invitation
+
+    root, entry, source, event = (uuid.uuid4() for _ in range(4))
+
+    class Connection(_CommandConnection):
+        async def fetchval(self, sql, *args):
+            if "UPDATE pending_actions SET tool_args" in sql:
+                row = self.pool.pending.get(args[0])
+                if row and row["status"] == "pending" and row["tool_args"] == args[2]:
+                    row["tool_args"] = copy.deepcopy(args[1])
+                    return args[0]
+                return None
+            if "SELECT EXISTS" in sql:
+                return any(
+                    row["action_payload"].get("phase") in {"egress_started", "uncertain"}
+                    for row in self.pool.commands.values()
+                )
+            raise AssertionError("unexpected fixture scalar")
+
+    class Pool(_CommandPool):
+        @asynccontextmanager
+        async def acquire(self):
+            yield Connection(self)
+
+    pool = Pool(
+        dict(
+            entry_id=entry,
+            source_id=source,
+            event_id=event,
+            instance_status="confirmed",
+            event_status="confirmed",
+            provider="google",
+            source_kind="provider_event",
+            lane="user",
+            butler_name=None,
+            writable=True,
+            source_key="google:owner",
+            calendar_id="owner@example.test",
+            provider_event_id="instance-one",
+            source_metadata={"account_email": "owner@example.test"},
+        )
+    )
+    module = CalendarModule()
+    module._db = SimpleNamespace(pool=pool)
+    module._butler_name = "relationship"
+    module._config = CalendarConfig(provider="google", response_enabled=True)
+    module._response_ready = True
+    module._verified_response_account = AsyncMock(
+        return_value={"entity_id": str(uuid.uuid4()), "email": "owner@example.test"}
+    )
+    provider = SimpleNamespace(
+        get_response_calendar=AsyncMock(
+            return_value={"id": "owner@example.test", "accessRole": "writer"}
+        ),
+        get_response_event=AsyncMock(return_value=_invitation()),
+        respond_to_invitation=AsyncMock(),
+    )
+    module._provider = provider
+    coordinator = module._response_coordinator
+    prepared = await coordinator.prepare_public(
+        {
+            "entry_id": str(entry),
+            "response_status": "accepted",
+            "request_id": str(uuid.uuid4()),
+            "send_updates": "none",
+        },
+        root,
+    )
+    async with pool.acquire() as conn, conn.transaction():
+        original = await coordinator.persist_prepared(conn, prepared)
+    pool.pending[root] = {
+        "id": root,
+        "tool_name": "calendar_respond",
+        "tool_args": original,
+        "status": "pending",
+        "expires_at": None,
+    }
+    before_root = copy.deepcopy(pool.commands[root])
+    db = SimpleNamespace(pool=lambda domain: pool)
+    app.dependency_overrides[get_db] = lambda: db
+    client = SimpleNamespace(prepare=coordinator.prepare_owner_candidate)
+    app.state.calendar_preparation_clients = SimpleNamespace(clients={"relationship": client})
+    monkeypatch.setattr(route, "_find_action_pool", AsyncMock(return_value=("relationship", pool)))
+    monkeypatch.setattr(goal_control, "lock_goal_decision", AsyncMock(return_value=None))
+    audit = AsyncMock()
+    monkeypatch.setattr(route.audit_router, "append", audit)
+    initial_preview = await stored_calendar_preview(pool, root, original)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            path = f"/api/approvals/{root}/calendar-reprepare"
+            response = await http.post(
+                path,
+                json={
+                    "displayed_call": initial_preview["displayed_call"],
+                    "response_status": "declined",
+                },
+            )
+            assert response.status_code == 200, response.text
+            refreshed = response.json()["data"]
+            assert refreshed["id"] == str(root) and refreshed["review_required"] is True
+            assert refreshed["call_preview"]["displayed_call"] != initial_preview["displayed_call"]
+            assert pool.pending[root]["status"] == "pending"
+            assert pool.pending[root]["tool_args"]["response_status"] == "declined"
+            assert pool.commands[root] == before_root and len(pool.commands) == 2
+            provider.respond_to_invitation.assert_not_awaited()
+            audit.assert_awaited_once()
+            assert audit.call_args.args[1] == route._ACTOR_DASHBOARD
+            stale = await http.post(
+                path,
+                json={
+                    "displayed_call": initial_preview["displayed_call"],
+                    "response_status": "tentative",
+                },
+            )
+            assert stale.status_code == 409
+            assert len(pool.commands) == 2
+            # Audit failure rolls attachment back while retaining only the
+            # unattached, nonauthoritative append-only preparation candidate.
+            current = copy.deepcopy(pool.pending[root])
+            audit.side_effect = RuntimeError("controlled audit refusal")
+            refused = await http.post(
+                path,
+                json={
+                    "displayed_call": refreshed["call_preview"]["displayed_call"],
+                    "response_status": "tentative",
+                },
+            )
+            assert refused.status_code == 500
+            assert pool.pending[root] == current
+            assert len(pool.commands) == 3
+            provider.respond_to_invitation.assert_not_awaited()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        del app.state.calendar_preparation_clients

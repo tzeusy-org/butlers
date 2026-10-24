@@ -44,6 +44,18 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - loading…
 - failed to load dossier
 - Open only: an exact safe preview is unavailable. Approval is disabled.
+- Change response
+- Preparing changes does not approve or send a response.
+- Workspace entry
+- Response
+- Accept
+- Decline
+- Tentative
+- Notify participants
+- No updates
+- All participants
+- External participants
+- Cancel changes
 - Defer
 - Approve:
 - Referenced Entities
@@ -85,6 +97,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Approval origin: {}
 - {} Undo
 - Stored call preview
+- Change calendar response
+- Calendar workspace entry
+- Calendar response
+- Send calendar updates
 - Deny reason (optional)
 - None
 - UTC

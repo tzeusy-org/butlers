@@ -475,3 +475,35 @@ async def test_record_policy_preserves_exposed_owner_authority_and_party_refusal
                     conn, principal, replace(cap, recipient_params=parties), {}
                 )
             assert refused.value.reason is Reason.POLICY
+
+
+async def test_registered_calendar_response_is_conservative_per_event_park(monkeypatch):
+    """Actual final Calendar registration/current fleet, no provider call or owner shortcut."""
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    final = await _roster_catalog("relationship")
+    broker, conn, domains, token, _, publishers = await current_broker()
+    await publishers["relationship"].publish(final)
+    entry = str(uuid4())
+    conn.grants = (Grant("relationship__calendar_respond", resources=(("entry_id", (entry,)),)),)
+    async with conn.transaction():
+        conn.catalog_digest = (await PublishedCatalogProvider().snapshot(conn)).digest
+    owner = uuid4()
+    fetch = conn.fetch
+
+    async def identities(sql, *args):
+        if "FROM public.entities" in sql:
+            assert conn.in_transaction
+            return [{"id": owner}]
+        return await fetch(sql, *args)
+
+    conn.fetch = identities
+    args = {"entry_id": entry, "request_id": str(uuid4()), "response_status": "accepted"}
+    result = await broker.call(conn.goal, token, "relationship__calendar_respond", args)
+    assert result.status == "parked" and result.approval_ref is not None
+    reservation, actual = domains.calls[0][:2]
+    assert actual == args and reservation.selected_grant == conn.grants[0]
+    assert reservation.decision.disposition.value == "park"
+    assert reservation.decision.allow_standing_rule is False
+    assert (
+        conn.used == 1 and final["calendar_respond"].approval_policy["mode"] == "always_per_event"
+    )

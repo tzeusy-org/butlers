@@ -34,11 +34,11 @@
  * payload is what carries that verb through the shared store.
  */
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { approveApproval, deferApproval, denyApproval, getApprovalDetail } from "@/api/index.ts";
 import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.ts";
-import type { ApprovalCallPreview, DisplayedApprovalCall } from "@/api/types";
+import type { ApprovalCallPreview, DisplayedApprovalCall, CalendarReprepareRequest } from "@/api/types";
 import { toast } from "sonner";
 
 import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
@@ -261,4 +261,24 @@ export function useApprovalDecisionMutations(
     scheduleDecision,
     cancelDecision: undo.cancel,
   };
+}
+
+/** Preparation refreshes a pending review; it never invokes an approval mutation. */
+export function useCalendarReprepare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, request }: {
+      id: string;
+      request: CalendarReprepareRequest;
+    }) => {
+      const { reprepareCalendarApproval } = await import("@/api/client");
+      return reprepareCalendarApproval(id, request);
+    },
+    onSuccess: (_result, variables) => {
+      void qc.invalidateQueries({ queryKey: ["approvals"] });
+      void qc.invalidateQueries({ queryKey: ["approval-detail", variables.id] });
+      toast.success("Changes prepared. Review the refreshed call, then approve separately.");
+    },
+    onError: () => toast.error("Changes were not attached. Refresh the approval and try again."),
+  });
 }

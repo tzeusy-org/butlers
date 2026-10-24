@@ -241,12 +241,11 @@ async def _check_goal_duplicate(
     if row is None:
         raise ValueError("goal_duplicate_missing")
     stored = PendingAction.from_row(row)
-    from butlers.core.capability_json import arguments_digest
 
     if (
         stored.goal_lineage() != request.goal_lineage
         or stored.tool_name != request.tool_name
-        or arguments_digest(stored.tool_args) != request.goal_lineage.goal_args_digest
+        or stored.tool_args != request.tool_args
     ):
         raise ValueError("goal_duplicate_binding_mismatch")
 
