@@ -23,6 +23,8 @@ OUTCOMES = {
     "LOOKUP": {
         "pending",
         "approved",
+        "rejected",
+        "expired",
         "dispatched",
         "committed",
         "cancelled",

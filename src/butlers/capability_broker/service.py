@@ -174,6 +174,34 @@ class Broker:
             value=receipt.value,
         )
 
+    async def reconcile_parked(self, goal_id: UUID, effect_id: UUID):
+        """Observe a fixed owner's decision before the separate approved replay.
+
+        LOOKUP can settle a negative observation only. It never grants execution
+        permission, even when the response reports approved. No pool connection
+        remains held during the owning call, and no failed call is retried here.
+        """
+        from butlers.core.goal_stop import GoalStop
+
+        from .approved import parked_identity, settle_negative
+
+        self.require_available()
+        if self.approvals is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+            identity, status = await parked_identity(conn, goal_id, effect_id)
+        if status in {"rejected", "expired"}:
+            return status
+        async with asyncio.timeout(self.forward_timeout):
+            observed = await self.approvals.lookup(identity)
+        if observed["outcome"] in {"rejected", "expired"}:
+            async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+                await settle_negative(conn, identity, observed["receipt"])
+            return observed["outcome"]
+        if observed["outcome"] == "approved":
+            return await self.replay_approved(goal_id, effect_id)
+        return None
+
     async def replay_approved(self, goal_id: UUID, effect_id: UUID | None = None):
         """Private stored-call replay; locators never provide approval authority.
 

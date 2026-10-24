@@ -30,7 +30,7 @@ from butlers.modules.approvals.park import (
 # Exact installed prosrc; change only with the owning migration, never a permissive fallback.
 _FUNCTION_DIGESTS = {
     "guard_approval_goal_effect": "feef78a6bd4d68cb4e5fe932bf4a979b",
-    "guard_approval_goal_receipt": "8e39bcaa85c2b376afa4768cc1b2c03f",
+    "guard_approval_goal_receipt": "79f7994343acf11d64cf8ca6bca3a527",
     "guard_pending_goal_action": "46bf1a1efdc84728b7e07f366ac74010",
     "validate_approval_goal_final": "a8c50106b56748beabb5b02b0b01b063",
 }
@@ -458,13 +458,51 @@ class OwningGoalApprovals:
             gate = await self._gate(conn, identity)
             if gate is None or gate["dispatch_intent_id"] is not None:
                 return None
-            outcome = {"pending": "pending", "approved": "approved"}.get(gate["phase"])
-            if gate["stop_fenced"]:
-                outcome = "fenced_absent" if gate["pending_action_id"] is None else "cancelled"
-            if outcome is None:
-                return None
-            value = await self._read_receipt(conn, gate, identity, outcome)
+            if gate["phase"] == "negative_terminal" and not gate["stop_fenced"]:
+                value = await self._negative_receipt(conn, gate, identity)
+            else:
+                outcome = {"pending": "pending", "approved": "approved"}.get(gate["phase"])
+                if gate["stop_fenced"]:
+                    outcome = "fenced_absent" if gate["pending_action_id"] is None else "cancelled"
+                if outcome is None:
+                    return None
+                value = await self._read_receipt(conn, gate, identity, outcome)
+        # A lost COMMIT reply can be read back, never turned into execute.
         return value
+
+    async def _negative_receipt(self, conn, gate, identity):
+        row = await conn.fetchrow(
+            "SELECT * FROM pending_actions WHERE id=$1 FOR UPDATE", identity.action_id
+        )
+        action = PendingAction.from_row(row) if row is not None else None
+        lineage = action.goal_lineage() if action is not None else None
+        if (
+            action is None
+            or action.id != identity.action_id
+            or gate["pending_action_id"] != identity.action_id
+            or lineage is None
+            or lineage.goal_id != identity.goal_id
+            or lineage.goal_effect_id != identity.effect_id
+            or lineage.goal_capability != identity.capability
+            or lineage.goal_args_digest != identity.args_digest
+        ):
+            raise GoalApprovalsUnavailable("negative_goal_identity_changed")
+        # Abandonment is not rejection/expiry and does not prove a Stop fence.
+        if action.status not in {ActionStatus.REJECTED, ActionStatus.EXPIRED}:
+            return None
+        outcome = action.status.value
+        existing = await conn.fetchrow(
+            "SELECT * FROM approval_goal_receipts WHERE effect_id=$1 AND state_version=$2 "
+            "AND outcome=$3",
+            identity.effect_id,
+            gate["state_version"],
+            outcome,
+        )
+        return (
+            stored_receipt(existing, identity, outcome)
+            if existing is not None
+            else await self._receipt(conn, gate, identity, outcome)
+        )
 
     async def transition(
         self,

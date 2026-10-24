@@ -98,7 +98,7 @@ def upgrade() -> None:
           goal_id uuid NOT NULL, owning_domain text NOT NULL, action_id uuid NOT NULL,
           capability text NOT NULL, args_digest text NOT NULL,
           outcome text NOT NULL CHECK(outcome IN ('parked','pending','approved',
-                                                'cancelled','fenced_absent')),
+                                                'rejected','expired','cancelled','fenced_absent')),
           pending_action_id uuid REFERENCES pending_actions(id) ON DELETE RESTRICT,
           digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
           created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -157,13 +157,17 @@ def upgrade() -> None:
 
       CREATE FUNCTION guard_approval_goal_receipt() RETURNS trigger
       LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $$
-      DECLARE g record;
+      DECLARE g record; action_status text;
       BEGIN
         IF TG_OP<>'INSERT' THEN
           RAISE EXCEPTION 'goal receipt immutable' USING ERRCODE='23514';
         END IF;
         EXECUTE format('SELECT * FROM %I.approval_goal_effects WHERE effect_id=$1 FOR UPDATE',
                        TG_TABLE_SCHEMA) INTO g USING NEW.effect_id;
+        IF NEW.outcome IN ('rejected','expired') THEN
+          EXECUTE format('SELECT status FROM %I.pending_actions WHERE id=$1 FOR UPDATE',
+                         TG_TABLE_SCHEMA) INTO action_status USING NEW.pending_action_id;
+        END IF;
         IF g.effect_id IS NULL OR ROW(NEW.goal_id,NEW.owning_domain,NEW.action_id,NEW.capability,
                             NEW.args_digest,NEW.state_version,NEW.pending_action_id)
           IS DISTINCT FROM ROW(g.goal_id,g.owning_domain,g.action_id,g.capability,
@@ -172,6 +176,9 @@ def upgrade() -> None:
                    AND g.dispatch_intent_id IS NULL AND NEW.outcome IN ('parked','pending'))
             OR (g.phase='approved' AND NOT g.stop_fenced
                 AND g.dispatch_intent_id IS NULL AND NEW.outcome='approved')
+            OR (g.phase='negative_terminal' AND NOT g.stop_fenced
+                AND g.dispatch_intent_id IS NULL AND NEW.outcome IN ('rejected','expired')
+                AND NEW.outcome IS NOT DISTINCT FROM action_status)
             OR (g.phase='cancelled' AND g.stop_fenced
                 AND g.dispatch_intent_id IS NULL AND NEW.outcome='cancelled')
             OR (g.phase='absent' AND g.stop_fenced AND g.pending_action_id IS NULL

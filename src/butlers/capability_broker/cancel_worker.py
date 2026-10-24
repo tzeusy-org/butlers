@@ -91,7 +91,13 @@ class CancellationWorker:
                         return "unknown"
                     await self.stop.ack_cancel_work(claim, observed["receipt"]["digest"], outcome)
                     return "acknowledged"
-                if operation == "LOOKUP" and outcome in {"pending", "approved", "unknown"}:
+                if operation == "LOOKUP" and outcome in {
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "expired",
+                    "unknown",
+                }:
                     # Fresh authenticated unknown/null is not absence or an ACK.
                     # One original-tuple CANCEL asks the actual A2 producer to
                     # revalidate atomically against dispatch/fence/current rows.

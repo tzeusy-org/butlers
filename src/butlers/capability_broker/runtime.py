@@ -154,13 +154,15 @@ class CentralRuntime:
                         "JOIN switchboard.effects e ON (e.goal_id,e.id)=(a.goal_id,a.effect_id) "
                         "JOIN switchboard.goals g ON g.id=a.goal_id "
                         "WHERE a.dispatch_intent_id IS NULL AND a.park_call_id IS NOT NULL "
-                        "AND g.status IN ('running','settling') "
+                        "AND a.owning_domain=ANY($1::text[]) "
+                        "AND g.status IN ('running','awaiting_approval','settling') "
                         "AND e.status IN ('requested','parked','unknown') "
-                        "ORDER BY e.created_at,e.id LIMIT 16"
+                        "ORDER BY e.created_at,e.id LIMIT 16",
+                        list(self.broker.approvals.clients),
                     )
             for row in rows:
                 try:
-                    await self.broker.replay_approved(row["goal_id"], row["effect_id"])
+                    await self.broker.reconcile_parked(row["goal_id"], row["effect_id"])
                 except Exception:
                     # No payload diagnostics or transport retry. A later scan
                     # can only read; an existing intent is never executable again.

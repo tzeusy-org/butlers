@@ -940,3 +940,213 @@ async def test_stop_discovery_keeps_unfiltered_default_and_validates_fixed_filte
     for invalid in (0, 5, True):
         with pytest.raises(ValueError, match="invalid_cancel_limit"):
             await stop.cancel_candidates(limit=invalid)
+
+
+@pytest.mark.parametrize("decision", ["rejected", "expired"])
+@pytest.mark.parametrize("goal_status", ["running", "awaiting_approval", "settling"])
+async def test_constructed_runtime_settles_actual_negative_owner_decision(
+    tmp_path, monkeypatch, decision, goal_status
+):
+    """Actual runtime/registration/owning writer; SQL and TLS remain software controls."""
+    import copy
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    from butlers.capability_broker.runtime import RuntimeConfig, build_runtime
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.protocol import identity, request
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from butlers.modules.approvals.models import ActionStatus
+    from tests.capability_broker import test_broker as broker_owner
+    from tests.capability_broker.test_published_catalog import registered_health_record_broker
+    from tests.core.test_goal_stop import StopConnection
+    from tests.modules.approvals.test_goal_control import DurableStore
+
+    lock, settled = asyncio.Lock(), asyncio.Event()
+
+    class Central(StopConnection):
+        @asynccontextmanager
+        async def transaction(self):
+            async with lock:
+                async with super().transaction():
+                    yield
+                if any(e["status"] in {"rejected", "expired"} for e in self.effects.values()):
+                    settled.set()
+
+        async def fetch(self, sql, *args):
+            if "SELECT a.goal_id,a.effect_id" in sql:
+                rows = [
+                    dict(goal_id=self.goal, effect_id=e["id"])
+                    for e in self.effects.values()
+                    if e["status"] in {"requested", "parked", "unknown"}
+                ]
+                if args:
+                    assert "a.owning_domain=ANY($1::text[])" in sql
+                    rows = [
+                        r
+                        for r in rows
+                        if self.associations[r["effect_id"]]["owning_domain"] in args[0]
+                    ]
+                return rows[:16]
+            if "SELECT w.goal_id,w.effect_id" in sql:
+                return []
+            return await super().fetch(sql, *args)
+
+        async def fetchrow(self, sql, *args):
+            if "SELECT e.*,a.owning_domain,a.action_id,a.approval_ref" in sql:
+                assert self.in_transaction and "FOR UPDATE OF e,a" in sql
+                e, a = self.effects.get(args[1]), self.associations.get(args[1])
+                return (
+                    copy.deepcopy(dict(e, **a, owning_approval_ref=a["approval_ref"]))
+                    if e and a
+                    else None
+                )
+            if "UPDATE switchboard.effects SET status=$3" in sql:
+                assert self.in_transaction and "status IN ('requested','parked','unknown')" in sql
+                e = self.effects[args[1]]
+                if e["status"] not in {"requested", "parked", "unknown"}:
+                    return None
+                e["status"] = args[2]
+                return {"id": e["id"]}
+            return await super().fetchrow(sql, *args)
+
+    class Health(DurableStore):
+        async def fetchrow(self, sql, *args):
+            if "current_schema()" in sql and "current_user" in sql:
+                return dict(
+                    schema="health",
+                    role="butler_health_rw",
+                    unsafe=False,
+                    schemas=["pg_catalog", "health", "public"],
+                )
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(args[1]),
+                    park_authorization_digest=args[2],
+                    park_call_id=args[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            return await super().fetchrow(sql, *args)
+
+    monkeypatch.setattr(broker_owner, "Connection", Central)
+    (
+        controlled,
+        conn,
+        _,
+        token,
+        _,
+        catalog,
+        originals,
+        facts,
+    ) = await registered_health_record_broker(monkeypatch, park_only=True, approvals_enabled=True)
+    catalog_fetch = conn.fetch
+
+    async def fetch(sql, *args):
+        if "FROM pg_class" in sql and "goal_stop_requests" in args[0]:
+            return await Central.fetch(conn, sql, *args)
+        return await catalog_fetch(sql, *args)
+
+    conn.fetch = fetch
+    config = key_config(tmp_path, "http://127.0.0.1:9/mcp")
+    config["approval_transports"] = {
+        "health": {
+            "enabled": True,
+            "role": "broker-control",
+            "domain": "health",
+            "endpoint": "https://localhost:4200/mcp",
+            "peer": {
+                "role": "owning-service",
+                "domain": "health",
+                "sans": ["DNS:localhost"],
+                "client_certificate": False,
+            },
+            "material": {
+                "ca_path": "/software-only/ca",
+                "certificate_path": "/software-only/cert",
+                "private_key_path": "/software-only/key",
+            },
+        }
+    }
+    monkeypatch.setattr(
+        "butlers.capability_broker.transport.client.build_client",
+        lambda settings, context: PrivateClient(settings, None),
+    )
+    runtime = await build_runtime(
+        controlled.pool, RuntimeConfig.parse(config), host="127.0.0.1", port=0
+    )
+    store = Health()
+    store.goal_id = conn.goal
+    operation = GoalDispatch(
+        store,
+        "health",
+        catalog,
+        originals,
+        {runtime.broker.signer.kid: runtime.broker.signer.private_key.public_key()},
+    )
+    peer, sent = SimpleNamespace(role="broker-control", domain="health"), []
+
+    async def exchange(client, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        assert client is runtime.broker.approvals.clients["health"] and assertion is None
+        sent.append(value["operation"])
+        store.action_id = UUID(value["identity"]["action_id"])
+        return await operation(request(value, "health"), peer)
+
+    monkeypatch.setattr(PrivateClient, "call", exchange)
+    try:
+        parked = await runtime.broker.call(
+            conn.goal, token, "health__measurement_log", {"type": "weight", "value": 72.5}
+        )
+        assert parked.status == "parked" and not facts and conn.used == 1
+        key = dict(
+            goal_id=str(conn.goal),
+            effect_id=str(parked.effect_id),
+            owning_domain="health",
+            action_id=str(parked.effect_id),
+            capability="health__measurement_log",
+            args_digest=store.gate["args_digest"],
+        )
+        await operation.owner.transition(
+            identity(key),
+            target_status=ActionStatus(decision),
+            decided_by="human:owner",
+            event_actor="owner",
+            event_reason="controlled",
+        )
+        assert store.row["status"] == decision and store.gate["phase"] == "negative_terminal"
+        conn.status = goal_status
+        # Older unconfigured domains cannot starve actual configured work.
+        for _ in range(16):
+            hint = conn.seed_effect(status="parked")
+            conn.effects[hint.effect_id]["capability"] = "travel__write"
+            conn.associations[hint.effect_id].update(owning_domain="travel", park_call_id=uuid4())
+        order = list(conn.effects)
+        conn.effects = {i: conn.effects[i] for i in order[1:] + order[:1]}
+        errors = []
+        reconcile = runtime.broker.reconcile_parked
+
+        async def observed_reconcile(*args):
+            try:
+                return await reconcile(*args)
+            except Exception as exc:
+                errors.append(exc)
+                settled.set()
+                raise
+
+        monkeypatch.setattr(runtime.broker, "reconcile_parked", observed_reconcile)
+        await runtime.start()
+        async with asyncio.timeout(2):
+            await settled.wait()
+        assert errors == []
+        assert conn.effects[parked.effect_id]["status"] == decision
+        receipt = next(r for r in store.receipts.values() if r["outcome"] == decision)
+        assert receipt["state_version"] == store.gate["state_version"]
+        assert sent == ["PARK", "LOOKUP"] and not facts and conn.used == 1
+        assert not store.gate["stop_fenced"] and store.gate["dispatch_intent_id"] is None
+        assert await runtime.broker.reconcile_parked(conn.goal, parked.effect_id) == decision
+        assert len(store.receipts) == 3 and not facts
+    finally:
+        await runtime.close()
+        await AsyncPath(config["key_file"]).unlink()

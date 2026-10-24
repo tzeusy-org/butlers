@@ -1202,6 +1202,13 @@ async def test_cancellation_consumer_reclaims_exact_tuple_over_real_private_MCP(
             assert await worker.run_batch() == ("acknowledged",)
             assert calls == ["LOOKUP", "CANCEL"]
             assert len(stop.acks) == 1 and stop.acks[0][2] == "fenced_absent"
+            for outcome in ("rejected", "expired"):
+                observed = outcome
+                calls.clear()
+                stop.acks.clear()
+                assert await worker.process(identity) == "acknowledged"
+                assert calls == ["LOOKUP", "CANCEL"]
+                assert len(stop.acks) == 1 and stop.acks[0][2] == "fenced_absent"
             for outcome in ("dispatched", "committed"):
                 observed = outcome
                 calls.clear()
@@ -1229,6 +1236,83 @@ async def test_cancellation_consumer_reclaims_exact_tuple_over_real_private_MCP(
         finally:
             await client.aclose()
     assert not server.protocols and not server.handshakes and server.slot_count == 0
+
+
+def test_negative_LOOKUP_is_exact_evidence_and_never_a_Cancel_ACK():
+    for outcome in ("rejected", "expired"):
+        outgoing = call_value("LOOKUP")
+        observed = fixture_reply(outgoing, outcome)
+        assert reply(observed, outgoing) == observed
+        for fault in ("identity", "digest", "outcome", "missing"):
+            bad = copy.deepcopy(observed)
+            if fault == "identity":
+                bad["receipt"]["identity"]["args_digest"] = "b" * 64
+                bad["receipt"]["digest"] = receipt_digest(bad["receipt"])
+            elif fault == "digest":
+                bad["receipt"]["digest"] = "a" * 64
+            elif fault == "outcome":
+                bad["receipt"]["outcome"] = "approved"
+                bad["receipt"]["digest"] = receipt_digest(bad["receipt"])
+            else:
+                bad["receipt"] = None
+            with pytest.raises(ProtocolError):
+                reply(bad, outgoing)
+        cancelled = dict(outgoing, operation="CANCEL")
+        with pytest.raises(ProtocolError):
+            reply(dict(observed, operation="CANCEL"), cancelled)
+
+
+@pytest.mark.parametrize("fault", [None, "stop", "dispatch", "identity", "terminal", "rollback"])
+async def test_negative_settlement_rechecks_goal_and_original_undispatched_tuple(fault):
+    from butlers.capability_broker.approved import settle_negative
+    from butlers.capability_broker.contracts import BrokerRefused
+    from butlers.core.goal_stop import GoalStop
+    from tests.capability_broker.test_broker import Pool
+    from tests.core.test_goal_stop import StopConnection
+
+    class Central(StopConnection):
+        async def fetchrow(self, sql, *args):
+            if "SELECT e.*,a.owning_domain,a.action_id,a.approval_ref" in sql:
+                assert self.in_transaction and "FOR UPDATE OF e,a" in sql
+                e, a = self.effects[args[1]], self.associations[args[1]]
+                return dict(e, **a, owning_approval_ref=a["approval_ref"])
+            if "UPDATE switchboard.effects SET status=$3" in sql:
+                assert self.in_transaction and "status IN ('requested','parked','unknown')" in sql
+                self.effects[args[1]]["status"] = args[2]
+                return {"id": args[1]}
+            return await super().fetchrow(sql, *args)
+
+    conn = Central()
+    exact = conn.seed_effect(status="parked")
+    from butlers.modules.approvals.goal_receipts import owning_receipt
+
+    receipt = owning_receipt(uuid4(), exact, "rejected", exact.action_id)
+    if fault == "stop":
+        conn.status = "stopped"
+    elif fault == "dispatch":
+        conn.associations[exact.effect_id]["dispatch_intent_id"] = uuid4()
+    elif fault == "identity":
+        conn.effects[exact.effect_id]["args_digest"] = "b" * 64
+    elif fault == "terminal":
+        conn.effects[exact.effect_id]["status"] = "expired"
+    elif fault == "rollback":
+        conn.fail_commit = True
+    before = copy.deepcopy((conn.effects, conn.associations))
+
+    async def settle():
+        async with GoalStop(Pool(conn))._transaction() as transaction:
+            await settle_negative(transaction, exact, receipt)
+
+    if fault is not None:
+        with pytest.raises((BrokerRefused, RuntimeError)):
+            await settle()
+        assert (conn.effects, conn.associations) == before
+    else:
+        await settle()
+        assert conn.effects[exact.effect_id]["status"] == "rejected"
+        assert conn.associations == before[1] and not conn.work
+        await settle()  # Identical terminal readback is not another execution grant.
+        assert conn.effects[exact.effect_id]["status"] == "rejected"
 
 
 def broker_lifecycle_listener():

@@ -73,6 +73,35 @@ class PrivateApprovals:
             raise BrokerRefused(Reason.UNAVAILABLE)
         return ParkReceipt(effect)
 
+    async def lookup(self, identity):
+        """Read exact committed owning evidence; never grant permission to execute."""
+        from butlers.core.goal_stop import CancelIdentity
+
+        from .transport.protocol import PROTOCOL
+
+        if type(identity) is not CancelIdentity:
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        client = self.clients.get(identity.owning_domain)
+        if client is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        outgoing = {
+            "protocol": PROTOCOL,
+            "operation": "LOOKUP",
+            "request_id": str(uuid4()),
+            "identity": {
+                key: str(getattr(identity, key))
+                for key in (
+                    "goal_id",
+                    "effect_id",
+                    "owning_domain",
+                    "action_id",
+                    "capability",
+                    "args_digest",
+                )
+            },
+        }
+        return reply(await client.call(outgoing), outgoing)
+
     async def operation(
         self,
         reservation,

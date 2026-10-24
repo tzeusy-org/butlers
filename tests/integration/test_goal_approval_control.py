@@ -199,7 +199,41 @@ async def test_real_decision_and_stop_preserve_historical_receipts(stores, decis
         assert (await service.lookup(identity(call)))["outcome"] == "approved"
     else:
         assert row["goal_approved_args_digest"] is None
-        assert await service.lookup(identity(call)) is None
+        negative = await service.lookup(identity(call))
+        expected = identity(call)
+        assert negative["outcome"] == decision and negative["approval_ref"] == str(call.action_id)
+        assert negative["identity"] == {
+            "goal_id": str(expected.goal_id),
+            "effect_id": str(expected.effect_id),
+            "owning_domain": expected.owning_domain,
+            "action_id": str(expected.action_id),
+            "capability": expected.capability,
+            "args_digest": expected.args_digest,
+        }
+        committed_row, committed_gate, committed_receipts = await snapshot(observer, call.action_id)
+        current = next(r for r in committed_receipts if r["outcome"] == decision)
+        assert committed_row["status"] == decision and committed_gate["state_version"] == 2
+        assert current["state_version"] == 2 and current["digest"] == negative["digest"]
+        assert str(current["receipt_id"]) == negative["receipt_id"]
+        assert all(
+            current[field] == getattr(expected, field)
+            for field in (
+                "goal_id",
+                "effect_id",
+                "owning_domain",
+                "action_id",
+                "capability",
+                "args_digest",
+            )
+        )
+        assert current["pending_action_id"] == call.action_id
+        assert next(r for r in committed_receipts if r["outcome"] == "parked") == historical
+        assert await service.lookup(expected) == negative
+        assert await snapshot(observer, call.action_id) == (
+            committed_row,
+            committed_gate,
+            committed_receipts,
+        )
     cancelled = await service.cancel(identity(call))
     assert cancelled == await service.lookup(identity(call)) == await service.cancel(identity(call))
     row, gate, receipts = await snapshot(observer, call.action_id)

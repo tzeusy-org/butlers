@@ -411,7 +411,15 @@ async def test_real_decision_core_versions_actual_stored_arguments_and_preserves
         assert store.gate["approved_args_digest"] == arguments_digest(store.row["tool_args"])
         assert store.row["goal_args_digest"] == store.digest
     else:
-        assert await owner.lookup(identity_for(store)) is None
+        negative = await owner.lookup(identity_for(store))
+        assert negative["outcome"] == decision
+        assert negative["approval_ref"] == str(store.action_id)
+        from butlers.modules.approvals.goal_receipts import identity_fields
+
+        assert negative["identity"] == identity_fields(identity_for(store))
+        assert store.receipts[(store.action_id, 2, decision)]["digest"] == negative["digest"]
+        assert await owner.lookup(identity_for(store)) == negative
+        assert store.receipts[(store.action_id, 1, "parked")]["digest"] == parked["digest"]
         assert store.gate["approved_args_digest"] is None
     cancelled = await owner.cancel(identity_for(store))
     assert cancelled["outcome"] == "cancelled"
@@ -662,3 +670,81 @@ async def test_lost_rule_approval_commit_reply_recovers_stored_receipt_without_s
     assert approved["outcome"] == "approved"
     duplicate, _ = await owner.park(call, grant=Grant("mail__send"))
     assert duplicate.duplicate and store.rule["use_count"] == 1
+
+
+@pytest.mark.parametrize("decision", ["rejected", "expired"])
+@pytest.mark.parametrize("fault", [None, "receipt_rollback", "commit_reply_loss", "wrong_lineage"])
+async def test_negative_lookup_returns_only_current_committed_exact_receipt(decision, fault):
+    import copy
+
+    from butlers.modules.approvals.goal_control import GoalApprovalsUnavailable, OwningGoalApprovals
+    from butlers.modules.approvals.models import ActionStatus
+
+    store = DurableStore()
+    owner = OwningGoalApprovals(store, "mail")
+    await owner.park(request_for(store))
+    await owner.transition(
+        identity_for(store),
+        target_status=ActionStatus(decision),
+        decided_by="human:owner",
+        event_actor="owner",
+        event_reason="controlled",
+    )
+    before = copy.deepcopy((store.row, store.gate, store.receipts, store.events))
+    if fault == "receipt_rollback":
+        store.refuse_receipt = True
+        with pytest.raises(ValueError, match="controlled_receipt_refusal"):
+            await owner.lookup(identity_for(store))
+        assert (store.row, store.gate, store.receipts, store.events) == before
+        store.refuse_receipt = False
+    elif fault == "commit_reply_loss":
+        store.lose_commit_reply = True
+        with pytest.raises(ConnectionError, match="controlled_commit_response_loss"):
+            await owner.lookup(identity_for(store))
+        assert len(store.receipts) == 3
+    elif fault == "wrong_lineage":
+        store.row["goal_id"] = uuid4()
+        with pytest.raises(GoalApprovalsUnavailable, match="negative_goal_identity_changed"):
+            await owner.lookup(identity_for(store))
+        assert len(store.receipts) == 2 and store.events == before[3]
+        return
+    value = await owner.lookup(identity_for(store))
+    assert value == await owner.lookup(identity_for(store))
+    assert value["outcome"] == decision and value["approval_ref"] == str(store.action_id)
+    receipt = store.receipts[(store.action_id, store.gate["state_version"], decision)]
+    assert receipt["digest"] == value["digest"] and len(store.receipts) == 3
+    assert store.row == before[0] and store.gate == before[1] and store.events == before[3]
+    # A negative observation never fences Stop or manufactures dispatch authority.
+    assert not store.gate["stop_fenced"] and store.gate["dispatch_intent_id"] is None
+
+
+@pytest.mark.parametrize("fault", ["abandoned", "pending", "dispatch", "wrong_receipt"])
+async def test_negative_lookup_refuses_other_history_or_noncurrent_evidence(fault):
+    from butlers.modules.approvals.goal_control import OwningGoalApprovals
+    from butlers.modules.approvals.models import ActionStatus
+
+    store = DurableStore()
+    owner = OwningGoalApprovals(store, "mail")
+    await owner.park(request_for(store))
+    await owner.transition(
+        identity_for(store),
+        target_status=ActionStatus.REJECTED,
+        decided_by="human:owner",
+        event_actor="owner",
+        event_reason="controlled",
+    )
+    if fault in {"abandoned", "pending"}:
+        store.row["status"] = fault
+        assert await owner.lookup(identity_for(store)) is None
+        assert len(store.receipts) == 2
+    elif fault == "dispatch":
+        store.gate["dispatch_intent_id"] = uuid4()
+        assert await owner.lookup(identity_for(store)) is None
+        assert len(store.receipts) == 2
+    else:
+        await owner.lookup(identity_for(store))
+        store.receipts[(store.action_id, store.gate["state_version"], "rejected")]["digest"] = (
+            "a" * 64
+        )
+        with pytest.raises(ValueError, match="stored_goal_receipt_mismatch"):
+            await owner.lookup(identity_for(store))

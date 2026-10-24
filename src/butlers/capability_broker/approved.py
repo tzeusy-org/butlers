@@ -263,6 +263,89 @@ async def settle_approved(connection, prepared: ApprovedDispatch, receipt: Domai
         )
 
 
+async def parked_identity(connection, goal_id, effect_id):
+    """Lock the original undispatched PARK tuple without granting execution."""
+    from uuid import UUID
+
+    from butlers.core.goal_stop import CancelIdentity
+
+    if not isinstance(goal_id, UUID) or not isinstance(effect_id, UUID):
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    goal = await connection.fetchrow(
+        "SELECT id,status FROM switchboard.goals WHERE id=$1 FOR UPDATE OF goals", goal_id
+    )
+    if goal is None or goal["status"] not in {"running", "awaiting_approval", "settling"}:
+        raise BrokerRefused(Reason.GOAL)
+    row = await connection.fetchrow(
+        "SELECT e.*,a.owning_domain,a.action_id,a.approval_ref AS owning_approval_ref,"
+        "a.dispatch_intent_id FROM switchboard.effects e "
+        "JOIN switchboard.goal_park_associations a ON (a.goal_id,a.effect_id)=(e.goal_id,e.id) "
+        "WHERE e.goal_id=$1 AND e.id=$2 FOR UPDATE OF e,a",
+        goal_id,
+        effect_id,
+    )
+    if (
+        row is None
+        or row["goal_id"] != goal_id
+        or row["id"] != effect_id
+        or row["dispatch_intent_id"] is not None
+        or row["status"] not in {"requested", "parked", "unknown", "rejected", "expired"}
+        or row["owning_approval_ref"] not in {None, str(effect_id)}
+    ):
+        raise BrokerRefused(Reason.DUPLICATE)
+    try:
+        identity = CancelIdentity(
+            goal_id,
+            effect_id,
+            row["owning_domain"],
+            row["action_id"],
+            row["capability"],
+            row["args_digest"],
+        )
+    except (ValueError, TypeError):
+        raise BrokerRefused(Reason.AUTHENTICATION) from None
+    return identity, row["status"]
+
+
+async def settle_negative(connection, identity, receipt):
+    """Persist only a validated current owning negative, never a dispatch/Stop ACK."""
+    from .transport.protocol import receipt_digest
+
+    outcome = receipt["outcome"]
+    if (
+        outcome not in {"rejected", "expired"}
+        or receipt["approval_ref"] != str(identity.action_id)
+        or receipt["identity"]
+        != {
+            key: str(getattr(identity, key))
+            for key in (
+                "goal_id",
+                "effect_id",
+                "owning_domain",
+                "action_id",
+                "capability",
+                "args_digest",
+            )
+        }
+        or receipt_digest(receipt) != receipt["digest"]
+    ):
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    current, status = await parked_identity(connection, identity.goal_id, identity.effect_id)
+    if current != identity or (status in {"rejected", "expired"} and status != outcome):
+        raise BrokerRefused(Reason.DUPLICATE)
+    if status == outcome:
+        return
+    row = await connection.fetchrow(
+        "UPDATE switchboard.effects SET status=$3,updated_at=now() "
+        "WHERE goal_id=$1 AND id=$2 AND status IN ('requested','parked','unknown') RETURNING id",
+        identity.goal_id,
+        identity.effect_id,
+        outcome,
+    )
+    if row is None:
+        raise BrokerRefused(Reason.DUPLICATE)
+
+
 async def parked_reservation(connection, goal_id, effect_id, authorities):
     """Select immutable original association/grant for a signed snapshot request."""
     from uuid import UUID

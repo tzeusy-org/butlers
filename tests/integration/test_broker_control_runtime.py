@@ -37,6 +37,324 @@ publication_url = publication_fixtures.publication_url
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize(
+    "decision,mode",
+    [
+        ("rejected", "healthy"),
+        ("expired", "healthy"),
+        ("rejected", "receipt_rollback"),
+        ("expired", "central_rollback"),
+        ("rejected", "lookup_reply_loss"),
+        ("expired", "repeat"),
+        ("rejected", "stop_race"),
+    ],
+)
+async def test_runtime_negative_decision_commits_exact_owning_and_central_readback(
+    publication_url, fleet, health_approvals_url, tmp_path, monkeypatch, decision, mode
+):
+    """AUTHORED/COLLECT ONLY: real migrations/roles and independent committed observers.
+
+    Registration uses the software-enabled Health variant; private exchange and
+    submission evidence are controls, not live TLS/runner/owner authority proof.
+    No handler, provider effect or cross-database atomic transaction is claimed.
+    """
+    import asyncio
+    from contextlib import AsyncExitStack
+    from types import SimpleNamespace
+
+    import asyncpg
+
+    from butlers.capability_broker.cancel_worker import CancellationWorker
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.protocol import identity, request
+    from butlers.core.catalog_publication import CatalogPublisher
+    from butlers.core.goal_stop import GoalStop
+    from butlers.db import register_jsonb_codec
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from butlers.modules.approvals.models import ActionStatus
+    from tests.capability_broker.test_published_catalog import registered_health_record
+
+    catalog, originals, facts = await registered_health_record(monkeypatch, approvals_enabled=True)
+    await publication_fixtures.publish_all(publication_url)
+    async with publication_fixtures.runtime_pool(publication_url, "health") as publisher:
+        await CatalogPublisher(publisher, "health").publish(catalog)
+    await configure(fleet, limits())
+
+    async def role(conn):
+        await conn.execute("SET ROLE butler_health_rw")
+        await conn.execute("SET search_path TO health,public")
+
+    async def close(pool):
+        try:
+            await asyncio.wait_for(pool.close(), 10)
+        except BaseException:
+            pool.terminate()
+            raise
+
+    config = key_config(tmp_path, "http://127.0.0.1:9/mcp")
+    config["approval_transports"] = {
+        "health": {
+            "enabled": True,
+            "role": "broker-control",
+            "domain": "health",
+            "endpoint": "https://localhost:4200/mcp",
+            "peer": {
+                "role": "owning-service",
+                "domain": "health",
+                "sans": ["DNS:localhost"],
+                "client_certificate": False,
+            },
+            "material": {
+                "ca_path": "/software-only/ca",
+                "certificate_path": "/software-only/cert",
+                "private_key_path": "/software-only/key",
+            },
+        }
+    }
+    monkeypatch.setattr(
+        "butlers.capability_broker.transport.client.build_client",
+        lambda settings, context: PrivateClient(settings, None),
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    pending = None
+    central_fault = owning_fault = False
+    try:
+        async with AsyncExitStack() as cleanup:
+            observer = await asyncpg.create_pool(
+                health_approvals_url,
+                init=register_jsonb_codec,
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+            )
+            cleanup.push_async_callback(close, observer)
+            owning = await asyncpg.create_pool(
+                health_approvals_url,
+                init=register_jsonb_codec,
+                setup=role,
+                min_size=1,
+                max_size=3,
+                command_timeout=5,
+            )
+            cleanup.push_async_callback(close, owning)
+            central = await cleanup.enter_async_context(
+                publication_fixtures.runtime_pool(publication_url, "switchboard")
+            )
+            admitted = await GoalAdmission(
+                central, Sources(Evidence("message", f"negative-owner:{uuid4()}", owner=True))
+            ).admit_submission(SourceRef("message", str(uuid4())), uuid4())
+            assert admitted.result == "admitted"
+            goal, invocation = admitted.goal_id, uuid4()
+            await fleet.execute("UPDATE switchboard.goals SET status='running' WHERE id=$1", goal)
+            grants = encode_grants((Grant("health__measurement_log", park_only=True),))
+            await fleet.execute(
+                "INSERT INTO switchboard.invocations "
+                "(id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) "
+                "VALUES($1,$2,0,'lead',0,'launching',$3::jsonb,$4,5,500)",
+                invocation,
+                goal,
+                grants,
+                digest(grants),
+            )
+            runtime = await build_runtime(
+                central, RuntimeConfig.parse(config), host="127.0.0.1", port=0
+            )
+            cleanup.push_async_callback(runtime.close)
+            op = GoalDispatch(
+                owning,
+                "health",
+                catalog,
+                originals,
+                {runtime.broker.signer.kid: runtime.broker.signer.private_key.public_key()},
+            )
+            peer, calls, lost = SimpleNamespace(role="broker-control", domain="health"), [], False
+
+            async def exchange(client, value, *, assertion=None):
+                nonlocal lost
+                assert client is runtime.broker.approvals.clients["health"] and assertion is None
+                calls.append(value)
+                result = await op(request(value, "health"), peer)
+                if value["operation"] == "LOOKUP":
+                    if mode == "stop_race":
+                        entered.set()
+                        await release.wait()
+                    if mode == "lookup_reply_loss" and not lost:
+                        lost = True
+                        raise ConnectionError("controlled_lookup_reply_loss")
+                return result
+
+            monkeypatch.setattr(PrivateClient, "call", exchange)
+            token = await runtime.broker.issue_invocation_token(goal, invocation)
+            await fleet.execute(
+                "UPDATE switchboard.invocations SET status='running' WHERE id=$1", invocation
+            )
+            parked = await runtime.broker.call(
+                goal, token, "health__measurement_log", {"type": "weight", "value": 72.5}
+            )
+            assert parked.status == "parked" and not facts
+            target = identity(calls[0]["identity"])
+            # The real runtime role cannot manufacture negative evidence while
+            # the actual action/gate is pending. Savepoint keeps the outer TX usable.
+            async with owning.acquire() as runtime_conn, runtime_conn.transaction():
+                pending_gate = await runtime_conn.fetchrow(
+                    "SELECT * FROM health.approval_goal_effects WHERE effect_id=$1",
+                    target.effect_id,
+                )
+                with pytest.raises(asyncpg.CheckViolationError):
+                    async with runtime_conn.transaction():
+                        await op.owner._receipt(runtime_conn, pending_gate, target, decision)
+            await op.owner.transition(
+                target,
+                target_status=ActionStatus(decision),
+                decided_by="human:owner",
+                event_actor="owner",
+                event_reason="controlled",
+            )
+            async with observer.acquire() as readback:
+                action = await readback.fetchrow(
+                    "SELECT * FROM health.pending_actions WHERE id=$1", target.action_id
+                )
+                gate = await readback.fetchrow(
+                    "SELECT * FROM health.approval_goal_effects WHERE effect_id=$1",
+                    target.effect_id,
+                )
+            assert action["status"] == decision and gate["phase"] == "negative_terminal"
+            assert not gate["stop_fenced"] and gate["dispatch_intent_id"] is None
+            async with owning.acquire() as runtime_conn, runtime_conn.transaction():
+                with pytest.raises(asyncpg.CheckViolationError):
+                    async with runtime_conn.transaction():
+                        await op.owner._receipt(
+                            runtime_conn,
+                            dict(gate, state_version=gate["state_version"] + 1),
+                            target,
+                            decision,
+                        )
+            assert (
+                await fleet.fetchval(
+                    "SELECT status FROM switchboard.effects WHERE id=$1", target.effect_id
+                )
+                == "parked"
+            )
+            if mode == "receipt_rollback":
+                await observer.execute(
+                    "CREATE FUNCTION health.negative_contract_refuse() RETURNS trigger LANGUAGE plpgsql "
+                    "AS $$ BEGIN IF NEW.outcome IN ('rejected','expired') THEN "
+                    "RAISE EXCEPTION 'controlled_negative_receipt_refusal' USING ERRCODE='23514'; "
+                    "END IF; RETURN NEW; END $$; CREATE TRIGGER negative_contract_refuse "
+                    "BEFORE INSERT ON health.approval_goal_receipts FOR EACH ROW "
+                    "EXECUTE FUNCTION health.negative_contract_refuse()"
+                )
+                owning_fault = True
+            elif mode == "central_rollback":
+                await fleet.execute(
+                    "CREATE FUNCTION switchboard.negative_contract_refuse() RETURNS trigger LANGUAGE plpgsql "
+                    "AS $$ BEGIN IF NEW.status IN ('rejected','expired') THEN "
+                    "RAISE EXCEPTION 'controlled_negative_settlement_refusal' USING ERRCODE='23514'; "
+                    "END IF; RETURN NEW; END $$; CREATE TRIGGER negative_contract_refuse "
+                    "BEFORE UPDATE ON switchboard.effects FOR EACH ROW "
+                    "EXECUTE FUNCTION switchboard.negative_contract_refuse()"
+                )
+                central_fault = True
+            try:
+                if mode in {"receipt_rollback", "central_rollback", "lookup_reply_loss"}:
+                    with pytest.raises((asyncpg.CheckViolationError, ConnectionError)):
+                        await runtime.broker.reconcile_parked(goal, target.effect_id)
+                    assert (
+                        await fleet.fetchval(
+                            "SELECT status FROM switchboard.effects WHERE id=$1", target.effect_id
+                        )
+                        == "parked"
+                    )
+                    if mode == "lookup_reply_loss":
+                        assert (
+                            await runtime.broker.reconcile_parked(goal, target.effect_id)
+                            == decision
+                        )
+                elif mode == "stop_race":
+                    pending = asyncio.create_task(
+                        runtime.broker.reconcile_parked(goal, target.effect_id)
+                    )
+                    async with asyncio.timeout(5):
+                        await entered.wait()
+                    await GoalStop(central).stop_goal(goal, uuid4(), "b" * 64)
+                    release.set()
+                    with pytest.raises(BrokerRefused):
+                        await pending
+                    assert await CancellationWorker(
+                        GoalStop(central), runtime.broker.approvals.clients
+                    ).run_batch() == ("acknowledged",)
+                elif mode == "repeat":
+                    assert await asyncio.gather(
+                        runtime.broker.reconcile_parked(goal, target.effect_id),
+                        runtime.broker.reconcile_parked(goal, target.effect_id),
+                    ) == [decision, decision]
+                else:
+                    await runtime.start()
+
+                    async def settled():
+                        return (
+                            await fleet.fetchval(
+                                "SELECT status FROM switchboard.effects WHERE id=$1",
+                                target.effect_id,
+                            )
+                            == decision
+                        )
+
+                    async with asyncio.timeout(5):
+                        await poll_until(settled, interval_s=0.01)
+                    await runtime.close()
+                async with observer.acquire() as readback:
+                    current = await readback.fetchrow(
+                        "SELECT * FROM health.pending_actions WHERE id=$1", target.action_id
+                    )
+                    receipts = await readback.fetch(
+                        "SELECT * FROM health.approval_goal_receipts WHERE effect_id=$1 AND outcome=$2",
+                        target.effect_id,
+                        decision,
+                    )
+                assert current["status"] == decision and not facts
+                assert len(receipts) == (0 if mode == "receipt_rollback" else 1)
+                if receipts:
+                    assert receipts[0]["state_version"] == gate["state_version"]
+                    assert receipts[0]["action_id"] == target.action_id
+                    assert receipts[0]["args_digest"] == target.args_digest
+                async with fleet.acquire() as readback:
+                    final = await readback.fetchval(
+                        "SELECT status FROM switchboard.effects WHERE id=$1", target.effect_id
+                    )
+                    intent = await readback.fetchval(
+                        "SELECT dispatch_intent_id FROM switchboard.goal_park_associations WHERE effect_id=$1",
+                        target.effect_id,
+                    )
+                    budget = await readback.fetchval(
+                        "SELECT used_calls FROM switchboard.budgets WHERE goal_id=$1", goal
+                    )
+                assert final == (
+                    "cancelled"
+                    if mode == "stop_race"
+                    else "parked"
+                    if mode in {"receipt_rollback", "central_rollback"}
+                    else decision
+                )
+                assert intent is None and budget == 1
+                assert all(v["operation"] in {"PARK", "LOOKUP", "CANCEL"} for v in calls)
+            finally:
+                release.set()
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                if owning_fault:
+                    await observer.execute(
+                        "DROP TRIGGER negative_contract_refuse ON health.approval_goal_receipts; DROP FUNCTION health.negative_contract_refuse()"
+                    )
+                if central_fault:
+                    await fleet.execute(
+                        "DROP TRIGGER negative_contract_refuse ON switchboard.effects; DROP FUNCTION switchboard.negative_contract_refuse()"
+                    )
+    finally:
+        await AsyncPath(config["key_file"]).unlink(missing_ok=True)
+
+
 async def test_real_runtime_role_hash_commit_current_catalog_read_and_revocation(
     publication_url, fleet, tmp_path
 ):

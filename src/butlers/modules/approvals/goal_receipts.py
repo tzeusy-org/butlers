@@ -31,6 +31,8 @@ def owning_receipt(
         "parked",
         "pending",
         "approved",
+        "rejected",
+        "expired",
         "cancelled",
         "fenced_absent",
     }:

@@ -202,6 +202,33 @@ termination and terminal hosted/protected evidence remain mandatory before
 production enablement or full broker acceptance.
 
 
+## Owning rejection and expiry observations
+
+The existing runtime replay worker first uses fixed-peer private `LOOKUP` for
+configured owning domains. Unconfigured hints cannot fill its discovery batch.
+An actual rejected or expired action produces a stable receipt for its current
+owning gate version, under the original goal/action lock and the same finite
+transaction. The receipt guard requires the matching current action status;
+lookup returns only after commit. Repeated lookup reads the same receipt, and a
+lost response gives no permission to execute. Abandoned actions remain
+unclassified rather than being relabeled as rejection, expiry or cancellation.
+
+The central consumer re-locks the goal and full original PARK association before
+persisting `rejected` or `expired`. A stopped goal, existing dispatch intent,
+changed tuple or conflicting terminal outcome refuses. Identical terminal
+readback is idempotent. No connection stays held across the private request;
+there is no new endpoint, issuer, handler call or execution authorization.
+Approved observations still enter the existing signed snapshot, current-grant
+and one-winner replay protocol. Unknown/refused evidence leaves the effect
+unsettled. Reclaimed Stop work that observes a negative decision still requires
+the original-tuple `CANCEL` fence and its actual ACK, preserving owner history.
+
+Software controls exercise constructed runtime/registration and the real owning
+decision writer with explicit SQL and private-exchange collaborators. Migrated
+runtime-role commit/readback, rollback, lost-response and Stop race controls are
+authored and collected only locally; those software results do not prove SQL
+durability, live owner authentication, provider effects or full broker delivery.
+
 ## Central stored-approved dispatch transaction
 
 The private `prepare_approved_dispatch` consumer implements the central half of
