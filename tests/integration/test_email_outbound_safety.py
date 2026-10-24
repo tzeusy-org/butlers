@@ -299,7 +299,7 @@ def _make_daemon_patches() -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
     from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
@@ -335,7 +335,9 @@ def _make_daemon_patches() -> dict[str, Any]:
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "RuntimeConfigAccessor": patch(
             "butlers.core.runtime_config.RuntimeConfigAccessor",
@@ -363,7 +365,7 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):
@@ -1364,7 +1366,7 @@ async def _boot_messenger_with_route_execute(
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):

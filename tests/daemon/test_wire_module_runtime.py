@@ -84,7 +84,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -106,7 +106,9 @@ def _patch_infra():
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
@@ -305,7 +307,7 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -448,7 +450,7 @@ async def test_wire_runtime_called_with_switchboard_client(tmp_path: Path) -> No
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -486,7 +488,7 @@ async def test_wire_runtime_graceful_when_no_switchboard(tmp_path: Path) -> None
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -522,7 +524,7 @@ async def test_wire_runtime_skipped_for_modules_without_method(tmp_path: Path) -
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -552,7 +554,7 @@ async def test_wire_runtime_failure_is_non_fatal(tmp_path: Path) -> None:
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -605,7 +607,7 @@ async def test_concrete_module_switchboard_client_wired_on_startup(
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],

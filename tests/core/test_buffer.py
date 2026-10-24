@@ -560,7 +560,9 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=_MockAdapterCls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", return_value=_MockAdapterCls()
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch(
             "butlers.daemon.ButlerDaemon._start_mcp_server", new_callable=AsyncMock
@@ -586,7 +588,7 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
             common_patches["sync_schedules"],
             common_patches["FastMCP"],
             common_patches["Spawner"],
-            common_patches["get_adapter"],
+            common_patches["build_runtime_adapter"],
             common_patches["shutil_which"],
             common_patches["start_mcp_server"],
             common_patches["connect_switchboard"],

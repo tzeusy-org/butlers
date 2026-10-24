@@ -34,7 +34,8 @@ from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
-from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE, get_adapter
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
+from butlers.core.runtimes.registry import build_runtime_adapter
 from butlers.core.scheduler import sync_schedules
 from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
@@ -484,18 +485,12 @@ async def _startup_module_startup(daemon: Any, state: StartupState) -> None:
 async def _startup_spawner(daemon: Any, state: StartupState) -> None:
     """Create the runtime and spawner, wire audit and connect Switchboard."""
     # 12. Create Spawner with runtime adapter (verify binary on PATH)
-    adapter_cls = get_adapter(DEFAULT_RUNTIME_TYPE)
-    # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture.
-    # CodexAdapter accepts credential_store/butler_name for auth.json rotation sync.
-    if DEFAULT_RUNTIME_TYPE == "claude":
-        runtime = adapter_cls(butler_name=daemon.config.name, log_root=state.log_root)
-    elif DEFAULT_RUNTIME_TYPE == "codex":
-        runtime = adapter_cls(
-            credential_store=state.credential_store,
-            butler_name=daemon.config.name,
-        )
-    else:
-        runtime = adapter_cls()
+    runtime = build_runtime_adapter(
+        DEFAULT_RUNTIME_TYPE,
+        codex_authority=state.credential_store,
+        butler_name=daemon.config.name,
+        log_root=state.log_root,
+    )
 
     binary = runtime.binary_name
     if not shutil.which(binary):
