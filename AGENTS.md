@@ -31,7 +31,7 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
   (`Survivor: <old> -> <new>`) for protected checks; review is the only deletion gate.
 - **Test budget:** a PR that pushes a lane over `scripts/test-budget-baseline.json` condenses tests in
   the same PR or states the net delta and why. `make check-guards` runs the hosted `guards` steps
-  locally before you push.
+  locally before you push, except hosted-only `knip`, `build`, and node `--test` tooling checks.
 
 <!-- bv-agent-instructions-v1 -->
 
@@ -177,7 +177,8 @@ check you write or read:
   names only the local one. If it happens, `git push origin --delete <branch>`.
 - Review a branch with three dots (`git diff --stat origin/main...HEAD`) or `git show --stat`. A
   two-dot `git diff origin/main` shows every commit that landed on `main` since the fork as a
-  deletion by the branch. `git patch-id --stable` proves two diffs carry the same net change.
+  deletion by the branch. `git patch-id --stable` proves two diffs carry the same net change even
+  when their tree SHAs differ.
 - During `git merge --no-commit`, check generated-artefact drift with `git diff`, not
   `git status --porcelain`: merged files are already staged. A change to a generator invalidates
   every queued PR carrying its output (e.g. `frontend/COPY_INVENTORY.md`): resolve by re-running the

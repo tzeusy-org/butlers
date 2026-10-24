@@ -32,6 +32,47 @@ def _repo_paths(text: str) -> set[str]:
     return found - ALLOWLIST
 
 
+def _heading_anchors(text: str) -> set[str]:
+    """GitHub-style ATX heading IDs, excluding comments and fenced examples."""
+    anchors = set()
+    fence = ""
+    for line in re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).splitlines():
+        if fence:
+            closing = rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*"
+            if re.fullmatch(closing, line):
+                fence = ""
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if opening:
+            fence = opening[1]
+            continue
+        heading = re.match(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", line)
+        if heading is None:
+            continue
+        slug = re.sub(r"[^\w -]", "", heading[1].lower()).replace(" ", "-")
+        anchor = slug
+        suffix = 0
+        while anchor in anchors:
+            suffix += 1
+            anchor = f"{slug}-{suffix}"
+        anchors.add(anchor)
+    return anchors
+
+
+def _assert_live_references(text: str, name: str) -> None:
+    paths = _repo_paths(text)
+    assert paths, f"{name}: path extraction found nothing, the check is blind"
+    dead = sorted(p for p in paths if not (ROOT / p).exists())
+    assert not dead, f"{name} cites paths that do not exist: {dead}"
+    dead_anchors = set()
+    for token in [*CODE_SPAN.findall(text), *LINK.findall(text)]:
+        path, separator, anchor = token.split()[0].partition("#") if token.strip() else ("", "", "")
+        if separator and anchor and path in paths and Path(path).suffix == ".md":
+            if anchor not in _heading_anchors((ROOT / path).read_text(encoding="utf-8")):
+                dead_anchors.add(f"{path}#{anchor}")
+    assert not dead_anchors, f"{name} cites anchors that do not exist: {sorted(dead_anchors)}"
+
+
 @pytest.mark.parametrize(("name", "cap"), GUIDANCE.items())
 def test_guidance_file_stays_within_its_line_cap(name: str, cap: int) -> None:
     lines = (ROOT / name).read_text(encoding="utf-8").count("\n")
@@ -41,10 +82,10 @@ def test_guidance_file_stays_within_its_line_cap(name: str, cap: int) -> None:
 @pytest.mark.parametrize("name", GUIDANCE)
 def test_guidance_file_cites_only_existing_paths(name: str) -> None:
     text = (ROOT / name).read_text(encoding="utf-8")
-    paths = _repo_paths(text)
-    assert paths, f"{name}: path extraction found nothing, the check is blind"
-    dead = sorted(p for p in paths if not (ROOT / p).exists())
-    assert not dead, f"{name} cites paths that do not exist: {dead}"
+    _assert_live_references(text, name)
+    _assert_live_references("[CI scope](docs/testing/ci.md#ci-fan-out-and-guard-predicates)", name)
+    with pytest.raises(AssertionError, match="anchors that do not exist"):
+        _assert_live_references("[CI scope](docs/testing/ci.md#planted-dead-anchor)", name)
 
 
 def test_dossier_data_json_is_not_tracked() -> None:
