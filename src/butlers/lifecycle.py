@@ -605,6 +605,14 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
         final_tool_catalog,
         mode=daemon.config.scheduler.obligation_source_mode,
     )
+    from butlers.core.obligation_feed_admission import start_feed_admission
+
+    daemon.obligation_feed_runtime = start_feed_admission(
+        state.pool,
+        daemon,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_feed_admission_mode,
+    )
     diagnose_loaded_schedules(
         daemon.config.schedules,
         owner_domain=daemon.config.name,
@@ -811,6 +819,7 @@ async def run_shutdown(daemon: Any) -> None:
         if (
             getattr(daemon, "_catalog_publication", None) is None
             and getattr(runtime, "admission", None) is None
+            and getattr(daemon, "obligation_feed_runtime", None) is None
         ):
             await _run_shutdown(daemon)
             return
@@ -948,7 +957,12 @@ async def _shutdown_resources(daemon: Any) -> None:
     # an expired admission never earns another admission grace period.
     source_runtime = getattr(daemon, "obligation_schedule_runtime", None)
     domain_runtime = getattr(daemon, "obligation_domain_runtime", None)
-    bounded = getattr(source_runtime, "admission", None) is not None or domain_runtime is not None
+    feed_runtime = getattr(daemon, "obligation_feed_runtime", None)
+    bounded = (
+        getattr(source_runtime, "admission", None) is not None
+        or domain_runtime is not None
+        or feed_runtime is not None
+    )
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
     )
@@ -961,6 +975,12 @@ async def _shutdown_resources(daemon: Any) -> None:
     if domain_runtime is not None:
         try:
             await domain_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
+    if feed_runtime is not None:
+        try:
+            await feed_runtime.aclose()
         except BaseException as exc:
             if admission_error is None:
                 admission_error = exc

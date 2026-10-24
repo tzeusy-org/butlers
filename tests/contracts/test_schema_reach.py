@@ -739,6 +739,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/core/obligation_feed_admission.py",
+        "switchboard.connector_registry",
+    ): "sanctioned:RFC-0038-D1/D5: private Switchboard feed reader locks the exact owning connector endpoint and requires explicit feed metadata on the same verified Switchboard admission transaction; no foreign-domain SQL or legacy message fallback authority",
+    (
+        "src/butlers/core/obligation_feed_admission.py",
+        "switchboard.message_inbox",
+    ): "sanctioned:RFC-0038-D1/D5: private Switchboard feed reader locks its owning canonical accepted inbox after admission ledger locks and binds full persisted material through the same verified runtime transaction; no caller envelope or foreign-domain SQL authority",
+    (
         "src/butlers/core/obligation_domain_sources.py",
         '<dynamic:"{self.owner_domain}".scheduled_tasks>',
     ): "dynamic-local:RFC-0038-D5: exact quoted owning scheduled_tasks selector after validated ObligationSourceRepository current-schema/exact-runtime-role/no-temp-shadow guards and inventory/source locks; durable bus/task material and occurrence are checked on that same owning transaction, not foreign-domain SQL authority",

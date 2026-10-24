@@ -124,6 +124,21 @@ goal or runner. Only a matching Git-owned subscription
 This seam introduces no live subscription engine. A canonical accepted request always uses the same
 `SourceRef("message", request_id)` for dedupe, including feed/message disposition changes.
 
+A separate private Switchboard consumer can offer canonical accepted UUIDs to actual
+GoalAdmission under the strict default-off `obligation_feed_admission_mode`. It is
+not the closed deterministic receiver above and makes no Home recording claim.
+After legacy enqueue, it rereads and locks the persisted inbox, canonical event
+and exact explicit-feed registry row; caller envelopes and the public helper's
+message fallback cannot authorize it. Only the loaded Home Assistant subscription
+and one current complete published fleet snapshot supply its non-actuating,
+resource-constrained, native-notify-eligible ceiling. Persisted skip, metadata-only
+and quarantine dispositions remain no-goal. All feed content starts exposed, with
+no owner/creator/cause stamp or runner activation. The global HA skip and existing
+history/presence writers remain unchanged. Roll back by disabling this private
+consumer first; retain accepted records and immutable admission attempts. Its
+single owned five-second operation bound never turns scheduling or incomplete
+cleanup into a successful goal receipt.
+
 Opaque reply locators resolve against stored transport, endpoint, conversation and recipient
 provenance, independently of the current reply destination. Known inbound content without a trusted
 stamp is exposed. Stored bot effects use actual producing-goal exposure. Live owner prompts join

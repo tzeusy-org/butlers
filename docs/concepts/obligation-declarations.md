@@ -744,3 +744,37 @@ an incomplete release stays retained and refuses further work. Daemon shutdown
 attempts the remaining resource owners before propagating an incomplete close or
 cancellation. Local software controls and PG collection establish neither genuine
 PostgreSQL outcomes nor enabled production delivery.
+
+The private Switchboard accepted-feed consumer is selected separately with
+`butler.scheduler.obligation_feed_admission_mode = "dark"`; its strict default
+is `"off"`, before any added Home configuration, catalog or source reads. No
+roster enables it. The registered ingest closure offers only the committed
+canonical request UUID after existing legacy queue setup, including duplicate
+acceptances. It does not change the response, global Home Assistant skip policy,
+connector filters, deterministic Home history/presence writers or dispatch.
+
+The admission transaction takes its existing attempt/source-ledger locks, then
+locks the owning inbox, matching public canonical event and exact connector
+registry composite-key row. This private reader requires explicit `feed`
+classification, rather than the public helper's legacy message fallback.
+Persisted skip, metadata-only, quarantine, missing content and unmatched feeds
+cannot yield a reasoning goal. Only the actual loaded Home
+`ha-event-response` subscription and one verified current fleet snapshot can
+supply the restricted Home ceiling. The same snapshot supplies resource keys
+and typed native notify eligibility; actuation, transaction, administration and
+owner-authority capabilities are refused. Full accepted sanitized material and
+loaded declaration material bind the durable goal contract digest. Input labels
+and notes remain exposed; they establish no owner stamp, recipient, creator,
+Grant or caused-goal lineage.
+
+The request retains `SourceRef("message", canonical_uuid)` and a deterministic
+attempt UUID across retries and registry-kind drift. Committed no-goal decisions
+remain no-goal. Lost commit replies remain unavailable until that same durable
+identity is read back. Scheduling the private operation is not admission
+success: one retained operation has a single five-second absolute bound;
+capacity, cancellation and incomplete cleanup are explicit unavailable states.
+Shutdown attempts downstream resources even after an admission close error.
+The new migrated-role/concurrency/readback cases are authored and collected
+locally only. A goal reference and ceiling are not runner prompt execution or
+Home domain recording. The original full nine criteria, real creator/cause,
+runner, hosted PostgreSQL and delivery obligations remain separate.

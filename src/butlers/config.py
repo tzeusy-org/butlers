@@ -459,6 +459,8 @@ class SchedulerConfig(_StrictModel):
     obligation_source_mode: Literal["off", "dark"] = "off"
     # Private Switchboard Git admission only; staging and legacy dispatch stay separate.
     obligation_admission_mode: Literal["off", "dark"] = "off"
+    # Private accepted-feed admission only; no connector or roster activation.
+    obligation_feed_admission_mode: Literal["off", "dark"] = "off"
 
     @model_validator(mode="after")
     def _require_staging(self):
@@ -545,6 +547,7 @@ def obligation_config_material_digest(config: ButlerConfig) -> str:
         "subscriptions": [spec.model_dump(mode="json") for spec in config.subscriptions],
         "runtime_seed": config.runtime_seed.model_dump(mode="json"),
         "obligation_source_mode": config.scheduler.obligation_source_mode,
+        "obligation_feed_admission_mode": config.scheduler.obligation_feed_admission_mode,
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
