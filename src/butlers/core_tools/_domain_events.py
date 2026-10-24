@@ -1015,6 +1015,7 @@ def register_domain_event_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             source_butler=source_butler,
             payload=payload,
             subscriber_butler=butler_name,
+            source_preparer=getattr(daemon, "obligation_domain_runtime", None),
         )
 
     @_core_tool("domain_events")

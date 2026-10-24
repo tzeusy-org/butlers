@@ -596,6 +596,15 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
         final_tool_catalog,
         mode=daemon.config.scheduler.obligation_admission_mode,
     )
+    from butlers.core.obligation_domain_sources import start_domain_sources
+
+    daemon.obligation_domain_runtime = start_domain_sources(
+        state.pool,
+        daemon,
+        state.effective_runtime,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_source_mode,
+    )
     diagnose_loaded_schedules(
         daemon.config.schedules,
         owner_domain=daemon.config.name,
@@ -938,7 +947,8 @@ async def _shutdown_resources(daemon: Any) -> None:
     # the existing configured shutdown budget, captured ONCE before joining it;
     # an expired admission never earns another admission grace period.
     source_runtime = getattr(daemon, "obligation_schedule_runtime", None)
-    bounded = getattr(source_runtime, "admission", None) is not None
+    domain_runtime = getattr(daemon, "obligation_domain_runtime", None)
+    bounded = getattr(source_runtime, "admission", None) is not None or domain_runtime is not None
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
     )
@@ -948,6 +958,12 @@ async def _shutdown_resources(daemon: Any) -> None:
             await source_runtime.close_admission()
         except BaseException as exc:
             admission_error = exc
+    if domain_runtime is not None:
+        try:
+            await domain_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
     await _shutdown_after_admission(daemon, admission_error, deadline if bounded else None)
 
 

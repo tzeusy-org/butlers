@@ -678,3 +678,124 @@ async def test_insight_selected_material_replay_fences_failure_and_off(monkeypat
         if not operation.done():
             operation.cancel()
         await asyncio.gather(operation, return_exceptions=True)
+
+
+async def test_domain_preparation_repeated_cancel_retains_absolute_deadline_and_cleanup(
+    tmp_path, monkeypatch
+):
+    """Real registered consumer, retained source connection; no PG proof."""
+    import asyncio
+
+    from butlers.core import obligation_domain_sources as domain
+    from tests.core.test_domain_event_wake import domain_source_consumer
+
+    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch)
+    runtime, c = daemon.obligation_domain_runtime, pool.connection
+    entered, release = asyncio.Event(), asyncio.Event()
+    fetchrow = c.fetchrow
+
+    async def resistant(sql, *args):
+        if "FROM public.domain_events" in sql:
+            entered.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    pass
+        return await fetchrow(sql, *args)
+
+    c.fetchrow = resistant
+    monkeypatch.setattr(domain, "PREPARATION_SECONDS", 0.08)
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": c.event["payload"],
+    }
+    operation = asyncio.create_task(receive(**args))
+    first_task = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        first_task, first_deadline = next(iter(runtime._pending.items()))
+        operation.cancel()
+        await asyncio.sleep(0)
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert not first_task.done() and runtime._pending[first_task] == first_deadline
+        assert len(c.rows) == 1 and c.depth == 1
+        with pytest.raises(RuntimeError, match="domain_preparation_cleanup_incomplete"):
+            await runtime.aclose()
+        assert runtime._pending[first_task] == first_deadline
+        assert await runtime.prepare(next(iter(c.rows)), **args) is None
+        release.set()
+        await asyncio.wait_for(asyncio.shield(first_task), 1)
+        await runtime.aclose()
+        assert c.depth == 0 and not runtime._pending
+        # Completion after caller cancellation was never reported as a successful
+        # committed callback. Explicit readback may now reconcile the stable key.
+        assert len(c.occurrences) == 1
+    finally:
+        release.set()
+        if not operation.done():
+            operation.cancel()
+        await asyncio.wait_for(asyncio.gather(operation, return_exceptions=True), 1)
+        if first_task is not None:
+            await asyncio.wait_for(asyncio.gather(first_task, return_exceptions=True), 1)
+        await runtime.aclose()
+
+
+@pytest.mark.parametrize("outcome", ["healthy", "refused", "cancelled", "downstream_failure"])
+async def test_domain_runtime_close_failure_still_attempts_daemon_downstream_cleanup(
+    tmp_path, monkeypatch, outcome
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from butlers import lifecycle
+    from tests.core.test_domain_event_wake import domain_source_consumer
+
+    daemon, _, _ = await domain_source_consumer(tmp_path, monkeypatch)
+    runtime = daemon.obligation_domain_runtime
+    attempted = []
+
+    async def close():
+        if outcome == "refused":
+            raise RuntimeError("domain_preparation_cleanup_incomplete")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        await runtime.aclose()
+
+    original_close = runtime.aclose
+
+    async def finish_close():
+        if outcome in {"refused", "cancelled"}:
+            return await close()
+        await original_close()
+
+    async def release(name):
+        attempted.append(name)
+        if name == "module" and outcome == "downstream_failure":
+            raise OSError("synthetic downstream failure")
+
+    monkeypatch.setattr(runtime, "aclose", finish_close)
+    daemon.spawner = None
+    daemon.config.shutdown_timeout_s = 1
+    module = SimpleNamespace(name="fixture", on_shutdown=lambda: release("module"))
+    daemon._modules = [module]
+    daemon.blob_store = SimpleNamespace(close=lambda: release("blob"))
+    daemon._audit_db = SimpleNamespace(close=lambda: release("audit"))
+    daemon._shared_credentials_db = SimpleNamespace(close=lambda: release("credentials"))
+    daemon.db.close = lambda: release("main")
+    expected = {
+        "refused": RuntimeError,
+        "cancelled": asyncio.CancelledError,
+        "downstream_failure": BaseExceptionGroup,
+    }.get(outcome)
+    if expected:
+        with pytest.raises(expected):
+            await lifecycle._shutdown_resources(daemon)
+    else:
+        await lifecycle._shutdown_resources(daemon)
+    assert attempted == ["module", "blob", "audit", "credentials", "main"]
+    assert not getattr(daemon, "_admission_cleanup_tasks", set())

@@ -490,6 +490,7 @@ class ObligationSourceRepository:
         slot: str | None = None,
         event_id: UUID | None = None,
         feed: bool = False,
+        event_reference: dict | None = None,
     ) -> UUID:
         """Capture an already source-validated slot/event; not event verification.
 
@@ -526,10 +527,47 @@ class ObligationSourceRepository:
                 "SELECT id FROM obligation_occurrences WHERE source_key=$1",
                 ref.key,
             )
-        await self._outbox(
-            source_id, revision, "occurrence_captured", {"occurrence_id": str(row["id"])}
-        )
+        reference = {"occurrence_id": str(row["id"])}
+        if event_reference is not None:
+            if (
+                value.family != "subscription"
+                or type(event_reference) is not dict
+                or set(event_reference)
+                != {"event_id", "subscription_id", "delivery_id", "task_id", "material_digest"}
+                or any(
+                    type(event_reference[key]) is not UUID
+                    for key in ("event_id", "subscription_id", "delivery_id", "task_id")
+                )
+                or event_reference["event_id"] != event_id
+                or not isinstance(event_reference["material_digest"], str)
+                or not _REVISION.fullmatch(event_reference["material_digest"])
+            ):
+                raise SourceConflict("invalid_event_reference")
+            reference |= {key: str(item) for key, item in event_reference.items()}
+            await self.check_event_reference(source_id, revision, row["id"], reference, new=True)
+        await self._outbox(source_id, revision, "occurrence_captured", reference)
         return row["id"]
+
+    async def check_event_reference(
+        self, source_id: UUID, revision: str, occurrence_id: UUID, reference: dict, *, new=False
+    ) -> None:
+        """Compare immutable full-material binding under the owning source lock.
+
+        Only closed UUIDs/digests enter the existing journal. A replay cannot
+        append a different binding beside the first or upgrade a bare capture.
+        Caller must validate and fence the actual bus/task rows in this TX.
+        """
+        await self.lock_source(source_id)
+        rows = await self.connection.fetch(
+            """SELECT reference FROM obligation_source_outbox
+               WHERE source_id=$1 AND revision=$2 AND kind='occurrence_captured'
+               AND reference->>'occurrence_id'=$3""",
+            source_id,
+            revision,
+            str(occurrence_id),
+        )
+        if (not rows and not new) or any(row["reference"] != reference for row in rows):
+            raise SourceConflict("domain_capture_binding_changed")
 
     async def cancel_occurrence(self, source_id: UUID, occurrence_id: UUID) -> None:
         """Durable idempotent cancellation, including an already claimed row."""

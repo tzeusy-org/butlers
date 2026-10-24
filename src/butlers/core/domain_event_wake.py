@@ -257,6 +257,7 @@ async def handle_receive_domain_event(
     source_butler: str,
     payload: dict[str, Any],
     subscriber_butler: str,
+    source_preparer=None,
 ) -> dict[str, Any]:
     """Reconcile this subscriber's own one-shot wake task for a fanned-out event.
 
@@ -272,6 +273,21 @@ async def handle_receive_domain_event(
     """
     task_name = task_name_for(event_id, subscriber_butler)
 
+    async def prepare(task_id):
+        if source_preparer is not None:
+            # Successful legacy wake remains successful on dark refusal/error.
+            # Cancellation remains visible; the preparer owns bounded cleanup.
+            try:
+                await source_preparer.prepare(
+                    task_id,
+                    event_id=event_id,
+                    event_type=event_type,
+                    source_butler=source_butler,
+                    payload=payload,
+                )
+            except Exception:
+                logger.warning("Domain dark preparation unavailable")
+
     existing = await _find_local_task_by_name(pool, task_name)
     if existing is not None:
         if _task_matches_wake(existing, event_id=event_id, subscriber_butler=subscriber_butler):
@@ -281,6 +297,7 @@ async def handle_receive_domain_event(
                 subscriber=subscriber_butler,
                 phase="wake_reconciled",
             )
+            await prepare(existing["id"])
             return {
                 "status": "ok",
                 "state": "task_created",
@@ -328,6 +345,7 @@ async def handle_receive_domain_event(
                 subscriber=subscriber_butler,
                 phase="wake_reconciled",
             )
+            await prepare(raced["id"])
             return {
                 "status": "ok",
                 "state": "task_created",
@@ -350,6 +368,7 @@ async def handle_receive_domain_event(
         subscriber=subscriber_butler,
         phase="wake_created",
     )
+    await prepare(task_id)
     return {
         "status": "ok",
         "state": "task_created",

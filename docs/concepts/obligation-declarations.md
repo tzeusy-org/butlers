@@ -704,3 +704,43 @@ source, tombstones removed/changed ones and cancels their occurrences, and still
 refuses unknown/malformed/dangling ordinary Git sources. It introduces neither a
 new origin nor a fabricated runtime creator. Existing source bodies without this
 optional payload retain their original encoding.
+
+
+## Durable domain-wake dark preparation
+
+The existing `butler.scheduler.obligation_source_mode="dark"` also binds a private
+preparer to the daemon's registered `receive_domain_event` closure. The default
+`off` returns before inspecting configuration or adding bus/source IO. No public
+argument selects a preparer, and this path does not call GoalAdmission or change
+legacy wake dispatch, validity semantics or reaction reporting.
+
+After successful legacy creation/reconciliation, the preparer uses one fresh
+owning-role transaction. It locks the owning inventory, command and source before
+the durable shared event, active subscriber, delivery and subscriber-local task.
+It checks the actual loaded domain declaration, held policy/final local registry,
+complete event payload and exact generated task material. A matching footer or
+transport event ID alone cannot authorize staging. The existing bus writer's
+serialized JSON-object representation is decoded conservatively; scalar or
+malformed data refuses dark preparation.
+
+The immutable `occurrence_captured` journal carries only occurrence/event,
+subscription, delivery and task UUIDs plus a full-material digest. Replay compares
+the first binding, rather than appending changed input beside it. Committed dark
+readback independently repeats the durable checks and claim fence; source failure
+or lost commit acknowledgement never becomes claimed success. Stable source,
+occurrence and claim identities allow explicit reconciliation. No raw event or
+prompt is added to the journal.
+
+Missing publishing-owner stamps always project `created_exposed=True`, regardless
+of payload-supplied owner, exposure or lineage fields. The current bus does not
+provide verified causing-goal/effect assertions: this is durable dark preparation,
+not caused admission, creator/Grant evidence or runner execution. Finance still
+has no actual domain declaration, and this mechanism does not add one or certify
+all current 99 schedules / 19 families.
+
+Each operation retains its own five-second absolute lifetime. Cancellation,
+including repeated cancellation, joins that same task without resetting grace;
+an incomplete release stays retained and refuses further work. Daemon shutdown
+attempts the remaining resource owners before propagating an incomplete close or
+cancellation. Local software controls and PG collection establish neither genuine
+PostgreSQL outcomes nor enabled production delivery.

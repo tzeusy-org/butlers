@@ -123,9 +123,19 @@ async def prepare_dark_submission(
             creator_invocation=creator.invocation_id if creator else None,
             # Insight/model-job inputs lack a verified transitive lineage
             # stamp. Their static Git origin must not certify unexposed input.
-            created_exposed=creator.exposed if creator else definition.family == "model_job",
+            created_exposed=creator.exposed
+            if creator
+            else definition.family in {"model_job", "subscription"},
         ),
     )
+
+
+@dataclass(frozen=True)
+class DomainDarkSubmission:
+    """Committed dark source plus reread input, never authenticated cause evidence."""
+
+    dark: DarkSubmission
+    material_json: str
 
 
 @dataclass(frozen=True)

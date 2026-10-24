@@ -54,6 +54,7 @@ from butlers.core_tools._domain_events import (
 )
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.integration.test_obligation_source_commit import owning_sources as owning_sources
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -1532,3 +1533,224 @@ async def test_list_recent_deliveries_orders_most_recent_first(pool: asyncpg.Poo
     event_ids = [row["event_id"] for row in rows[:2]]
     assert str(event_ids[0]) == second["event_id"]
     assert str(event_ids[1]) == first["event_id"]
+
+
+# Reuse the existing genuine migrated/bootstrap/real-role source fixture.
+# These cases are authored and collected locally, never relabeled as executed PG.
+
+
+@pytest.mark.parametrize("rollback", [False, True], ids=["committed", "source-rollback"])
+async def test_registered_domain_dark_publisher_fanout_and_independent_readback(
+    owning_sources, tmp_path, monkeypatch, rollback
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from tests.core.test_domain_event_wake import domain_source_consumer
+
+    pool = owning_sources.pool
+    daemon, _, receive = await domain_source_consumer(tmp_path, monkeypatch, owning_pool=pool)
+    runtime = daemon.obligation_domain_runtime
+    await upsert_subscription(pool, subscriber_butler="health", event_type="travel.trip_booked")
+
+    class FaultConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO obligation_source_outbox" in sql:
+                # A genuine SQL abort inside the owning source transaction.
+                await self.connection.execute("SELECT 1/0")
+            return await self.connection.execute(sql, *args)
+
+    class FaultPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as connection:
+                yield FaultConnection(connection)
+
+    if rollback:
+        runtime.pool = FaultPool()
+
+    class Receiver:
+        async def call_tool(self, name, arguments):
+            assert name == "route" and arguments["tool_name"] == "receive_domain_event"
+            if arguments["target_butler"] != "health":
+                return SimpleNamespace(is_error=True, data={"error": "not fixture subscriber"})
+            return SimpleNamespace(
+                is_error=False, data={"result": await receive(**arguments["args"])}
+            )
+
+    published = await publish_domain_event(
+        pool,
+        Receiver(),
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": str(uuid.uuid4())},
+    )
+    event_id = uuid.UUID(published["event_id"])
+    async with pool.acquire() as observer:
+        assert await observer.fetchval("SELECT current_user") == "butler_health_rw"
+        delivery = await observer.fetchrow(
+            "SELECT * FROM public.domain_event_deliveries "
+            "WHERE event_id=$1 AND subscriber_butler='health'",
+            event_id,
+        )
+        assert delivery["status"] == "delivered"
+        task_id = delivery["task_id"]
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM health.scheduled_tasks WHERE id=$1", task_id
+            )
+            == 1
+        )
+        refs = await observer.fetch(
+            "SELECT reference FROM health.obligation_source_outbox "
+            "WHERE kind='occurrence_captured' AND reference->>'event_id'=$1",
+            str(event_id),
+        )
+        assert len(refs) == (0 if rollback else 1)
+    if not rollback:
+        # Reconstruct the actual published payload; readback is another fresh
+        # acquisition and owning transaction, not the staged callback's DTO.
+        event = await pool.fetchrow(
+            "SELECT event_type,source_butler,payload FROM public.domain_events WHERE id=$1",
+            event_id,
+        )
+        import json
+
+        payload = event["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        result = await runtime.read_committed(
+            task_id,
+            event_id=event_id,
+            event_type=event["event_type"],
+            source_butler=event["source_butler"],
+            payload=payload,
+        )
+        assert result.dark.obligation.created_exposed is True
+        assert json.loads(result.material_json)["event"]["payload"] == payload
+        assert set(refs[0]["reference"]) == {
+            "occurrence_id",
+            "event_id",
+            "subscription_id",
+            "delivery_id",
+            "task_id",
+            "material_digest",
+        }
+        async with pool.acquire() as observer:
+            row = await observer.fetchrow(
+                "SELECT state,claim_token FROM health.obligation_occurrences WHERE id=$1",
+                result.dark.occurrence_id,
+            )
+            assert row["state"] == "claimed" and row["claim_token"] == result.dark.claim_token
+    await runtime.aclose()
+
+
+async def test_domain_dark_deactivation_race_and_exact_role_shadow_refusal(
+    owning_sources, tmp_path, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from butlers.core.domain_events import record_event
+    from butlers.core.obligation_sources import SourceConflict
+    from tests.core.test_domain_event_wake import domain_source_consumer
+    from tests.polling import poll_until
+
+    pool = owning_sources.pool
+    daemon, _, receive = await domain_source_consumer(tmp_path, monkeypatch, owning_pool=pool)
+    runtime = daemon.obligation_domain_runtime
+    await upsert_subscription(pool, subscriber_butler="health", event_type="travel.trip_booked")
+    event_id = uuid.UUID(
+        await record_event(
+            pool,
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            payload={"trip_id": "race"},
+        )
+    )
+    await claim_delivery(pool, event_id=event_id, subscriber_butler="health")
+    args = dict(
+        event_id=str(event_id),
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": "race"},
+    )
+    contender = []
+
+    class HeldPool:
+        def __init__(self, connection=None):
+            self.connection = connection
+
+        @asynccontextmanager
+        async def acquire(self):
+            if self.connection is not None:
+                yield self.connection
+            else:
+                async with pool.acquire() as c:
+                    contender.append(c.get_server_pid())
+                    yield c
+
+    runtime.pool = HeldPool()
+    task = None
+    try:
+        async with owning_sources.administrator() as holder, holder.transaction():
+            await holder.execute(
+                "UPDATE public.butler_subscriptions SET active=false "
+                "WHERE subscriber_butler='health' AND event_type='travel.trip_booked'"
+            )
+            holder_pid = holder.get_server_pid()
+            task = asyncio.create_task(receive(**args))
+
+            async def blocked():
+                if task.done():
+                    await task
+                    raise AssertionError("source completed before subscription lock release")
+                if not contender:
+                    return False
+                assert len(contender) == 1 and contender[0] != holder_pid
+                return await holder.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity "
+                    "WHERE pid=$1 AND datname=current_database() "
+                    "AND $2=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')",
+                    contender[0],
+                    holder_pid,
+                )
+
+            async with asyncio.timeout(3):
+                await poll_until(blocked, interval_s=0.01)
+        result = await asyncio.wait_for(asyncio.shield(task), 5)
+        assert result["status"] == "ok"  # legacy wake survives dark refusal
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM health.obligation_source_outbox "
+                "WHERE reference->>'event_id'=$1",
+                str(event_id),
+            )
+            == 0
+        )
+    await upsert_subscription(pool, subscriber_butler="health", event_type="travel.trip_booked")
+    task_id = uuid.UUID(result["task_id"])
+    runtime.pool = owning_sources.peer
+    with pytest.raises(SourceConflict, match="owning_role_required"):
+        await runtime._consume(task_id, **args)
+    # Construct the shadow with fixture-admin authority, then drop to the
+    # ordinary runtime role on that SAME connection. Runtime TEMP stays denied.
+    async with owning_sources.administrator() as c:
+        await c.execute("CREATE TEMP TABLE scheduled_tasks (id uuid)")
+        await c.execute("SET ROLE butler_health_rw")
+        await c.execute("SET search_path TO health,public")
+        runtime.pool = HeldPool(c)
+        with pytest.raises(SourceConflict, match="owning_schedule_relation_required"):
+            await runtime._consume(task_id, **args)
+    runtime.pool = pool
+    await runtime.aclose()
