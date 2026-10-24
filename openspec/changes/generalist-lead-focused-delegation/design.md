@@ -71,31 +71,13 @@ assigned from this evaluation, not from vendor benchmarks.
 
 ## Cross-change collisions
 
-The [complete disposition ledger](collision-dispositions.md) retains the original nineteen authoring-list changes and the fresh entire active-change census. At the recorded base, 45 active changes touch the 79 capabilities this change modifies or removes; the six-requirement/56-scenario dashboard fast-answer change is an additional explicit D18 collision and is treated first. The full affected-change population is 443 requirements and 1,968 scenarios.
-
-Each ledger row requires archive-first, a reviewed re-scope, or an explicit whole-body fold-in before task4.2. A recorded disposition does not mean that its archive, foreign owner transfer, approval or PR has occurred. Same-name MODIFIED blocks must be rebuilt from the actual refreshed baseline; every full scenario body stays authoritative until its successor is concretely preserved and signed where required.
-
-PR4485 cannot introduce its tool-capable model path outside goals. Its complete signed twelve-choice contract is re-scoped through feature-request amendment mode, with genuine independent review and a resolving owner choice before that changed behavior is implemented. No new D18 exception or decision change is proposed.
-
-The dashboard capability successors remain owned by the separate D19 change and its owner signoff. Existing source/custody gates and foreign claims remain binding; D19's historical generic retirement drafts are not whole-clause preservation proof; its current qualified review and authority limits are below.
-
-
-
-
-### Complete correction5 functional composer — proposed, unadopted
-
-All46outcomes (18archive-first/24rescope/4fold-in),19named scope changes,443originalrequirements/1968oldscenarios/4604oldparagraphs,324Generalist bodies, full Generalist81files1083cases79blocks, four complete folds,21outside101REQ498SC,121archive-later complete MODIFIED bodies and12provisional identities remain. The actual future remains443REQ2010SC. Every2010C4case and full C2/C3/C4 repair union has an actual complete C5successor; no case was removed or added. Current source transport has94changed/38unchanged/132coalesced paths and172atomic paths. Counts/hashes are not semantic or execution proof.
-
-C15 removes recipient/message resolution as retry authority. Automatic enqueue requires affirmative proven pre-send/not-attempted evidence, complete recipient/message and the existing bounded policy. A confirmed external receipt survives bookkeeping faults with no resend. Begun/possibly begun transport without confirmation stays explicit uncertain and runtime-attention terminal under the existing claim/token/epoch/lease fence, with only the existing authenticated owner-confirmed one-successor reissue path. Closed safe failure reasons, quiet-hours deliver_at, the single deferral path, supersede dedupe and confirmed-only debounce remain.
-
-C16 preserves the mandatory fixed private-result/public-audit transaction and constrained NOLOGIN audit writer. Projection rejection rolls the enclosing attempted result/timestamp/failure epoch back. Only genuine post-commit best-effort attention/independent telemetry may fail without erasing a committed result. Uncommitted/unavailable attempt evidence creates no new checked_at/failing_since or24hour fail clock. Reader/API and due checks retain only the last actual committed result, immediate no-result policy, or truthful degraded authority read. Cleanup, closed stage/code vocabulary,512character sanitization, seven-day committed-pass/24-hour committed-fail cadence, privilege boundaries and real-PG obligations survive in the complete cases.
-
-All prior F01–F09/C01–C14 repairs remain binding, including closed D15 prompts, trusted/exposed Memory partitions and scoped apply, fixed authenticated QA relay/truthful attribution, admitted effect-free readiness, absolute initial+at-most-one pre-capability replacement, exact Education obligation grants and same bound map150cases, native deny-all, operation-bound DB-free host, existing custody/control provenance transaction owner, complete5+6coverage, retained TOML orphan cadence, original fullspan ingress/WhatsApp, current goal/invocation fleet facts, and core-ingest Telegram lifecycle ownership. Actual three-control attachment synthetic goals retain fullD3/D5/D7/D14grant/tuple/custody/private comparison/redaction/cleanup/zero-retry rules; tool-lessD18measurement cannot substitute. Full two-RFC proposals remain exact C4 candidates, unadopted. No eligibility/custodyB/private/PG/M6 release.
-
-PR4485 remains first: no new goal-external tool-capable D18fast-answer exception. Operative6REQ56SC and separate held4file8REQ65SC/canonical8/65candidate remain distinct with all12SIGNEDhistory choices,12unsigned treatments,oneexactUNSENTquestion,sevencompound obligations/sixcitationcases. Four native append proposals remain unchanged/unapplied. Inherited outside-onlyO01–O03 retain complete bodies/treatments/existing-holder limits and are not introduced by this composer.
-
-Latest full native query2026-10-15T00:31:53.689715+00:00–2026-10-15T00:31:55.955834+00:00 is8934ALL136READY320BLOCKED31IP58OPEN/allfiveexit0, with210full relevant holders/204rowrefs and58unchangedheads/1354complete paginatedpublic files. Foreign authority and source allocations remain held. Existing PR4524/4525/4526 ordinary green contexts do not clear protected failed runs or establish merge/delivery. OriginalAC1–3 remainunmet;AC4source-onlyTests:+0~0-0 preserved. Allstrict/guards/productgates remainUNRUN; inherited trace NONPASS. Fresh independent whole review and exact ROOT/holder source allocation/adoption precede any repository action.
-
+Other active changes edit capabilities that this change modifies or removes.
+Each one is archived first, re-scoped to the goal runtime, folded into this
+change, or withdrawn by owner decision before task 4.2 applies the deltas.
+`define-dashboard-fast-answer-runtime` is settled first, because it adds a
+model path outside goals that D18 forbids. The census, the disposition and
+owner for each change, and the requirement blocks both deltas edit are listed
+in [collision-dispositions.md](collision-dispositions.md).
 
 ## Spec format note
 
@@ -112,3 +94,42 @@ use multi-WHEN scenarios, a MODIFIED block repeats its baseline ID, and
 REMOVED blocks carry `Reason`/`Migration` rather than `ID`/`Source`/`Scope`.
 Backfilling IDs across the baseline is left to the post-switch RFC and spec
 reorganization.
+
+## Shared contract authority and source composition (2026-10-24)
+
+The proposed RFC0038 S0–S8 section is the single field/state/API home. New
+independently named ADDED blocks reference it rather than replacing existing
+Model Resolution, goal008, adapter, origin or sandbox clauses. The complete
+old Model Resolution paragraph and Source line remain byte-identical. The
+closed source baseline and protected-span evidence are recorded in
+[shared-contract-coverage.md](shared-contract-coverage.md).
+
+PR4872's unmerged D20 source is not copied, repaired or adopted. Its existing
+replacement spans and insertion gaps remain unchanged. .19's fresh requirement
+IDs do not reuse its research identity or current017/018 owner contracts.
+Independent structural additions preserve existing roles/grants/eligibility;
+owner-fast is a profile, not a new role or fallback. Any future union must keep
+all adopted research bytes and its separate enqueue reservation. Its
+pre-existing identity collision remains foreign custody, not a .19 permission
+or a new global gate.
+
+The source ledger is actual switchboard/sw_047 → sw_050 → sw_051, including
+immutable attempt/source-to-canonical decision bindings and terminal
+recorded_without_goal dispositions; held sw_048/sw_049 are not delivered. Migration/producers/replay/
+shadow readers/enforcement are serialized as RFC S2/S3, with sole mutation
+owners and no permanent parallel writer or unsafe rollback. The coverage table
+keeps selected first-switch source and M6 gates distinct from M7/later owners;
+.19 cannot close on unbuilt behavior or unrecorded adoption.
+
+## Accepted interface-review corrections (R1–R4)
+
+RFC S2.1 discriminates real owner-reply, non-reply and condition-fire inputs in
+the one inbox; kind-specific nullability/composite FKs and the one-time
+consumed_at/epoch tuple retain historical consumed rows without invented epochs.
+S2.2 rearms only a new generation of the unchanged approved envelope with a
+cumulative count/deadline and durable prior-fire cursor. S3.1 fixes the initial
+kind/alias/eight-mode wire; S3.2 retains Dots confirmation/late/history-preserving
+retraction and page-independent reader disposition. S7 separates exact
+authenticated internal peers from restrictive external gateway egress.
+These complete existing boundaries; all original task states, ownership, held
+choices, adoption/activation/M6 and current-source invariants remain unchanged.

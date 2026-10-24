@@ -322,12 +322,37 @@ class ChannelIdCondition(BaseModel):
         return v
 
 
-def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
+#: Per-rule opt-in stored in the condition JSONB (bu-q7vx1q.88.3): a block or skip rule passes a
+#: known contact. Stored only when true; an absent key means off.
+EXCEPT_KNOWN_CONTACTS_KEY = "except_known_contacts"
+_EXCEPT_KNOWN_CONTACTS_ACTIONS = frozenset({"block", "skip"})
+
+
+def validate_condition(
+    rule_type: str, condition: dict[str, Any], action: str | None = None
+) -> dict[str, Any]:
     """Validate condition JSONB against the rule_type schema.
 
-    Returns the validated condition dict.
+    Returns the validated condition dict, keeping the optional ``except_known_contacts`` flag
+    (a bool, true only on a block or skip ``action`` when one is given).
     Raises ValueError on schema mismatch.
     """
+    base = {k: v for k, v in condition.items() if k != EXCEPT_KNOWN_CONTACTS_KEY}
+    validated = _validate_rule_condition(rule_type, base)
+    if EXCEPT_KNOWN_CONTACTS_KEY in condition:
+        flag = condition[EXCEPT_KNOWN_CONTACTS_KEY]
+        if not isinstance(flag, bool):
+            raise ValueError(f"{EXCEPT_KNOWN_CONTACTS_KEY} must be a boolean")
+        if flag:
+            if action is not None and action not in _EXCEPT_KNOWN_CONTACTS_ACTIONS:
+                raise ValueError(
+                    f"{EXCEPT_KNOWN_CONTACTS_KEY} is only valid on block or skip rules"
+                )
+            validated[EXCEPT_KNOWN_CONTACTS_KEY] = True
+    return validated
+
+
+def _validate_rule_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
     if rule_type == "sender_domain":
         return SenderDomainCondition(**condition).model_dump()
     elif rule_type == "sender_address":
@@ -494,7 +519,7 @@ class IngestionRuleCreate(BaseModel):
             raise ValueError(str(exc)) from exc
         # Validate condition schema
         try:
-            validate_condition(self.rule_type, self.condition)
+            validate_condition(self.rule_type, self.condition, self.action)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
         # Validate rule_type is compatible with scope
@@ -543,6 +568,9 @@ class IngestionRuleTestEnvelope(BaseModel):
     headers: dict[str, str] = {}
     mime_parts: list[str] = []
     raw_key: str = ""
+    known_contact: bool | None = None
+    """Optional: pretend the sender is (``true``) or is not (``false``) a known contact, to try
+    a rule's "except people I know" option. Omitted means unclassified, so the rule applies."""
 
 
 class IngestionRuleTestRequest(BaseModel):

@@ -132,6 +132,7 @@ from butlers.google_credentials import (
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, CHANNEL_KIND_FEED
 from butlers.oauth_token_payload import (
     OAuthTokenValidationError,
     validate_oauth_token_payload,
@@ -1215,6 +1216,7 @@ class GoogleHealthConnector:
                 "uptime_s": 0,
             },
             "counters": {},
+            "capabilities": {CHANNEL_KIND_CAPABILITY: CHANNEL_KIND_FEED},
             "sent_at": datetime.now(UTC).isoformat(),
         }
         try:
@@ -1257,6 +1259,7 @@ class GoogleHealthConnector:
                 endpoint_identity=ctx.endpoint_identity,
             ),
             get_health_state=_account_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._heartbeats[ctx.account_id] = hb
 
@@ -1292,6 +1295,7 @@ class GoogleHealthConnector:
             mcp_client=self._mcp_client,
             metrics=metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._degraded_heartbeat.start()
         # Do not wait for the normal heartbeat interval: replacing the final
@@ -1336,6 +1340,7 @@ class GoogleHealthConnector:
                 mcp_client=self._mcp_client,
                 metrics=self._metrics,
                 get_health_state=self._get_health_state,
+                channel_kind=CHANNEL_KIND_FEED,
             )
         else:
             # Accounts already known — stop any degraded heartbeat and ensure

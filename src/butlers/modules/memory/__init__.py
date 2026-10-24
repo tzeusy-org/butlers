@@ -17,7 +17,7 @@ import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 from butlers.transport_identifiers import is_whatsapp_transport_identifier
 
 
@@ -307,17 +307,11 @@ class MemoryModule(Module):
         self._maintenance_runtime_owner: str | None = None
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
-    @property
-    def name(self) -> str:
-        return "memory"
+    name = "memory"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return MemoryModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the full reclassification command as safety-critical."""
@@ -880,12 +874,7 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import reading as _reading
         from butlers.modules.memory.tools import writing as _writing
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, config)
 
         # --- Writing tools ---
 

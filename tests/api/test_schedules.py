@@ -16,8 +16,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.routers.schedules import _coerce_complexity, _get_db_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
+from butlers.api.routers.schedules import _coerce_complexity
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +63,7 @@ def _wire_db(app, *, fetch_rows=None):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas", "switchboard"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_db, mock_pool
 
 
@@ -77,7 +77,7 @@ def _wire_mcp(app, *, result=None):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_client
 
@@ -92,7 +92,7 @@ def _wire_unreachable(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app
 
@@ -157,7 +157,7 @@ async def test_list_coerces_legacy_complexity(app, stored, expected):
 async def test_list_503_when_db_unavailable(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.side_effect = KeyError("no pool")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

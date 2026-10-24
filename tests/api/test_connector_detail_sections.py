@@ -25,7 +25,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -143,7 +143,7 @@ def _wire_pool(app, pool):
     """Override _get_db_manager with a mock DatabaseManager backed by pool."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -151,7 +151,7 @@ def _wire_pool_unavailable(app):
     """Override _get_db_manager to simulate a missing switchboard pool."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.side_effect = KeyError("switchboard pool not available")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 

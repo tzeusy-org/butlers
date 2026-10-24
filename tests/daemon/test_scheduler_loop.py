@@ -110,8 +110,8 @@ def _patch_infra():
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter",
             return_value=type(
                 "MockAdapter",
                 (),
@@ -119,7 +119,7 @@ def _patch_infra():
                     "binary_name": "claude",
                     "__init__": lambda self, **kwargs: None,
                 },
-            ),
+            )(),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -200,7 +200,7 @@ class TestSchedulerLoopBehavior:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -356,3 +356,104 @@ class TestSchedulerLoopBehavior:
             except asyncio.CancelledError:
                 pass
         assert all(s == 42 for s in sleep_calls)
+
+
+async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch):
+    """REQ-context-bus-016: no direct deferred-send bypass of unavailable reads."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from butlers import background
+
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(return_value=[])
+    client = MagicMock(call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={})))
+    envelope = {
+        "schema_version": "notify.v1",
+        "delivery": {
+            "intent": "send",
+            "priority": "high",
+            "message": "routine",
+            "recipient": "owner",
+        },
+    }
+
+    completed = []
+
+    async def tick(pool, dispatch, *, notify_fn, **kwargs):
+        from uuid import uuid4
+
+        from butlers.core.scheduler import _tick_deferred_notification_pass
+
+        now = datetime.now(UTC)
+        anchor = now - timedelta(minutes=1)
+        state = {"status": "pending", "deliver_at": anchor}
+        queued = MagicMock(fetchval=AsyncMock(return_value=True))
+        row = {
+            "id": uuid4(),
+            "butler_name": "health",
+            "channel": "telegram",
+            "message": "routine",
+            "priority": "high",
+            "envelope": envelope,
+        }
+
+        async def fetch(*args):
+            return [row] if state["status"] == "pending" else []
+
+        async def execute(sql, *args):
+            if "SET status = 'expired'" in sql and state["deliver_at"] < args[0]:
+                state["status"] = "expired"
+            elif "SET status = 'delivered'" in sql:
+                state["status"] = "delivered"
+            return "UPDATE 1"
+
+        queued.fetch = AsyncMock(side_effect=fetch)
+        queued.execute = AsyncMock(side_effect=execute)
+        pool.fetchrow.side_effect = RuntimeError("policy unavailable")
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+        assert state == {"status": "pending", "deliver_at": anchor}
+        client.call_tool.assert_not_awaited()
+        pool.fetchrow.side_effect = None
+        pool.fetch.side_effect = RuntimeError("context unavailable")
+        for _ in range(2):
+            assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+            assert state == {"status": "pending", "deliver_at": anchor}
+            client.call_tool.assert_not_awaited()
+        pool.fetch.side_effect = None
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 1
+        assert state["status"] == "delivered"
+        assert await _tick_deferred_notification_pass(queued, now, notify_fn=notify_fn) == 0
+        client.call_tool.assert_awaited_once()
+        # Original queue expiry still retires stale work; it never becomes a
+        # send permission while attention reads remain unavailable.
+        state["status"] = "pending"
+        pool.fetch.side_effect = RuntimeError("context unavailable")
+        assert (
+            await _tick_deferred_notification_pass(
+                queued, now + timedelta(hours=25), notify_fn=notify_fn
+            )
+            == 0
+        )
+        assert state == {"status": "expired", "deliver_at": anchor}
+        client.call_tool.assert_awaited_once()
+        completed.append(True)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(background.asyncio, "sleep", _fast_sleep)
+    await asyncio.wait_for(
+        background.scheduler_loop(
+            pool=pool,
+            dispatch_fn=AsyncMock(),
+            interval=0,
+            butler_name="health",
+            tick_fn=tick,
+            get_switchboard_client=lambda: client,
+            get_db=lambda: SimpleNamespace(pool=pool),
+        ),
+        timeout=2,
+    )
+    # The production loop catches ordinary tick failures. Assert outside it so
+    # neither a swallowed test assertion nor cancellation can manufacture PASS.
+    assert completed == [True]

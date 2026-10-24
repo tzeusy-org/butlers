@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -112,7 +112,7 @@ def _build_app(
 
     mock_db.pool = MagicMock(side_effect=_pool_for)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_db, fetch_calls
 
 

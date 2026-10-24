@@ -120,7 +120,7 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     mock_credential_store = AsyncMock()
     mock_credential_store.resolve = AsyncMock(return_value=None)
@@ -155,7 +155,9 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value=mock_credential_store,
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
@@ -193,7 +195,7 @@ async def _start_daemon_with_notify(
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
         patches["build_credential_store"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
     ):
         daemon = ButlerDaemon(butler_dir)

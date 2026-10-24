@@ -600,10 +600,6 @@ def test_renderability_warning_boundaries(case):
 def test_estimated_prompt_length_follows_current_template(case):
     from datetime import timedelta
 
-    from butlers.jobs.decision_review import _parse_timestamp
-    from butlers.jobs.decision_routing import compose_prompt_message
-    from tests.decision_desk_helpers import make_bead
-
     now = _renderability_context()
     issue = _decision_issue(created_at=(now - timedelta(hours=3)).isoformat())
     if case == "days_default_repeat":
@@ -628,22 +624,19 @@ def test_estimated_prompt_length_follows_current_template(case):
         issue["created_at"] = "not-a-date"
         issue["due_at"] = "present-but-invalid"
         issue["title"] = "t" * 4097
-    created = _parse_timestamp(issue.get("created_at"))
-    due = _parse_timestamp(issue.get("due_at"))
-    options = tuple(issue["metadata"]["decision"]["options"])
-    bead = make_bead(
-        issue["id"],
-        title=issue["title"],
-        options=options,
-        default=issue["metadata"]["decision"]["default"],
-        age=now - created if created else timedelta(0),
-    )
-    from dataclasses import replace
-
-    bead = replace(bead, due_at=due)
-    estimate, lower_bound = ldb._estimated_prompt_length(issue, now=now)
-    assert estimate == len(compose_prompt_message(bead))
-    assert lower_bound is (created is None or due is None)
+    # Fixed receipts from the independent formatter before product retirement.
+    expected = {
+        "hours": (181, False),
+        "days_default_repeat": (1163, False),
+        "future_creation": (181, False),
+        "offset_due": (181, False),
+        "naive_due": (181, False),
+        "missing_due": (165, True),
+        "unicode": (645, False),
+        "newlines_two_digit_numbering": (308, False),
+        "incomplete_dates_lower_bound": (4224, True),
+    }
+    assert ldb._estimated_prompt_length(issue, now=now) == expected[case]
     result = ldb.lint_issue(issue, now=now)
     if case == "incomplete_dates_lower_bound":
         assert result.ok  # Existing linter checks due presence, not timestamp validity.
@@ -667,13 +660,3 @@ def test_warning_cli_runs_with_only_stdlib(tmp_path):
     )
     assert proc.returncode == 0
     assert json.loads(proc.stdout)[0]["warnings"]
-
-
-def test_weekly_lint_accepts_advisory_warning_json(tmp_path):
-    from butlers.jobs.decision_review import _run_unlabeled_marker_lint
-
-    fixture = tmp_path / "weekly.jsonl"
-    fixture.write_text(json.dumps(_decision_issue(title="t" * 4097)) + "\n")
-    result = _run_unlabeled_marker_lint(fixture)
-    assert result.available is True
-    assert result.violations == ()

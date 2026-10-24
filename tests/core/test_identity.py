@@ -569,6 +569,10 @@ async def test_owner_whatsapp_user_client_failure_log_is_content_blind(
 
     assert result is None
     assert "identity.owner_channel_resolution_failed" in caplog.messages
+    with pytest.raises(RuntimeError):
+        await resolve_owner_channel_via_definer(
+            pool, "whatsapp_user_client", sentinel_jid, raise_on_error=True
+        )
     assert sentinel_jid not in caplog.text
     assert "15551234567" not in caplog.text
     assert sentinel_error not in caplog.text

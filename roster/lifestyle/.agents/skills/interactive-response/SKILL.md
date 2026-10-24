@@ -21,7 +21,7 @@ When processing messages that originated from Telegram or other interactive chan
 
 **Email is NOT an interactive channel.** Do not reply to, forward, or send emails in response to routed email content. Use `notify(channel="telegram")` if the user needs to be informed about something from an email.
 
-**Spotify is NOT an interactive channel.** Do not reply to, react to, or send Telegram messages in response to routed Spotify connector events. See the "Spotify Connector Events" guidance in AGENTS.md.
+**Spotify is NOT an interactive channel.** Do not reply to, react to, or send Telegram messages in response to routed Spotify connector events. See the "Spotify Connector Events" guidance in AGENTS.md, which also requires a one-line plain-text closing note (what was stored, or `no notable change`) that is not a Telegram message.
 
 ## Detection
 

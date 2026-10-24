@@ -77,6 +77,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.telegram_spans import telethon_in_reply_to_ref, telethon_message_spans
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -96,6 +97,7 @@ from butlers.ingestion_bearer_scrub import (
     scrub_envelope,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import span_in_text
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -180,6 +182,17 @@ class ChatBuffer:
     last_flush_ts: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_title: str | None = None
+
+
+def _raise_site(exc: BaseException) -> str:
+    """``file:line:func`` of the innermost frame that raised ``exc`` (no locals, no message)."""
+    tb = exc.__traceback__
+    if tb is None:
+        return "unknown"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    code = tb.tb_frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{tb.tb_lineno}:{code.co_name}"
 
 
 @dataclass
@@ -877,6 +890,8 @@ class TelegramUserClientConnector:
                 the row is scrubbed like the envelope: preview, payload and
                 ``error_detail``.
         """
+        # Only the exposure facts survive the batch's filtered-content privacy tier.
+        spans = [span for message in messages or [] for span in telethon_message_spans(message, "")]
         payload = FilteredEventBuffer.full_payload(
             channel=self._config.channel,
             provider=self._config.provider,
@@ -886,6 +901,10 @@ class TelegramUserClientConnector:
             external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
             observed_at=datetime.now(UTC).isoformat(),
             sender_identity=sender_identity,
+            in_reply_to_ref=(
+                telethon_in_reply_to_ref(messages[0]) if messages and len(messages) == 1 else None
+            ),
+            untrusted_spans=spans or None,
             raw={},
         )
         if self._batch_has_service_sender(messages):
@@ -1076,9 +1095,15 @@ class TelegramUserClientConnector:
                 await self._save_checkpoint()
 
         except Exception as exc:
-            logger.exception(
-                "Failed to flush chat buffer for chat %s",
+            # Identifiers only: the exception message and traceback can echo message text,
+            # including a 777000 login code, so neither is logged (no str(exc), no exc_info).
+            logger.error(
+                "Failed to flush chat buffer for chat %s (batch_size=%d, error_class=%s, "
+                "raised_at=%s)",
                 chat_id,
+                len(buffered_messages),
+                type(exc).__name__,
+                _raise_site(exc),
                 extra={"endpoint_identity": self._config.endpoint_identity},
             )
             # i. Record error event for the batch failure.
@@ -1182,13 +1207,22 @@ class TelegramUserClientConnector:
         header_lines.append("---")
 
         text_parts: list[str] = []
+        marked_lines: dict[int, list[dict[str, Any]]] = {}
         for msg in new_messages_sorted:
             sender_id = self._extract_sender_identity(msg)
             display_name = seen_sender_ids[sender_id]
             text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
             is_owner = owner_sender_id is not None and sender_id == owner_sender_id
             owner_tag = " (owner)" if is_owner else ""
-            text_parts.append(f"[{display_name}{owner_tag}]: {text}")
+            prefix = f"[{display_name}{owner_tag}]: "
+            line = prefix + text
+            for span in telethon_message_spans(msg, text, escape_html=False):
+                marked = dict(span)
+                lead = len(text) - len(text.lstrip())
+                marked["start"] += len(prefix) + lead if text else 0
+                marked["end"] += len(prefix) + lead if text else len(line)
+                marked_lines.setdefault(len(text_parts), []).append(marked)
+            text_parts.append(line)
 
         footer_lines: list[str] = [
             "---",
@@ -1198,6 +1232,21 @@ class TelegramUserClientConnector:
             footer_lines.append(f"Flush window: {oldest_ts} → {newest_ts}")
 
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
+        line_offset = sum(len(line) + 1 for line in header_lines)
+        untrusted_spans = []
+        for index, line in enumerate(text_parts):
+            for span in marked_lines.get(index, ()):
+                untrusted_spans.append(
+                    span_in_text(
+                        span["kind"],
+                        normalized_text,
+                        line_offset + span["start"],
+                        line_offset + span["end"],
+                        origin_identity=span.get("origin_identity"),
+                        origin_display_name=span.get("origin_display_name"),
+                    )
+                )
+            line_offset += len(line) + 1
 
         # Build conversation_history: all context messages, sorted ascending by ID.
         # Collect display names for all context senders (superset of new-message senders).
@@ -1272,6 +1321,7 @@ class TelegramUserClientConnector:
             "payload": {
                 "raw": {"conversation_history": conversation_history},
                 "normalized_text": normalized_text,
+                **({"untrusted_spans": untrusted_spans} if untrusted_spans else {}),
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
@@ -1283,6 +1333,12 @@ class TelegramUserClientConnector:
                 "interaction_eligible": interaction_eligible,
             },
         }
+        # A single buffered reply has one provider target. A mixed batch must
+        # not select a scalar target from several independently authored replies.
+        if len(new_messages_sorted) == 1:
+            reply_ref = telethon_in_reply_to_ref(new_messages_sorted[0])
+            if reply_ref:
+                envelope["event"]["in_reply_to_ref"] = reply_ref
         # Telegram login codes (service sender 777000) never leave the connector.
         return scrub_envelope(envelope)[0]
 
@@ -1299,6 +1355,7 @@ class TelegramUserClientConnector:
         for batch persistence after the event is processed.
         """
         async with self._semaphore:
+            replay_spans = telethon_message_spans(message, "") or None
             try:
                 # Extract message ID for checkpoint tracking
                 message_id = getattr(message, "id", None)
@@ -1348,6 +1405,8 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            in_reply_to_ref=telethon_in_reply_to_ref(message),
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1385,6 +1444,8 @@ class TelegramUserClientConnector:
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            in_reply_to_ref=telethon_in_reply_to_ref(message),
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     await self._flush_and_drain()
@@ -1455,6 +1516,8 @@ class TelegramUserClientConnector:
                                 # discretion-IGNORE content persists a bounded
                                 # preview only; no full raw payload retained.
                                 raw={},
+                                in_reply_to_ref=telethon_in_reply_to_ref(message),
+                                untrusted_spans=replay_spans,
                             ),
                         )
                         await self._flush_and_drain()
@@ -1509,6 +1572,8 @@ class TelegramUserClientConnector:
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=error_sender,
                         raw=raw_for_error,
+                        in_reply_to_ref=telethon_in_reply_to_ref(message),
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -2025,6 +2090,7 @@ class TelegramUserClientConnector:
             )
 
         # Build ingest.v1 envelope
+        spans = telethon_message_spans(message, normalized_text)
         envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
             "source": {
@@ -2054,6 +2120,10 @@ class TelegramUserClientConnector:
                 "interaction_eligible": interaction_eligible,
             },
         }
+        if spans:
+            envelope["payload"]["untrusted_spans"] = spans
+        if reply_ref := telethon_in_reply_to_ref(message):
+            envelope["event"]["in_reply_to_ref"] = reply_ref
 
         return scrub_envelope(envelope)[0]
 
@@ -2082,10 +2152,18 @@ class TelegramUserClientConnector:
                 },
             )
         except Exception as exc:
+            # Identifiers only: an ingest rejection echoes envelope text (pydantic input_value,
+            # "Ingest tool error: ..."), which can carry a 777000 login code. The exception is
+            # re-raised for the caller; its text is never logged here.
+            _event = envelope.get("event") if isinstance(envelope, dict) else None
             logger.error(
                 "Failed to submit to Switchboard ingest",
                 extra={
-                    "error": str(exc),
+                    "error_class": type(exc).__name__,
+                    "raised_at": _raise_site(exc),
+                    "external_event_id": _event.get("external_event_id")
+                    if isinstance(_event, dict)
+                    else None,
                     "endpoint_identity": self._config.endpoint_identity,
                 },
             )

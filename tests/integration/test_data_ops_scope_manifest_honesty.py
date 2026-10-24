@@ -16,7 +16,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.data_ops import _decrypt_export, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.data_ops import _decrypt_export
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.testing.migration import (
@@ -99,7 +100,7 @@ async def export_sources(postgres_container):
 
 async def _signed_download(db):
     app = create_authenticated_domain_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:

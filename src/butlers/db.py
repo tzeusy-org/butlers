@@ -619,19 +619,19 @@ class Database:
             raise RuntimeError(f"Database '{self.db_name}' has no active connection pool")
         return self.pool
 
-    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:
+    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetch."""
         return await self._require_pool().fetch(query, *args, timeout=timeout)
 
-    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetchrow."""
         return await self._require_pool().fetchrow(query, *args, timeout=timeout)
 
-    async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+    async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetchval."""
         return await self._require_pool().fetchval(query, *args, timeout=timeout)
 
-    async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:
+    async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.execute."""
         return await self._require_pool().execute(query, *args, timeout=timeout)
 

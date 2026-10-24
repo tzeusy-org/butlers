@@ -1,6 +1,6 @@
 ## Why
 
-Owner authentication now rejects the daemon's unauthenticated heartbeat POST. The resulting registry expiry blocks routing and also suppresses QA's scheduled patrol, while process health remains green. The 2026-09-23 [focused reliability review](../../../docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md) confirms this composition failure and the unreliable quarantine semantics. Butlers' adopted vision requires continuously reliable routing and scheduled work.
+Owner authentication now rejects the daemon's unauthenticated heartbeat POST. The resulting registry expiry blocks routing and also suppresses QA's scheduled patrol, while process health remains green. The 2026-09-23 [focused reliability review](../../../docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md) confirms this composition failure and the unreliable quarantine semantics. Butlers' adopted vision requires continuously reliable routing and scheduled work.
 
 ## What Changes
 

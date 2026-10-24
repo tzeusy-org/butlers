@@ -25,9 +25,11 @@ read them there. The semantics that matter:
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.
-- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs: the
-  first mixes Postgres and Python clocks that libfaketime skews apart, the second waits on a timed
-  thread primitive that never expires under a shifted clock. Everywhere else they run.
+- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs. The
+  first mixes Postgres and Python clocks; the shared testcontainer now runs under the same offset,
+  so new DB tests do not need it and the existing marks are awaiting re-admission. The second waits
+  on a timed thread primitive, needs a PostgreSQL statement or lock timeout to fire, or needs a live
+  TLS certificate check, none of which works under a shifted clock. Everywhere else they run.
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 
@@ -39,10 +41,15 @@ The root `conftest.py` (at the repository root) provides fixtures visible to all
 
 A shared Postgres testcontainer for all DB-backed tests in the pytest session. Uses the `pgvector/pgvector:pg17` image. The container is started once and reused across all tests; isolation is achieved at the database level (each test gets a fresh DB).
 
+`_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
+
 ```python
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    with container as pg:
         yield pg
 ```
 
@@ -204,18 +211,17 @@ Tests can use this to skip gracefully when Docker is not installed.
   permission, and malformed verdict/classifier/planner evidence fails closed.
 - Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
   recovery policy and frozen dev synchronization. Their command scopes match the former
-  preflight commands and local `make check-guards`. Fresh collection and both budgets belong
-  to early inventory; exact-once manifests, smoke/release cmd/SHA/duration/status/skips and
-  sanitized artifacts stay in preflight. Required check contains only the verdict step.
-  The independent owned `coverage-report` job waits for fresh inventory, all eleven covered
-  shards and complete-identity preflight, reads each raw CoverageData
-  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  preflight commands and local `make check-guards`. Fresh collection, the lane-group totals, both budgets, smoke/release
+  cmd/SHA/duration/status/skips and sanitized artifacts belong to preflight. Required check contains only the verdict step.
+  The independent owned `coverage-report` job waits for all eleven covered groups and preflight,
+  reads each raw CoverageData database and its checkout/run/attempt/lane/group/config/digest
+  metadata, requires the
   complete measured source population and compatible tracing, then combines and publishes
   the report; only scheduled/manual main success may update the badge. Missing, empty,
   corrupt, stale or mismatched inputs fail
   reporting before publication. Coverage reporting never changes required test verdicts.
 - Protected merge-group and ordinary PR heavy shards receive exact `CI_COVERAGE=0`;
-  the owned daily/manual and pipeline-PR coverage workflow receives `1`. The standalone
+  the nightly coverage jobs (scheduled or manual) receive `1`. The standalone
   runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
   enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
@@ -236,15 +242,45 @@ Tests can use this to skip gracefully when Docker is not installed.
   watchdog until healthy measurements justify a separate change.
 - Browser caches require the exact runner OS, architecture, package-lock hash and installed
   locked Playwright version. Cache failure is advisory; installation is mandatory on hits
-  and misses and always includes `--with-deps`. The installed-version reader checks all
+  and misses and always installs the OS dependencies first, as their own bounded
+  `install-deps` phase (apt under sudo; two attempts, 150/160 s) so a slow apt cannot consume
+  the browser download's 110/120 s deadline. The deps supervisor runs under noninteractive
+  sudo, starts apt in its own process group, and terminates and reaps that group's members
+  before permitting a retry. Cancellation or parent EOF triggers the same cleanup; an
+  unproven cleanup fails closed without starting another attempt. Reserved supervisor exit
+  outcomes 80/81/82/83 establish cleaned success/failure/deadline/cancellation; generic zero,
+  nonzero or signal exits never authorize retry. Cancellation/EOF (83) is never retryable,
+  including a direct supervisor cancellation with the Node parent still alive. Only a
+  confirmed cleaned elapsed deadline (82) selects the official-Ubuntu preference for the
+  existing second attempt; ordinary clean failure (81) retries the default route. The healthy
+  first attempt is unchanged. Recovery accepts only the witnessed Ubuntu24 noble deb822
+  source with the exact local mirror URI and three recognized Azure/archive/security
+  candidates. It changes only that copied Ubuntu URI and mirror priority, preserving all
+  source/trust fields, third-party bytes and ordinary dpkg/index/archive state. Unknown
+  layouts, ambiguous fields, links, writable/untrusted inputs and modified endpoints fail
+  closed. Copied configuration stays root-private; only nonsecret mirror data is sandbox
+  readable. The actual APT configuration reader compares ordinary settings and effective
+  private source paths, rejecting later source overrides, binary path overrides and rerooting.
+  Its child shares the existing process group/deadline; it never prints configuration data.
+  Partial setup removes only its own files, and a full overlay remains until child cleanup
+  is confirmed. Local fixture-reader controls do not prove Ubuntu24 parsing, sandbox access
+  or signed package transport; those require explicit actual-Ubuntu/hosted evidence.
+  Setup shares the child's cleanup lifetime. Non-reaping leader
+  observation retains the group identity through its last signal, before reaping. `EPERM` never crashes
+  the parent or establishes that a process is gone. The installed-version reader checks all
   three Playwright packages against the lock. Each attempt installs and launches the locked
   Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
   and three force repair; test retries are unchanged.
-  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
-  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
-  ordinary descendants even when their shell exits first; these bounds do not establish
+  The installer has a 720-second outer budget: two dependency attempts (TERM150/KILL160,
+  up to two seconds each for cleanup, one ten-second backoff), then three browser attempts
+  (TERM110/KILL120, two ten-second backoffs). It cleans ordinary descendants even when
+  their shell exits first; these bounds do not establish
   containment of deliberately detached hostile processes. Local synthetic install controls
-  prove the supervisor, not actual OS-package installation or hosted cache behavior.
+  prove the supervisor, not actual OS-package installation or hosted cache behavior. The
+  frontend-e2e job cap is provisionally 20 minutes: ceil((2*228s historical whole-job envelope
+  + 720s full installer reserve)/60). This source-derived adjustment retains observed setup
+  and does not establish current healthy p95 calibration. See the active
+  [failure matrix](playwright-installer-failure-matrix.md).
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the
@@ -269,13 +305,14 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ### Owned coverage pipeline validation
 
-`.github/workflows/ci-coverage.yml` owns daily/manual full coverage and validates
-coverage-pipeline path changes on PRs. It runs the same fresh full inventory,
-five unit and six integration commands, complete execution reconciliation and
-smoke fallback before the strict CoverageData reader. Inventory, execution and
-coverage metadata preserve the actual event, checkout, run and attempt. Both
+The nightly workflow (`.github/workflows/nightly.yml`) owns daily/manual full
+coverage; dispatch it on a branch to validate a coverage-pipeline change (owner
+decision bu-w72da2 = A retired the former PR-path workflow). It runs the same five unit and
+six integration pytest-split groups, the lane totals against fresh collect-only
+counts and the smoke command before the strict CoverageData reader. Coverage
+metadata preserves the actual event, checkout, run, attempt, lane and group. Both
 preflight and reporting fail visibly when any prerequisite fails, skips or is
-unknown. PR runs produce full report artifacts; only scheduled/manual main
+unknown. Every run uploads the full report artifact; only scheduled/manual main
 success can update the badge. Its exact Python/cache/frozen repair comes from
 the local setup composite, with existing finite job caps retained per row.
 

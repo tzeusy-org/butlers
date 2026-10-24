@@ -1,3 +1,5 @@
+import { fulfillEmptyApi } from "./fixtures/empty-api";
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 import { expect, test, type Page } from "@playwright/test";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -8,7 +10,7 @@ function completeHour() {
   return { since: until - HOUR_MS, until };
 }
 
-function timelineEvent(id: string, timestamp: string) {
+function timelineEvent(id: string, timestamp: string): ResponseOf<"getTimeline">["data"][number] {
   return {
     id,
     type: "notification",
@@ -33,13 +35,13 @@ async function mockTimeline(page: Page) {
   }));
 
   await page.route("**/api/**", (route) =>
-    new URL(route.request().url()).pathname.startsWith("/api/auth/owner/") ? route.fallback() : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) }),
+    new URL(route.request().url()).pathname.startsWith("/api/auth/owner/") ? route.fallback() : fulfillEmptyApi(route),
   );
   await page.route(/\/api\/timeline\/histogram(?:\?.*)?$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getTimelineHistogram", {
         data: buckets,
         meta: {
           since: new Date(window.since).toISOString(),
@@ -58,7 +60,7 @@ async function mockTimeline(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getTimelineAttention", {
         data: [
           {
             id: "attention-1",
@@ -87,7 +89,7 @@ async function mockTimeline(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getTimeline", {
         data: rows,
         meta: {
           cursor: null,
@@ -103,7 +105,7 @@ async function mockTimeline(page: Page) {
   return window;
 }
 
-test.use({ reducedMotion: "reduce" });
+test.use({ contextOptions: { reducedMotion: "reduce" } });
 
 test("first j survives composed Timeline URL and drawer focus transitions", async ({ page }) => {
   const window = await mockTimeline(page);

@@ -7,8 +7,7 @@ quiet-hours gate:
     instead of vanishing without a trace
   - context-bus dnd/sleeping signals are consulted deterministically,
     alongside (not instead of) the existing hour-based quiet-hours policy
-  - priority="high" always fails open — bypasses both quiet hours and the
-    context bus, consistent with existing notify() semantics
+  - a model-assigned priority="high" cannot bypass owner attention policy
   - a successfully delivered notification is recorded as outcome="delivered"
 
 These tests boot a real ``ButlerDaemon`` with every I/O boundary mocked
@@ -144,7 +143,7 @@ def _patch_infra(mock_pool: Any) -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     mock_credential_store = AsyncMock()
     mock_credential_store.resolve = AsyncMock(return_value=None)
@@ -179,7 +178,9 @@ def _patch_infra(mock_pool: Any) -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value=mock_credential_store,
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
@@ -216,7 +217,7 @@ async def _start_daemon_with_notify(
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
         patches["build_credential_store"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
     ):
         daemon = ButlerDaemon(butler_dir)
@@ -721,7 +722,7 @@ class TestQuietHoursLedgerRecording:
             == 1
         )
 
-    async def test_context_lookup_failure_fails_open(self, butler_dir: Path) -> None:
+    async def test_context_lookup_failure_refuses_without_delivery(self, butler_dir: Path) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -736,10 +737,11 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "attention_context_unavailable"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
-    async def test_high_priority_bypasses_quiet_hours_and_context_bus(
+    async def test_model_priority_label_cannot_bypass_quiet_hours_and_context_bus(
         self, butler_dir: Path
     ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
@@ -763,13 +765,13 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "deferred"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         outcomes = [c[8] for c in ledger_calls]
         assert "suppressed" not in outcomes
-        assert "delivered" in outcomes
+        assert "deferred" in outcomes
 
     # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
     @pytest.mark.parametrize("publish_failure", [False, True])

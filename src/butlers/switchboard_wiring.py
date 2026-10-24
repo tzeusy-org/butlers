@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -140,6 +141,23 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         tool_args["attachments"] = ref.attachments
 
     return request_context, tool_args
+
+
+def build_switchboard_buffer(
+    daemon: Any, pool: Any, process_fn: Callable[[Any], Awaitable[None]]
+) -> None:
+    """Create the Switchboard DurableBuffer around an injected message processor.
+
+    The buffer depends only on the pool, the butler's BufferConfig and the
+    processor it is given; it never reads ``daemon.spawner``.
+    """
+    from butlers.core.buffer import DurableBuffer
+
+    daemon._buffer = DurableBuffer(
+        config=daemon.config.buffer,
+        pool=pool,
+        process_fn=process_fn,
+    )
 
 
 def wire_pipelines(daemon: Any, pool: Any) -> None:
@@ -343,14 +361,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                         observability_request_id,
                     )
 
-    # Create the durable buffer
-    from butlers.core.buffer import DurableBuffer
-
-    daemon._buffer = DurableBuffer(
-        config=daemon.config.buffer,
-        pool=pool,
-        process_fn=_buffer_process,
-    )
+    build_switchboard_buffer(daemon, pool, _buffer_process)
 
     wired_modules: list[str] = []
     for mod in daemon._active_modules:
@@ -492,7 +503,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 request_id=parsed.request_context.request_id,
                                 route_inbox_id=row_id,
                             )
-                        except Exception:
+                        except Exception as exc:
                             logger.exception(
                                 "route_inbox recovery: could not reconcile dashboard "
                                 "predecessor id=%s",
@@ -502,7 +513,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 raise RouteInboxLeaseLost(
                                     "route inbox processing lease was lost during "
                                     "dashboard recovery reconciliation"
-                                )
+                                ) from exc
                             await route_inbox_mark_errored(
                                 pool,
                                 row_id,

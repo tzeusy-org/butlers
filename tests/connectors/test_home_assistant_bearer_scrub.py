@@ -225,7 +225,7 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
 
         queued = []
 
-        async def capture_split(event_type, event, transport):
+        async def capture_split(event_type, event, transport, *, queued=queued):
             queued.append(event)
 
         reorder = HAEventReorderBuffer(submit=capture_split, window_s=0, max_size=100)

@@ -26,6 +26,8 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.unit
 
 
@@ -82,7 +84,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -104,7 +106,9 @@ def _patch_infra():
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
@@ -122,9 +126,7 @@ class StubModuleCapturingButlerName(Module):
     def __init__(self) -> None:
         self.received_butler_name: str = ""
 
-    @property
-    def name(self) -> str:
-        return "stub_capture_name"
+    name = "stub_capture_name"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -157,9 +159,7 @@ class StubModuleWithWireRuntime(Module):
         self.wire_runtime_args: tuple = ()
         self.wire_runtime_kwargs: dict = {}
 
-    @property
-    def name(self) -> str:
-        return "stub_wire"
+    name = "stub_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -192,9 +192,7 @@ class StubModuleWithWireRuntime(Module):
 class StubModuleWithoutWireRuntime(Module):
     """Stub module that does NOT implement wire_runtime()."""
 
-    @property
-    def name(self) -> str:
-        return "stub_no_wire"
+    name = "stub_no_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -222,9 +220,7 @@ class StubModuleWithoutWireRuntime(Module):
 class StubModuleWithBrokenWireRuntime(Module):
     """Stub module whose wire_runtime() raises an exception."""
 
-    @property
-    def name(self) -> str:
-        return "stub_broken_wire"
+    name = "stub_broken_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -261,6 +257,43 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     """Daemon passes self.config.name as butler_name to register_tools(). REQ-core-modules-002"""
     registry = ModuleRegistry()
     registry.register(StubModuleCapturingButlerName)
+    omitted_constructions = []
+
+    class OmittedNoSchema(StubModuleCapturingButlerName):
+        name = "omitted_no_schema"
+
+        def __init__(self):
+            omitted_constructions.append(self.name)
+            super().__init__()
+
+        @property
+        def config_schema(self):
+            return None
+
+    class NeedsDeclaration(StubModuleCapturingButlerName):
+        name = "needs_declaration"
+
+        @property
+        def dependencies(self):
+            return ["stub_capture_name"]
+
+    class CycleA(StubModuleCapturingButlerName):
+        name = "cycle_a"
+
+        @property
+        def dependencies(self):
+            return ["cycle_b"]
+
+    class CycleB(StubModuleCapturingButlerName):
+        name = "cycle_b"
+
+        @property
+        def dependencies(self):
+            return ["cycle_a"]
+
+    for cls in (OmittedNoSchema, NeedsDeclaration, CycleA, CycleB):
+        registry.register(cls)
+    assert omitted_constructions == []
 
     butler_dir = _make_butler_toml(tmp_path, modules={"stub_capture_name": {}})
     patches = _patch_infra()
@@ -274,30 +307,42 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
         patch.object(ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock),
     ):
-        # Exercise production load_all + run_startup selection, before DB work.
+        # Exercise the real declared-only loader through run_startup before DB work.
         toml = butler_dir / "butler.toml"
         valid_toml = toml.read_text()
-        toml.write_text(valid_toml + "\n[modules.unknown_startup_sentinel]\n")
-        rejected = ButlerDaemon(butler_dir, registry=registry)
-        with pytest.raises(ValueError, match="unknown_startup_sentinel"):
-            await rejected.start()
-        db_factory.assert_not_called()
-        migrations.assert_not_awaited()
-        assert not rejected._active_modules
-        assert not any(m.received_butler_name for m in rejected._registry.load_all({}))
+        prefix = valid_toml.split("[modules.stub_capture_name]")[0]
+        for declarations, error in (
+            ("[modules.unknown_startup_sentinel]", "unknown_startup_sentinel"),
+            ("[modules.needs_declaration]", "stub_capture_name.*enabled module set"),
+            ("[modules.cycle_a]\n[modules.cycle_b]", "Circular dependency"),
+        ):
+            toml.write_text(prefix + declarations + "\n")
+            rejected = ButlerDaemon(butler_dir, registry=registry)
+            with pytest.raises(ValueError, match=error):
+                await rejected.start()
+            db_factory.assert_not_called()
+            migrations.assert_not_awaited()
+            assert not rejected._active_modules
+            assert omitted_constructions == []
+        # The explicit load_all utility still constructs everything; test its
+        # no-registration-effect contract without introducing a deliberate cycle.
+        utility = ModuleRegistry()
+        utility.register(StubModuleCapturingButlerName)
+        assert not any(m.received_butler_name for m in utility.load_all({}))
 
         toml.write_text(valid_toml)
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
         db_factory.assert_called()
         migrations.assert_awaited()
+        assert omitted_constructions == []
 
     stub_mod = next(m for m in daemon._modules if m.name == "stub_capture_name")
     # Daemon must pass self.config.name ("test-butler" from the toml) as butler_name
@@ -313,14 +358,14 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     class RegisteredBoundary(Exception):
         pass
 
-    roster_root = Path(__file__).resolve().parents[2] / "roster"
+    roster_root = _THIS_FILE.parents[2] / "roster"
     rosters = sorted(roster_root.glob("*/butler.toml"))
     assert len(rosters) == 13
     for toml_path in rosters:
         config = load_config(toml_path.parent)
         assert "self_healing" in config.modules
         registry = default_registry()
-        discovered = registry.load_all(config.modules)
+        discovered = registry.load_from_config(config.modules)
         started, registered = [], []
         patches = _patch_infra()
         with ExitStack() as stack:
@@ -345,12 +390,16 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
                 original_start = type(module).on_startup
                 original_register = type(module).register_tools
 
-                async def start_hook(self, *args, _original=original_start, **kwargs):
+                async def start_hook(
+                    self, *args, _original=original_start, started=started, **kwargs
+                ):
                     started.append(self.name)
                     if isinstance(self, SelfHealingModule):
                         await _original(self, *args, **kwargs)
 
-                async def registration(self, *args, _original=original_register, **kwargs):
+                async def registration(
+                    self, *args, _original=original_register, registered=registered, **kwargs
+                ):
                     registered.append(self.name)
                     if isinstance(self, SelfHealingModule):
                         await _original(self, *args, **kwargs)
@@ -401,7 +450,7 @@ async def test_wire_runtime_called_with_switchboard_client(tmp_path: Path) -> No
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -439,7 +488,7 @@ async def test_wire_runtime_graceful_when_no_switchboard(tmp_path: Path) -> None
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -475,7 +524,7 @@ async def test_wire_runtime_skipped_for_modules_without_method(tmp_path: Path) -
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -505,7 +554,7 @@ async def test_wire_runtime_failure_is_non_fatal(tmp_path: Path) -> None:
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],
@@ -558,7 +607,7 @@ async def test_concrete_module_switchboard_client_wired_on_startup(
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["create_audit_pool"],

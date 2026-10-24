@@ -25,10 +25,12 @@
   `MemoryPaginationMeta` / `MemoryPaginatedResponse<T>` so paginated episode,
   fact, rule, and inspect responses carry `pools_failed?: string[]` without
   unsafe casts; do not expose worker lease internals.
+  (bu-kqnum.14.5 landed the typed pagination meta part; the lifecycle dossier
+  fields remain with bu-kqnum.14.3.)
 - [ ] 2.2 Add API regressions for episode/fact/rule detail resolution: found
   rows win over unrelated degraded pools, clean misses are 404, and unresolved
   named failures are source-named 503s.
-- [ ] 2.3 Make episode, fact, rule, and inspect `meta.total` exact after their
+- [x] 2.3 Make episode, fact, rule, and inspect `meta.total` exact after their
   filters, independent of the bounded globally merged page; retain named typed
   `meta.pools_failed` for genuine source failures and test healthy/degraded
   counts, ordering, `has_more`, and the typed pagination metadata contract.
@@ -49,14 +51,14 @@
 
 ## 3. Truthful and accessible dashboard surfaces
 
-- [ ] 3.1 Update EpisodeDetailPage, FactDetailPage, and RuleDetailPage so only
+- [x] 3.1 Update EpisodeDetailPage, FactDetailPage, and RuleDetailPage so only
   true 404s render not-found copy; render named 503 and other query failures as
   visible retryable errors, with focused regression coverage.
-- [ ] 3.2 Add the episode lifecycle dossier and owner/dead-letter-only requeue
+- [x] 3.2 Add the episode lifecycle dossier and owner/dead-letter-only requeue
   control, including queued-not-running, conflict, and failure landing states;
   test keyboard operation, visible focus, disabled-in-flight behavior, and live
   announcements.
-- [ ] 3.3 Render `SourceDegradedNote` for episode/fact/rule registers and
+- [x] 3.3 Render `SourceDegradedNote` for episode/fact/rule registers and
   inspect search whenever typed `MemoryPaginationMeta.pools_failed` is
   non-empty, including a zero-row partial response; add register and inspect
   regressions for named failed pools and a healthy absent/empty flag while
@@ -65,8 +67,10 @@
   URL-backed inspect paging from exact API metadata, including qualified ranges
   while sources are degraded; test loading, error, clean empty, filter, and
   back/forward page behavior that preserves `q` and `kind` while changing
-  `offset`.
-- [ ] 3.5 Add local accessible success/failure feedback to the Fact detail
+  `offset`. (bu-kqnum.14.5 landed URL-backed paging, the loading line and the
+  qualified range; SearchResults still uses its own loading/error branches
+  rather than `QueryBoundary`.)
+- [x] 3.5 Add local accessible success/failure feedback to the Fact detail
   Confirm and Retract footer without changing request payloads or optimistic
   rollback/cache semantics; test both actions, rollback, retryability, and
   non-duplicated screen-reader announcements.

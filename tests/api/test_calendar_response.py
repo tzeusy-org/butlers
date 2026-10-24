@@ -1,4 +1,4 @@
-# Spec: REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-dashboard-api-069
 """Authenticated response admission and exact same-owner decision composition."""
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers import approvals
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.api.routers import calendar_workspace as workspace
 from butlers.modules.calendar_response import _digest
 
@@ -28,26 +27,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
         response_status="accepted",
         send_updates="none",
     )
-    # Invoke the actual owner-read consumer: an ordinary action cannot shadow
-    # a response command with the same UUID in another source schema.
     from fastapi import HTTPException
-
-    duplicate_db = SimpleNamespace(
-        butlers_with_module=lambda module: ["relationship", "messenger"],
-        fan_out_with_status=AsyncMock(
-            return_value=(
-                {
-                    "relationship": [{"id": command_id, "action_type": "workspace_user_create"}],
-                    "messenger": [{"id": command_id, "action_type": "workspace_user_respond"}],
-                },
-                [],
-            )
-        ),
-    )
-    with pytest.raises(HTTPException) as duplicate:
-        await workspace._find_action_owner(duplicate_db, command_id)
-    assert duplicate.value.status_code == 409
-    assert duplicate.value.detail == "calendar_action_owner_ambiguous"
 
     command = {"owner": "messenger", "arguments": arguments}
     payload = {
@@ -153,7 +133,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
         yield connection
 
     pool.acquire = acquire_review
-    app.dependency_overrides[approvals._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -181,7 +161,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             final_kind = "healthy"
             assert (await review_client.get(review_url)).status_code == 200
     finally:
-        app.dependency_overrides.pop(approvals._get_db_manager, None)
+        app.dependency_overrides.pop(get_db, None)
     pool.fetchrow = old_reader
     db.fan_out_with_status.return_value = (
         {"messenger": [{"id": entry_id}], "relationship": []},
@@ -213,7 +193,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
     decision.side_effect = decide
     monkeypatch.setattr(workspace, "_call_mcp_tool", call)
     monkeypatch.setattr("butlers.api.routers.approvals.approve_owning_action", decision)
-    app.dependency_overrides[workspace._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp
     try:
         async with httpx.AsyncClient(
@@ -229,7 +209,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             assert response.status_code == 200
             data = response.json()["data"]
             assert data["status"] == "applied" and data["projection_available"] is False
-            assert data["undo_available"] is True and data["source_butler"] == "messenger"
+            assert data["source_butler"] == "messenger"
             assert data["command_id"] == str(command_id) and data["approval_id"] == str(command_id)
             assert decision.await_count == 1
             invoked = call.call_args.args
@@ -277,9 +257,114 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             concurrent_inverse_claim = True
             late_claim = await client.post("/api/calendar/workspace/respond", json=arguments)
             assert late_claim.status_code == 200
-            assert late_claim.json()["data"]["undo_available"] is False
             assert payload.get("inverse_claim")
 
     finally:
-        app.dependency_overrides.pop(workspace._get_db_manager, None)
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_mcp_manager, None)
+
+
+async def test_response_receipt_reads_bound_inverse_without_dispatch(app):
+    # REQ-dashboard-api-069: recovery is a durable read,
+    # including when an inverse claim was already committed.
+    original_id, inverse_id = uuid.uuid4(), uuid.uuid4()
+    rows = {}
+    pending = {}
+    for ident, inverse_of in ((original_id, None), (inverse_id, str(original_id))):
+        command = {
+            "owner": "messenger",
+            "arguments": {"request_id": str(uuid.uuid4())},
+            "inverse_of": inverse_of,
+        }
+        payload = {"command": command, "digest": _digest(command), "phase": "prepared"}
+        args = {
+            **command["arguments"],
+            "_command_id": str(ident),
+            "_command_digest": payload["digest"],
+        }
+        rows[ident] = {
+            "id": ident,
+            "action_type": "workspace_user_respond",
+            "action_payload": payload,
+            "action_result": None,
+        }
+        pending[ident] = {"tool_name": "calendar_respond", "tool_args": args, "status": "approved"}
+    rows[original_id]["action_payload"]["inverse_claim"] = str(inverse_id)
+    rows[original_id]["action_result"] = {
+        "status": "applied",
+        "before": {"response_status": "needsAction"},
+    }
+
+    async def read(sql, ident):
+        return pending.get(ident) if "FROM pending_actions" in sql else rows.get(ident)
+
+    pool = SimpleNamespace(fetchrow=AsyncMock(side_effect=read))
+    census = AsyncMock(
+        side_effect=lambda sql, args, **kw: (
+            {"messenger": [{"id": args[0]}], "relationship": []},
+            [],
+        )
+    )
+    db = SimpleNamespace(
+        configured_butlers_with_module=lambda module: ["messenger", "relationship"],
+        fan_out_with_status=census,
+        pool=lambda name: pool,
+    )
+    mcp = SimpleNamespace(
+        get_client=AsyncMock(side_effect=AssertionError("read must not dispatch"))
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_mcp_manager] = lambda: mcp
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            url = f"/api/calendar/workspace/responses/{original_id}?source_butler=messenger&inverse=true"
+            response = await client.get(url)
+            assert response.status_code == 200
+            data = response.json()["data"]
+            assert data["command_id"] == str(inverse_id) and data["approval_id"] == str(inverse_id)
+            assert data["source_butler"] == "messenger" and data["status"] == "approved"
+            original = await client.get(
+                f"/api/calendar/workspace/responses/{original_id}?source_butler=messenger"
+            )
+            assert original.json()["data"]["command_id"] == str(original_id)
+            pending[inverse_id]["status"] = "expired"
+            expired = (await client.get(url)).json()["data"]
+            assert (
+                expired["status"] == "rejected" and expired["reason"] == "response_approval_expired"
+            )
+            pending[inverse_id]["status"] = "approved"
+            claim = rows[original_id]["action_payload"].pop("inverse_claim")
+            assert (await client.get(url)).status_code == 409
+            rows[original_id]["action_payload"]["inverse_claim"] = claim
+            rows[inverse_id]["action_payload"]["phase"] = "egress_started"
+            assert (await client.get(url)).json()["data"]["status"] == "uncertain"
+            rows[inverse_id]["action_result"] = {"status": "applied", "projection_available": True}
+            applied = (await client.get(url)).json()["data"]
+            assert applied["status"] == "applied"
+            assert applied["projection_available"] is True
+            # Valid command with an unrelated original is still not this inverse.
+            command = rows[inverse_id]["action_payload"]["command"]
+            command["inverse_of"] = str(uuid.uuid4())
+            digest = _digest(command)
+            rows[inverse_id]["action_payload"]["digest"] = digest
+            pending[inverse_id]["tool_args"]["_command_digest"] = digest
+            assert (await client.get(url)).status_code == 409
+            command["inverse_of"] = str(original_id)
+            digest = _digest(command)
+            rows[inverse_id]["action_payload"]["digest"] = digest
+            pending[inverse_id]["tool_args"]["_command_digest"] = digest
+            pool.fetchrow.side_effect = RuntimeError("private diagnostic")
+            unavailable = await client.get(url)
+            assert unavailable.status_code == 503 and "private diagnostic" not in unavailable.text
+            pool.fetchrow.side_effect = read
+            census.side_effect = lambda sql, args, **kw: (
+                {"messenger": [{"id": args[0]}], "relationship": [{"id": args[0]}]},
+                [],
+            )
+            assert (await client.get(url)).status_code == 409
+            mcp.get_client.assert_not_awaited()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_mcp_manager, None)

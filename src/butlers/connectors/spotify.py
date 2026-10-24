@@ -76,6 +76,7 @@ from butlers.credential_store import (
 )
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.spotify_credentials import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_OAUTH_ACCESS,
@@ -2085,6 +2086,7 @@ class SpotifyConnector:
             endpoint_identity=identity_label,
         )
         self._heartbeat = ConnectorHeartbeat(
+            channel_kind=CHANNEL_KIND_FEED,
             config=hb_config,
             mcp_client=self._mcp_client,
             metrics=self._metrics,

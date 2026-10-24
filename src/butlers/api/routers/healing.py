@@ -55,6 +55,7 @@ from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
+    Db,
     MCPClientManager,
     get_mcp_manager,
 )
@@ -99,11 +100,6 @@ class DispatchCallable(Protocol):
         call_site: str,
         sanitized_msg: str | None,
     ) -> None: ...
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_dispatch_fn() -> DispatchCallable | None:
@@ -186,11 +182,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 def _publication_lineage_held(attempt_id: uuid.UUID) -> HTTPException:
@@ -322,7 +318,8 @@ async def list_healing_attempts(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     status: str | None = Query(default=None, description="Filter by status value"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[HealingAttempt]:
     """Return a paginated list of healing attempts, optionally filtered by status.
 
@@ -358,7 +355,8 @@ async def list_healing_attempts(
 )
 async def get_healing_attempt(
     attempt_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> HealingAttempt:
     """Return the full record for a single healing attempt."""
     pool = _shared_pool(db)
@@ -482,7 +480,8 @@ async def _redispatch_via_daemon(
 async def retry_healing_attempt(
     attempt_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     dispatch_fn: DispatchCallable | None = Depends(_get_dispatch_fn),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> RetryResponse:
@@ -583,7 +582,7 @@ async def retry_healing_attempt(
         )
     except Exception as exc:
         logger.error("Failed to create retry attempt for %s: %s", attempt_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to create retry attempt")
+        raise HTTPException(status_code=500, detail="Failed to create retry attempt") from exc
 
     if new_row is None:
         # The only filter on the INSERT is the publication hold: a hold appeared after the
@@ -672,7 +671,8 @@ async def get_circuit_breaker_status(
         ge=1,
         description="Circuit breaker threshold (number of consecutive failures to trip)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CircuitBreakerStatus:
     """Return the current circuit breaker state.
 
@@ -706,7 +706,8 @@ async def reset_circuit_breaker(
         ge=1,
         description="Circuit breaker threshold to use when returning the new status",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CircuitBreakerStatus:
     """Reset the circuit breaker by recording an auditable reset marker.
 
@@ -732,7 +733,7 @@ async def reset_circuit_breaker(
         logger.info("Healing circuit breaker reset via dashboard (breaker_resets recorded)")
     except Exception as exc:
         logger.error("Failed to reset circuit breaker: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to reset circuit breaker")
+        raise HTTPException(status_code=500, detail="Failed to reset circuit breaker") from exc
 
     # Return the updated state — use the same helper as get_circuit_breaker_status
     # so last_failure_at is correctly populated (previously was hard-coded None).
@@ -776,7 +777,8 @@ async def list_healing_dispatch_events(
             "standing condition suppressed (bu-ep4ks.3)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[HealingDispatchEvent]:
     """Return a paginated list of healing dispatch decisions.
 

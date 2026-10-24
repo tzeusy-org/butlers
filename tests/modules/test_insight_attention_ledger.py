@@ -14,10 +14,10 @@ Amendment 1): the insight-delivery-cycle side of the attention policy.
 Ledger-row content assertions (the actual INSERT into
 ``public.attention_ledger``) live in
 ``tests/integration/test_attention_ledger_roundtrip.py`` against a fully
-migrated database — the ``insight_pool`` fixture here creates only the four
-insight tables (see ``create_insight_tables``) plus the Owner Attention Policy
-row, so ledger writes fail open silently, which is itself part of the
-degraded-honesty contract this test file does not need to re-verify.
+migrated database. The ``insight_pool`` fixture here also uses the real core
+schema so routine delivery reads a genuine context store. The focused ledger
+controls below capture call shape; durable ledger outcomes remain covered by
+that dedicated roundtrip owner.
 
 The policy row is not optional decoration: it is the difference between a
 quiet-hours assertion that means something and one that is green because the
@@ -26,11 +26,16 @@ table was missing. See ``_DEFAULT_QUIET_START_HOUR`` below.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
+
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 
@@ -75,19 +80,32 @@ def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
 
-@pytest.fixture
-async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables and the owner policy.
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Migrate the real context schema before entering the async fixture loop."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
-    The Owner Attention Policy is part of the schema every one of these tests
-    runs against in production, so it is seeded here with its production
-    default. A test that is *about* quiet-hours suppression overrides it with
-    :func:`_set_owner_attention_policy`.
-    """
+
+@pytest.fixture
+async def insight_pool(migrated_db_url: str):
+    """Own a fresh pool and reset only this test's ordinary Insight state."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    async with provisioned_postgres_pool() as pool:
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await create_insight_tables(pool)
+        await pool.execute("""
+            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
+                insight_candidates, insight_cooldowns, insight_settings,
+                attention_daily_rollup
+        """)
+        await pool.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
         await _set_owner_attention_policy(
             pool,
             quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
@@ -95,6 +113,8 @@ async def insight_pool(provisioned_postgres_pool):
             timezone=_DEFAULT_QUIET_TIMEZONE,
         )
         yield pool
+    finally:
+        await pool.close()
 
 
 async def _set_owner_attention_policy(
@@ -458,7 +478,10 @@ class TestUrgentOnlySubCycle:
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
 
-    async def test_bypasses_quiet_hours_without_querying_context_bus(self, insight_pool):
+    @pytest.mark.parametrize("urgent_only", [True, False])
+    async def test_bypasses_quiet_hours_without_querying_context_bus(
+        self, insight_pool, urgent_only
+    ):
         """urgent_only skips the quiet-hours/context-bus consult entirely — it
         isn't just bypassed after being computed, it is never queried."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -484,9 +507,11 @@ class TestUrgentOnlySubCycle:
             ),
         ):
             result = await delivery_cycle(
-                insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+                insight_pool, notify_fn=notify_mock, urgent_only=urgent_only, now=_PINNED_NOW
             )
 
+        if not urgent_only:
+            assert result["reason"] == "attention_store_unavailable"
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
         row = await insight_pool.fetchrow(
@@ -648,8 +673,7 @@ class TestFailedDeliveryLedgerRecording:
     prove silence is chosen. Mirrors the notify() choke point's all-paths
     failed accounting (bu-zcos8/bu-hmdqz.3).
 
-    ``insight_pool`` only creates the four insight tables, so the real ledger
-    write would fail open silently; these tests patch
+    ``insight_pool`` includes the real core schema; these focused tests patch
     ``record_attention_event`` in the broker module to capture the exact call
     shape while still asserting the unchanged bookkeeping (attempt-count bump,
     3-strikes ``filtered`` transition) against the real insight tables.
@@ -1247,3 +1271,46 @@ class TestBrokerCatchupCycle:
 
         assert result["skipped"] is False
         catchup_mock.assert_not_awaited()
+
+
+class TestCatchupReadAvailability:
+    @pytest.mark.parametrize("failure", ["unavailable", "cancelled", "unexpected"])
+    async def test_optional_context_reread_preserves_failure_boundary(self, failure):
+        """Only a typed unavailable optional read may finish without scheduling."""
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+        from butlers.tools.switchboard.insight.broker import _schedule_insight_catchup
+
+        errors = {
+            "unavailable": AttentionReadUnavailable("context_store_unavailable"),
+            "cancelled": asyncio.CancelledError(),
+            "unexpected": ValueError("unexpected"),
+        }
+        error = errors[failure]
+        pool = object()
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker._get_suppressing_context_signal_detail",
+                new=AsyncMock(side_effect=error),
+            ) as detail,
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(),
+            ) as reconcile,
+        ):
+
+            async def attempt():
+                return await _schedule_insight_catchup(
+                    pool,
+                    suppression_signal="meeting",
+                    suppression_reason="context_bus:meeting",
+                    policy=None,
+                    now=_PINNED_NOW,
+                )
+
+            if failure == "unavailable":
+                assert await attempt() is None
+            else:
+                with pytest.raises(type(error)):
+                    await attempt()
+            detail.assert_awaited_once_with(pool, now=_PINNED_NOW)
+            reconcile.assert_not_awaited()

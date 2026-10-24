@@ -1,4 +1,4 @@
-# Spec: REQ-module-calendar-029, REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-module-calendar-029, REQ-dashboard-api-069
 """Owning migrated approval/command transactions with controlled provider HTTP.
 
 This test uses the production core/approvals chains and runtime role on every
@@ -12,6 +12,7 @@ import asyncio
 import copy
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -21,9 +22,7 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers import approvals as approvals_router
-from butlers.api.routers import calendar_workspace as workspace
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.approvals_hooks import DecisionDossier
 from butlers.daemon import ButlerDaemon
 from butlers.db import Database
@@ -38,6 +37,8 @@ from butlers.modules.calendar import (
 from butlers.modules.calendar_response import CalendarResponseError, reserve_response_inverse
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -147,12 +148,9 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             return await client.call_tool(name, arguments)
 
     transport = SimpleNamespace(call_tool=call_route)
-    from pathlib import Path
 
     for owner_module in (module, peer):
-        owner_module.wire_runtime(
-            None, Path(__file__).resolve().parents[2], switchboard_client=transport
-        )
+        owner_module.wire_runtime(None, _THIS_FILE.parents[2], switchboard_client=transport)
         response_pool.fences.append(owner_module._response_fence)
     account = {"entity_id": str(uuid.uuid4()), "email": "owner@example.test"}
     module._verified_response_account = AsyncMock(return_value=account)
@@ -222,10 +220,9 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     )
     approvals = ApprovalsModule()
     await approvals.register_tools(mcp, {}, pool, "messenger")
-    from pathlib import Path
 
     daemon = ButlerDaemon(
-        Path(__file__).resolve().parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
+        _THIS_FILE.parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
     )
     daemon.config = SimpleNamespace(
         name="messenger",
@@ -249,8 +246,8 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     database._butler_modules = {"messenger": frozenset({"calendar", "approvals"})}
     database.register_configured_modules("messenger", frozenset({"calendar", "approvals"}))
     app = create_authenticated_domain_app()
-    app.dependency_overrides[workspace._get_db_manager] = lambda: database
-    app.dependency_overrides[approvals_router._get_db_manager] = lambda: database
+    app.dependency_overrides[get_db] = lambda: database
+    app.dependency_overrides[get_db] = lambda: database
     app.dependency_overrides[get_mcp_manager] = lambda: manager
     coordinator = module._response_coordinator
     now = datetime.now(UTC)
@@ -362,22 +359,10 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             "/api/calendar/workspace/respond", json={**request, "request_id": str(uuid.uuid4())}
         )
         assert noop.status_code == 200 and noop.json()["data"]["status"] == "noop"
-        assert len(writes) == 1 and noop.json()["data"]["undo_available"] is False
-        concurrent_undo = await asyncio.gather(
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-        )
-        assert sorted(result.status_code for result in concurrent_undo) == [200, 409]
-        undone = next(result for result in concurrent_undo if result.status_code == 200)
-        assert undone.status_code == 200 and undone.json()["data"]["undone"] is True
-        inverse_id = uuid.UUID(undone.json()["data"]["result"]["command_id"])
-        inverse_args = await pool.fetchval(
-            "SELECT tool_args FROM pending_actions WHERE id=$1", inverse_id
-        )
-        assert inverse_args["response_status"] == "needsAction" and len(writes) == 2
-        assert (await client.post(f"/api/calendar/workspace/undo/{command_id}")).status_code == 409
-        with pytest.raises(CalendarResponseError, match="response_inverse_used"):
-            await reserve_response_inverse(pool, command_id)
+        assert len(writes) == 1
+        # The dashboard no longer exposes undo; reset the controlled provider so the
+        # remaining receipts start again from the original response status.
+        resource["attendees"][0]["responseStatus"] = "needsAction"
 
     # A real committed rejection receipt earns neither success nor inverse.
     # The explicit provider status is controlled; action-log SQL is actual.

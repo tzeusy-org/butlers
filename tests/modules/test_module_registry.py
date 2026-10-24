@@ -36,9 +36,7 @@ def _make_module(
     _migration_label = migration_label
 
     class DynamicModule(Module):
-        @property
-        def name(self) -> str:
-            return _name
+        name = _name
 
         @property
         def config_schema(self) -> type[BaseModel]:
@@ -104,6 +102,11 @@ def test_register_duplicate_name_raises():
     reg.register(ModuleA)
     with pytest.raises(ValueError, match="already registered"):
         reg.register(_make_module("a"))
+    # Invalid class metadata must fail without constructing a legacy property.
+    for name in ("", None, property(lambda self: "legacy")):
+        invalid = type("InvalidName", (ModuleA,), {"name": name})
+        with pytest.raises(ValueError, match="non-empty class name"):
+            reg.register(invalid)
 
 
 def test_load_single_module():
@@ -154,6 +157,7 @@ def test_load_independent_modules_sorted():
     ids=["direct-cycle", "indirect-cycle", "missing-dep", "unknown-module"],
 )
 def test_load_error_cases(modules, config, match):
+    """REQ-core-modules-008, REQ-core-modules-009: invalid declarations fail closed."""
     reg = ModuleRegistry()
     for m in modules:
         reg.register(m)
@@ -213,8 +217,19 @@ def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tm
 
     import butlers.modules.registry as registry_module
     from butlers.api.router_discovery import _load_router_module, discover_butler_routers
+    from butlers.modules.calendar import CalendarModule
+    from butlers.modules.contacts import ContactsModule
 
-    discovered = registry_module.default_registry()
+    def undeclared_constructor(self):
+        pytest.fail("Discovery or declared-only loading constructed an omitted module")
+
+    with monkeypatch.context() as constructor_guard:
+        constructor_guard.setattr(CalendarModule, "__init__", undeclared_constructor)
+        constructor_guard.setattr(ContactsModule, "__init__", undeclared_constructor)
+        discovered = registry_module.default_registry()
+        assert [m.name for m in discovered.load_from_config({"self_healing": {}})] == [
+            "self_healing"
+        ]
     assert {"metrics", "document_renderer"}.isdisjoint(discovered.available_modules)
     assert {"pipeline", "calendar"}.issubset(discovered.available_modules)
     for retired in ("metrics", "document_renderer"):

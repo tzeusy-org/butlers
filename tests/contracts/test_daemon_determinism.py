@@ -6,7 +6,9 @@ and concurrency controls.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+from functools import wraps
 
 import pytest
 
@@ -16,20 +18,82 @@ pytestmark = pytest.mark.contract
 class TestStartupPhaseOrder:
     """RFC 0001: 17-phase startup executes in strict order."""
 
-    def test_daemon_startup_structure(self):
-        """Daemon has run method; telemetry before modules; DB before migrations;
-        tools before server; scheduler after server."""
-        from butlers.daemon import ButlerDaemon
-        from butlers.lifecycle import run_startup
+    async def test_daemon_startup_structure(self, monkeypatch):
+        """Await each RFC stage in order; a fatal phase prevents later work."""
+        from butlers import lifecycle
 
-        assert hasattr(ButlerDaemon, "run") or hasattr(ButlerDaemon, "start")
+        expected = [
+            "_startup_config",
+            "_startup_telemetry",
+            "_startup_modules",
+            "_startup_module_config",
+            "_startup_credentials",
+            "_startup_database",
+            "_startup_core_migrations",
+            "_startup_module_migrations",
+            "_startup_credential_store",
+            "_startup_blob_storage",
+            "_startup_cli_auth",
+            "_startup_shared_bootstrap",
+            "_startup_session_recovery",
+            "_startup_runtime_config",
+            "_startup_schedules",
+            "_startup_module_startup",
+            "_startup_spawner",
+            "_startup_core_tools",
+            "_startup_module_tools",
+            "_startup_mcp_server",
+            "_startup_background_services",
+            "_startup_readiness",
+        ]
+        assert [phase.__name__ for phase in lifecycle.STARTUP_PHASES] == expected
+        events = []
+        states = []
+        daemon = object()
+        fail_at = None
 
-        src = inspect.getsource(run_startup)
-        assert "telemetry" in src.lower() or "init_telemetry" in src
-        assert "module" in src.lower()
-        assert "provision" in src or "migration" in src
-        assert "register" in src.lower() or "tool" in src.lower()
-        assert "scheduler" in src.lower()
+        def observe(phase):
+            @wraps(phase)
+            async def run(actual_daemon, state):
+                assert actual_daemon is daemon
+                states.append(state)
+                events.append((phase.__name__, "start"))
+                await asyncio.sleep(0)
+                if phase.__name__ == fail_at:
+                    raise RuntimeError("fatal phase")
+                events.append((phase.__name__, "done"))
+
+            return run
+
+        monkeypatch.setattr(
+            lifecycle, "STARTUP_PHASES", [observe(p) for p in lifecycle.STARTUP_PHASES]
+        )
+        await lifecycle.run_startup(daemon)
+        assert events == [(name, event) for name in expected for event in ("start", "done")]
+        assert all(state is states[0] for state in states)
+
+        first_state = states[0]
+        events.clear()
+        states.clear()
+        fail_at = "_startup_runtime_config"
+        with pytest.raises(RuntimeError, match="fatal phase"):
+            await lifecycle.run_startup(daemon)
+        assert states[0] is not first_state
+        preceding = expected[: expected.index(fail_at)]
+        assert events == [(name, event) for name in preceding for event in ("start", "done")] + [
+            (fail_at, "start")
+        ]
+
+    def test_startup_phases_stay_small(self):
+        """Each startup phase remains reviewable, including comments and docstrings."""
+        from butlers.lifecycle import STARTUP_PHASES
+
+        oversized = {
+            phase.__name__: lines
+            for phase in STARTUP_PHASES
+            if (lines := len(inspect.getsourcelines(phase)[0])) > 120
+        }
+        assert not oversized, oversized
 
 
 class TestFailureSemantics:

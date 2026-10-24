@@ -1,3 +1,4 @@
+import { MemoryProvenanceLine } from "@/components/memory/MemoryProvenanceLine";
 // ---------------------------------------------------------------------------
 // FactDetailPage — the fact's detail page. (bu-2ix8d.7)
 //
@@ -16,8 +17,9 @@
 // - (memory house-ledger redesign, graduated) VISION.md (commit pills)
 // ---------------------------------------------------------------------------
 
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
+import { ApiError } from "@/api/client";
 
 import {
   DetailEyebrow,
@@ -77,18 +79,44 @@ function CommitFooter({ fact }: { fact: Fact }) {
   const confirmMutation = useConfirmFact();
   const retractMutation = useRetractFact();
   const [retractArmed, setRetractArmed] = useState(false);
+  const [action, setAction] = useState<"confirm" | "retract" | null>(null);
+  const inFlight = useRef(false);
+  const armTimer = useRef<number>();
+  const confirmButton = useRef<HTMLButtonElement>(null);
+  const retractButton = useRef<HTMLButtonElement>(null);
 
   const busy = confirmMutation.isPending || retractMutation.isPending;
+  const mutation = action === "confirm" ? confirmMutation : retractMutation;
+  const current = action !== null && mutation.variables === fact.id;
+  const failed = current && mutation.isError;
+
+  useEffect(() => {
+    if (!busy) inFlight.current = false;
+  }, [busy, confirmMutation.status, retractMutation.status]);
+
+  useEffect(() => () => window.clearTimeout(armTimer.current), []);
+
+  function submit(next: "confirm" | "retract") {
+    // Also refuse repeated activation before React renders the disabled pills.
+    if (inFlight.current) return;
+    inFlight.current = true;
+    window.clearTimeout(armTimer.current);
+    setRetractArmed(false);
+    setAction(next);
+    if (next === "confirm") confirmMutation.mutate(fact.id);
+    else retractMutation.mutate(fact.id);
+  }
 
   const onRetract = () => {
+    if (inFlight.current) return;
     if (!retractArmed) {
+      setAction(null);
       setRetractArmed(true);
       // Disarm after 5s if the owner does not follow through.
-      window.setTimeout(() => setRetractArmed(false), 5000);
+      armTimer.current = window.setTimeout(() => setRetractArmed(false), 5000);
       return;
     }
-    setRetractArmed(false);
-    retractMutation.mutate(fact.id);
+    submit("retract");
   };
 
   return (
@@ -96,9 +124,11 @@ function CommitFooter({ fact }: { fact: Fact }) {
       <div className="flex flex-wrap items-center gap-3">
         {/* Confirm — the commit pill (fg-on-bg). */}
         <button
+          ref={confirmButton}
           type="button"
           disabled={busy}
-          onClick={() => confirmMutation.mutate(fact.id)}
+          aria-busy={busy}
+          onClick={() => submit("confirm")}
           className={cn(
             "inline-flex h-7 items-center rounded-full px-3.5",
             "font-mono text-[11px] font-medium",
@@ -118,8 +148,10 @@ function CommitFooter({ fact }: { fact: Fact }) {
       <div className="flex flex-wrap items-center gap-3">
         {/* Retract — secondary (bordered, not colored). One-step confirm. */}
         <button
+          ref={retractButton}
           type="button"
           disabled={busy}
+          aria-busy={busy}
           onClick={onRetract}
           className={cn(
             "inline-flex h-7 items-center rounded-full px-3.5",
@@ -136,6 +168,31 @@ function CommitFooter({ fact }: { fact: Fact }) {
           Marks the record incorrect; agents stop retrieving it.
         </Voice>
       </div>
+      <p role={failed ? "alert" : "status"} aria-label="Fact action outcome" aria-atomic="true"
+        className="text-[13px] text-fg">
+        {failed ? (
+          <>
+            {action === "confirm"
+              ? <>Could not confirm this fact: </>
+              : <>Could not retract this fact: </>}
+            {mutation.error.message}
+          </>
+        ) : current && mutation.isSuccess ? (
+          action === "confirm" ? <>Confirmed.</> : <>Retracted.</>
+        ) : null}
+      </p>
+      {failed && action && (
+        <button type="button" disabled={busy}
+          onClick={() => {
+            // Retry already has the owner's confirmation. Keep focus on the
+            // initiating pill when the temporary Retry control disappears.
+            (action === "confirm" ? confirmButton : retractButton).current?.focus();
+            submit(action);
+          }}
+          className="self-start rounded-full border border-[var(--border)] px-3.5 py-1 font-mono text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-40">
+          {action === "confirm" ? <>Retry confirm</> : <>Retry retract</>}
+        </button>
+      )}
     </footer>
   );
 }
@@ -152,8 +209,9 @@ interface FactDetailPageProps {
 export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
   const tz = useTimezone();
   const { factId } = useParams<{ factId: string }>();
-  const { data, isLoading } = useFact(factId ?? null);
-  const fact = data?.data;
+  const { data, isLoading, error, refetch } = useFact(factId ?? null);
+  const notFound = error instanceof ApiError && error.status === 404;
+  const fact = notFound ? undefined : data?.data;
 
   // Title: content is the record identity; truncate to 80 chars per spec.
   const title = fact
@@ -224,6 +282,8 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
         ) : undefined
       }
       loading={isLoading}
+      error={notFound ? null : error}
+      onRetry={() => void refetch()}
       empty={
         !fact && !isLoading
           ? {
@@ -236,6 +296,7 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
       {fact && (
         <div className="mx-auto flex max-w-[680px] flex-col gap-6">
           <DetailEyebrow kind="fact" id={fact.id} />
+          <MemoryProvenanceLine record={fact} />
 
           {/* State line — lifecycle in the API's words. */}
           <StateLine
@@ -286,7 +347,7 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
           </ProvenanceSection>
 
           {/* Commit footer — both endpoints live, always rendered. */}
-          <CommitFooter fact={fact} />
+          <CommitFooter key={fact.id} fact={fact} />
         </div>
       )}
     </Page>

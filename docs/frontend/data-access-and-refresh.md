@@ -83,6 +83,20 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
 
 ## Implementation Notes
 
+- New system tiles compose `Query` from `components/ui/query-boundary.tsx` through
+  `QueryTile` in `components/ui/query-tile.tsx`. Pass the complete typed hook result;
+  the data callback executes only for confirmed success. Pending, paused-without-data,
+  refetch errors with cached data, and previous-key placeholders cannot invoke it or
+  establish a genuine empty result. Successful background refresh keeps the confirmed
+  content visible with a busy indicator. Tile-specific source availability and formatting
+  remain in the success presentation; a successful HTTP envelope is not proof every
+  source is healthy. `QueryTile` owns the shared error and query-refetch Retry control.
+  These primitives compose within `Page`; they do not own page chrome or fetching.
+- Where a surface requires retained stale rows, render them as a separate, explicitly
+  labelled sibling from a last-confirmed-success snapshot scoped to its originating
+  query/filter and authority. Do not supply an error-data callback to `Query` or let a
+  previous-filter placeholder count as confirmation for a new filter. Existing system
+  tiles continue to replace content on errors; this slice adds no snapshot cache.
 - `EventBusProvider` supplies the snapshot cache policy to `useEventStream`: the existing
   event registry plans the same targeted filters, and `applyFleetEventBatch` unions filters
   only when their refetch policies match. Ingestion retains `cancelRefetch: false`; activity
@@ -112,3 +126,10 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
 - [Response Conventions](../api_and_protocols/response-conventions.md) -- Envelopes, pagination,
   degraded-source flags
 - [Information Architecture](information-architecture.md) -- Navigation rationale
+
+### Browser-local unsent input
+
+Approved unsent form bundles use the native IndexedDB task seam, independent of
+QueryClient and API response caches. See [browser-local unsent drafts](unsent-drafts.md)
+for the exact allowlist, one-second dismissal contract, stale-writer fences, privacy
+boundary, and the explicitly unavailable chat outcome-recovery prerequisite.

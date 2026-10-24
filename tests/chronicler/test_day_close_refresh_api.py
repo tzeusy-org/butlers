@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError
+from butlers.api.deps import ButlerUnreachableError, get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -59,7 +59,7 @@ def _make_app(
         manager.get_client = AsyncMock(return_value=client)
 
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[chronicler_mod.get_mcp_manager] = lambda: manager
     chronicler_mod.emit_dashboard_audit = AsyncMock()
     return app, manager.get_client, client.call_tool

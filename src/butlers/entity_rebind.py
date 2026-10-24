@@ -371,9 +371,11 @@ async def run_entity_rebind_listener(
                             rebind_id = await asyncio.wait_for(
                                 queue.get(), timeout=health_poll_interval_s
                             )
-                        except TimeoutError:
+                        except TimeoutError as exc:
                             if conn.is_closed():
-                                raise RuntimeError("entity rebind listener connection closed")
+                                raise RuntimeError(
+                                    "entity rebind listener connection closed"
+                                ) from exc
                             continue
 
                         row = await conn.fetchrow(

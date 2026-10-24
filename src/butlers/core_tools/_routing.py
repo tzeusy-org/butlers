@@ -54,12 +54,12 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
     parse_notify_request,
-    parse_route_envelope,
 )
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
+from butlers.tools.switchboard.transport import (
     POLICY_DENIED,
     PROVIDER_REJECTED,
     RECIPIENT_UNAVAILABLE,
@@ -640,41 +640,6 @@ def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
         keyboard.append(decision_buttons)
     keyboard.append([{"text": "Open dashboard", "url": open_dashboard.dashboard_url}])
     return {"inline_keyboard": keyboard}
-
-
-def _decision_request_reply_markup(actions: Any) -> dict[str, Any]:
-    """One button row per offered option, then the dashboard link (bu-ckkpz.3)."""
-    keyboard: list[list[dict[str, str]]] = []
-    dashboard_url: str | None = None
-    for action in actions:
-        if action.verb == "choose":
-            if action.callback_token is None or action.label is None:
-                raise ValueError("decision_request choose action is missing token or label.")
-            keyboard.append([{"text": action.label, "callback_data": action.callback_token}])
-        elif action.verb == "open_dashboard":
-            dashboard_url = action.dashboard_url
-    if not keyboard or dashboard_url is None:
-        raise ValueError("decision_request actions need choices and open_dashboard.")
-    keyboard.append([{"text": "Open dashboard", "url": dashboard_url}])
-    return {"inline_keyboard": keyboard}
-
-
-def _owner_control_plain_text(intent: str, message: str, actions: Any) -> str:
-    """Text for a channel without inline buttons: a decision prompt carries its link.
-
-    The decision template names options for buttons, so without them the owner
-    needs the dashboard URL to answer; approval messages already embed theirs.
-    """
-    if intent != "decision_request":
-        return message
-    url = next((a.dashboard_url for a in actions if a.verb == "open_dashboard"), None)
-    return f"{message}\n\nDecide in the dashboard: {url}" if url else message
-
-
-def _owner_control_reply_markup(intent: str, actions: Any) -> dict[str, Any]:
-    if intent == "decision_request":
-        return _decision_request_reply_markup(actions)
-    return _approval_request_reply_markup(actions)
 
 
 def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -1669,7 +1634,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         approval_recipient: str | None = None
 
         try:
-            # approval_request and decision_request are daemon-owned
+            # Approval requests are daemon-owned
             # control-plane envelopes.  Their recipient must resolve to the owner
             # before any transport module is touched; ordinary recipient gates
             # deliberately do not park or recurse this already-pending decision
@@ -1794,9 +1759,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     adapter_result = await telegram_module._send_message(
                         approval_recipient,
                         rendered_text,
-                        reply_markup=_owner_control_reply_markup(
-                            intent, notify_request.actions or ()
-                        ),
+                        reply_markup=_approval_request_reply_markup(notify_request.actions or ()),
                     )
                 elif intent == "react":
                     thread_identity = (
@@ -1883,7 +1846,6 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
 
                 raw_subject = notify_request.delivery.subject or {
                     "approval_request": "Approval requested",
-                    "decision_request": "Decision requested",
                 }.get(intent, "Notification")
                 normalized_subject = (
                     raw_subject
@@ -1902,9 +1864,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     adapter_result = await email_module._send_email(
                         approval_recipient,
                         normalized_subject,
-                        _owner_control_plain_text(
-                            intent, message_text, notify_request.actions or ()
-                        ),
+                        message_text,
                     )
                 else:
                     raise ValueError(f"Unsupported email intent: {intent}")
@@ -1933,9 +1893,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(
                         recipient=approval_recipient,
-                        text=_owner_control_plain_text(
-                            intent, rendered_text, notify_request.actions or ()
-                        ),
+                        text=rendered_text,
                     )
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")

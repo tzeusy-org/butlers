@@ -294,9 +294,9 @@ describe("EpisodesRegister — the daybook", () => {
     const mark = mounted.container.querySelector('[aria-label="health"]');
     expect(mark).not.toBeNull();
     expect(mark!.textContent).toBe("H");
-    // It carries a category hue via inline style (color or background).
+    // It carries its identity hue via inline style (color or background).
     const style = (mark as HTMLElement).getAttribute("style") ?? "";
-    expect(style).toContain("category");
+    expect(style).toContain("light-dark(oklch(");
   });
 
   it("keeps an initial-only episode row's full butler identity available on hover", () => {

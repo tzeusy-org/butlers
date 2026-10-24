@@ -278,7 +278,10 @@ class TestAttentionEventRecordedSince:
 
 class TestGetSuppressingContextSignal:
     async def test_none_pool_returns_none(self):
-        assert await get_suppressing_context_signal(None) is None
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+
+        with pytest.raises(AttentionReadUnavailable):
+            await get_suppressing_context_signal(None)
 
     async def test_no_active_signals_returns_none(self, monkeypatch):
         async def _fake_get_active_context(pool):
@@ -331,7 +334,10 @@ class TestGetSuppressingContextSignal:
             raise RuntimeError("boom")
 
         monkeypatch.setattr("butlers.context_bus.get_active_context", _raising)
-        assert await get_suppressing_context_signal(AsyncMock()) is None
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+
+        with pytest.raises(AttentionReadUnavailable):
+            await get_suppressing_context_signal(AsyncMock())
 
     async def test_context_detail_uses_latest_suppressor_expiry(self, monkeypatch):
         """A DND plus sleeping hold cannot flush while either signal remains active."""

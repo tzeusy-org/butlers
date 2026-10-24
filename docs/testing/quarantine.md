@@ -8,9 +8,9 @@
 
 ## Why a single flake is expensive here
 
-Every pull request and every merge-queue entry runs the unit and integration lanes as eleven shards.
-Unit shards run with `--maxfail=1`, a rerun of only the failed jobs is refused (the inventory
-receipts no longer match), and the merge queue re-runs every shard for every entry. So one test that
+Every pull request and every merge-queue entry runs the unit and integration lanes as eleven groups.
+Unit groups run with `--maxfail=1`, a rerun of only the failed jobs is refused (the lane totals
+are checked over one run), and the merge queue re-runs every group for every entry. So one test that
 fails 5% of the time fails a noticeable share of whole workflows, and each failure costs a full
 re-run. Fixing the cause is always the goal; quarantine exists for the gap between finding a flake
 and being able to remove its cause.
@@ -27,10 +27,10 @@ and being able to remove its cause.
 
 `tests/quarantine.py` is a pytest plugin that `pyproject.toml` `addopts` load with
 `-p tests.quarantine`, so it applies to every pytest invocation that reads the repo config: CI
-shards, the inventory collector, `make` targets and local runs.
+lane groups, the lane totals' `--collect-only` count, `make` targets and local runs.
 
 - **Default run:** listed tests are deselected (they appear in the `deselected` count, and the
-  session header says how many are quarantined). The CI inventory, shard manifests and test budget
+  session header says how many are quarantined). The lane groups, lane totals and test budget
   count only selected tests, so they stay consistent.
 - **`--quarantined`:** runs only the listed tests within the requested scope. Use it for diagnostics,
   including a single parameter; registry owners outside that scope need not be collected.
@@ -68,24 +68,14 @@ restore those owners to blocking coverage.
   the run and job ids, the cause, and what removing the cause means.
 - **No automatic reruns, no raised timeouts, no weakened assertions** as a substitute. Each of those
   hides the next real regression in the same test.
-- **Quarantine through the registry, not by editing the test.** The condensation ledger guard
-  refuses marker, decorator and statement changes to existing tests and any `conftest.py` change
-  without a proof, so a `nightly` marker or a conftest skip cannot land without proof work anyway.
-  The registry touches no test file.
+- **Quarantine through the registry, not by editing the test.** The registry touches no test
+  file, so the quarantined test keeps its assertions, markers and fixtures exactly as they were,
+  and removing the entry restores it unchanged.
 - **Un-quarantine by fixing the cause.** The PR that removes the cause deletes the entry. Nothing
   else should bring a test back into the blocking lanes.
 
-Quarantine is normally temporary. The one standing exception is the three
-condensation proof owners in `tests/scripts/test_condense_evidence.py` (ctrace,
-distinct and paired), all registered under bu-oq6eiu. On 2026-10-20 the owner
-ruled that they run nightly-only for good. Each proof launches about 22
-strace-observed workers under a fixed 60 s deadline, and cutting cost further
-would weaken the evidence the proofs exist to produce. A dedicated serial
-blocking job was declined too, because it would slow every CI run. These entries
-stay until that ruling changes; a regression in the proof script surfaces in the
-nightly `quarantined` job.
+Quarantine is temporary: every entry waits on the fix its bead owns.
 
 ## Related Pages
 
 - [Markers and Fixtures](markers-and-fixtures.md)
-- [Condensation Evidence](condensation-evidence.md)

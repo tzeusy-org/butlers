@@ -26,6 +26,7 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
@@ -82,7 +83,7 @@ def _make_app(
     app.dependency_overrides[get_butler_configs] = lambda: _BUTLER_CONFIG
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_pricing] = lambda: _PRICING
-    app.dependency_overrides[console_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
 
     return app
 

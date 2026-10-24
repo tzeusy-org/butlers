@@ -11,7 +11,7 @@ composite ``(timestamp, id)`` keyset pagination (``before`` cursor + ``limit``)
 and SQL-level filtering by butler and event type.
 
 Cross-butler fan-out reads go through the versioned read-model boundary in
-``butlers.api.read_models.timeline_v1`` rather than constructing ad-hoc SQL
+``butlers.api.read_models.timeline`` rather than constructing ad-hoc SQL
 inline in this router.
 """
 
@@ -21,9 +21,9 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models.timeline import (
     TimelineAttentionItem,
     TimelineAttentionMeta,
@@ -36,12 +36,11 @@ from butlers.api.models.timeline import (
     TimelineMeta,
     TimelineResponse,
 )
-from butlers.api.read_models.timeline_v1 import (
+from butlers.api.pagination import decode_cursor, encode_cursor
+from butlers.api.read_models.timeline import (
     TIMELINE_ATTENTION_LIMIT,
     TimelineNotificationRow,
     TimelineSessionRow,
-    decode_cursor,
-    encode_cursor,
     query_timeline_attention_notifications_single,
     query_timeline_attention_sessions_fan_out,
     query_timeline_notification_histogram_single,
@@ -113,11 +112,6 @@ def _availability(expected: int, healthy: int) -> str:
     return "partial"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # Event builders — convert read-model DTOs to TimelineEvent response models
 # ---------------------------------------------------------------------------
@@ -173,7 +167,7 @@ def _notification_dto_to_event(dto: TimelineNotificationRow) -> TimelineEvent:
 
 def _session_to_event(row, *, butler: str) -> TimelineEvent:  # noqa: ANN001
     """Legacy shim — raw asyncpg Record accepted.  New code: use :func:`_session_dto_to_event`."""
-    from butlers.api.read_models.timeline_v1 import _row_to_session  # noqa: PLC0415
+    from butlers.api.read_models.timeline import _row_to_session  # noqa: PLC0415
 
     dto = _row_to_session(row, butler=butler)
     return _session_dto_to_event(dto)
@@ -197,9 +191,8 @@ async def list_timeline(
         None,
         description=(
             "Pagination cursor from the previous page's ``meta.cursor`` field: "
-            "an opaque composite (timestamp, id) keyset position. A bare "
-            "ISO-8601 timestamp is also accepted for backward compatibility, "
-            "without the same-timestamp tiebreak the composite cursor provides."
+            "an opaque composite (timestamp, id) keyset position; a malformed "
+            "one is a 400."
         ),
     ),
     limit: int = Query(50, ge=1, le=200, description="Max events to return"),
@@ -215,7 +208,8 @@ async def list_timeline(
     ),
     since: datetime | None = Query(None, description="Inclusive UTC minute interval bound"),
     until: datetime | None = Query(None, description="Exclusive UTC minute interval bound"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineResponse:
     """Return a cursor-paginated cross-butler event stream.
 
@@ -250,10 +244,7 @@ async def list_timeline(
     before_ts: datetime | None = None
     before_id: UUID | None = None
     if before is not None:
-        try:
-            before_ts, before_id = decode_cursor(before)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid 'before' cursor: {exc}") from exc
+        before_ts, before_id = decode_cursor(before, (datetime, UUID), scope="timeline")
 
     trace_id = trace.strip() if trace is not None and trace.strip() else None
 
@@ -347,7 +338,7 @@ async def list_timeline(
 
     cursor: str | None = None
     if has_more and page:
-        cursor = encode_cursor(page[-1].timestamp, page[-1].id)
+        cursor = encode_cursor((page[-1].timestamp, page[-1].id), scope="timeline")
 
     heartbeat_events = [e for e in page if e.is_heartbeat]
     heartbeat_rollup = TimelineHeartbeatRollup(
@@ -375,7 +366,8 @@ async def timeline_histogram(
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     event_type: list[str] | None = Query(None, description="Filter by event type(s)"),
     trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineHistogramResponse:
     """Return content-blind, server-counted minute density for a bounded interval."""
     validated_since, validated_until = _validate_interval(since, until, required=True)
@@ -459,7 +451,8 @@ async def timeline_histogram(
 async def timeline_attention(
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TimelineAttentionResponse:
     """Return recent records that are currently marked failed.
 

@@ -113,8 +113,10 @@ async def event_chain_create(
             actions,
             butler_name,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"An event chain named {name!r} already exists for butler {butler_name!r}")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(
+            f"An event chain named {name!r} already exists for butler {butler_name!r}"
+        ) from exc
     assert row is not None
     return _row_to_dict(row)
 
@@ -225,8 +227,10 @@ async def event_chain_update(
             """,
             *params,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"An event chain named {name!r} already exists for butler {butler_name!r}")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(
+            f"An event chain named {name!r} already exists for butler {butler_name!r}"
+        ) from exc
     assert row is not None
     return _row_to_dict(row)
 

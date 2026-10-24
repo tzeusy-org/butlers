@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +21,10 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = pytest.mark.unit
 
@@ -59,10 +63,9 @@ def _build_app(pool):
     """Create a FastAPI test app with the health router wired to *pool*."""
     import importlib.util
     import sys
-    from pathlib import Path
 
     # Load the health router module (may already be in sys.modules)
-    router_path = Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
+    router_path = _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
     module_name = "health_api_router"
     if module_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(module_name, router_path)
@@ -72,7 +75,7 @@ def _build_app(pool):
     else:
         module = sys.modules[module_name]
 
-    _get_db_manager = module._get_db_manager
+    _get_db_manager = get_db
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
@@ -258,11 +261,8 @@ class TestMeasurementsLatest:
 
         import importlib.util
         import sys
-        from pathlib import Path
 
-        router_path = (
-            Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
-        )
+        router_path = _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
         module_name = "health_api_router"
         if module_name not in sys.modules:
             spec = importlib.util.spec_from_file_location(module_name, router_path)
@@ -272,7 +272,7 @@ class TestMeasurementsLatest:
         module = sys.modules[module_name]
 
         app = create_app(api_key="")
-        app.dependency_overrides[module._get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

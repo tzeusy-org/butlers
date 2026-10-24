@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Docked chat rail (bu-0ynlk.11) — the >= xl default posture for the global
  * "Talk to Butlers" surface. Mounted by RootLayout as Shell's `chatDock`
@@ -73,7 +76,13 @@ export function ChatDock({ onClose }: ChatDockProps) {
   }, []);
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([WIDGET_BUTLER, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [WIDGET_BUTLER, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), true, { message: "" });
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
@@ -113,6 +122,15 @@ export function ChatDock({ onClose }: ChatDockProps) {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // Resume the most recently updated open conversation once per mount, same
@@ -131,17 +149,30 @@ export function ChatDock({ onClose }: ChatDockProps) {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      // Keep failed pre-acceptance bindings for the existing explicit Retry/message_id.
+      // Only onMessageAccepted consumes C; a retry must never capture newer input.
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
+    draft.dismiss(() => {
     abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
+    });
   }
 
   function handleCheckAgain() {
@@ -215,7 +246,7 @@ export function ChatDock({ onClose }: ChatDockProps) {
           <Button
             variant="ghost"
             size="icon-xs"
-            onClick={onClose}
+            onClick={() => draft.dismiss(onClose)}
             aria-label="Collapse chat dock"
             title="Collapse"
             data-testid="chat-dock-close"
@@ -268,6 +299,7 @@ export function ChatDock({ onClose }: ChatDockProps) {
           />
         )}
 
+        <DraftNotice session={draft.session} />
         <MessageInput
           value={inputValue}
           onChange={setInputValue}
@@ -284,7 +316,7 @@ export function ChatDock({ onClose }: ChatDockProps) {
                   ? `Could not stop this turn: ${streaming.cancelError}`
                   : null
           }
-          disabled={isLoadingConversations}
+          disabled={isLoadingConversations || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
           isStreaming={hasActiveRuntime}
           contextChip={{
             label: contextPreview.label,

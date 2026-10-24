@@ -64,6 +64,7 @@ from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.google_credentials import resolve_google_credentials
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.metrics_registry import get_or_create_counter, get_or_create_gauge
 from butlers.oauth_token_payload import (
     OAuthTokenValidationError,
@@ -629,7 +630,7 @@ def _build_batch_digest_text(pending: list[_PendingChange]) -> str:
     file_count = len(by_file)
 
     lines = [f"google_drive_batch: {total} change(s) across {file_count} file(s)"]
-    for file_id, changes in by_file.items():
+    for _file_id, changes in by_file.items():
         name = changes[-1].name  # latest name
         types = [c.change_type for c in changes]
 
@@ -2185,6 +2186,7 @@ class GDriveConnectorManager:
         )
 
         self._heartbeat = ConnectorHeartbeat(
+            channel_kind=CHANNEL_KIND_FEED,
             config=heartbeat_config,
             mcp_client=self._mcp_client,
             metrics=self._metrics,
@@ -2240,7 +2242,9 @@ class GDriveConnectorManager:
                                 error_message = $2,
                                 last_heartbeat_at = NOW(),
                                 uptime_s = $3,
-                                operational_role = 'runtime_instance'
+                                operational_role = 'runtime_instance',
+                                capabilities = COALESCE(capabilities, '{}'::jsonb)
+                                    || jsonb_build_object('channel_kind', $6::text)
                             WHERE connector_type = $4
                               AND endpoint_identity = $5
                             """,
@@ -2249,6 +2253,7 @@ class GDriveConnectorManager:
                             int(time.time() - self._start_time),
                             _CONNECTOR_TYPE,
                             endpoint_id,
+                            CHANNEL_KIND_FEED,
                         )
                 logger.debug(
                     "Drive manager: per-account heartbeat updated %d accounts",

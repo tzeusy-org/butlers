@@ -72,7 +72,8 @@ class TestContactsConfig:
         config = ContactsConfig(provider="google")
         assert config.provider == "google"
         assert config.include_other_contacts is False
-        assert config.sync.enabled is True
+        # Only the owning butler (Relationship) opts in; a new butler never silently syncs.
+        assert config.sync.enabled is False
         assert config.sync.interval_minutes == 15
 
     def test_legacy_provider_creates_providers_list(self) -> None:
@@ -319,7 +320,9 @@ async def test_telegram_full_cycle_completion_disposition(case):
                 class EarlierCursorProvider:
                     name = "telegram"
 
-                    async def full_sync(self, *, account_id, page_token=None):
+                    async def full_sync(
+                        self, *, account_id, page_token=None, terminal_cursor=terminal_cursor
+                    ):
                         return ContactBatch(
                             contacts=[contact] if page_token is None else [],
                             next_page_token="terminal" if page_token is None else None,
@@ -327,7 +330,7 @@ async def test_telegram_full_cycle_completion_disposition(case):
                             checkpoint={"complete_full_fetch": True},
                         )
 
-                async def observed_apply(value):
+                async def observed_apply(value, *, applied=applied):
                     applied.append(value)
 
                 guarded = ContactsSyncEngine(
@@ -421,7 +424,7 @@ async def test_telegram_full_cycle_completion_disposition(case):
                 class BadProvider:
                     name = "telegram"
 
-                    async def full_sync(self, **kwargs):
+                    async def full_sync(self, *, bad=bad, **kwargs):
                         return bad
 
                 unchanged = store.state.model_copy(deep=True)
@@ -554,7 +557,9 @@ async def test_contacts_startup_poll_and_sync_now_share_full_finalizer(monkeypat
     await module.register_tools(
         mcp, {"provider": "telegram"}, SimpleNamespace(pool=object()), "general"
     )
-    await module.on_startup({"provider": "telegram"}, SimpleNamespace(pool=object()))
+    await module.on_startup(
+        {"provider": "telegram", "sync": {"enabled": True}}, SimpleNamespace(pool=object())
+    )
     runtime = module._runtimes["telegram"]
     engine = runtime._sync_engine
     original_sync = engine.sync

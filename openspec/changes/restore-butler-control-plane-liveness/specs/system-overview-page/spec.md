@@ -9,7 +9,7 @@ separately. The legacy timestamp field name is retained for existing clients but
 is the receiver's DB-server time of the last successful healthy verification, not a daemon-authored heartbeat or the latest failed probe. A separate `last_probe_at` SHALL carry the last attempted receiver probe time. Clients SHALL classify effective status from `observation_state` and `effective_eligibility`, never heartbeat age alone.
 
 ID: REQ-system-overview-page-007
-Source: RFC 0007 §System Ownership Page; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] src/butlers/api/routers/system.py
+Source: RFC 0007 §System Ownership Page; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] src/butlers/api/routers/system.py
 Scope: v1-mandatory
 
 #### Scenario: Heartbeat endpoint returns per-butler status

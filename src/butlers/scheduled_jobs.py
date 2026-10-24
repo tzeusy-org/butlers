@@ -189,49 +189,6 @@ async def _run_switchboard_fleet_case_lapse_sweep_job(
     return await run_lapse_sweep(pool)
 
 
-async def _run_switchboard_decision_review_digest_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the weekly decision-review digest job for the Switchboard butler.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_review_digest``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_review_digest
-
-    return await run_decision_review_digest(pool, job_args)
-
-
-async def _run_switchboard_decision_escalation_check_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the P1/deploy decision-block age-escalation check for Switchboard.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_escalation_check``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_escalation_check
-
-    return await run_decision_escalation_check(pool, job_args)
-
-
-async def _run_switchboard_decision_routing_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Offer open decision beads to the owner as one-tap Telegram prompts.
-
-    Delegates to ``butlers.jobs.decision_routing.run_decision_routing``
-    (bu-ckkpz.3, epic bu-ckkpz "Owner Decision Desk"). A no-op unless
-    ``BUTLERS_DECISION_ROUTING_ENABLED=1``.
-    """
-    from butlers.jobs.decision_routing import run_decision_routing
-
-    return await run_decision_routing(pool, job_args)
-
-
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -1194,6 +1151,16 @@ async def _run_health_baseline_watch_job(
     return await run_baseline_watch(pool, job_args)
 
 
+async def _run_health_visit_brief_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the health pre-appointment visit brief (deterministic, zero LLM, owner-only)."""
+    from butlers.jobs.health_visit_brief import run_visit_brief
+
+    return await run_visit_brief(pool, job_args)
+
+
 async def _run_health_atmosphere_advisory_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1276,6 +1243,28 @@ async def _run_relationship_insight_scan_job(
 
     mod = load_roster_jobs("relationship")
     return await mod.run_insight_scan(pool)
+
+
+async def _run_relationship_upcoming_dates_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Remind the owner of active people's dates this week (bu-idc5mx.4; template, zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_upcoming_dates_check
+
+    return await run_upcoming_dates_check(pool)
+
+
+async def _run_relationship_maintenance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Suggest the week's top overdue reconnections by urgency (bu-idc5mx.4; zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    return await run_relationship_maintenance(pool)
 
 
 async def _run_prepared_action_orphan_sweep_job(
@@ -1738,6 +1727,16 @@ async def _run_qa_evidence_cleanup_job(
 # ---------------------------------------------------------------------------
 
 
+async def _run_chronicler_gap_interview_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
+    from butlers.chronicler.gap_interview_job import run_gap_interview_job
+
+    return await run_gap_interview_job(pool, job_args)
+
+
 async def _run_chronicler_project_sessions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2142,6 +2141,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
             "baseline_watch": _run_health_baseline_watch_job,
+            "health_visit_brief": _run_health_visit_brief_job,
             "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
             **_retention_pruner_job_handlers("health"),
@@ -2164,6 +2164,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
+            "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
+            "relationship_maintenance": _run_relationship_maintenance_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
@@ -2208,6 +2210,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # purge_superseded / catalog_backfill) or they fail with "unknown
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
@@ -2267,9 +2270,6 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
             "dropped_known_watch": _run_switchboard_dropped_known_watch_job,
-            "decision_review_digest": _run_switchboard_decision_review_digest_job,
-            "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
-            "decision_routing": _run_switchboard_decision_routing_job,
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
