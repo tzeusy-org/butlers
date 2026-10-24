@@ -157,7 +157,7 @@ async def test_remove_source_deletes_only_registry_key_and_leaves_dangling_refs(
 
 
 async def test_education_module_registers_source_material_tools() -> None:
-    from roster.education.modules import EducationModule, EducationModuleConfig
+    from butlers.modules._roster_education import EducationModule, EducationModuleConfig
 
     class _FakeMCP:
         def __init__(self) -> None:
@@ -189,7 +189,7 @@ async def test_education_module_registers_source_material_tools() -> None:
 async def test_source_material_register_schema_requires_title_and_type() -> None:
     from fastmcp import FastMCP
 
-    from roster.education.modules import EducationModule, EducationModuleConfig
+    from butlers.modules._roster_education import EducationModule, EducationModuleConfig
 
     mcp = FastMCP("source-material-schema")
     module = EducationModule()

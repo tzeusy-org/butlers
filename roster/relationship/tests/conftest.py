@@ -16,7 +16,7 @@ _PRISTINE_DUNBAR_GLOBALS: dict[str, object] = {
 @pytest.fixture(scope="module")
 def interaction_sync_database(postgres_container):
     """Provision real named-schema chains once for the owning test module."""
-    from roster.relationship.tests.calendar_projection import create_interaction_sync_database
+    from .calendar_projection import create_interaction_sync_database
 
     return create_interaction_sync_database(postgres_container)
 

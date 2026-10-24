@@ -45,7 +45,8 @@ from butlers.testing.schema_standins import (
     ENTITY_PREDICATE_REGISTRY,
     PENDING_ACTIONS,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
+from .evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,

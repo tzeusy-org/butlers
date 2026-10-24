@@ -34,11 +34,12 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
     retract_prefers_channel,
 )
-from roster.relationship.tests.evidence_schema import (
+
+from .evidence_schema import (
     apply_evidence_schema,
     simulate_temporal_cutover,
 )
-from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+from .fact_authority_fixtures import synthetic_owner
 
 pytestmark = [
     pytest.mark.integration,

@@ -29,7 +29,8 @@ from butlers.tools.relationship.relationship_assert_fact import (
     assert_prefers_channel,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
+from .evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,

@@ -38,7 +38,8 @@ from butlers.tools.relationship.entity_merge import (
     TargetEntityTombstonedError,
     merge_entity_pair,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
+from .evidence_schema import apply_evidence_schema
 
 
 def _locked_row(entity_id: UUID, *, tombstoned: bool = False) -> dict:

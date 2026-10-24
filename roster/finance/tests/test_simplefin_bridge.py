@@ -150,7 +150,7 @@ def _http_client(
 
 def test_simplefin_sync_entrypoint_is_available() -> None:
     """The Finance job has a dedicated deterministic entrypoint."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     assert callable(run_simplefin_sync)
 
@@ -159,7 +159,7 @@ def test_simplefin_sync_entrypoint_is_available() -> None:
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_missing_access_url_skips_without_http_or_writes(pool: asyncpg.Pool) -> None:
     """An absent DB secret is honest and never reaches the network boundary."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     credential_store = _CredentialStore(None)
     requests: list[httpx.Request] = []
@@ -186,7 +186,7 @@ async def test_missing_access_url_skips_without_http_or_writes(pool: asyncpg.Poo
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_malformed_access_url_skips_without_http_or_writes(pool: asyncpg.Pool) -> None:
     """A malformed access URL is rejected before the HTTP client is used."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     credential_store = _CredentialStore("not-a-url")
     requests: list[httpx.Request] = []
@@ -215,7 +215,7 @@ async def test_first_valid_response_creates_exact_provider_bound_account(
     pool: asyncpg.Pool,
 ) -> None:
     """The credential is enough to bootstrap one exact remote account safely."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     response = _account_set(
         transactions=[
@@ -275,7 +275,7 @@ async def test_ambiguous_local_binding_skips_without_http(
     pool: asyncpg.Pool,
 ) -> None:
     """Multiple explicit provider bindings remain a no-request configuration error."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     requests: list[httpx.Request] = []
 
@@ -308,7 +308,7 @@ async def test_first_response_is_fully_validated_before_account_creation(
     pool: asyncpg.Pool,
 ) -> None:
     """Invalid discovery metadata cannot leave a partially provisioned account."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     response = _account_set()
     response["connections"] = []
@@ -361,7 +361,7 @@ async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_fr
     invalid_value: object,
 ) -> None:
     """Every required v2 connection/account field is validated before writes."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     response = _account_set(
@@ -405,7 +405,7 @@ async def test_upstream_403_is_sanitized_and_does_not_advance_freshness(
     pool: asyncpg.Pool,
 ) -> None:
     """Revocation is observable only through a sanitized failed request."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     requests: list[httpx.Request] = []
@@ -441,7 +441,7 @@ async def test_access_url_userinfo_is_not_passed_to_httpx_or_its_info_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The credential-bearing Access URL becomes Basic auth, never request authority."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     await _insert_bound_account(pool)
     requests: list[httpx.Request] = []
@@ -483,7 +483,7 @@ async def test_upstream_timeout_is_sanitized_and_does_not_advance_freshness(
     pool: asyncpg.Pool,
 ) -> None:
     """A transport timeout does not become a credential or provider-text disclosure."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
 
@@ -513,8 +513,8 @@ async def test_complete_one_account_response_records_settled_transactions_with_p
     pool: asyncpg.Pool,
 ) -> None:
     """The bridge uses provider IDs and skips pending/unposted data."""
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
     from butlers.tools.finance.transactions import record_transaction
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
     assert "source" not in inspect.signature(record_transaction).parameters
     account = await _insert_bound_account(pool)
@@ -583,8 +583,8 @@ async def test_provider_id_preserves_aggregator_provenance_after_email_collision
     pool: asyncpg.Pool,
 ) -> None:
     """A new provider ID must not collapse into an equal email-ledger row."""
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
     from butlers.tools.finance.feed_reconciliation import reconcile_feed_vs_email
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     sync_now = datetime.now(UTC).replace(microsecond=0)
@@ -661,7 +661,7 @@ async def test_sync_records_on_a_migrated_single_connection_pool(
     single_connection_pool: asyncpg.Pool,
 ) -> None:
     """The held advisory-lock connection also performs the ledger write."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(single_connection_pool)
     response = _account_set(
@@ -705,7 +705,7 @@ async def test_error_list_or_multiple_remote_accounts_prevents_all_writes(
     pool: asyncpg.Pool,
 ) -> None:
     """Any incomplete or ambiguous remote response fails before a ledger write."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     incomplete = _account_set(
@@ -773,7 +773,7 @@ async def test_malformed_settled_transaction_prevents_earlier_valid_write(
     pool: asyncpg.Pool,
 ) -> None:
     """The complete payload is validated before its first transaction is recorded."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     response = _account_set(
@@ -818,7 +818,7 @@ async def test_storage_unrepresentable_settled_transaction_prevents_earlier_vali
     pool: asyncpg.Pool,
 ) -> None:
     """All settled values must fit Finance storage before the first ledger write."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     account = await _insert_bound_account(pool)
     response = _account_set(
@@ -861,7 +861,7 @@ async def test_storage_unrepresentable_settled_transaction_prevents_earlier_vali
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_overlap_window_replays_by_external_id_without_duplicate(pool: asyncpg.Pool) -> None:
     """Five-day overlap retries converge on the existing provider-ID dedup key."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     previous_sync = _NOW - timedelta(days=2)
     account = await _insert_bound_account(pool, last_synced_at=previous_sync)
@@ -911,7 +911,7 @@ async def test_overlap_window_replays_by_external_id_without_duplicate(pool: asy
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_concurrent_sync_skips_before_second_http_request(pool: asyncpg.Pool) -> None:
     """The losing invocation leaves the winner's serialized fetch/write path alone."""
-    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+    from butlers.jobs._roster.finance_jobs import run_simplefin_sync
 
     await _insert_bound_account(pool)
     first_request_started = asyncio.Event()

@@ -34,7 +34,8 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
+from .evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,

@@ -352,3 +352,70 @@ def test_tests_do_not_execute_canonical_roster_names_by_path(tmp_path):
         "import importlib.util\nimportlib.util.spec_from_file_location('_private_router', path)\n"
     )
     assert _canonical_test_loads([planted]) == []
+
+
+def _dotted_roster_test_imports(paths):
+    """Inspect executable imports/lookup targets, not prose or policy literals."""
+    found = []
+    for path in paths:
+        tree = ast.parse(path.read_text())
+        lookup_names = {"__import__", "import_module", "patch"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                lookup_names.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in {"import_module", "patch"}
+                )
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+                if node.module == "roster":
+                    names = [f"roster.{alias.name}" for alias in node.names]
+            elif isinstance(node, ast.Call) and node.args:
+                name = (
+                    node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else None
+                )
+                if name in lookup_names and isinstance(node.args[0], ast.Constant):
+                    value = node.args[0].value
+                    if isinstance(value, str):
+                        names = [value]
+            found.extend(
+                (str(path), node.lineno, name) for name in names if name.startswith("roster.")
+            )
+    return found
+
+
+def test_tests_do_not_import_dotted_roster_names(tmp_path):
+    paths = [*(_ROOT / "tests").rglob("*.py"), *(_ROOT / "roster").glob("*/tests/**/*.py")]
+    assert _dotted_roster_test_imports(paths) == []
+    planted = tmp_path / "test_import.py"
+    for source in (
+        "import roster.relationship.tests.test_jobs as helpers\n",
+        "from roster.finance.jobs.finance_jobs import run_simplefin_sync\n",
+        "from roster import relationship\n",
+        "import importlib\nimportlib.import_module('roster.education.modules')\n",
+        "from importlib import import_module as load\nload('roster.education.modules')\n",
+        "from unittest.mock import patch as replace\n"
+        "replace('roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger')\n",
+        "__import__('roster.chronicler.modules')\n",
+    ):
+        planted.write_text(source)
+        assert len(_dotted_roster_test_imports([planted])) == 1
+    planted.write_text(
+        "from butlers.jobs._roster.finance_jobs import run_simplefin_sync\n"
+        "from .evidence_schema import apply_evidence_schema\n"
+        "from . import test_finder_no_llm_transitive as _module\n"
+        "from unittest.mock import patch\n"
+        "patch('butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger')\n"
+        "# from roster.health.tools import measurement_list\n"
+        "assert f'roster.{other_butler}' not in src\n"
+    )
+    assert _dotted_roster_test_imports([planted]) == []

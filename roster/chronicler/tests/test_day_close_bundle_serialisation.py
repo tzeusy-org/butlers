@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 from butlers.chronicler.reconciliation import DroppedIntent
-from roster.chronicler.modules import _serialise_dropped_intents
+from butlers.modules._roster_chronicler import _serialise_dropped_intents
 
 pytestmark = pytest.mark.unit
 

@@ -556,7 +556,7 @@ def test_transitive_guardrail_catches_synthetic_banned_import(
     )
 
     # Monkeypatch _is_first_party_path to treat our fake file as first-party.
-    import roster.relationship.tests.test_finder_no_llm_transitive as _module
+    from . import test_finder_no_llm_transitive as _module
 
     original_is_first_party = _module._is_first_party_path
 
@@ -605,7 +605,7 @@ def test_transitive_guardrail_catches_synthetic_pgvector_operator(
         encoding="utf-8",
     )
 
-    import roster.relationship.tests.test_finder_no_llm_transitive as _module
+    from . import test_finder_no_llm_transitive as _module
 
     original_is_first_party = _module._is_first_party_path
 
