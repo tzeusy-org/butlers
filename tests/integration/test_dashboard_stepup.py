@@ -52,7 +52,9 @@ async def authority(migrated_db_url, postgres_container):
     )
     pool = auth_pool = None
     login_name, password = "stepup_" + uuid4().hex, secrets.token_hex(32)
+    database = '"' + unquote(parsed.path.lstrip("/")).replace('"', '""') + '"'
     created_login = False
+    granted_connect = False
     try:
         pool = await asyncpg.create_pool(
             migrated_db_url, min_size=1, max_size=4, init=register_jsonb_codec
@@ -62,6 +64,8 @@ async def authority(migrated_db_url, postgres_container):
             f"""CREATE ROLE "{login_name}" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '{password}'"""
         )
         created_login = True
+        await admin.execute(f'GRANT CONNECT ON DATABASE {database} TO "{login_name}"')
+        granted_connect = True
         await admin.execute(f'GRANT dashboard_auth_api TO "{login_name}"')
         auth_pool = await asyncpg.create_pool(
             host=parsed.hostname,
@@ -109,9 +113,15 @@ async def authority(migrated_db_url, postgres_container):
         finally:
             try:
                 if created_login:
-                    await admin.execute(
-                        f'REVOKE dashboard_auth_api FROM "{login_name}"; DROP ROLE "{login_name}"'
-                    )
+                    try:
+                        if granted_connect:
+                            await admin.execute(
+                                f'REVOKE CONNECT ON DATABASE {database} FROM "{login_name}"'
+                            )
+                    finally:
+                        await admin.execute(
+                            f'REVOKE dashboard_auth_api FROM "{login_name}"; DROP ROLE "{login_name}"'
+                        )
             finally:
                 await admin.close()
 
@@ -174,6 +184,91 @@ async def test_real_factor_commits_once_and_hash_is_not_bearer(authority):
         assert (await operations.create_approval_rule(pool, **parameters))[
             "error"
         ] == "dashboard_step_up_required"
+    finally:
+        dashboard_stepup_proof.reset(token)
+
+
+async def test_runtime_role_commits_real_factor_rule_audit_and_closed_receipt_once(authority):
+    """The daemon's real role must consume through the owning rule transaction."""
+    pool, _, _, _, _, _ = authority
+    parameters = dict(
+        tool_name="synthetic_send",
+        arg_constraints={},
+        description="Runtime role",
+        expires_at=None,
+        max_uses=1,
+    )
+    proof = await proof_for(authority, "create", parameters)
+    token = dashboard_stepup_proof.set(proof)
+    try:
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SET LOCAL ROLE butler_home_rw")
+                assert await connection.fetchval("SELECT current_user") == "butler_home_rw"
+                first = await operations.create_approval_rule(connection, **parameters)
+                assert "error" not in first
+                rule_id = UUID(first["id"])
+                assert await connection.fetchval("SELECT current_user") == "butler_home_rw"
+                assert (
+                    await connection.fetchval(
+                        "SELECT count(*) FROM approval_events WHERE rule_id=$1 AND event_type='rule_created'",
+                        rule_id,
+                    )
+                    == 1
+                )
+                # A savepoint alone must not publish any part of this result.
+                assert (
+                    await pool.fetchval("SELECT count(*) FROM approval_rules WHERE id=$1", rule_id)
+                    == 0
+                )
+                assert (
+                    await pool.fetchval(
+                        "SELECT consumed_at FROM dashboard_stepup.bindings WHERE nonce_digest=$1",
+                        _digest(proof.nonce),
+                    )
+                    is None
+                )
+        receipt = await pool.fetchrow(
+            "SELECT consumed_at,result FROM dashboard_stepup.bindings WHERE nonce_digest=$1",
+            _digest(proof.nonce),
+        )
+        assert receipt["consumed_at"] is not None
+        assert receipt["result"] == {
+            "version": 1,
+            "kind": "create",
+            "id": first["id"],
+            "rule_id": first["id"],
+        }
+        assert await pool.fetchval("SELECT count(*) FROM approval_rules WHERE id=$1", rule_id) == 1
+        await operations.revoke_approval_rule(pool, first["id"])
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute("SET LOCAL ROLE butler_home_rw")
+            assert await connection.fetchval("SELECT current_user") == "butler_home_rw"
+            replay = await operations.create_approval_rule(connection, **parameters)
+            assert replay["id"] == first["id"]
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM approval_rules WHERE description='Runtime role'"
+                )
+                == 1
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM approval_events WHERE rule_id=$1 AND event_type='rule_created'",
+                    rule_id,
+                )
+                == 1
+            )
+            assert (
+                await connection.fetchval("SELECT active FROM approval_rules WHERE id=$1", rule_id)
+                is False
+            )
+        assert dict(
+            await pool.fetchrow(
+                "SELECT consumed_at,result FROM dashboard_stepup.bindings WHERE nonce_digest=$1",
+                _digest(proof.nonce),
+            )
+        ) == dict(receipt)
     finally:
         dashboard_stepup_proof.reset(token)
 

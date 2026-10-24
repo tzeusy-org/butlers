@@ -13,7 +13,7 @@ from butlers.modules.approvals.stepup import _enlisted_write, _EnlistedWrite, _W
 
 def admit_rule_boundary_for_non_auth_owner(monkeypatch):
     from butlers.api.routers import approvals as routes
-    from butlers.modules.approvals import autonomy_suggestions, module, operations
+    from butlers.modules.approvals import module, operations, stepup
 
     async def admitted(pool, kind, parameters, writer):
         parent = _enlisted_write.get()
@@ -29,5 +29,5 @@ def admit_rule_boundary_for_non_auth_owner(monkeypatch):
                 _enlisted_write.reset(token)
         return _WriteResult(result, deferred=borrowed)
 
-    for consumer in (routes, autonomy_suggestions, module, operations):
+    for consumer in (routes, stepup, module, operations):
         monkeypatch.setattr(consumer, "run_rule_write", admitted)
