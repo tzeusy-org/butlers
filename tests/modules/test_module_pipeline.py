@@ -3831,7 +3831,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", mock_capture)
         fake_reply = AsyncMock(return_value={"id": "msg-1"})
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 
@@ -3875,7 +3875,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", AsyncMock(return_value="dl-id"))
         fake_reply = AsyncMock()
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 

@@ -1761,7 +1761,7 @@ class MessagePipeline:
                 "explicitly what you'd like recorded or reported."
             )
             try:
-                from butlers.api.conversations import conversation_reply_create
+                from butlers.conversation_messages import conversation_reply_create
 
                 await conversation_reply_create(
                     self._pool,

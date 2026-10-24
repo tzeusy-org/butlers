@@ -21,24 +21,13 @@ pytestmark = pytest.mark.contract
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Every package a contract names must exist, or lint-imports rejects the config outright.
 _PACKAGES = ("api", "connectors", "core", "core_tools", "modules")
-# The pyproject baseline (ignore_imports) must match real imports or lint-imports errors, so the
-# fixture reproduces them; that same check is what forces a fixed violation out of the baseline.
-_BASELINE = {
-    "modules/dashboard_read/queries.py": (
-        "from butlers.api.read_models import insights, sessions\n"
-    ),
-    "api/read_models/insights.py": "",
-    "api/read_models/sessions.py": "",
-    "modules/pipeline.py": "from butlers.api import conversations\n",
-    "api/conversations.py": "",
-}
 
 
 def _lint(tmp_path: Path, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
     for package in ("", *_PACKAGES):
         (tmp_path / "butlers" / package).mkdir(parents=True, exist_ok=True)
         (tmp_path / "butlers" / package / "__init__.py").touch()
-    for rel, body in {**_BASELINE, **files}.items():
+    for rel, body in files.items():
         path = tmp_path / "butlers" / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body)
