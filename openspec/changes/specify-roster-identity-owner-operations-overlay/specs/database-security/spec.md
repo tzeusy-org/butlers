@@ -21,7 +21,7 @@ reconciliation SHALL preserve this restricted end state. The generic dashboard l
 backup/restore authority SHALL use a separately governed operational principal that is never
 available to the dashboard process.
 
-ID: REQ-database-security-013
+ID: REQ-database-security-015
 Source: specify-roster-identity-owner-operations-overlay design D5-D6; heart-and-soul/security.md Least Privilege
 Scope: v1-mandatory
 
