@@ -666,3 +666,40 @@ The private mechanism's positive tests use a loaded Git read declaration for an
 actually registered Switchboard tool. They do not deliver those two Insight
 workflows or all 102 schedules/19 dynamic families. Runtime creator, Finance
 reaction cause, feed, runner, genuine PostgreSQL and delivery gates remain.
+
+## Insight selected-content dark preparation
+
+The real daily and urgent Insight collectors have an optional private preparation
+consumer (`BUTLERS_INSIGHT_DARK_PREPARATION=1`, absent by default). It observes
+selected content before formatting/model/notify calls; it changes no dispatch
+mode, recipient resolution, delivery bookkeeping or capability registration.
+Job arguments cannot enable it. Unavailable preparation is reported as a closed
+`unavailable` outcome while legacy delivery continues; caller cancellation still
+propagates. No new model calls or notifications are made by preparation.
+
+The Switchboard source transaction takes its Git inventory/command/source locks,
+locks and rereads the exact pending `public.insight_candidates` rows, and compares
+the complete selected material. It persists canonical raw and decorated text,
+selection order, context/selection reference and the exact deterministic synthesis
+prompts in the immutable revision body. Candidate IDs identify a selected-set
+occurrence, **not** a content revision. Full material determines the revision.
+Changed/deleted content, contradictory replay, a stale claim or a tombstone refuses;
+a lost commit/release reply stays unconfirmed until original-identity readback.
+The existing source revision, occurrence, stable claim and reference-only outbox
+commit together. No model/network call runs under those source locks.
+
+Prepared-action statuses and premise verdicts are captured observations used to
+reproduce that cycle's decorated text. They neither authorize the action nor
+promise a different domain's state remained unchanged through this transaction.
+The source's creator remains absent and its admission status is explicitly
+`unverified_unavailable`. The real STAFFER `notify` catalog refusal remains; no
+empty ceiling or recipient/grant/creator authority is substituted. This is M6 AC2
+payload preparation, not an admitted goal, D7 proof, runner delivery or D18 cutover.
+
+Full Git reconciliation recognizes only this fixed registered Insight subtype:
+matching owning role/domain, immutable identity/body/declaration and current
+loaded configuration and candidate material. It preserves a current prepared
+source, tombstones removed/changed ones and cancels their occurrences, and still
+refuses unknown/malformed/dangling ordinary Git sources. It introduces neither a
+new origin nor a fabricated runtime creator. Existing source bodies without this
+optional payload retain their original encoding.

@@ -483,3 +483,198 @@ def test_off_descriptor_is_immutable_non_authority_with_explicit_unknown_identit
         assert unknown.authority == "unverified"
     with pytest.raises(ValueError):
         build_dark_attempt_observation(kind="verified_goal", phase="post_claim")
+
+
+def insight_source_fixture():
+    """Rollback-aware production SQL protocol; no PG locks/roles/durability claim."""
+    import copy
+    from datetime import timedelta
+
+    from tests.core.test_obligation_schedule_dispatch import OccurrenceConnection
+    from tests.core.test_obligation_schedule_sources import RecordingPool
+
+    class Connection(OccurrenceConnection):
+        async def execute(self, sql, *args):
+            if sql.lstrip().startswith("DELETE FROM") and "scheduled_tasks" in sql:
+                del self.rows[args[0]]
+                return "DELETE 1"
+            return await super().execute(sql, *args)
+
+        async def fetchrow(self, sql, *args):
+            if "current_schema()" in sql:
+                return {"schema": "switchboard", "role": self.role, "shadowed": self.shadow}
+            return await super().fetchrow(sql, *args)
+
+        async def fetch(self, sql, *args):
+            if "FROM public.insight_candidates" in sql:
+                assert self.depth == 1 and "FOR UPDATE" in sql
+                self.calls.append(sql)
+                return copy.deepcopy(self.candidates)
+            return await super().fetch(sql, *args)
+
+    now = datetime(2026, 1, 15, 12, tzinfo=UTC)
+    rows = [
+        {
+            "id": UUID(int=n),
+            "origin_butler": "health",
+            "priority": 95,
+            "category": "test",
+            "dedup_key": f"health:test:{n}",
+            "cooldown_days": None,
+            "expires_at": now + timedelta(days=2),
+            "message": f"Private note {n}",
+            "channel": None,
+            "metadata": {"entity_id": "same-cluster"},
+            "prepared_action_id": None,
+            "created_at": now,
+            "premise": None,
+        }
+        for n in (101, 102)
+    ]
+    pool = RecordingPool()
+    pool.connection = Connection()
+    pool.connection.role = "butler_switchboard_rw"
+    pool.connection.candidates = copy.deepcopy(rows)
+    return pool, rows
+
+
+@pytest.mark.asyncio
+async def test_insight_selected_material_replay_fences_failure_and_off(monkeypatch):
+    """Actual helper/repository control species; software, never PG or admission."""
+    import copy
+    import json
+
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
+    from butlers.core.obligation_sources import SourceConflict
+
+    pool, raw = insight_source_fixture()
+    monkeypatch.delenv("BUTLERS_INSIGHT_DARK_PREPARATION", raising=False)
+    assert configured_insight_preparer(pool, "insight_delivery_cycle") is None
+    assert not pool.connection.calls
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    prepare = configured_insight_preparer(pool, "insight_delivery_cycle")
+    # The decorated delivery copy and prompt are the actual model input; raw
+    # candidate message remains unchanged. Observations grant no action rights.
+    raw[0]["premise"] = {"kind": "observed"}
+    pool.connection.candidates = copy.deepcopy(raw)
+    selected = copy.deepcopy(raw)
+    selected[0]["message"] += " (as of 2026-01-15 12:00 UTC)"
+    from butlers.tools.switchboard.insight.broker import _cluster_synthesis_prompt
+
+    context = {
+        "clusters": [
+            {"ids": [str(c["id"]) for c in selected], "prompt": _cluster_synthesis_prompt(selected)}
+        ],
+        "settings": {"verbosity": "normal"},
+        "effective_budget": 2,
+        "selection_reference": datetime(2026, 1, 15, 12, tzinfo=UTC),
+        "urgent_only": False,
+        "daily_hold_mode": True,
+        "category_budget_reasons": {},
+        "premise_verdicts": {},
+        "prepared_action_statuses": {},
+    }
+    assert await prepare(raw, selected, context) == "staged_unverified"
+    conn = pool.connection
+    original = copy.deepcopy((conn.definitions, conn.revisions, conn.occurrences))
+    assert await prepare(raw, selected, context) == "staged_unverified"
+    assert (conn.definitions, conn.revisions, conn.occurrences) == original
+    value = next(iter(conn.revisions.values()))
+    assert value["payload"]["raw"][0]["message"] == "Private note 101"
+    assert value["payload"]["selected"][0]["message"] == selected[0]["message"]
+    assert value["payload"]["context"]["settings"] == context["settings"]
+    assert value["payload"]["admission"] == "unverified_unavailable"
+    for fault in ("edited", "deleted", "reordered", "context", "decorated", "wrongrole", "shadow"):
+        conn.candidates = copy.deepcopy(raw)
+        given_raw, given_selected, given_context = copy.deepcopy((raw, selected, context))
+        if fault == "edited":
+            conn.candidates[0]["message"] = "concurrent different content"
+        elif fault == "deleted":
+            conn.candidates.pop()
+        elif fault == "reordered":
+            given_raw.reverse()
+            given_selected.reverse()
+        elif fault == "context":
+            given_context["settings"]["verbosity"] = "verbose"
+        elif fault == "decorated":
+            given_selected[0]["message"] = "contradictory replay"
+        elif fault == "wrongrole":
+            conn.role = "butler_health_rw"
+        else:
+            conn.shadow = True
+        with pytest.raises(SourceConflict):
+            await prepare(given_raw, given_selected, given_context)
+        assert (conn.definitions, conn.revisions, conn.occurrences) == original
+        conn.role, conn.shadow = "butler_switchboard_rw", False
+    fresh, candidates = insight_source_fixture()
+    fresh.connection.fail_outbox = True
+    fresh.connection.candidates = copy.deepcopy(raw)
+    with pytest.raises(SourceUnavailable):
+        await configured_insight_preparer(fresh, "insight_delivery_cycle")(raw, selected, context)
+    assert not fresh.connection.definitions and not fresh.connection.occurrences
+    assert not fresh.connection.revisions and not fresh.connection.outbox
+    # Existing body roundtrip remains exact when no optional source payload exists.
+    from butlers.core.obligation_sources import DefinitionRevision
+
+    assert DefinitionRevision.decode(value).encode() == value
+    bad = copy.deepcopy(value)
+    bad["payload"]["selected"][0]["message"] = "tampered stored content"
+    with pytest.raises(DeclarationError, match="invalid_source_payload"):
+        DefinitionRevision.decode(bad)
+    assert json.loads(DefinitionRevision.decode(value).payload_json) == value["payload"]
+
+    # A commit/release reply loss is UNKNOWN while its exact original durable
+    # source is reconciled; a fresh identity must not mask the committed write.
+    from contextlib import asynccontextmanager
+
+    lost, _ = insight_source_fixture()
+    lost.connection.candidates = copy.deepcopy(raw)
+    acquire = lost.acquire
+    fail_release = True
+
+    @asynccontextmanager
+    async def lost_reply():
+        nonlocal fail_release
+        async with acquire() as connection:
+            yield connection
+        if fail_release:
+            fail_release = False
+            raise OSError("controlled committed reply loss")
+
+    lost.acquire = lost_reply
+    pending = configured_insight_preparer(lost, "insight_delivery_cycle")
+    with pytest.raises(SourceUnavailable):
+        await pending(raw, selected, context)
+    assert len(lost.connection.definitions) == len(lost.connection.occurrences) == 1
+    assert await pending(raw, selected, context) == "staged_unverified"
+    assert len(lost.connection.definitions) == len(lost.connection.occurrences) == 1
+
+    import asyncio
+
+    cancelled, _ = insight_source_fixture()
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_fetch = cancelled.connection.fetch
+
+    async def paused(sql, *args):
+        if "FROM public.insight_candidates" in sql:
+            entered.set()
+            await release.wait()
+        return await original_fetch(sql, *args)
+
+    cancelled.connection.fetch = paused
+    operation = asyncio.create_task(
+        configured_insight_preparer(cancelled, "insight_delivery_cycle")(raw, selected, context)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(operation, 1)
+        assert cancelled.connection.depth == 0
+        assert not cancelled.connection.definitions and not cancelled.connection.outbox
+    finally:
+        release.set()
+        if not operation.done():
+            operation.cancel()
+        await asyncio.gather(operation, return_exceptions=True)

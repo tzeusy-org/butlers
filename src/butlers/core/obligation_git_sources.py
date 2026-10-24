@@ -186,9 +186,13 @@ async def reconcile_loaded_git_sources(
             "AND family IN ('schedule','deadline','model_job') AND state<>'deleted' ORDER BY id"
         )
         source_ids = {row["id"] for row in rows} | {row["id"] for row in identities}
+        row_ids = {row["id"] for row in rows}
+        selected_commands = {source: uuid4() for source in source_ids - row_ids}
         # All command locks precede ALL source locks, including removals.
         commands = {name: uuid4() for name in sorted(set(names) | set(by_name))}
-        for command in sorted(commands.values(), key=lambda value: value.int):
+        for command in sorted(
+            [*commands.values(), *selected_commands.values()], key=lambda value: value.int
+        ):
             await repository.read_command(command)
         for source in sorted(source_ids, key=lambda value: value.int):
             await repository.lock_source(source)
@@ -196,8 +200,12 @@ async def reconcile_loaded_git_sources(
         # A dangling active Git definition is an integrity error, not proof of
         # deletion. A real full-config removal below requires its actual row.
         row_ids = {row["id"] for row in rows}
-        if any(row["id"] not in row_ids for row in identities):
-            raise SourceConflict("git_schedule_row_missing")
+        for source in sorted(source_ids - row_ids, key=lambda value: value.int):
+            from butlers.core.obligation_insight_sources import reconcile_selected_source
+
+            await reconcile_selected_source(
+                repository, current[source], snapshot, selected_commands[source]
+            )
         results = []
         for definition in sorted(snapshot.definitions, key=lambda item: item.schedule["name"]):
             name = definition.schedule["name"]

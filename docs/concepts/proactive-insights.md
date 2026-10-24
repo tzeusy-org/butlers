@@ -46,3 +46,18 @@ The origin of a candidate is never chosen by a session. Producers outside Switch
 `origin_butler`. The Switchboard MCP tool has no `origin_butler` parameter: sessions get
 the registering daemon's origin, `switchboard`, and a butler-scoped (four-segment) dedup key
 must name it.
+
+## Dark obligation preparation
+
+The optional private Insight collector preparation records the actual selected
+raw/decorated candidates and exact synthesis inputs in the owning source
+transaction before today's formatting and delivery. It is OFF by default and
+never replaces dispatch, calls a model, sends a notification or marks a candidate
+delivered. Unavailable source preparation leaves ordinary delivery behavior
+intact. The current STAFFER notification/catalog refusal remains unresolved for
+actual obligation admission; captured prepared-action/premise observations do
+not grant action or recipient authority. See
+[obligation declarations](obligation-declarations.md#insight-selected-content-dark-preparation)
+for replay/fencing and source lifecycle details. Real role/locking/readback cases
+are authored separately from the recording-SQL software controls; neither source
+code nor collection establishes a PostgreSQL or runner outcome.

@@ -355,14 +355,17 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    preparation = configured_insight_preparer(pool, "insight_delivery_cycle")
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+        **({"dark_prepare_fn": preparation} if preparation is not None else {}),
     )
 
 
@@ -383,14 +386,17 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    preparation = configured_insight_preparer(pool, "insight_urgent_subcycle")
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
         urgent_only=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+        **({"dark_prepare_fn": preparation} if preparation is not None else {}),
     )
 
 

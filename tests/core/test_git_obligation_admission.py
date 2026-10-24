@@ -641,3 +641,113 @@ async def test_actual_daemon_shutdown_continues_after_private_admission_close(
             assert not pending and done == owned
             await asyncio.gather(*done, return_exceptions=True)
         await runtime.close_admission()
+
+
+async def test_full_git_discovery_verifies_selected_insight_source_and_removal(
+    tmp_path, monkeypatch
+):
+    """Actual full-inventory consumer; SQL doubles are software-only evidence."""
+    import json
+    from uuid import uuid4
+
+    from butlers.core.goal_admission import Grant, digest
+    from butlers.core.obligation_git_sources import reconcile_loaded_git_sources
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
+    from butlers.core.obligation_sources import DefinitionRevision, SourceConflict
+    from butlers.core.obligations import ObligationDeclaration
+    from butlers.tools.switchboard.insight.broker import _cluster_synthesis_prompt
+    from tests.core.test_dark_obligation_producers import insight_source_fixture
+
+    pool, raw = insight_source_fixture()
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    context = {
+        "clusters": [
+            {"ids": [str(c["id"]) for c in raw], "prompt": _cluster_synthesis_prompt(raw)}
+        ],
+        "settings": {"verbosity": "normal"},
+        "effective_budget": 2,
+        "selection_reference": NOW.replace(year=2026, month=1, day=15, hour=12),
+        "urgent_only": False,
+        "daily_hold_mode": True,
+        "category_budget_reasons": {},
+        "premise_verdicts": {},
+        "prepared_action_statuses": {},
+    }
+    await configured_insight_preparer(pool, "insight_delivery_cycle")(raw, raw, context)
+    config = load_config(_ROOT / "roster" / "switchboard")
+    registry = await _complete_core_catalog("switchboard")
+    snapshot = capture_loaded_git_sources(config, RuntimeConfig("switchboard"), registry)
+    conn = pool.connection
+    source = next(iter(conn.definitions))
+    original = DefinitionRevision.decode(next(iter(conn.revisions.values())))
+    await reconcile_loaded_git_sources(pool, snapshot)
+    assert conn.definitions[source]["state"] == "active"
+    assert DefinitionRevision.decode(conn.revisions[original.revision]) == original
+    assert not any(row["id"] == source for row in conn.rows.values())
+    baseline = copy.deepcopy(
+        (conn.rows, conn.definitions, conn.revisions, conn.commands, conn.outbox, conn.occurrences)
+    )
+    for fault in (
+        "ordinary_dangling",
+        "unknown_subtype",
+        "wrong_identity",
+        "wrong_family",
+        "wrong_declaration",
+    ):
+        # Plant a fully parseable, owning-repository-shaped wrong source. A
+        # marker-only exclusion must not hide any of these inventory failures.
+        body = original.encode()
+        if fault == "ordinary_dangling":
+            wrong = replace(original, source_id=uuid4(), family="schedule", payload_json=None)
+        elif fault == "wrong_identity":
+            wrong = replace(original, source_id=uuid4())
+        elif fault == "wrong_family":
+            wrong = replace(original, family="schedule")
+        elif fault == "wrong_declaration":
+            wrong = replace(
+                original,
+                declaration=ObligationDeclaration((Grant("switchboard__entity_graph_walk"),)),
+            )
+        else:
+            body["payload"]["kind"] = "caller_says_insight"
+            wrong = replace(
+                original,
+                material_digest=digest(body["payload"]),
+                payload_json=json.dumps(body["payload"], sort_keys=True, separators=(",", ":")),
+            )
+        conn.definitions[wrong.source_id] = {
+            "id": wrong.source_id,
+            "owner_domain": wrong.owner_domain,
+            "family": wrong.family,
+            "origin": wrong.origin,
+            "creator": wrong.encode()["creator"],
+            "revision": wrong.revision,
+            "generation": wrong.generation,
+            "state": wrong.state,
+        }
+        conn.revisions[wrong.revision] = wrong.encode()
+        with pytest.raises(SourceConflict):
+            await reconcile_loaded_git_sources(pool, snapshot)
+        (
+            conn.rows,
+            conn.definitions,
+            conn.revisions,
+            conn.commands,
+            conn.outbox,
+            conn.occurrences,
+        ) = copy.deepcopy(baseline)
+    # A real complete loaded config authorizes removal; no fake selective
+    # snapshot or runtime creator is introduced to hide the extra model job.
+    (tmp_path / "butler.toml").write_text(
+        '[butler]\nname="switchboard"\nport=41100\ntype="staffer"\n'
+    )
+    removed = capture_loaded_git_sources(
+        load_config(tmp_path), RuntimeConfig("switchboard"), registry
+    )
+    await reconcile_loaded_git_sources(pool, removed)
+    assert conn.definitions[source]["state"] == "deleted"
+    assert all(row["state"] == "cancelled" for row in conn.occurrences.values())
+    assert await reconcile_loaded_git_sources(pool, removed) == ()
+    with pytest.raises(SourceConflict):
+        await configured_insight_preparer(pool, "insight_delivery_cycle")(raw, raw, context)
+    assert conn.definitions[source]["state"] == "deleted"

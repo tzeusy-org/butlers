@@ -8,6 +8,7 @@ they are not a request schema or an admission endpoint.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -140,6 +141,7 @@ class DefinitionRevision:
     origin: Literal["git", "runtime"]
     creator: RuntimeCreationSnapshot | None = None
     state: Literal["active", "disabled", "deleted"] = "active"
+    payload_json: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -152,6 +154,21 @@ class DefinitionRevision:
             or (self.origin == "runtime") != (self.creator is not None)
         ):
             raise DeclarationError("invalid_definition_revision")
+        if self.payload_json is not None:
+            try:
+                payload = json.loads(self.payload_json)
+                canonical = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+                )
+                if (
+                    type(payload) is not dict
+                    or canonical != self.payload_json
+                    or len(canonical.encode()) > 131072
+                    or digest(payload) != self.material_digest
+                ):
+                    raise ValueError
+            except (TypeError, ValueError, RecursionError):
+                raise DeclarationError("invalid_source_payload") from None
         # Reuse the immutable value contract, including creator ceiling checks.
         ObligationSource(
             self.owner_domain,
@@ -178,7 +195,9 @@ class DefinitionRevision:
         )
 
     def encode(self) -> dict:
-        return {
+        return (
+            {"payload": json.loads(self.payload_json)} if self.payload_json is not None else {}
+        ) | {
             "owner_domain": self.owner_domain,
             "family": self.family,
             "source_id": str(self.source_id),
@@ -218,6 +237,9 @@ class DefinitionRevision:
                 creator["exposed"],
             ),
             value["state"],
+            json.dumps(value["payload"], sort_keys=True, separators=(",", ":"), allow_nan=False)
+            if "payload" in value
+            else None,
         )
 
 

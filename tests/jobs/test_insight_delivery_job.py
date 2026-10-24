@@ -625,3 +625,133 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         assert meta.get("channel") == expected_channel, (
             f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )
+
+
+@pytest.mark.parametrize("job_name", ["insight_delivery_cycle", "insight_urgent_subcycle"])
+async def test_registered_insight_dark_preparation_captures_actual_selected_material(
+    monkeypatch, job_name
+):
+    """Real job/collector/repository; recording SQL is software, not PostgreSQL proof.
+
+    REQ-goal-orchestration-007; REQ-capability-authorization-013.
+    """
+    from butlers.background import _deterministic_jobs_for_butler
+    from butlers.tools.switchboard.insight import broker
+    from tests.core.test_dark_obligation_producers import insight_source_fixture
+
+    pool, candidates = insight_source_fixture()
+    connection = pool.connection
+    import copy
+    from uuid import UUID
+
+    candidates[0].update(
+        origin_butler="relationship", prepared_action_id=UUID(int=901), premise={"kind": "observed"}
+    )
+    connection.candidates = copy.deepcopy(candidates)
+    pool.fetchrow = AsyncMock(return_value={"status": "pending"})
+    pool.execute = AsyncMock(return_value="UPDATE 0")
+
+    async def fetch(sql, *args):
+        import copy
+
+        if "status, delivery_attempt_count" in sql:
+            return [dict(c, status="pending", delivery_attempt_count=1) for c in candidates]
+        if "SELECT id, origin_butler" in sql:
+            return copy.deepcopy(candidates)
+        if "UPDATE insight_candidates" in sql:
+            return [
+                {
+                    "id": c["id"],
+                    "status": "pending",
+                    "delivery_attempt_count": 1,
+                    "origin_butler": "health",
+                    "channel": None,
+                    "priority": 95,
+                }
+                for c in candidates
+            ]
+        if "FROM insight_candidates" in sql:
+            return [{"id": c["id"]} for c in candidates]
+        return []
+
+    pool.fetch = fetch
+    for name, value in {
+        "get_insight_settings": {"verbosity": "normal", "custom_budget": None},
+        "get_approvals_policy_quiet_hours": {
+            "quiet_start_hour": None,
+            "quiet_end_hour": None,
+            "timezone": "UTC",
+        },
+        "get_suppressing_context_signal": None,
+        "expire_candidates": 0,
+        "_revalidate_premises": ({}, 0),
+        "apply_pending_amendments": {"applied": 0},
+        "filter_by_cooldown": [c["id"] for c in candidates],
+        "deduplicate_candidates": [c["id"] for c in candidates],
+        "compute_category_budget_weights": {"test": {"weight": 1.0, "reason": "fixture"}},
+        "compute_effective_budget": 2,
+    }.items():
+        monkeypatch.setattr(broker, name, AsyncMock(return_value=value))
+    monkeypatch.setattr(broker, "is_policy_quiet_now", lambda *_, **__: False)
+    # No model/provider/owner sends; retained collector still reaches this notify refusal.
+    notify = AsyncMock(return_value={"status": "error", "error": "controlled"})
+    monkeypatch.setattr(
+        "butlers.scheduled_jobs._build_switchboard_insight_notify_fn", lambda _: notify
+    )
+    monkeypatch.setattr(broker, "_synthesize_cluster_sentence", AsyncMock(return_value=None))
+    monkeypatch.setattr(broker, "_pending_fold_lines", AsyncMock(return_value=[]))
+    monkeypatch.setattr(broker, "cleanup_old_rows", AsyncMock())
+    monkeypatch.setattr(broker, "check_total_disengagement_auto_off", AsyncMock(return_value=False))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _PINNED_NOW
+
+    monkeypatch.setattr(broker, "datetime", Clock)
+    monkeypatch.setattr(broker, "record_attention_event", AsyncMock())
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    handler = _deterministic_jobs_for_butler("switchboard")[job_name]
+    await handler(pool, None)
+    assert connection.definitions, "registered collector must persist full selected dark material"
+    assert len(connection.definitions) == len(connection.occurrences) == 1
+    assert connection.depth == 0 and notify.await_count == 1
+    body = next(iter(connection.revisions.values()))
+    assert body["payload"]["raw"][0]["message"] == "Private note 101"
+    assert (
+        body["payload"]["selected"][0]["message"]
+        == "Private note 101 [reply approve/dismiss] (as of 2026-01-15 12:00 UTC)"
+    )
+    assert [c["id"] for c in body["payload"]["selected"]] == [str(c["id"]) for c in candidates]
+    assert "Private note 102" in body["payload"]["clusters"][0]["prompt"]
+    assert body["payload"]["job_name"] == job_name
+    assert body["declaration"]["capabilities"][0]["capability"] == "switchboard__notify"
+    assert body["creator"] is None and body["origin"] == "git"
+    assert body["payload"]["admission"] == "unverified_unavailable"
+    assert next(iter(connection.occurrences.values()))["state"] == "claimed"
+    assert connection.outbox
+
+    # Real OFF and configured-but-unavailable factory controls retain ordinary
+    # dispatch; neither performs sensitive source IO or borrows injected grants.
+    from butlers.core import obligation_insight_sources as sources
+
+    baseline = copy.deepcopy(
+        (connection.definitions, connection.revisions, connection.occurrences, connection.calls)
+    )
+    with monkeypatch.context() as unavailable:
+        unavailable.setattr(
+            sources,
+            "load_config",
+            lambda *_: (_ for _ in ()).throw(OSError("controlled unavailable config")),
+        )
+        unavailable.delenv("BUTLERS_INSIGHT_DARK_PREPARATION", raising=False)
+        assert "dark_preparation" not in await handler(pool, None)
+        unavailable.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+        assert (await handler(pool, None))["dark_preparation"] == "unavailable"
+    assert (
+        connection.definitions,
+        connection.revisions,
+        connection.occurrences,
+        connection.calls,
+    ) == baseline
+    assert notify.await_count == 3

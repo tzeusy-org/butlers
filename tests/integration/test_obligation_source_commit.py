@@ -1344,3 +1344,183 @@ async def test_migrated_stamped_schema_without_baseline_keeps_local_owner_and_ac
         ) == get_chain_head("core")
     finally:
         await connection.close(timeout=5)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_insight_selected_source_real_role_commit_reply_and_observed_edit_wait(
+    owning_sources, monkeypatch
+):
+    """Genuine owning SQL/locks/readback; collected locally, no PG execution claim.
+
+    REQ-goal-orchestration-007; REQ-capability-authorization-013.
+    """
+    import asyncio
+    import copy
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_insight_sources import _identity, configured_insight_preparer
+    from butlers.core.obligation_sources import SourceConflict
+    from butlers.tools.switchboard.insight.broker import _cluster_synthesis_prompt
+
+    pool = owning_sources.switchboard
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    now = datetime.now(UTC)
+    created = []
+
+    async def candidates():
+        rows = [
+            {
+                "id": uuid4(),
+                "origin_butler": "health",
+                "priority": 95,
+                "category": "test",
+                "dedup_key": f"health:test:{uuid4()}",
+                "cooldown_days": None,
+                "expires_at": now + timedelta(days=2),
+                "message": f"fixture note {n}",
+                "channel": None,
+                "metadata": {"entity_id": "fixture-correlation"},
+                "prepared_action_id": None,
+                "created_at": now,
+                "premise": None,
+            }
+            for n in (1, 2)
+        ]
+        async with pool.acquire() as connection:
+            assert await connection.fetchval("SELECT current_user") == "butler_switchboard_rw"
+            for row in rows:
+                await connection.execute(
+                    "INSERT INTO public.insight_candidates "
+                    "(id,origin_butler,priority,category,dedup_key,cooldown_days,expires_at,message,"
+                    "channel,metadata,prepared_action_id,created_at,premise) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                    *row.values(),
+                )
+                created.append(row["id"])
+        return rows
+
+    def context(rows):
+        return {
+            "clusters": [
+                {"ids": [str(c["id"]) for c in rows], "prompt": _cluster_synthesis_prompt(rows)}
+            ],
+            "settings": {"verbosity": "normal"},
+            "effective_budget": 2,
+            "selection_reference": now,
+            "urgent_only": False,
+            "daily_hold_mode": True,
+            "category_budget_reasons": {},
+            "premise_verdicts": {},
+            "prepared_action_statuses": {},
+        }
+
+    class ReplyLossPool:
+        fail = True
+
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as connection:
+                yield connection
+            if self.fail:
+                self.fail = False
+                raise OSError("controlled committed reply loss")
+
+    task = None
+    try:
+        raw = await candidates()
+        prepare = configured_insight_preparer(ReplyLossPool(), "insight_delivery_cycle")
+        with pytest.raises(SourceUnavailable):
+            await prepare(raw, raw, context(raw))
+        source = _identity("insight_delivery_cycle", raw)
+        async with pool.acquire() as observer:
+            body = await observer.fetchval(
+                "SELECT body FROM obligation_revisions WHERE source_id=$1", source
+            )
+            assert body["payload"]["selected"][0]["message"] == raw[0]["message"]
+            assert body["payload"]["context"]["clusters"][0]["prompt"] == _cluster_synthesis_prompt(
+                raw
+            )
+            assert (
+                body["creator"] is None and body["payload"]["admission"] == "unverified_unavailable"
+            )
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1 AND state='claimed'",
+                    source,
+                )
+                == 1
+            )
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM obligation_source_outbox WHERE source_id=$1", source
+                )
+                == 2
+            )
+        assert await prepare(raw, raw, context(raw)) == "staged_unverified"
+        async with pool.acquire() as observer:
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM obligation_revisions WHERE source_id=$1", source
+                )
+                == 1
+            )
+
+        # A second real actor holds the candidate row, then edits it. Observe
+        # the producer waiting on THAT backend before releasing, not gather-as-race.
+        pending = await candidates()
+        source = _identity("insight_delivery_cycle", pending)
+        async with pool.acquire() as holder, holder.transaction():
+            pid = await holder.fetchval("SELECT pg_backend_pid()")
+            await holder.fetchrow(
+                "SELECT id FROM public.insight_candidates WHERE id=$1 FOR UPDATE", pending[0]["id"]
+            )
+            task = asyncio.create_task(
+                configured_insight_preparer(pool, "insight_delivery_cycle")(
+                    pending, copy.deepcopy(pending), context(pending)
+                )
+            )
+
+            async def blocked_on_holder():
+                async with pool.acquire() as observer:
+                    return await observer.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')",
+                        pid,
+                    )
+
+            async with asyncio.timeout(3):
+                await poll_until(blocked_on_holder, interval_s=0.01)
+            await holder.execute(
+                "UPDATE public.insight_candidates SET message=$2 WHERE id=$1",
+                pending[0]["id"],
+                "concurrently changed fixture",
+            )
+        with pytest.raises(SourceConflict, match="insight_selection_changed"):
+            await asyncio.wait_for(task, 5)
+        async with pool.acquire() as observer:
+            for table in (
+                "obligation_definitions",
+                "obligation_source_outbox",
+                "obligation_occurrences",
+            ):
+                column = "id" if table == "obligation_definitions" else "source_id"
+                assert (
+                    await observer.fetchval(
+                        f"SELECT count(*) FROM {table} WHERE {column}=$1", source
+                    )
+                    == 0
+                )
+    finally:
+        try:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        finally:
+            async with pool.acquire() as cleanup:
+                await cleanup.execute(
+                    "DELETE FROM public.insight_candidates WHERE id=ANY($1::uuid[])", created
+                )
