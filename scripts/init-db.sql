@@ -5890,8 +5890,21 @@ END $attention_configuration$;
 
 CREATE OR REPLACE FUNCTION dashboard_attention.finalize_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $finalize$
-DECLARE n name; r name; item record; column_grant record; grantee_name text; owner_oid oid := 'dashboard_attention_owner'::regrole;
+DECLARE n name; r name; item record; column_grant record; grantee_name text; auth_owner oid; migration_name name; owner_oid oid := 'dashboard_attention_owner'::regrole;
 BEGIN
+ SELECT migration_role INTO STRICT migration_name
+  FROM dashboard_attention.bootstrap_configuration WHERE singleton;
+ SELECT n.nspowner INTO auth_owner FROM pg_namespace n
+  WHERE n.nspname='dashboard_auth'
+   AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
+ -- core240 creates this namespace under the recorded ordinary migration login.
+ -- Neither a marker alone nor an arbitrary runtime-owned relation is authority.
+ IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
+   AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
+  OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE n.nspname='dashboard_auth' AND c.relname IN ('instance','sessions','csrf')
+    AND c.relkind='r' AND c.relowner=auth_owner)<>3 THEN
+  RAISE EXCEPTION 'attention requires trusted owner authentication'; END IF;
  IF EXISTS(SELECT FROM pg_roles WHERE oid=owner_oid AND
   (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
   OR EXISTS(SELECT FROM pg_auth_members WHERE roleid=owner_oid OR member=owner_oid)
@@ -5952,6 +5965,9 @@ BEGIN
   RAISE EXCEPTION 'unexpected attention function'; END IF;
  REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
  IF to_regclass('public.insight_candidates') IS NOT NULL THEN
+  -- A sibling schema may still be on an older revision that changes this
+  -- shared catalogue. The core278 advisory lock alone cannot fence its DDL.
+  LOCK TABLE public.insight_candidates IN ACCESS EXCLUSIVE MODE;
   GRANT USAGE ON SCHEMA public TO dashboard_attention_owner;
   GRANT SELECT ON public.insight_candidates TO dashboard_attention_owner;
  END IF;
@@ -5962,6 +5978,7 @@ BEGIN
  END IF;
  GRANT USAGE ON SCHEMA dashboard_auth TO dashboard_attention_owner;
  GRANT SELECT ON dashboard_auth.instance,dashboard_auth.sessions TO dashboard_attention_owner;
+ GRANT SELECT(session_digest,digest,expires_at) ON dashboard_auth.csrf TO dashboard_attention_owner;
  GRANT UPDATE(singleton) ON dashboard_auth.instance TO dashboard_attention_owner;
  GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.api(text,jsonb) FROM PUBLIC;
@@ -6010,8 +6027,8 @@ BEGIN
  IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
    AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
   OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-   WHERE n.nspname='dashboard_auth' AND c.relname IN ('instance','sessions')
-    AND c.relkind='r' AND c.relowner=auth_owner)<>2 THEN
+   WHERE n.nspname='dashboard_auth' AND c.relname IN ('instance','sessions','csrf')
+    AND c.relkind='r' AND c.relowner=auth_owner)<>3 THEN
   RAISE EXCEPTION 'attention requires trusted owner authentication'; END IF;
  IF to_regclass('dashboard_attention.tickets') IS NOT NULL
   OR to_regclass('dashboard_attention.candidate_causes') IS NOT NULL
@@ -6156,8 +6173,11 @@ BEGIN
    OR s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   SELECT * INTO se FROM dashboard_auth.sessions WHERE digest=p->>'session_digest';
   IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
-   OR se.session_epoch<>s.session_epoch OR se.csrf_digest IS DISTINCT FROM p->>'csrf_digest'
+   OR se.session_epoch<>s.session_epoch
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+  IF NOT EXISTS(SELECT FROM dashboard_auth.csrf
+   WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
+   THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
    IF p->>'target' IS NULL OR p->>'request_digest' IS NULL OR p->>'nonce_digest' IS NULL
     OR p->>'target' NOT IN('chronicler','concierge','education','finance','general','health','home','lifestyle',

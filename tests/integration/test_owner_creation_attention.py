@@ -23,7 +23,7 @@ from fastmcp import Client, FastMCP
 from butlers.api.deps import get_db, get_mcp_manager
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
-from butlers.api.owner_auth.service import _digest
+from butlers.api.owner_auth.service import AuthError, _digest
 from butlers.api.routers.schedules import router
 from butlers.config import ButlerType
 from butlers.core.attention_urgency import AttentionOrigin, _current_origin, evaluate_interruption
@@ -57,7 +57,7 @@ def migrated_db_url(postgres_container):
 
 @pytest.fixture
 async def attention_env(authority, migrated_db_url):
-    migration, service, _, _, session, admin = authority
+    migration, service, key, handle, session, admin = authority
 
     async def initialize(connection):
         await register_jsonb_codec(connection)
@@ -89,6 +89,8 @@ async def attention_env(authority, migrated_db_url):
             domain=domain,
             service=service,
             session=session,
+            key=key,
+            handle=handle,
             authority=authority_value,
         )
     finally:
@@ -171,6 +173,90 @@ async def browser(env):
 
 async def test_actual_cookie_mcp_commit_unknown_retry_and_deleted_task_not_recreated(attention_env):
     env = attention_env
+    # Reach the fixed SQL boundary directly: middleware-only CSRF refusals
+    # would not catch an absent, expired or cross-session csrf row here.
+    context = await env.service.context()
+    options = await env.service.login_options(context.token, context.data["csrf_token"])
+    env.key.counter += 1
+    other_session = await env.service.finish_login(
+        context.token,
+        context.data["csrf_token"],
+        options["ceremony_id"],
+        env.key.response(options, register=False, user_handle=env.handle),
+    )
+    assert _digest(other_session.token) != env.authority.session_digest
+    expired = await env.service.csrf(env.session.token)
+    await env.admin.execute(
+        "UPDATE dashboard_auth.csrf SET expires_at=clock_timestamp()-interval '1 second' "
+        "WHERE session_digest=$1 AND digest=$2",
+        env.authority.session_digest,
+        _digest(expired["csrf_token"]),
+    )
+    protected_clause = await env.service.attention_call(
+        "clause_create",
+        env.authority,
+        env.session.data["csrf_token"],
+        entity_id=str(uuid4()),
+        scope="always",
+    )
+    populations = (
+        "dashboard_attention.tickets",
+        "dashboard_attention.stamps",
+        "dashboard_attention.candidate_causes",
+        "dashboard_attention.final_claims",
+        "public.break_through_clauses",
+        "general.scheduled_tasks",
+    )
+    before = {
+        table: await env.admin.fetchval(f"SELECT count(*) FROM {table}") for table in populations
+    }
+    for csrf in ("", "synthetic-wrong", expired["csrf_token"], other_session.data["csrf_token"]):
+        for action in ("issue", "clause_create", "clause_revoke"):
+            with pytest.raises(AuthError) as denied_auth:
+                await env.service.attention_call(
+                    action,
+                    env.authority,
+                    csrf,
+                    operation=str(uuid4()),
+                    target="general",
+                    request_digest="a" * 64,
+                    nonce_digest="b" * 64,
+                    entity_id=str(uuid4()),
+                    scope="always",
+                    id=protected_clause["id"],
+                )
+            assert denied_auth.value.code == "FORBIDDEN"
+    assert before == {
+        table: await env.admin.fetchval(f"SELECT count(*) FROM {table}") for table in populations
+    }
+    assert (
+        await env.admin.fetchval(
+            "SELECT revoked_at FROM public.break_through_clauses WHERE id=$1",
+            UUID(protected_clause["id"]),
+        )
+        is None
+    )
+    # Rotation uses the canonical core240 writer; the new token remains valid
+    # at the fixed attention interface without a synthetic sessions column.
+    rotated = await env.service.csrf(env.session.token)
+    assert rotated["csrf_token"] != env.session.data["csrf_token"]
+    rotated_operation = uuid4()
+    assert await env.service.attention_call(
+        "issue",
+        env.authority,
+        rotated["csrf_token"],
+        operation=str(rotated_operation),
+        target="general",
+        request_digest="c" * 64,
+        nonce_digest="d" * 64,
+    ) == {"state": "issued"}
+    assert (
+        await env.admin.fetchval(
+            "SELECT session_digest FROM dashboard_attention.tickets WHERE operation=$1",
+            rotated_operation,
+        )
+        == env.authority.session_digest
+    )
     body = {
         "name": "http_" + uuid4().hex,
         "cron": "0 9 * * *",
@@ -599,6 +685,7 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
     )
 
     env = attention_env
+    now = datetime(2026, 1, 15, 12, tzinfo=UTC)
     # This is the actual recorded migration login, not privileged bootstrap.
     # The reusable authority fixture exposes the actual migrated owning pool.
     # It can read the private cause store only through its fixed functions.
@@ -625,7 +712,8 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
                 category="synthetic",
                 dedup_key=f"general:attention:{uuid4().hex}:{suffix}",
                 message="Synthetic private candidate",
-                expires_at=datetime.now(UTC) + timedelta(days=1),
+                expires_at=now + timedelta(days=1),
+                now=now,
             )
             assert result["status"] == "accepted"
     finally:
@@ -640,7 +728,8 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
             category="synthetic",
             dedup_key=key,
             message="Synthetic forged urgency",
-            expires_at=datetime.now(UTC) + timedelta(days=1),
+            expires_at=now + timedelta(days=1),
+            now=now,
             metadata={"attention_cause": "owner_creation", "task_id": str(uuid4())},
         )
     )["status"] == "accepted"
@@ -677,7 +766,7 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
         "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
         AsyncMock(return_value="dnd"),
     ):
-        first = await delivery_cycle(pool, notify_fn=sent, urgent_only=True)
+        first = await delivery_cycle(pool, notify_fn=sent, urgent_only=True, now=now)
         assert len(first["delivered"]) == 2
         assert str(ids[0]) not in first["delivered"]
         sent.assert_awaited_once()
@@ -696,7 +785,7 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
         )
         assert await pool.fetchval("SELECT dashboard_attention.candidate_origin($1)", ids[0])
         sent.reset_mock()
-        again = await delivery_cycle(pool, notify_fn=sent, urgent_only=True)
+        again = await delivery_cycle(pool, notify_fn=sent, urgent_only=True, now=now)
         assert again["delivered"] == []
         sent.assert_not_awaited()
 
@@ -750,7 +839,7 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
             "COMMENT ON SCHEMA dashboard_auth IS 'not-the-core240-marker'",
             "ALTER SCHEMA dashboard_auth OWNER TO butler_general_rw",
         ]
-        for table in ("instance", "sessions"):
+        for table in ("instance", "sessions", "csrf"):
             mutations.extend(
                 [
                     f"ALTER TABLE dashboard_auth.{table} OWNER TO butler_general_rw",
@@ -762,7 +851,7 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
                 async with admin.transaction():
                     await admin.execute(mutation)
                     await admin.execute("SELECT dashboard_attention.install_interface()")
-        for table in ("instance", "sessions"):
+        for table in ("instance", "sessions", "csrf"):
             with pytest.raises(asyncpg.RaiseError, match="attention requires trusted owner"):
                 async with admin.transaction():
                     await admin.execute(f"DROP TABLE dashboard_auth.{table} CASCADE")
@@ -783,7 +872,7 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
                 "SELECT rolsuper FROM pg_roles WHERE rolname=$1", bootstrap_role
             )
             await admin.execute(f"ALTER SCHEMA dashboard_auth OWNER TO {quoted_bootstrap}")
-            for table in ("instance", "sessions"):
+            for table in ("instance", "sessions", "csrf"):
                 await admin.execute(
                     f"ALTER TABLE dashboard_auth.{table} OWNER TO {quoted_bootstrap}"
                 )
@@ -833,6 +922,14 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         assert before == await admin.fetchval(
             "SELECT to_jsonb(c)::text FROM public.break_through_clauses c WHERE id=$1", clause
         )
+        for mutation in (
+            "ALTER TABLE dashboard_auth.csrf OWNER TO butler_general_rw",
+            "DROP TABLE dashboard_auth.csrf",
+        ):
+            with pytest.raises(asyncpg.RaiseError, match="attention requires trusted owner"):
+                async with admin.transaction():
+                    await admin.execute(mutation)
+                    await admin.execute("SELECT dashboard_attention.finalize_interface()")
         await admin.execute(
             f'ALTER FUNCTION dashboard_attention.evaluate(jsonb) OWNER TO "{migration_role}"'
         )

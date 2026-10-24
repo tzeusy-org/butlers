@@ -2125,7 +2125,11 @@ async def delivery_cycle(
                 outcome="suppressed",
                 intent="insight",
                 reason=_suppression_reason or "unverified_urgency",
-                metadata={"attention_cause": "routine", "downgrade": "unverified_urgency"},
+                metadata={
+                    **({"held_by": _suppression_signal} if _suppression_signal is not None else {}),
+                    "attention_cause": "routine",
+                    "downgrade": "unverified_urgency",
+                },
             )
             if _suppression_reason is not None:
                 await _schedule_insight_catchup(

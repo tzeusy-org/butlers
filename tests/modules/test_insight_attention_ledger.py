@@ -438,7 +438,11 @@ class TestContextBusGating:
         _, kwargs = ledger_mock.call_args
         assert kwargs["outcome"] == "suppressed"
         assert kwargs["reason"] == "context_bus:meeting"
-        assert kwargs["metadata"] == {"held_by": "meeting"}
+        assert kwargs["metadata"] == {
+            "held_by": "meeting",
+            "attention_cause": "routine",
+            "downgrade": "unverified_urgency",
+        }
 
     async def test_no_context_signal_and_no_quiet_hours_delivers_normally(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -1035,7 +1039,11 @@ class TestDailyHoldMode:
         _, kwargs = ledger_mock.call_args
         assert kwargs["outcome"] == "suppressed"
         assert kwargs["reason"] == "travel_day_defer"
-        assert kwargs["metadata"] == {"held_by": "traveling"}
+        assert kwargs["metadata"] == {
+            "held_by": "traveling",
+            "attention_cause": "routine",
+            "downgrade": "unverified_urgency",
+        }
 
     async def test_urgent_candidate_still_bypasses_on_travel_day(self, insight_pool, authority):
         """An urgent (priority>=90) candidate is delivered on a travel day
