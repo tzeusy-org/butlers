@@ -1,5 +1,6 @@
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 // Two consumed mutations have no concrete TypeScript response model. Project
 // their existing Pydantic models, never the void/unknown client return type.
@@ -8,39 +9,16 @@ const contracts = [
   ["putPermission", "permissions", "/{butler}/{perm}", "PermissionSetResponse"],
   ["updateSpendCeiling", "spend", "/ceiling", "SpendCeiling"],
 ];
-const primitives = { str: "string", datetime: "string", float: "number", bool: "boolean" };
-
+// Python's stdlib AST distinguishes executable declarations from inert text.
+// The helper parses only source text and supports only the two contracts above.
 export function projectModel(source, route, model) {
-  const decorator = `@router.put("${route}", response_model=ApiResponse[${model}])`;
-  if (!source.includes(decorator)) throw new Error(`Missing exact response_model binding: ${model}`);
-  const lines = source.split("\n");
-  const declarations = lines.filter(line => new RegExp(`^(?:class ${model}\\b|${model}\\s*=)`).test(line));
-  const start = lines.indexOf(`class ${model}(BaseModel):`);
-  // Track statement starts, so a multiline decorator (including intervening
-  // comments) cannot hide behind its closing parenthesis.
-  const previousStatement = lines.slice(0, start).findLast(line => /^(?:@|(?:async )?def |class |from |import |\w+\s*=)/.test(line));
-  if (declarations.length !== 1 || start < 0 || previousStatement?.startsWith("@")) {
-    throw new Error(`Unsupported model declaration: ${model}`);
+  const result = spawnSync("python3", [fileURLToPath(new URL("./e2e_backend_response_models.py", import.meta.url))], {
+    input: JSON.stringify({ source, route, model }), encoding: "utf8", timeout: 10000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(result.stderr || `Unsupported backend response contract: ${result.error?.message}`);
   }
-  const fields = [];
-  let inDocstring = false;
-  for (const line of lines.slice(start + 1)) {
-    // Comments do not end a Python suite, even at column zero.
-    if (!line.trim() || line.trim().startsWith("#")) continue;
-    if (!line.startsWith(" ")) break;
-    if (line.trim().startsWith('"""')) {
-      if (!line.trim().slice(3).includes('"""')) inDocstring = !inDocstring;
-      continue;
-    }
-    if (inDocstring) continue;
-    const field = /^    (\w+): (str|datetime|float|bool)$/.exec(line);
-    if (!field || fields.some(([name]) => name === field[1])) {
-      throw new Error(`Unsupported field/default/union/validator in ${model}: ${line.trim()}`);
-    }
-    fields.push([field[1], primitives[field[2]]]);
-  }
-  if (!fields.length || inDocstring) throw new Error(`Incomplete model: ${model}`);
-  return fields.map(([name, type]) => `${name}: ${type};`).join(" ");
+  return JSON.parse(result.stdout);
 }
 
 export function generate() {

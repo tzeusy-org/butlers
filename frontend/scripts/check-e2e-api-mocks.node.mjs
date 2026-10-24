@@ -50,9 +50,59 @@ test("refuses inheritance, decorated models and shadowed declarations", () => {
     source + `\nclass ${model}(BaseModel):\n    other: str\n`,
     source + `\n${model} = OtherModel\n`,
   ]) assert.throws(() => project(changed), /Unsupported/);
+  for (const [module, name, path] of [
+    ["permissions", "PermissionSetResponse", "/{butler}/{perm}"],
+    ["spend", "SpendCeiling", "/ceiling"],
+  ]) {
+    const actual = readFileSync(new URL(`../../src/butlers/api/routers/${module}.py`, import.meta.url), "utf8");
+    const declaration = `class ${name}(BaseModel):`;
+    const start = actual.indexOf(declaration);
+    const end = actual.indexOf("\n\n@router.put", start);
+    assert.notEqual(start, -1);
+    assert.notEqual(end, -1);
+    const literal = actual.slice(0, start) + "'''" + actual.slice(start, end) + "'''\n" +
+      `from pydantic import BaseModel as ${name}\n` + actual.slice(end);
+    const scoped = (header) => actual.slice(0, start) + header + "\n" +
+      actual.slice(start, end).split("\n").map((line) => "    " + line).join("\n") + actual.slice(end);
+    for (const changed of [
+      literal,
+      scoped("if False:"),
+      scoped("def inactive():"),
+      actual + `\n${name}: type[BaseModel] = BaseModel\n`,
+      actual + `\nfrom pydantic import BaseModel as ${name}\n`,
+      actual + `\nAlias = ${name}\n`,
+      actual + `\nmatch {}:\n    case {**${name}}:\n        pass\n`,
+      actual + "\nAlias = BaseModel\n",
+      actual + "\nAlias = ApiResponse\n",
+      actual + "\nAlias = APIRouter\n",
+      actual + "\nAlias = router\n",
+      actual.replace(declaration, `@custom(\noption=True,\n)\n${declaration}`),
+      actual + "\nif :\n",
+    ]) assert.throws(() => projectModel(changed, path, name), /Unsupported/);
+  }
 });
 
 test("refuses a changed response_model or route binding", () => {
   assert.throws(() => project(source.replace(`response_model=ApiResponse[${model}]`, "response_model=OtherModel")), /binding/);
   assert.throws(() => project(source.replace(`@router.put("${route}"`, '@router.put("/other"')), /binding/);
+  for (const [module, name, path, prefix] of [
+    ["permissions", "PermissionSetResponse", "/{butler}/{perm}", "/api/permissions"],
+    ["spend", "SpendCeiling", "/ceiling", "/api/spend"],
+  ]) {
+    const actual = readFileSync(new URL(`../../src/butlers/api/routers/${module}.py`, import.meta.url), "utf8");
+    const binding = `@router.put("${path}", response_model=ApiResponse[${name}])`;
+    const wrong = binding.replace(`ApiResponse[${name}]`, "ApiResponse[BaseModel]");
+    assert.ok(actual.includes(binding));
+    for (const inert of [`# ${binding}\n`, `'''${binding}'''\n`]) {
+      assert.throws(() => projectModel(actual.replace(binding, inert + wrong), path, name), /binding/);
+    }
+    assert.throws(() => projectModel(actual.replace(`prefix="${prefix}"`, 'prefix="/api/other"'), path, name), /binding/);
+    assert.throws(() => projectModel(actual.replace(binding, binding + "\n" + binding), path, name), /binding/);
+    const start = actual.indexOf(binding);
+    for (const header of ["if False:", "def inactive():"]) {
+      const nested = actual.slice(0, start) + header + "\n" +
+        actual.slice(start).split("\n").map((line) => "    " + line).join("\n");
+      assert.throws(() => projectModel(nested, path, name), /binding/);
+    }
+  }
 });
