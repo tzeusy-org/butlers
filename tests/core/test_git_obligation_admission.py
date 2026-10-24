@@ -481,7 +481,8 @@ async def test_actual_daemon_shutdown_continues_after_private_admission_close(
     daemon.config.shutdown_timeout_s = 0.05
     daemon.obligation_schedule_runtime = runtime
     entered, interrupted, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    admission_released, pool_release = asyncio.Event(), asyncio.Event()
+    admission_released = asyncio.Event()
+    pool_events = []
     events, calls = [], []
     submitted_task = None
 
@@ -535,27 +536,13 @@ async def test_actual_daemon_shutdown_continues_after_private_admission_close(
         calls.append(name)
         if name == "blob" and outcome == "expired_later_error":
             raise ConnectionError("controlled downstream close failure")
-        if name == "db":
-            # A release may itself resist cancellation while a connection is
-            # owned. This is an explicit software settlement control only.
-            while not admission_released.is_set():
-                try:
-                    await admission_released.wait()
-                except asyncio.CancelledError:
-                    pass
-            if outcome == "expired_later_error":
-                while not pool_release.is_set():
-                    try:
-                        await pool_release.wait()
-                    except asyncio.CancelledError:
-                        pass
         events.append(name)
 
     daemon._modules = [SimpleNamespace(name="native", on_shutdown=lambda: close("module"))]
     daemon.blob_store = SimpleNamespace(close=lambda: close("blob"))
     daemon._audit_db = SimpleNamespace(close=lambda: close("audit"))
     daemon._shared_credentials_db = SimpleNamespace(close=lambda: close("credentials"))
-    daemon.db = SimpleNamespace(pool=pool, close=lambda: close("db"))
+    daemon.db, actual_pool = shutdown_database(admission_released, pool_events)
     handler = logging.NullHandler()
     logging.getLogger().addHandler(handler)
     daemon._db_log_handler = handler
@@ -587,7 +574,7 @@ async def test_actual_daemon_shutdown_continues_after_private_admission_close(
                 await shutdown
         else:
             await shutdown
-        assert calls == ["module", "blob", "audit", "credentials", "db"]
+        assert calls == ["module", "blob", "audit", "credentials"]
         assert {"scheduler", "recovery", "liveness", "approval_delivery"} <= set(events)
         assert events.index("scheduler") < events.index("recovery")
         assert handler not in logging.getLogger().handlers
@@ -603,18 +590,31 @@ async def test_actual_daemon_shutdown_continues_after_private_admission_close(
         with pytest.raises(repeated_error) if repeated_error else nullcontext():
             await daemon.shutdown()
         assert daemon._catalog_shutdown_task is retained
-        assert calls == ["module", "blob", "audit", "credentials", "db"]
+        assert calls == ["module", "blob", "audit", "credentials"]
         if outcome.startswith("expired"):
             assert daemon._admission_cleanup_tasks
-            assert "db" not in events
+            assert pool_events == [] and daemon.db.pool is actual_pool
             assert daemon.db is not None
             if outcome == "expired_later_error":
                 failures = retained.exception().__cause__
                 assert isinstance(failures, BaseExceptionGroup)
                 assert any(isinstance(exc, ConnectionError) for exc in failures.exceptions)
+            release.set()
+            owned = set(runtime.admission._pending) | set(daemon._admission_cleanup_tasks)
+            done, unsettled = await asyncio.wait(owned, timeout=1)
+            assert done == owned and not unsettled
+            for _ in range(10):
+                if not daemon._admission_cleanup_tasks:
+                    break
+                await asyncio.sleep(0)
+            assert not daemon._admission_cleanup_tasks
+            assert actual_pool._closed and pool_events
+            assert all(after_release for _, after_release in pool_events)
+        else:
+            assert actual_pool._closed and daemon.db.pool is None
+            assert pool_events == [("pool_close", True), ("holder_close", True)]
     finally:
         release.set()
-        pool_release.set()
         logging.getLogger().removeHandler(handler)
         owned = set(runtime.admission._pending)
         owned.add(shutdown)
@@ -751,3 +751,646 @@ async def test_full_git_discovery_verifies_selected_insight_source_and_removal(
     with pytest.raises(SourceConflict):
         await configured_insight_preparer(pool, "insight_delivery_cycle")(raw, raw, context)
     assert conn.definitions[source]["state"] == "deleted"
+
+
+async def insight_collector_fixture(monkeypatch):
+    """Actual collector and admission SQL, with legacy I/O collaborators isolated."""
+    from datetime import UTC, datetime
+
+    from butlers import scheduled_jobs
+    from butlers.tools.switchboard.insight import broker
+    from tests.core.test_dark_obligation_producers import insight_source_fixture
+
+    pool, runtime, _, loaded, registry = await owning_runtime(actual_roster=True)
+    _, rows = insight_source_fixture()
+    now = datetime.now(UTC)
+    rows = [dict(rows[0], created_at=now, expires_at=now + timedelta(days=2))]
+    c = pool.connection
+    c.candidates = rows
+    original_fetch = c.fetch
+
+    async def fetch(sql, *args):
+        if "FROM public.insight_candidates" in sql:
+            assert c.depth == 1 and "FOR UPDATE" in sql
+            c.events.append("insight_row_lock")
+            return copy.deepcopy(c.candidates) if getattr(c, "candidate_pending", True) else []
+        return await original_fetch(sql, *args)
+
+    c.fetch = fetch
+
+    async def collector_fetch(sql, *args):
+        if "FROM insight_candidates" in sql:
+            return copy.deepcopy(c.candidates)
+        return await c.fetch(sql, *args)
+
+    pool.fetch = collector_fetch
+    for name, value in {
+        "get_insight_settings": {"verbosity": "normal"},
+        "get_approvals_policy_quiet_hours": None,
+        "get_suppressing_context_signal": None,
+        "expire_candidates": 0,
+        "_revalidate_premises": ({}, 0),
+        "compute_effective_budget": 1,
+        "compute_category_budget_weights": {},
+        "cleanup_old_rows": 0,
+    }.items():
+        monkeypatch.setattr(broker, name, AsyncMock(return_value=value))
+
+    async def identity(_pool, ids, **_):
+        return ids
+
+    monkeypatch.setattr(broker, "filter_by_cooldown", identity)
+    monkeypatch.setattr(broker, "deduplicate_candidates", identity)
+    monkeypatch.setattr(scheduled_jobs, "_build_switchboard_insight_notify_fn", lambda _: None)
+    monkeypatch.setattr(scheduled_jobs, "_build_switchboard_insight_amend_fn", lambda _: None)
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    return pool, runtime, loaded, registry
+
+
+@pytest.mark.parametrize("job", ["insight_delivery_cycle", "insight_urgent_subcycle"])
+async def test_registered_insight_collector_persists_actual_catalog_refusal(
+    tmp_path, monkeypatch, job
+):
+    from butlers.background import _deterministic_jobs_for_butler
+
+    pool, runtime, loaded, registry = await insight_collector_fixture(monkeypatch)
+    from butlers.core.obligation_insight_admission import start_insight_admission
+    from butlers.daemon import ButlerDaemon
+
+    held = start_insight_admission(
+        pool, loaded, registry, source_mode="dark", admission_mode="dark"
+    )
+    assert _deterministic_jobs_for_butler("switchboard")[job] is not None
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = pool.startup_config
+    daemon.db = SimpleNamespace(pool=pool)
+    daemon.obligation_insight_admission = held
+    result = await daemon._dispatch_scheduled_task(trigger_source="schedule:" + job, job_name=job)
+    assert result["dark_preparation"] == "staged_unverified"
+    assert result["skipped"] and result["delivered"] == []
+    assert [d["reason"] for d in pool.connection.decisions.values()] == [
+        "source_evidence_unavailable"
+    ]
+    # GoalAdmission deliberately minimizes EvidenceRefused reasons. Verify the
+    # actual contract refusal separately, rather than inventing a ledger token.
+    from butlers.core.goal_admission import derive_admission
+    from butlers.core.obligation_git_admission import (
+        GitOccurrenceEvidenceProvider,
+        RegisteredGitCatalog,
+    )
+    from butlers.core.obligation_insight_sources import _identity
+    from butlers.core.obligation_sources import SourceConflict
+
+    submitted = await staged_read(pool, runtime, _identity(job, pool.connection.candidates))
+    with pytest.raises(SourceConflict, match="schedule_source_unregistered"):
+        async with pool.acquire() as connection, connection.transaction():
+            await runtime.read_submission_in_transaction(connection, submitted)
+    async with pool.acquire() as connection, connection.transaction():
+        evidence = await GitOccurrenceEvidenceProvider(held.runtime, submitted).load(
+            connection, submitted.source
+        )
+        view = await RegisteredGitCatalog(registry).load(connection)
+        with pytest.raises(EvidenceRefused, match="invalid_contract"):
+            derive_admission(evidence, view)
+        assert evidence.outside_content and evidence.obligation.created_exposed
+    assert "notify" not in registry
+    assert pool.connection.events.count("insight_row_lock") == 3
+    admission = pool.connection.events.index("admission_key_lock")
+    assert admission < pool.connection.events.index("insight_row_lock", admission)
+    await held.aclose()
+    assert not pool.connection.goals and not pool.connection.budgets
+    await runtime.close_admission()
+
+
+async def staged_insight(pool, loaded, job="insight_delivery_cycle"):
+    from butlers.core.obligation_insight_sources import InsightPreparation
+
+    raw = copy.deepcopy(pool.connection.candidates)
+    material = next(m for m in loaded.definitions if m.schedule["job_name"] == job)
+    context = {
+        "urgent_only": job == "insight_urgent_subcycle",
+        "daily_hold_mode": job == "insight_delivery_cycle",
+        "selection_reference": raw[0]["created_at"],
+        "settings": {"verbosity": "normal"},
+        "effective_budget": 1,
+        "category_budget_reasons": {},
+        "premise_verdicts": {str(raw[0]["id"]): None},
+        "prepared_action_statuses": {},
+        "clusters": [{"ids": [str(raw[0]["id"])], "prompt": None}],
+    }
+    return await InsightPreparation(
+        pool, job, material.declaration, loaded.source_sha256, loaded.config_digest
+    ).prepare_committed(raw, raw, context)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "content",
+        "expired",
+        "status",
+        "declaration",
+        "deleted",
+        "membership",
+        "definition",
+        "context",
+        "claim",
+        "occurrence",
+        "token",
+        "payload",
+        "config",
+        "handler",
+        "registration",
+        "role",
+        "shadow",
+    ],
+)
+async def test_insight_current_reader_refuses_changed_full_material(monkeypatch, fault):
+    from butlers.core import obligation_git_sources
+    from butlers.core.obligation_insight_admission import start_insight_admission
+    from butlers.core.obligation_sources import SourceConflict
+
+    pool, runtime, loaded, registry = await insight_collector_fixture(monkeypatch)
+    held = start_insight_admission(
+        pool, loaded, registry, source_mode="dark", admission_mode="dark"
+    )
+    submitted = await staged_insight(pool, loaded)
+    c = pool.connection
+    if fault == "content":
+        c.candidates[0]["message"] = "changed after capture"
+    elif fault == "expired":
+        original_clock = c.fetchval
+
+        async def clock(sql, *args):
+            if "clock_timestamp()" in sql:
+                return c.candidates[0]["expires_at"] + timedelta(seconds=1)
+            return await original_clock(sql, *args)
+
+        c.fetchval = clock
+    elif fault == "status":
+        c.candidate_pending = False
+    elif fault == "declaration":
+        from butlers.core.goal_admission import Grant
+        from butlers.core.obligations import ObligationDeclaration
+
+        held.runtime = replace(
+            held.runtime,
+            loaded=replace(
+                loaded,
+                definitions=tuple(
+                    replace(
+                        m,
+                        declaration=ObligationDeclaration(
+                            (Grant("switchboard__entity_graph_walk"),)
+                        ),
+                    )
+                    if m.schedule["job_name"] == "insight_delivery_cycle"
+                    else m
+                    for m in loaded.definitions
+                ),
+            ),
+        )
+    elif fault in {"deleted", "membership"}:
+        c.candidates = [] if fault == "deleted" else [dict(c.candidates[0], id=uuid4())]
+    elif fault in {"definition", "context"}:
+        import json
+
+        from butlers.core.goal_admission import digest
+
+        changed = submitted.definition
+        if fault == "context":
+            payload = json.loads(changed.payload_json)
+            payload["context"]["settings"]["verbosity"] = "off"
+            changed = replace(
+                changed,
+                generation=2,
+                material_digest=digest(payload),
+                payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+        else:
+            changed = replace(changed, generation=2, state="deleted")
+        from butlers.core.obligation_admission import run_source_transaction
+
+        await run_source_transaction(
+            pool,
+            "switchboard",
+            lambda repo: repo.revise(
+                uuid4(), changed, expected_revision=submitted.definition.revision
+            ),
+        )
+    elif fault == "claim":
+        c.occurrences[submitted.occurrence_id]["claim_token"] = uuid4()
+    elif fault == "occurrence":
+        c.occurrences[submitted.occurrence_id]["state"] = "cancelled"
+    elif fault == "token":
+        submitted = replace(submitted, claim_token=uuid4())
+    elif fault == "payload":
+        submitted = replace(submitted, obligation=replace(submitted.obligation, digest="forged"))
+    elif fault == "config":
+        held.runtime = replace(held.runtime, loaded=replace(loaded, config_digest="0" * 64))
+    elif fault == "handler":
+        monkeypatch.setattr(
+            obligation_git_sources, "_registered_model_job_handler", lambda *_: None
+        )
+    elif fault == "registration":
+        _, changed = await registered_catalog("switchboard")
+        await CatalogPublisher(CatalogPool(c.catalog.store, "switchboard"), "switchboard").publish(
+            changed
+        )
+    elif fault == "role":
+        c.role = "butler_health_rw"
+    elif fault == "shadow":
+        c.shadow = True
+    if fault != "registration":
+        with pytest.raises(SourceConflict):
+            async with pool.acquire() as connection, connection.transaction():
+                await held.runtime.read_submission_in_transaction(connection, submitted)
+    result = await held.submit(submitted)
+    assert result is None or (
+        result.result == "refused" and result.reason == "source_evidence_unavailable"
+    )
+    assert not c.goals and not c.budgets and c.depth == 0
+    await held.aclose()
+    await runtime.close_admission()
+
+
+async def test_insight_refusal_replay_is_same_attempt_after_lost_commit_reply(monkeypatch):
+    from butlers.core.obligation_insight_admission import start_insight_admission
+
+    pool, runtime, loaded, registry = await insight_collector_fixture(monkeypatch)
+    held = start_insight_admission(
+        pool, loaded, registry, source_mode="dark", admission_mode="dark"
+    )
+    submitted = await staged_insight(pool, loaded)
+    pool.connection.lose_reply = True
+    assert await held.submit(submitted) is None
+    assert len(pool.connection.decisions) == 1
+    result = await held.submit(submitted)
+    assert result.result == "refused"
+    assert len(pool.connection.decisions) == len(pool.connection.attempts) == 1
+    assert set(pool.connection.attempts) == {submitted.occurrence_id}
+    assert not pool.connection.goals and not pool.connection.budgets
+    await held.aclose()
+    await runtime.close_admission()
+
+
+async def test_insight_off_preparation_only_and_noninsight_handler_abi(monkeypatch):
+    from butlers import background
+    from butlers.core.obligation_insight_admission import start_insight_admission
+
+    assert start_insight_admission(None, None, None) is None
+    assert start_insight_admission(None, None, None, source_mode="dark") is None
+    assert start_insight_admission(None, None, None, admission_mode="dark") is None
+    pool, runtime, _, _ = await insight_collector_fixture(monkeypatch)
+    # Existing preparation-only remains the same registered collector result,
+    # with zero NEW admission/catalog reads; job args cannot turn it on.
+    before = pool.connection.catalog_reads
+    result = await background.dispatch_scheduled_task(
+        butler_name="switchboard",
+        pool=pool,
+        spawner=None,
+        trigger_source="schedule:insight_delivery_cycle",
+        job_name="insight_delivery_cycle",
+        job_args={"insight_admission": "dark"},
+    )
+    assert result["dark_preparation"] == "staged_unverified"
+    assert not pool.connection.decisions and pool.connection.catalog_reads == before
+    monkeypatch.delenv("BUTLERS_INSIGHT_DARK_PREPARATION")
+    before_calls = len(pool.connection.calls)
+    result = await background.dispatch_scheduled_task(
+        butler_name="switchboard",
+        pool=pool,
+        spawner=None,
+        trigger_source="schedule:insight_delivery_cycle",
+        job_name="insight_delivery_cycle",
+    )
+    assert "dark_preparation" not in result and len(pool.connection.calls) == before_calls
+    other = AsyncMock(return_value={"ordinary": True})
+    monkeypatch.setattr(
+        background, "_deterministic_jobs_for_butler", lambda _: {"insight_delivery_cycle": other}
+    )
+    assert await background.dispatch_scheduled_task(
+        butler_name="switchboard",
+        pool=pool,
+        spawner=None,
+        trigger_source="schedule:insight_delivery_cycle",
+        job_name="insight_delivery_cycle",
+        insight_admission=object(),
+        job_args={"x": 1},
+    ) == {"ordinary": True}
+    other.assert_awaited_once_with(pool, {"x": 1})
+    await runtime.close_admission()
+
+
+def shutdown_database(worker_released, pool_events):
+    """Real Database/asyncpg close, with one network-free owned holder."""
+    import asyncpg
+
+    from butlers.db import Database
+
+    async def holder_close():
+        pool_events.append(("holder_close", worker_released.is_set()))
+
+    def holder_terminate():
+        pool_events.append(("terminate", worker_released.is_set()))
+
+    class ObservedPool(asyncpg.Pool):
+        # Execute the installed asyncpg close/terminate implementation, with a
+        # network-free holder whose release is the actual admission task's exit.
+        def __init__(self):
+            self._loop = asyncio.get_running_loop()
+            self._initialized, self._initializing = True, False
+            self._closed, self._closing = False, False
+            self._holders = [
+                SimpleNamespace(
+                    wait_until_released=worker_released.wait,
+                    close=holder_close,
+                    terminate=holder_terminate,
+                )
+            ]
+
+        async def close(self):
+            pool_events.append(("pool_close", worker_released.is_set()))
+            await super().close()
+
+    actual_pool = ObservedPool()
+    database = Database("controlled_shutdown")
+    database.pool = actual_pool
+    return database, actual_pool
+
+
+@pytest.mark.parametrize("outcome", ["expired", "expired_later_error", "cancel", "healthy"])
+async def test_insight_owned_timeout_quarantines_and_daemon_attempts_remaining_cleanup(
+    tmp_path, monkeypatch, outcome
+):
+    from butlers.core import obligation_insight_admission as module
+    from butlers.daemon import ButlerDaemon
+
+    pool, runtime, loaded, registry = await insight_collector_fixture(monkeypatch)
+    held = module.start_insight_admission(
+        pool, loaded, registry, source_mode="dark", admission_mode="dark"
+    )
+    entered, interrupted, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    worker_released = asyncio.Event()
+
+    async def resistant(self, *_):
+        async with self.pool.acquire():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                interrupted.set()
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        pass
+        worker_released.set()
+
+    if outcome != "healthy":
+        monkeypatch.setattr(module.GoalAdmission, "admit_submission", resistant)
+    else:
+        worker_released.set()
+    raw = copy.deepcopy(pool.connection.candidates)
+    context = {
+        "urgent_only": False,
+        "daily_hold_mode": True,
+        "selection_reference": raw[0]["created_at"],
+        "settings": {"verbosity": "normal"},
+        "effective_budget": 1,
+        "category_budget_reasons": {},
+        "premise_verdicts": {},
+        "prepared_action_statuses": {},
+        "clusters": [{"ids": [str(raw[0]["id"])], "prompt": None}],
+    }
+    prepare = held.preparer("insight_delivery_cycle")
+    task = asyncio.create_task(prepare(raw, raw, context))
+    if outcome != "healthy":
+        await entered.wait()
+    start = asyncio.get_running_loop().time()
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = pool.startup_config
+    daemon.config.shutdown_timeout_s = 0.05
+    daemon.obligation_insight_admission = held
+    closed, pool_events = [], []
+
+    async def close(name):
+        closed.append(name)
+        if name == "blob" and outcome == "expired_later_error":
+            raise ConnectionError("controlled downstream close failure")
+
+    daemon.db, actual_pool = shutdown_database(worker_released, pool_events)
+    daemon._modules = [SimpleNamespace(name="fixture", on_shutdown=lambda: close("module"))]
+    daemon.blob_store = SimpleNamespace(close=lambda: close("blob"))
+    daemon._audit_db = SimpleNamespace(close=lambda: close("audit"))
+    daemon._shared_credentials_db = SimpleNamespace(close=lambda: close("credentials"))
+    shutdown = None
+    try:
+        if outcome.startswith("expired"):
+            assert await task == "unavailable"
+            await interrupted.wait()
+            pending = dict(held._pending)
+            assert pending and 4 <= asyncio.get_running_loop().time() - start <= 6
+            assert await prepare(raw, raw, context) == "unavailable" and held._pending == pending
+        elif outcome == "healthy":
+            assert await task == "staged_unverified"
+            pending = {}
+        else:
+            pending = dict(held._pending)
+        shutdown_start = asyncio.get_running_loop().time()
+        shutdown = asyncio.create_task(daemon.shutdown())
+        if outcome == "cancel":
+            await interrupted.wait()
+            shutdown.cancel()
+            await asyncio.sleep(0)
+            shutdown.cancel()
+            await asyncio.sleep(0)
+            assert not shutdown.done() and held._pending == pending
+            assert pool_events == []
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await shutdown
+        elif outcome.startswith("expired"):
+            done, unsettled = await asyncio.wait({shutdown}, timeout=1)
+            assert done == {shutdown} and not unsettled
+            with pytest.raises(RuntimeError, match="cleanup_incomplete"):
+                shutdown.result()
+            assert asyncio.get_running_loop().time() - shutdown_start < 1
+            assert held._pending == pending
+            assert pool_events == [] and daemon.db.pool is actual_pool
+        else:
+            await shutdown
+        assert closed == ["module", "blob", "audit", "credentials"]
+        lifetime = daemon._catalog_shutdown_task
+        assert lifetime.done()
+        if outcome.startswith("expired"):
+            deferred = set(daemon._admission_cleanup_tasks)
+            assert deferred and all(not t.done() for t in deferred)
+            with pytest.raises(RuntimeError, match="cleanup_incomplete"):
+                await daemon.shutdown()
+            assert daemon._catalog_shutdown_task is lifetime
+            assert set(daemon._admission_cleanup_tasks) == deferred and pool_events == []
+            if outcome == "expired_later_error":
+                failures = lifetime.exception().__cause__
+                assert isinstance(failures, BaseExceptionGroup)
+                assert any(isinstance(exc, ConnectionError) for exc in failures.exceptions)
+            release.set()
+            owned = set(pending) | deferred
+            done, unsettled = await asyncio.wait(owned, timeout=1)
+            assert done == owned and not unsettled
+            # The original deadline is not renewed for the deferred pool close.
+            # If close needs cancellation, real asyncpg may terminate only AFTER
+            # the retained worker released its holder; shutdown remains incomplete.
+            for _ in range(10):
+                if not daemon._admission_cleanup_tasks:
+                    break
+                await asyncio.sleep(0)
+            assert not daemon._admission_cleanup_tasks
+            assert actual_pool._closed and pool_events
+            assert all(after_release for _, after_release in pool_events)
+            with pytest.raises(RuntimeError, match="cleanup_incomplete"):
+                await daemon.shutdown()
+        else:
+            assert actual_pool._closed and daemon.db.pool is None
+            assert pool_events == [("pool_close", True), ("holder_close", True)]
+            await daemon.shutdown()
+            assert daemon._catalog_shutdown_task is lifetime
+    finally:
+        pending = set(held._pending)
+        release.set()
+        if pending:
+            done, unsettled = await asyncio.wait(pending, timeout=1)
+            assert not unsettled and done == pending
+        if shutdown is not None:
+            await asyncio.gather(shutdown, return_exceptions=True)
+        downstream = set(getattr(daemon, "_admission_cleanup_tasks", ()))
+        if downstream:
+            _, unsettled = await asyncio.wait(downstream, timeout=1)
+            assert not unsettled
+        await held.aclose()
+        await runtime.close_admission()
+
+
+async def test_insight_caller_repeated_cancel_joins_original_worker(monkeypatch):
+    from butlers.core import obligation_insight_admission as module
+
+    pool, runtime, loaded, registry = await insight_collector_fixture(monkeypatch)
+    held = module.start_insight_admission(
+        pool, loaded, registry, source_mode="dark", admission_mode="dark"
+    )
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def resistant(self, *_):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+
+    monkeypatch.setattr(module.GoalAdmission, "admit_submission", resistant)
+    raw = copy.deepcopy(pool.connection.candidates)
+    context = dict(
+        urgent_only=False,
+        daily_hold_mode=True,
+        selection_reference=raw[0]["created_at"],
+        settings={"verbosity": "normal"},
+        effective_budget=1,
+        category_budget_reasons={},
+        premise_verdicts={},
+        prepared_action_statuses={},
+        clusters=[{"ids": [str(raw[0]["id"])], "prompt": None}],
+    )
+    prepare = held.preparer("insight_delivery_cycle")
+    task = asyncio.create_task(prepare(raw, raw, context))
+    try:
+        await entered.wait()
+        pending = dict(held._pending)
+        task.cancel()
+        await cancelled.wait()
+        task.cancel()
+        assert held._pending == pending
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert not held._pending
+        await held.aclose()
+        await held.aclose()
+        assert await prepare(raw, raw, context) == "unavailable"
+    finally:
+        release.set()
+        owned = set(held._pending) | {task}
+        if owned:
+            _, pending = await asyncio.wait(owned, timeout=1)
+            assert not pending
+        await held.aclose()
+        await runtime.close_admission()
+
+
+async def test_domain_only_shutdown_retains_owner_across_repeated_caller_cancel(
+    tmp_path, monkeypatch
+):
+    from butlers.core.obligation_domain_sources import DomainWakeRuntime, start_domain_sources
+    from butlers.daemon import ButlerDaemon
+
+    pool, runtime, _, _, registry = await owning_runtime()
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = pool.startup_config
+    daemon.config.shutdown_timeout_s = 0.05
+    daemon._tool_catalog = registry
+    domain = start_domain_sources(pool, daemon, RuntimeConfig("switchboard"), registry, mode="dark")
+    daemon.obligation_domain_runtime = domain
+    entered, cancelled, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    worker_released = asyncio.Event()
+    pool_events = []
+    daemon.db, actual_pool = shutdown_database(worker_released, pool_events)
+
+    async def resistant(self, *_args, **_kwargs):
+        async with self.pool.acquire():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                while not released.is_set():
+                    try:
+                        await released.wait()
+                    except asyncio.CancelledError:
+                        pass
+        worker_released.set()
+
+    monkeypatch.setattr(DomainWakeRuntime, "_consume", resistant)
+    operation = asyncio.create_task(domain.prepare(uuid4()))
+    shutdown = None
+    try:
+        await entered.wait()
+        pending = dict(domain._pending)
+        shutdown = asyncio.create_task(daemon.shutdown())
+        await cancelled.wait()
+        lifetime = daemon._catalog_shutdown_task
+        assert isinstance(lifetime, asyncio.Task) and not lifetime.done()
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert not shutdown.done() and domain._pending == pending
+        assert pool_events == [] and daemon.db.pool is actual_pool
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown
+        assert lifetime.done() and lifetime.result() is None
+        assert not domain._pending and actual_pool._closed and daemon.db.pool is None
+        assert pool_events == [("pool_close", True), ("holder_close", True)]
+        await daemon.shutdown()
+        assert daemon._catalog_shutdown_task is lifetime
+    finally:
+        released.set()
+        owned = set(domain._pending) | {operation}
+        if shutdown is not None:
+            owned.add(shutdown)
+        done, pending = await asyncio.wait(owned, timeout=1)
+        assert not pending
+        await asyncio.gather(*done, return_exceptions=True)
+        await domain.aclose()
+        await runtime.close_admission()

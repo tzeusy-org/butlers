@@ -695,7 +695,32 @@ promise a different domain's state remained unchanged through this transaction.
 The source's creator remains absent and its admission status is explicitly
 `unverified_unavailable`. The real STAFFER `notify` catalog refusal remains; no
 empty ceiling or recipient/grant/creator authority is substituted. This is M6 AC2
-payload preparation, not an admitted goal, D7 proof, runner delivery or D18 cutover.
+payload preparation; staging alone is not an admitted goal, D7 proof, runner
+delivery or D18 cutover.
+
+When the existing source and admission controls are both `dark`, lifecycle also
+holds a private Insight admission consumer built from the final post-approval
+registration and captured configuration. The daemon supplies it only to the two
+exact registered Insight handlers, outside job arguments. Source staging releases
+its transaction and pool acquisition before admission takes its immutable
+attempt/source-ledger locks. On that admission connection the selected-source
+reader locks the owning inventory, full definition, pending candidate rows,
+occurrence and claim, and verifies the complete current material and held handler
+before the durable decision commits. A selected-set UUID is not a scheduled-task
+ID, so this path does not relax the ordinary Git schedule reader.
+
+The actual whole current fleet is read once, preserving native-notify eligibility
+and resource metadata together. The current STAFFER Switchboard has no native
+notify capability: deriving its requested contract refuses `invalid_contract`;
+the existing admission service persists the minimized
+`source_evidence_unavailable` refusal. No positive Insight admission or notify
+authority is substituted. The collector still returns `staged_unverified`, never
+an execution receipt, and its ordinary delivery/amendment/failure behavior stays
+in place. Both controls OFF or preparation-only add no admission IO. A single
+five-second owned lifetime covers preparation plus admission; incomplete workers
+remain retained and quarantine repeats, and daemon shutdown attempts downstream
+releases before propagating the truthful incomplete outcome. Runner payload,
+result, actual delivery and D18 execution remain separate unfinished work.
 
 Full Git reconciliation recognizes only this fixed registered Insight subtype:
 matching owning role/domain, immutable identity/body/declaration and current

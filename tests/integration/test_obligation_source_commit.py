@@ -1547,3 +1547,278 @@ async def test_insight_selected_source_real_role_commit_reply_and_observed_edit_
                 await cleanup.execute(
                     "DELETE FROM public.insight_candidates WHERE id=ANY($1::uuid[])", created
                 )
+
+
+# Reuse the existing migrated core+Switchboard database producer. No new
+# migration/privilege fixture or local PostgreSQL execution is introduced.
+from tests.integration.test_git_obligation_admission import git_admission_url  # noqa: E402,F401
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fault", ["healthy", "changed", "rollback", "lost_reply", "race"])
+async def test_insight_actual_admission_role_readback_and_candidate_fence(
+    request, monkeypatch, fault
+):
+    """Actual SQL/roles/fleet/locks, AUTHOR+COLLECTONLY until hosted execution.
+
+    The real STAFFER graph MUST refuse. No fixture grants native notify, runs a
+    model, sends a notification or promotes an occurrence DTO into authority.
+    REQ-goal-orchestration-007; REQ-capability-authorization-013.
+    """
+    import asyncio
+    import copy
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    import asyncpg
+
+    from butlers.config import load_config
+    from butlers.core.catalog_publication import CatalogPublisher
+    from butlers.core.catalog_reader import DOMAINS
+    from butlers.core.obligation_git_admission import RegisteredGitCatalog
+    from butlers.core.obligation_git_sources import capture_loaded_git_sources
+    from butlers.core.obligation_insight_admission import start_insight_admission
+    from butlers.core.obligation_insight_sources import InsightPreparation
+    from butlers.core.runtime_config import RuntimeConfig
+    from butlers.db import register_jsonb_codec
+    from tests.contracts.test_catalog_publication import registered_catalog
+    from tests.contracts.test_tool_authorization_catalog import _complete_core_catalog
+    from tests.integration.test_catalog_publication import runtime_pool
+    from tests.integration.test_git_obligation_admission import observed
+    from tests.switchboard.goal_admission_fixtures import limits
+    from tests.switchboard.goal_ledger_fixtures import configure
+
+    url = request.getfixturevalue("git_admission_url")
+    registry = await _complete_core_catalog("switchboard")
+    assert "notify" not in registry
+    loaded = capture_loaded_git_sources(
+        load_config(_REPO_ROOT / "roster" / "switchboard"), RuntimeConfig("switchboard"), registry
+    )
+    material = next(
+        d for d in loaded.definitions if d.schedule["job_name"] == "insight_delivery_cycle"
+    )
+    now = datetime.now(UTC)
+    row = dict(
+        id=uuid4(),
+        origin_butler="health",
+        priority=95,
+        category="test",
+        dedup_key=f"health:test:{uuid4()}",
+        cooldown_days=None,
+        expires_at=now + timedelta(days=2),
+        message="controlled integration material",
+        channel=None,
+        metadata={},
+        prepared_action_id=None,
+        created_at=now,
+        premise=None,
+    )
+    context = dict(
+        urgent_only=False,
+        daily_hold_mode=True,
+        selection_reference=now,
+        settings={"verbosity": "normal"},
+        effective_budget=1,
+        category_budget_reasons={},
+        premise_verdicts={},
+        prepared_action_statuses={},
+        clusters=[{"ids": [str(row["id"])], "prompt": None}],
+    )
+    async with asyncpg.create_pool(url, init=register_jsonb_codec, min_size=1, max_size=3) as owner:
+        await owner.execute(
+            "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
+        )
+        try:
+            await owner.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        finally:
+            await owner.execute(
+                "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
+            )
+        await configure(owner, limits())
+        for domain in DOMAINS:
+            catalog = registry if domain == "switchboard" else (await registered_catalog(domain))[1]
+            async with runtime_pool(url, domain) as writer:
+                await CatalogPublisher(writer, domain).publish(catalog)
+
+        async def own_role(connection):
+            await connection.execute("SET ROLE butler_switchboard_rw")
+
+        async with asyncpg.create_pool(
+            url,
+            init=register_jsonb_codec,
+            setup=own_role,
+            min_size=1,
+            max_size=3,
+            server_settings={"search_path": "switchboard,public"},
+        ) as pool:
+            held = start_insight_admission(
+                pool, loaded, registry, source_mode="dark", admission_mode="dark"
+            )
+            worker = contender = None
+            resume = asyncio.Event()
+            try:
+                async with pool.acquire() as connection:
+                    assert (
+                        await connection.fetchval("SELECT current_user") == "butler_switchboard_rw"
+                    )
+                    await connection.execute(
+                        "INSERT INTO public.insight_candidates "
+                        "(id,origin_butler,priority,category,dedup_key,cooldown_days,expires_at,message,"
+                        "channel,metadata,prepared_action_id,created_at,premise) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                        *row.values(),
+                    )
+                submitted = await InsightPreparation(
+                    pool,
+                    "insight_delivery_cycle",
+                    material.declaration,
+                    loaded.source_sha256,
+                    loaded.config_digest,
+                ).prepare_committed([row], [copy.deepcopy(row)], context)
+                async with owner.acquire() as independent:
+                    source = await independent.fetchrow(
+                        "SELECT o.state,o.claim_token,r.body FROM switchboard.obligation_occurrences o "
+                        "JOIN switchboard.obligation_revisions r ON r.source_id=o.source_id AND r.revision=o.revision "
+                        "WHERE o.id=$1",
+                        submitted.occurrence_id,
+                    )
+                    assert (
+                        source["state"] == "claimed"
+                        and source["claim_token"] == submitted.claim_token
+                    )
+                    assert source["body"]["payload"]["raw"][0]["message"] == row["message"]
+                if fault == "changed":
+                    await pool.execute(
+                        "UPDATE public.insight_candidates SET message=$2 WHERE id=$1",
+                        row["id"],
+                        "edited",
+                    )
+                if fault in {"rollback", "lost_reply"}:
+
+                    class ConnectionProxy:
+                        def __init__(self, connection):
+                            self.connection = connection
+
+                        def __getattr__(self, name):
+                            return getattr(self.connection, name)
+
+                        async def execute(self, sql, *args):
+                            result = await self.connection.execute(sql, *args)
+                            if (
+                                fault == "rollback"
+                                and "INSERT INTO switchboard.admission_attempt_bindings" in sql
+                            ):
+                                raise RuntimeError("controlled post-insert rollback")
+                            return result
+
+                    class ReplyPool:
+                        @asynccontextmanager
+                        async def acquire(self):
+                            async with pool.acquire() as connection:
+                                yield ConnectionProxy(connection)
+                            if fault == "lost_reply":
+                                raise OSError("controlled committed reply loss")
+
+                    held.pool = ReplyPool()
+                if fault == "race":
+                    entered = asyncio.Event()
+                    pids = {}
+                    original = RegisteredGitCatalog.load
+
+                    async def pause_after_source(self, connection):
+                        pids["holder"] = connection.get_server_pid()
+                        entered.set()
+                        await resume.wait()
+                        return await original(self, connection)
+
+                    monkeypatch.setattr(RegisteredGitCatalog, "load", pause_after_source)
+                    race_deadline = asyncio.get_running_loop().time() + 3
+                    worker = asyncio.create_task(held.submit(submitted))
+                    await asyncio.wait_for(
+                        entered.wait(), max(0, race_deadline - asyncio.get_running_loop().time())
+                    )
+
+                    async def update():
+                        async with pool.acquire() as connection:
+                            pids["contender"] = connection.get_server_pid()
+                            await connection.execute(
+                                "UPDATE public.insight_candidates SET message=$2 WHERE id=$1",
+                                row["id"],
+                                "after-decision edit",
+                            )
+
+                    contender = asyncio.create_task(update())
+
+                    async def blocked():
+                        if worker.done():
+                            await worker
+                            raise AssertionError(
+                                "admission completed before held fence observation"
+                            )
+                        if contender.done():
+                            await contender
+                            raise AssertionError("candidate edit crossed admission's held row lock")
+                        if "contender" not in pids:
+                            return False
+                        return await owner.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 "
+                            "AND datname=current_database() AND $2=ANY(pg_blocking_pids(pid)) "
+                            "AND wait_event_type='Lock')",
+                            pids["contender"],
+                            pids["holder"],
+                        )
+
+                    async with asyncio.timeout_at(race_deadline):
+                        await poll_until(blocked, interval_s=0.01)
+                    assert await observed(owner, submitted.occurrence_id) is None
+                    resume.set()
+                    result = await asyncio.wait_for(worker, 5)
+                    await asyncio.wait_for(contender, 5)
+                else:
+                    result = await held.submit(submitted)
+                if fault == "rollback":
+                    assert result is None and await observed(owner, submitted.occurrence_id) is None
+                else:
+                    if fault == "lost_reply":
+                        assert result is None
+                        held.pool = pool
+                        result = await held.submit(submitted)
+                    assert (
+                        result.result == "refused"
+                        and result.reason == "source_evidence_unavailable"
+                    )
+                    durable = await observed(owner, submitted.occurrence_id)
+                    assert durable["result"] == "refused" and durable["goal_id"] is None
+                    assert (
+                        durable["budget_goal"] is None
+                        and durable["attempt_id"] == submitted.occurrence_id
+                    )
+                    same = await held.submit(submitted)
+                    assert same.decision_id == result.decision_id
+                async with owner.acquire() as independent:
+                    assert (
+                        await independent.fetchval(
+                            "SELECT count(*) FROM switchboard.goals WHERE occurrence_key=$1",
+                            submitted.source.occurrence,
+                        )
+                        == 0
+                    )
+                    assert (
+                        await independent.fetchval(
+                            "SELECT count(*) FROM switchboard.obligation_occurrences WHERE source_id=$1",
+                            submitted.definition.source_id,
+                        )
+                        == 1
+                    )
+            finally:
+                resume.set()
+                owned = {t for t in (worker, contender) if t is not None}
+                for task in owned:
+                    if not task.done():
+                        task.cancel()
+                if owned:
+                    _, pending = await asyncio.wait(owned, timeout=5)
+                    assert not pending
+                await held.aclose()
+                await pool.execute("DELETE FROM public.insight_candidates WHERE id=$1", row["id"])

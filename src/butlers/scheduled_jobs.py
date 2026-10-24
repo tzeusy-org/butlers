@@ -293,6 +293,8 @@ def _build_switchboard_insight_amend_fn(pool: asyncpg.Pool) -> Any:
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
+    *,
+    insight_admission: Any | None = None,
 ) -> dict[str, Any]:
     """Run the proactive insight delivery cycle for the Switchboard butler.
 
@@ -315,7 +317,11 @@ async def _run_switchboard_insight_delivery_cycle_job(
     from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-    preparation = configured_insight_preparer(pool, "insight_delivery_cycle")
+    preparation = (
+        insight_admission.preparer("insight_delivery_cycle")
+        if insight_admission is not None
+        else configured_insight_preparer(pool, "insight_delivery_cycle")
+    )
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
@@ -329,6 +335,8 @@ async def _run_switchboard_insight_delivery_cycle_job(
 async def _run_switchboard_insight_urgent_subcycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
+    *,
+    insight_admission: Any | None = None,
 ) -> dict[str, Any]:
     """Run the hourly urgent insight sub-cycle for the Switchboard butler.
 
@@ -346,7 +354,11 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-    preparation = configured_insight_preparer(pool, "insight_urgent_subcycle")
+    preparation = (
+        insight_admission.preparer("insight_urgent_subcycle")
+        if insight_admission is not None
+        else configured_insight_preparer(pool, "insight_urgent_subcycle")
+    )
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,

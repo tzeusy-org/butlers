@@ -596,6 +596,15 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
         final_tool_catalog,
         mode=daemon.config.scheduler.obligation_admission_mode,
     )
+    from butlers.core.obligation_insight_admission import start_insight_admission
+
+    daemon.obligation_insight_admission = start_insight_admission(
+        state.pool,
+        daemon.obligation_git_sources,
+        final_tool_catalog,
+        source_mode=daemon.config.scheduler.obligation_source_mode,
+        admission_mode=daemon.config.scheduler.obligation_admission_mode,
+    )
     from butlers.core.obligation_domain_sources import start_domain_sources
 
     daemon.obligation_domain_runtime = start_domain_sources(
@@ -819,7 +828,9 @@ async def run_shutdown(daemon: Any) -> None:
         if (
             getattr(daemon, "_catalog_publication", None) is None
             and getattr(runtime, "admission", None) is None
+            and getattr(daemon, "obligation_domain_runtime", None) is None
             and getattr(daemon, "obligation_feed_runtime", None) is None
+            and getattr(daemon, "obligation_insight_admission", None) is None
         ):
             await _run_shutdown(daemon)
             return
@@ -958,10 +969,12 @@ async def _shutdown_resources(daemon: Any) -> None:
     source_runtime = getattr(daemon, "obligation_schedule_runtime", None)
     domain_runtime = getattr(daemon, "obligation_domain_runtime", None)
     feed_runtime = getattr(daemon, "obligation_feed_runtime", None)
+    insight_runtime = getattr(daemon, "obligation_insight_admission", None)
     bounded = (
         getattr(source_runtime, "admission", None) is not None
         or domain_runtime is not None
         or feed_runtime is not None
+        or insight_runtime is not None
     )
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
@@ -984,6 +997,12 @@ async def _shutdown_resources(daemon: Any) -> None:
         except BaseException as exc:
             if admission_error is None:
                 admission_error = exc
+    if insight_runtime is not None:
+        try:
+            await insight_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
     await _shutdown_after_admission(daemon, admission_error, deadline if bounded else None)
 
 
@@ -1000,11 +1019,7 @@ async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> N
         retained = set()
         daemon._admission_cleanup_tasks = retained
 
-    async def release(operation):
-        if deadline is None:
-            await operation
-            return True
-        task = asyncio.create_task(operation, name="private-admission-owner-release")
+    def retain(task):
         retained.add(task)
 
         def finished(done):
@@ -1013,6 +1028,13 @@ async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> N
                 done.exception()
 
         task.add_done_callback(finished)
+        return task
+
+    async def release(operation):
+        if deadline is None:
+            await operation
+            return True
+        task = retain(asyncio.create_task(operation, name="private-admission-owner-release"))
         await asyncio.wait({task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
         if not task.done():
             task.cancel()
@@ -1078,9 +1100,40 @@ async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> N
         if await release(daemon._shared_credentials_db.close()):
             daemon._shared_credentials_db = None
 
-    # 9. Close DB pool
-    if daemon.db:
-        await release(daemon.db.close())
+    # 9. asyncpg closes by terminating holders if cancelled. Even attempting
+    # close at the downstream deadline is unsafe while an admission still owns
+    # a connection. All services are closed above, so their retained task set
+    # cannot grow. Keep the pool and its eventual release owned by this daemon.
+    database = daemon.db
+    if database:
+        schedule = getattr(daemon, "obligation_schedule_runtime", None)
+        services = (
+            getattr(schedule, "admission", None),
+            getattr(daemon, "obligation_domain_runtime", None),
+            getattr(daemon, "obligation_feed_runtime", None),
+            getattr(daemon, "obligation_insight_admission", None),
+        )
+        pending = {
+            task
+            for service in services
+            for task in getattr(service, "_pending", ())
+            if not task.done()
+        }
+        if pending:
+
+            async def close_after_admission():
+                # This wait retains ownership, not a fresh execution allowance.
+                # Pool close still uses the original downstream deadline, and
+                # can be cancelled only AFTER every retained owner has settled.
+                await asyncio.wait(pending)
+                await release(database.close())
+
+            retain(
+                asyncio.create_task(close_after_admission(), name="admission-deferred-pool-close")
+            )
+            errors.append(RuntimeError("private_git_admission_downstream_cleanup_incomplete"))
+        else:
+            await release(database.close())
 
     if admission_error is not None:
         if errors:

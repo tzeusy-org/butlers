@@ -1103,6 +1103,11 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            **(
+                {"insight_admission": self.obligation_insight_admission}
+                if getattr(self, "obligation_insight_admission", None) is not None
+                else {}
+            ),
         )
 
     async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:

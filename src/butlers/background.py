@@ -83,6 +83,7 @@ async def dispatch_scheduled_task(
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
     approval_push_runtime: Any | None = None,
+    insight_admission: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -167,6 +168,17 @@ async def dispatch_scheduled_task(
                 butler_name=butler_name,
                 spawner=spawner,
             ):
+                if insight_admission is not None and butler_name == "switchboard":
+                    from butlers.scheduled_jobs import (
+                        _run_switchboard_insight_delivery_cycle_job,
+                        _run_switchboard_insight_urgent_subcycle_job,
+                    )
+
+                    if handler in (
+                        _run_switchboard_insight_delivery_cycle_job,
+                        _run_switchboard_insight_urgent_subcycle_job,
+                    ):
+                        return await handler(pool, job_args, insight_admission=insight_admission)
                 return await handler(pool, job_args)
         finally:
             reset_current_codex_auth_authority(_codex_authority_token)

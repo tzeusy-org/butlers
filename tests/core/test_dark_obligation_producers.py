@@ -799,3 +799,44 @@ async def test_domain_runtime_close_failure_still_attempts_daemon_downstream_cle
         await lifecycle._shutdown_resources(daemon)
     assert attempted == ["module", "blob", "audit", "credentials", "main"]
     assert not getattr(daemon, "_admission_cleanup_tasks", set())
+
+
+@pytest.mark.asyncio
+async def test_insight_private_reference_retains_complete_body_and_legacy_status(monkeypatch):
+    """Committed reference is immutable material, never evidence or a runner payload."""
+    import copy
+    import json
+
+    from butlers.core.obligation_admission import DarkSubmission
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
+
+    pool, rows = insight_source_fixture()
+    raw = [rows[0]]
+    pool.connection.candidates = copy.deepcopy(raw)
+    context = dict(
+        urgent_only=False,
+        daily_hold_mode=True,
+        selection_reference=raw[0]["created_at"],
+        settings={"verbosity": "normal"},
+        effective_budget=1,
+        category_budget_reasons={},
+        premise_verdicts={},
+        prepared_action_statuses={},
+        clusters=[{"ids": [str(raw[0]["id"])], "prompt": None}],
+    )
+    monkeypatch.setenv("BUTLERS_INSIGHT_DARK_PREPARATION", "1")
+    prepare = configured_insight_preparer(pool, "insight_delivery_cycle")
+    reference = await prepare.prepare_committed(raw, raw, context)
+    assert type(reference) is DarkSubmission and pool.connection.depth == 0
+    payload = json.loads(reference.definition.payload_json)
+    assert payload["raw"][0]["message"] == raw[0]["message"]
+    assert payload["context"]["settings"] == context["settings"]
+    assert reference.definition.creator is None and reference.obligation.created_exposed
+    context["settings"]["verbosity"] = "off"
+    assert (
+        json.loads(reference.definition.payload_json)["context"]["settings"]["verbosity"]
+        == "normal"
+    )
+    context["settings"]["verbosity"] = "normal"
+    assert await prepare(raw, raw, context) == "staged_unverified"
+    assert len(pool.connection.occurrences) == 1

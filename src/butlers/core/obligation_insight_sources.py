@@ -1,4 +1,4 @@
-"""Private Insight selected-content preparation, never admission or execution.
+"""Private Insight selected-content preparation and fenced committed readback.
 
 The real daily/urgent collector supplies its actual selection. The Switchboard
 role locks/rereads candidate contents and persists complete material in the same
@@ -12,18 +12,29 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from butlers.config import load_config, obligation_config_material_digest
 from butlers.core.goal_admission import digest
 from butlers.core.obligation_admission import (
+    DarkSubmission,
     SourceUnavailable,
     prepare_dark_submission,
     run_source_transaction,
 )
-from butlers.core.obligation_sources import DefinitionRevision, SourceConflict
+from butlers.core.obligation_sources import (
+    DefinitionRevision,
+    ObligationSourceRepository,
+    SourceConflict,
+)
+
+if TYPE_CHECKING:
+    from butlers.core.obligation_git_sources import LoadedGitSources
+
 
 JOBS = frozenset({"insight_delivery_cycle", "insight_urgent_subcycle"})
 COLUMNS = (
@@ -173,6 +184,14 @@ class InsightPreparation:
         self.source_sha, self.config_digest = source_sha, config_digest
 
     async def __call__(self, raw, selected, context):
+        await self.prepare_committed(raw, selected, context)
+        return "staged_unverified"
+
+    async def prepare_committed(self, raw, selected, context):
+        """Return only after the source transaction and pool acquisition release.
+
+        The handoff reference conveys no authority; admission must reread it.
+        """
         # Canonical copies remove aliases to collector-owned mutable objects.
         raw, selected, context = (json.loads(_json(v)) for v in (raw, selected, context))
         _validate_material(self.job_name, raw, selected, context)
@@ -229,25 +248,19 @@ class InsightPreparation:
 
         try:
             async with asyncio.timeout(5):
-                await run_source_transaction(self.pool, "switchboard", write, require_fresh=True)
+                return await run_source_transaction(
+                    self.pool, "switchboard", write, require_fresh=True
+                )
         except SourceUnavailable:
             # Existing source helper deliberately reports cancellation as unknown.
             # The collector must still preserve its caller's cancellation.
             if asyncio.current_task().cancelling():
                 raise asyncio.CancelledError from None
             raise
-        return "staged_unverified"
 
 
-async def reconcile_selected_source(repository, value, snapshot, command):
-    """Verify this exact fixed producer subtype; refuse every unknown/dangling source.
-
-    Full Git reconciliation may preserve a still-current selected-set source or
-    tombstone it when its actual loaded config/candidates disappear or change.
-    This is not a marker-only exception to schedule inventory integrity.
-    """
-    from dataclasses import replace
-
+async def selected_material_current(repository, value, snapshot):
+    """Lock and validate the complete selected subtype against held/current inputs."""
     from butlers.core.obligation_git_sources import _registered_model_job_handler
 
     try:
@@ -313,7 +326,51 @@ async def reconcile_selected_source(repository, value, snapshot, command):
     )
     by_id = {str(c["id"]): dict(c) for c in rows}
     material_current = _json([by_id.get(c["id"]) for c in payload["raw"]]) == _json(payload["raw"])
-    if not current_config or not material_current:
+    return current_config and material_current
+
+
+async def reconcile_selected_source(repository, value, snapshot, command):
+    """Keep still-current selected sources; tombstone changed/deleted material."""
+    from dataclasses import replace
+
+    if not await selected_material_current(repository, value, snapshot):
         await repository.revise(
             command, replace(value, generation=2, state="deleted"), expected_revision=value.revision
         )
+
+
+@dataclass(frozen=True)
+class InsightSelectedRuntime:
+    """Same-owning reader; selected UUIDs are never scheduled-task identities."""
+
+    owner_domain = "switchboard"
+
+    loaded: LoadedGitSources
+
+    async def read_submission_in_transaction(self, connection, submitted):
+        if type(submitted) is not DarkSubmission:
+            raise SourceConflict("insight_submission_invalid")
+        repository = ObligationSourceRepository(connection, self.owner_domain)
+        # Admission already owns its attempt/source-ledger locks. All source
+        # locks below remain on that PASSED connection until its decision commits.
+        await repository.lock_git_inventory()
+        await repository.lock_source(submitted.definition.source_id)
+        value = await repository.read(submitted.definition.source_id)
+        if (
+            value is None
+            or value != submitted.definition
+            or not await selected_material_current(repository, value, self.loaded)
+        ):
+            raise SourceConflict("insight_selection_changed")
+        now = await connection.fetchval("SELECT clock_timestamp()")
+        if any(
+            datetime.fromisoformat(row["expires_at"]) <= now
+            for row in json.loads(value.payload_json)["raw"]
+        ):
+            raise SourceConflict("insight_selection_expired")
+        current = await prepare_dark_submission(
+            repository, value.source_id, submitted.occurrence_id, submitted.claim_token
+        )
+        if current != submitted:
+            raise SourceConflict("insight_submission_changed")
+        return current
