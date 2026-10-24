@@ -396,3 +396,24 @@ Scope: v1-mandatory
 #### Scenario: Engineering executors get no MCP servers
 - **WHEN** the Spawner prepares a `qa` or `healing` session
 - **THEN** the `mcp_servers` dict is empty
+
+## ADDED Requirements
+
+### Requirement: Starting envelopes have one bounded composition path
+The runner SHALL consume S5's exact starting-envelope/query schema, finite runtime-config snapshots, stable prefix and whole-item limits through brokered authorized reads. It SHALL NOT compose domain daemon prompts, grant from profile metadata or inline untrusted text under a typed-shape exception.
+
+ID: REQ-core-spawner-014
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S5; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Dynamic evidence changes
+- **WHEN** a new situation, recall item or open loop is added to a repeated owner invocation
+- **THEN** immutable policy/profile/contract prefix bytes stay before the breakpoint, with dynamic labelled evidence afterward
+
+#### Scenario: A domain exceeds the budget
+- **WHEN** a read times out or would exceed the whole packet/item limit
+- **THEN** the domain is explicitly degraded or complete items are omitted with reasons; no body is detached from its label/reference
+
+#### Scenario: A child starts with a narrower brief
+- **WHEN** the runner launches a depth-one child
+- **THEN** only its brief and authorized relevant envelope are supplied, with inherited labels and no domain-daemon session prompt

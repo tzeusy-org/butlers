@@ -180,3 +180,93 @@ Scope: v1-mandatory
 - `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
 - RFC 0038 (goal runtime and capability authorization)
 - RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)
+
+## ADDED Requirements
+
+### Requirement: Waiting goals wake through one fenced epoch intent
+The ledger and runner SHALL implement S2's thread/plan/wait-envelope/inbox/epoch/wake-intent schemas and S4 evaluator interface. Conditional fire, wake consumption, labelled inbox and durable intent SHALL commit atomically; every wake SHALL narrow authority and retain finite horizon/budget. Waiting SHALL release capacity without erasing obligations or effects.
+
+ID: REQ-goal-orchestration-009
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2/S4; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Already satisfied registration cannot lose a wake
+- **WHEN** an envelope condition is true before its subscription is installed
+- **THEN** registration evaluates the current snapshot and commits one unique successor intent
+
+#### Scenario: Crash between fire and launch preserves one successor
+- **WHEN** a worker crashes after the fire transaction, then another replays it
+- **THEN** the same intent is claimed for one epoch with no duplicate launch or committed-effect replay
+
+#### Scenario: Owner answer and bounded follow-up have distinct approval
+- **WHEN** a goal waits for an exact owner answer, or asks approval for an effect plus envelope
+- **THEN** answer-only waiting adds no approval; the latter binds exact digests and only bounded follow-ups, never an exposed extension
+
+#### Scenario: Stop wins a competing wake
+- **WHEN** Stop and a condition fire race for the goal fence
+- **THEN** a fire committed first is retained honestly; a losing or later wake cannot launch or execute
+
+#### Scenario: Changed plans and expired horizons cannot silently continue
+- **WHEN** a plan premise changes or an envelope exhausts its deadline/wake count
+- **THEN** a new immutable plan version is recorded; no envelope is enlarged and unresolved work ends partial with preserved receipts
+
+### Requirement: Ledger conversion preserves every existing state and effect
+The migration and lifecycle owner SHALL apply the complete S2 mapping from actual switchboard sw_047 → sw_050 → sw_051, preserving immutable attempt/source-to-canonical decision bindings, composite FK/backfill, runtime RLS, terminal recorded_without_goal, atomic constraint replacement and durable-row downgrade refusals, as well as all identities, statuses, parked/unknown effects, joined labels, inbox consumption, origin/ceiling/budgets and receipts. Conversion SHALL retain source status/provenance and refuse inconsistent legacy bindings. It SHALL NOT create a second control ledger or destructive rollback.
+
+ID: REQ-goal-orchestration-010
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Every current status has a safe disposition
+- **WHEN** the migration encounters admitted/running/settling/awaiting_approval/recovering or any terminal state
+- **THEN** it applies the explicit S2 map, keeps terminal outcomes identical and preserves all invocation/effect statuses
+
+#### Scenario: Missing legacy approval evidence is held
+- **WHEN** an awaiting_approval record cannot be bound to its original effect
+- **THEN** it remains waiting with unavailable evidence, without invented approval or completion
+
+#### Scenario: Shadow parity precedes enforcement
+- **WHEN** conversion/backfill has run but a producer/reader count, FK, receipt or role check disagrees
+- **THEN** activation is refused and old compatible readers remain; no table or effect is discarded
+
+#### Scenario: A rollback retains newly written restrictions
+- **WHEN** the new consumer must be disabled after recording labels or wake receipts
+- **THEN** new admissions/wakes stop, all evidence remains and no unknown dispatch or cancelled decision is replayed
+
+### Requirement: Owner thread inputs obey running and waiting bindings
+Admission SHALL use S2's sole owner-thread identity, configured 2–10 minute running join window, exact waiting reply/button binding, labelled inbox and Stop-aware between-call delivery. Joining SHALL NOT widen ceiling, reset budget or imply approval.
+
+ID: REQ-goal-orchestration-011
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: One running chat receives a fresh non-reply
+- **WHEN** exactly one matching owner goal is running inside the configured window
+- **THEN** the input joins through one deduplicated inbox receipt and displays its thread chip plus /new
+
+#### Scenario: Ambiguous or waiting chat cannot guess a target
+- **WHEN** multiple goals match, the running window elapsed, or a waiting goal receives an unbound message
+- **THEN** no latest-thread guess is used; only an exact reply/button joins waiting work and other input follows separate admission
+
+#### Scenario: Stop words separate old and new work
+- **WHEN** the owner sends a stop word and a new ask while a tool call is completing
+- **THEN** old work is fenced and the new ask is separately admitted; between-call delivery does not create an unfenced turn
+
+### Requirement: First-switch acceptance stays separate from M7
+The programme SHALL use the complete first-switch/M7 and release-boundary matrices in shared-contract-coverage.md. Conservative representation, named successors and first-switch evidence SHALL NOT assert M7 readiness, release a held rule, execute a switch or close M6 with absent source owners. Existing per-event approval semantics SHALL remain binding before the richer M7 surface.
+
+ID: REQ-goal-orchestration-012
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S8; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: A source contract is reviewed
+- **WHEN** the draft has authoring checks and a normative review
+- **THEN** reserved exact-text adoption, source implementation, M6 candidate evidence and operational approval remain distinct unfinished boundaries
+
+#### Scenario: M6 prepares a candidate
+- **WHEN** first-switch successor evidence is incomplete but M7 work is available
+- **THEN** M6 retains its selected first-switch requirements and does not substitute M7 or archive/release old contracts
+
+#### Scenario: A held typed or cited rule is encountered
+- **WHEN** a worker can represent typed values or citations
+- **THEN** representation confers no steering/authority relaxation and the held decision remains for its named M7 gate

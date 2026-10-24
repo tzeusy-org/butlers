@@ -624,3 +624,39 @@ def downgrade() -> None:
 **Push notifications to butlers when context changes.** Rejected for the same reasons as pub/sub. Pull-based checking at decision points is simpler, sufficient, and does not require butlers to maintain listener state or handle missed notifications.
 
 **Per-butler context tables.** Rejected because the entire point is shared awareness. Per-butler tables would recreate the isolation problem this feature solves.
+
+## Proposed dated successor: canonical perception at the first switch (2026-10-24)
+
+**Exact text: bu-dhloi1.19, pending reserved adoption and independent review.**
+The current RFC above, including bu-dhloi1.17's current-context/suppression
+contract, remains the old-runtime contract. This is its explicitly dated
+perception successor, not a retroactive claim that the legacy table was typed,
+role-fenced or already replaced. The authoritative fields and APIs are
+[RFC0038 S3–S5](0038-goal-runtime-and-capability-authorization.md#s3-one-perception-registry-and-trusted-writer-interface)
+and the active `perception-registry`/`condition-evaluation` deltas.
+
+At the named activation, public.situation_slots, timeline, owner_modes, typed
+conditions and suppressions SHALL be the single shared projection. Registered
+primitives/enum/reference schemas, null-subject uniqueness, four-state
+freshness, stable source/event identity, generation CAS, role-derived writer
+authority and atomic transition receipts SHALL follow S3. Domain stores keep
+source truth. No separate life-record/owner_clock/presence/observations store,
+generic model record writer, arbitrary context text or raw coordinates is
+created by this successor.
+
+Registry/schema and restrictive writers land first; source-labelled adapters,
+backfill/replay, shadow read parity and complete failure/migration tests precede
+one atomic reader/sole-writer activation. Expired legacy context is not fresh
+perception; missing provenance stays unknown/exposed. Preserve DND/attention
+versioned suppression and authenticated owner mutation until their explicitly
+mapped successor is proven; a plain mode row is not replacement authority.
+A failed parity/activation rollback holds new readers/writers and keeps receipts,
+old IDs and restrictive evidence rather than restoring unsafe authority.
+
+Representation is owned by bu-dhloi1.9. Dots bu-jv1moa.17 consumes the stable
+writer/event/CAS API for owner.place; bu-dhloi1.21 owns clock/modes and consumer
+activation; .14 owns system.dep, and bu-xxfkhk owns confirmed expect.* feeds.
+This text does not implement any reducer, switch an existing consumer, alter
+.18 mode policy, authorize deployment, or widen a grant. Perception detail and
+recall remain source-labelled; exposed/third-party views are availability-only
+and raw coordinates never enter model context.

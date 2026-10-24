@@ -686,6 +686,11 @@ and ends the goal `budget_exhausted` with whatever results and effects exist.
 
 ### D11. State machines
 
+The following goal diagram is the pre-switch `sw_047` representation. The
+proposed dated S2 amendment defines the target states and complete lossless
+mapping, subject to its reserved adoption. Invocation and effect states below
+remain unchanged.
+
 Goal:
 
 ```text
@@ -1152,6 +1157,429 @@ hard-cutover gates or alter the private-custody boundary.
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
+
+## Proposed shared switch and M7 interfaces (2026-10-24)
+
+**Exact-text review carrier: bu-dhloi1.19; adoption pending.** This section and
+its explicitly identified D6/D11 successor wording are the concrete amendment
+for the recorded two-cutover answer, not an assertion of implementation or
+activation. The current accepted contract applies until the required
+independent conformance review and reserved exact-text adoption are recorded.
+Adoption of this text is not permission to deploy or execute either cutover.
+The requirement, source-owner and approval maps are in the active change's
+[shared contract coverage](../../../openspec/changes/generalist-lead-focused-delegation/shared-contract-coverage.md).
+
+### S0. Representation and version discipline
+
+Unless named otherwise, IDs are UUIDs, generations/epochs/versions are
+nonnegative 64-bit integers (CAS increments by one; overflow refuses), digests
+are SHA256 of versioned canonical UTF-8 JSON, times are finite UTC instants,
+and zones are validated IANA names. References resolve through the owning
+service under grants, never ambient cross-schema SQL. Arrays are unique,
+bounded sets; unknown fields/types/versions refuse rather than normalize away.
+Null means explicitly absent, never an empty permission or current evidence.
+Effective engineering limits are validated positive finite runtime_config
+snapshots; a missing snapshot refuses work rather than removing a bound.
+State changes and their immutable audit/identity receipt commit together.
+
+### S1. Labels, descriptors and authorization
+
+The six sensitivity categories are exactly `health`, `finance`, `location`,
+`routine`, `relationship_notes`, `credentials`. A label is version 1 with
+`label_instr` (I: instruction provenance), `label_data` (D: data provenance),
+and `label_sens` (C: a subset of those categories). I and D are sets of opaque,
+server-resolved principal references, not sender text or model assertions.
+The principal kinds are `owner`, `owner_device`, `domain`, `external`, `world`;
+domain/external references use registered opaque identities, never an email,
+credential or payload. Existing content-authority stamps determine whether a
+principal is owner-authoritative; a principal name alone grants nothing.
+Unknown or unreadable provenance is `{world}` in I and D, and all six in C
+when sensitivity is unknown. Reject unknown category/kind/schema versions;
+never drop an unknown member to make a call admissible.
+
+Join is component-wise set union. An invocation's label only increases,
+including across callbacks, queues, receipts, storage, child results and
+recovery. A read joins returned labels before its result can reach a model;
+a write binds the invoking label, writer goal/invocation, and a closed
+`exposure_cause` enum (`ingress`, `read`, `child`, `inbox`, `recovery`,
+`legacy_unknown`) in the same call/fence transaction. Stamped readers include
+memory, facts, capture, notes, history, episodes, insight and decision stores.
+Missing stamp or failed label persistence refuses the operation; an unlabelled
+result is not a trusted empty response. Successful writes cannot lose labels
+when their producer retries or a deferred writer resumes.
+
+For the proposed first-switch target, this paragraph replaces only D6's
+start-from-goal-aggregate bullet and clarifies its goal exposure reporting
+sentence: the call policy uses the actual invocation and its
+input/cause/predecessor chain, not a reporting aggregate as a substitute. The goal retains the union
+for audit and outcome reporting. A clean sibling already running independently
+is not contaminated just by that aggregate, but a child inherits its caller,
+a returned child contaminates its reader, and a replacement/escalated lead
+inherits its predecessor, consumed inbox and recovered context/effects.
+Unknown legacy lineage retains at least the old Boolean restriction. At the
+first switch, free text and typed values carrying third-party/unknown data
+retain D6 exposure: no reminder-date, cited-evidence or typed-shape laundering.
+The M7 typed-value semantic choice remains held on `bu-4c7nvp.1.1`, and
+cited-label steering remains held on `bu-7ry1sy`.
+
+The descriptor extension has `categories` (set of the six names), `depends_on`
+(set of declared dependency IDs), and `interactive_profiles` (set of registered
+profile IDs). This augments, never replaces, D4 effect/trust/sensitivity,
+resource/recipient arguments, approval mode and owner-authority metadata.
+`bu-dhloi1.6` owns the single descriptor change for labels/categories;
+`bu-dhloi1.14` adds dependency declarations after it;
+`bu-dhloi1.12` adds the `owner-fast` profile after .14. Missing metadata is
+ungrantable; metadata, discovery, a profile or a condition cannot grant a tool.
+
+A tighten-only policy record has `id`, `scope` (capability/resource),
+`version` (positive monotonic integer), `constraint` (`never`, `always_ask`),
+`expires_at` (null or finite future time), owner-action identity and audit
+receipt. The owner-authenticated control-plane surface alone writes it using
+expected-version CAS; no model capability, domain or connector does. The
+broker evaluates catalog/origin/grant, invocation exposure/category/slot
+constraints, owner law, mode tightening and health/admission restrictions in
+that order, recording every constraining term/version in a typed receipt.
+`never` refuses; `always_ask` parks the exact otherwise-permitted effect.
+Neither grants, clears taint nor overrides always-per-event/selection rules.
+Unreadable policy refuses; an expired term ceases only its own tightening and
+never restores a revoked grant. A concurrent tightening affects the next call,
+not the truth of already committed effects. .18 owns the separate owner-law,
+mode, urgency and step-up policy wording; these are only its structural slots.
+
+### S2. Waiting, epochs, inbox, plans and migration
+
+The source baseline is actual main `5d4a979aba57b24da0f6c14734197c381d111bbf`,
+`roster/switchboard/migrations/047_goal_ledger.py` (`sw_047`), followed directly
+by `050_admission_attempt_bindings.py` (`sw_050`) and
+`051_record_only_admission_reason.py` (`sw_051`), and
+`src/butlers/core/goal_ledger.py`, not a proposed `control.goals` schema.
+Allocations sw_048/sw_049 are held and are not delivered chain members.
+Keep `switchboard.goals`, `invocations`, `effects`, `budgets`,
+`admission_decisions` and `goal_inbox` identities, foreign keys, immutable
+admission/source-key deduplication and ordinary runtime-role fences.
+The landed sw_050 `admission_attempt_bindings` backfill and immutable
+`attempt_id/source_key/decision_id` binding, composite decision/source FK,
+Switchboard-only runtime RLS and refusal to downgrade durable rows remain
+mandatory. Ledger `existing()`/`bind_attempt()` must resolve every returned
+attempt to its original canonical decision. The landed sw_051 terminal reason
+`recorded_without_goal` remains a durable no-goal disposition; preserve its
+atomic locked constraint replacement and refusal to downgrade while such rows
+exist. Neither a record-only attempt nor a replay can mint a new goal.
+
+The first-switch target goal states are `admitted`, `running`, `waiting`,
+`completed`, `partial`, `failed`, `stopped`, `budget_exhausted`.
+`admitted -> running -> waiting -> admitted` may repeat only through a recorded
+wake. Terminal states admit no wake. Waiting releases the runtime slot, not
+the goal budget, effect history or obligations. Completion still requires the
+owner reply's genuine delivery receipt and honest dependent-effect outcomes.
+
+| Record | Required fields and invariant |
+|---|---|
+| Goal extension | `legacy_status` (original status), `label_version/I/D/C`, `thread_id`, `plan_version`, `wait_generation`; existing origin/ceiling/config/catalog digests and budgets remain immutable except existing permitted counters |
+| Epoch | `(goal_id, epoch)` unique; predecessor invocation, `reason` (`initial`, `wake`, `recovery`, `escalation`), input/inbox refs, label snapshot, grant digest, durable launch intent and state `pending/launching/running/finished/failed`; one live lead remains enforced by the existing partial unique index |
+| Thread | UUID PK; owner entity, channel and opaque conversation key with a unique `(owner,channel,key)` identity; goals reference this one owner thread registry by FK, not a second waiting-thread table |
+| Plan | `(goal_id,version)` PK; predecessor version, premise/source refs, bounded step refs, created epoch and digest; append-only; goal/envelope `(goal_id,plan_version)` FKs bind it; changed premise creates a new version, never edits the approved one |
+| Wait envelope | UUID PK, goal/epoch, immutable condition IDs, finite deadline, positive maximum wakes, consumed wakes, permitted source set, grant snapshot/digest, plan version/digest, label snapshot, approval effect/ref if required, generation and state `open/fired/expired/cancelled`; no arbitrary text predicate |
+| Inbox extension | Preserve existing id/decision/source/delivery/reply-effect refs and consumption; add event identity, label snapshot and consumed epoch; uniqueness remains source/decision based; a source retry cannot create a second input |
+| Wake intent | Stable `(envelope_id,generation,fire_event_id)` identity, successor epoch and outbox state `pending/claimed/launched/failed`; unique successor per fired generation; no receipt is an instruction to replay an effect |
+
+Creating an envelope checks the current condition snapshot before subscribing.
+The evaluator's conditional `open -> fired` CAS, wake-count increment, inbox
+entry and durable launch intent commit atomically. A failed launch before any
+invocation starts may retry that same intent within its deadline; lease/crash
+recovery cannot mint another successor. New grants intersect the original
+ceiling, previous envelope, current policy and causing input. A plan change or
+new exposure cannot extend a wait. Owner approval binds the exact effect and
+envelope digest; it allows bounded follow-ups inside that envelope only. An
+exposed run cannot extend it. Waiting solely for the owner's answer needs no
+additional approval; that answer is still authenticated and cannot approve an
+unrelated effect. Deadline/horizon exhaustion produces `partial` with pending
+work and receipts; it never silently executes or loses a parked effect.
+
+Stop locks/fences the goal, cancels open envelopes/pending wake intents and
+pending decisions, revokes tokens and prevents a post-Stop launch. A call/fire
+that commits first remains in history; one that loses the fence is refused.
+Inbox delivery occurs between tool calls under the same Stop fence. A running
+same-chat non-reply joins only the single matching owner goal within an
+engineering-configured window of 2–10 minutes, with a receipt/thread chip and
+`/new`. Ambiguous/out-of-window input starts a separate admitted goal. A
+waiting goal joins only by exact reply/button binding. A stop word stops the
+old goal and starts separate admitted work; it is not an unfenced new turn.
+
+| Current landed sw_047 → sw_050 → sw_051 state/data | Lossless target disposition |
+|---|---|
+| admitted / running | Same state and original identity; recover a live lease through the existing epoch fence before any new lead |
+| settling | waiting on the exact outstanding effects, or the original terminal outcome if every dependency settled; preserve all parked effect IDs and receipts |
+| awaiting_approval | waiting on the exact approval/effect binding; missing legacy binding remains held with explicit unavailable evidence, never auto-approved |
+| recovering | admitted with a recovery intent and incremented epoch only after old-lead fencing; no new admission, budget reset or dispatch |
+| completed / partial / failed / stopped / budget_exhausted | Identical terminal state and dependent effect outcomes |
+| invocation statuses / effects | Preserve every current status, including launching/escalated and requested/parked/approved/dispatched/unknown/refused/rejected/expired/cancelled; uncertain dispatch stays unknown |
+| admission attempts / recorded_without_goal | Preserve every immutable source-to-canonical decision binding and composite FK, including backfilled rows; replay returns the existing decision; a record-only terminal result stays goal-less; keep runtime RLS and durable-row downgrade refusal |
+| inbox / origin / exposure / receipts | Preserve decision/source uniqueness, consumed_at, thread refs, ceiling, joined exposure, immutable origin/cause and original receipt/delivery/prompt bindings; unknown labels fail closed |
+
+Migrations retain a per-row source status and conversion receipt, verify counts,
+FKs, pending effects, inbox consumption and authority before enabling readers,
+and refuse inconsistent input rather than guessing a completion/approval.
+Serial order is schema/constraints and restrictive role functions, labelled
+producer adapters, backfill/replay with original identity, shadow readers,
+parity verification, then one admitted switch to enforcement/sole writers.
+No permanent dual-writing or second ledger is permitted. A rollback before
+activation keeps old readers and new receipts; after activation disable new
+admission/wakes and redeploy only a compatible old reader, keeping all effect
+and label evidence. Never reverse labels, replay uncertain effects, reopen a
+cancelled decision or destructively downgrade newly written data.
+
+### S3. One perception registry and trusted writer interface
+
+`public.situation_slots`, `public.timeline`, `public.owner_modes`, typed
+condition instances and suppression records are shared coordination projections.
+Domain source-region stores remain the record of truth. These replace, at the
+named future activation, the old context projection; they do not authorize
+`public.life_records`, a sibling owner_clock, observations or presence store.
+
+Registry entries declare `kind`, schema version, owning domain/writer role,
+primitive type (`boolean`, finite number, bounded enum, timestamp, opaque
+reference), bounds/enum, category set, freshness policy, and read visibility.
+No arbitrary title, prose, URL or raw coordinate is a typed primitive. Writer
+identity is derived from the authenticated database/service role and declared
+kind, never a request's `writer` field or a grantable generic record tool.
+
+| Projection | Required identity and fields |
+|---|---|
+| situation_slots | UUID PK; `(kind,subject_entity)` unique with `NULLS NOT DISTINCT` (or equivalent separate partial indexes for null/non-null); state `known/unknown/unmeasurable/unconfigured`, typed value or opaque ref, source, observed_at, fresh_until, evidence refs, I/D/C, generation, registered writer |
+| timeline | Stable event UUID plus unique `(source,event_key)`; kind, nullable subject, class `transition/record/occurrence/point`, effective span, observed_at, IANA zone/lived date, bounded typed measures, source refs, labels and generation; no second copy of source prose |
+| owner_modes | Versioned projection of declared mode IDs, effective interval, source/ref, label, generation and cause; .18 owns tightening policy, .21 activation, not the registry writer |
+| conditions / suppressions | Stable ID, registry kind/subject or goal binding, immutable predicate/source boundary, finite interval, generation, source/ref, label and state; existing approval/attention authority is not replaced by an anonymous bool |
+
+The stable event UUID is UUIDv5 with namespace
+`e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32` and the canonical JSON array
+`["perception-event-v1", source, event_key]` as its name. Source is a registered
+opaque source ID; event_key is its immutable ingestion/occurrence identity
+(max 256 UTF-8 bytes), not observed time alone. Unique source/event-key and
+UUID constraints both apply; a collision or digest mismatch refuses. Replay
+must use the original key, never a newly generated UUID.
+
+The one trusted writer API accepts `(kind, subject, source, event_key,
+expected_generation, observed_at, effective_span, typed_value_or_ref,
+evidence_refs, labels)`. The registry derives the writer and validates type,
+source authority, finite times and permitted kind before DML. A retry with the
+same source/event key and digest returns the same event/receipt; changed bytes
+under that key refuse. CAS loss returns conflict/current generation, never
+last-writer-wins. Successful CAS updates one slot generation and appends its
+transition event/receipt atomically. Stale evidence cannot move a current slot
+backward; late data can append explicitly historical timeline evidence without
+changing present state. Reducer-specific hysteresis belongs to its named owner,
+not a second ingestion or authority API.
+
+Read APIs return state, typed value/ref, source/age/freshness, labels and
+availability reason. A known value past fresh_until reads as unknown with its
+last value separately labelled stale; it is not current knowledge. Configured
+healthy absence, unconfigured producer and all-inputs-unmeasurable are distinct.
+Missing transport/failed producer is not an all-clear. Raw coordinates stay in
+the connector/domain; model place is a named place or elsewhere plus city/country.
+Transition history retains 400 days under the recorded visibility answer;
+existing raw-fix expiry and vitals discoverability are not changed here.
+
+`bu-dhloi1.9` owns representation and restrictive writer roles; Dots
+`bu-jv1moa.17` consumes this exact event/CAS API for owner.place reduction.
+`bu-dhloi1.21` owns clock/modes and actual consumer activation;
+`bu-dhloi1.14` owns system.dep projection; `bu-xxfkhk` owns confirmed expect.*
+feeding. Representation is usable dark without .6 activation. No current
+scheduler/notification/preamble reader changes just because the tables exist.
+
+### S4. Minimal conditions and deterministic evaluator
+
+The first-switch predicate is a tagged AST with leaves `decision(subject_id,
+outcome)`, `owner_input(goal_id,binding_ref)`, `effect_settled(effect_id,
+status_set)`, `at(instant,zone)` and `transition(kind,subject,from,to)`.
+`all`/`any` combine at most16 leaves to depth2; no text expressions, code,
+arbitrary SQL, implicit subscribers or model evaluation. Unknown tags, fields,
+state values, undeclared sources, excessive depth/size (8KiB canonical JSON)
+or a grant/source mismatch refuse before registration. Referenced decision,
+inbox and effect identities must belong to the bound goal/subject.
+
+An instance stores id, canonical predicate/digest, goal/envelope ref, immutable
+source set and grant digest, finite expiry, cursor, generation, current result
+`true/false/unknown`, and state `open/fired/expired/cancelled`.
+`register` checks the current consistent snapshot and returns instance/receipt;
+`evaluate` accepts only trusted source events and advances the durable cursor;
+`consume_fire` claims the unique fire intent, not an arbitrary launch command.
+These APIs are deterministic infrastructure, not LLM tools to widen sources.
+
+Evaluation joins labels and records event identity, snapshot generation,
+result/reason and cursor in the same transaction as `open -> fired` and the
+outbox intent. Duplicate/reordered/replayed events cannot re-fire. Unknown or
+unmeasurable inputs evaluate unknown, never false/healthy. `all` requires all
+true; `any` requires one true; otherwise known false wins only when logically
+sufficient, and remaining unknown stays explicit. Transition leaves ignore
+real-time events older than10 minutes; historical evidence remains recorded.
+An `at` leaf crossed by a clock jump fires once late before expiry, never
+replays each missed tick. Time resolves from owner clock, configured home zone,
+then UTC, with source/age; no hidden local-machine/Singapore timezone default.
+
+Restart resumes its durable cursor and replays to the same unique intent.
+Evaluator unavailability retains work and reports `system.dep.conditions`;
+no guessed wake or fake healthy snapshot. Scheduler delivers trusted time
+occurrences; it does not introduce another expression language. Watches and
+advanced temporal composition are M7, not first-switch activation.
+
+### S5. Starting context, read purity and owner-fast profile
+
+`context.search` accepts bounded `query`, opaque entity anchors, `as_of`,
+optional `[since,until)` window, regions/kinds and `k`; grants and labels are
+server-derived. Version1 engineering defaults are query1024 UTF-8 bytes,
+16 anchors,16 regions/kinds, k1–20,1000ms per-domain and2000ms total deadline,
+and4096 tokens for the complete packet. Effective finite positive limits are
+snapshotted from runtime_config with the request; missing/invalid limits refuse.
+These are bounded initial settings, not measured latency claims or authority.
+Budget changes cannot widen source/category permissions.
+
+The starting envelope has version, goal/epoch/plan, immutable lead-policy and
+owner-profile digests, effective clock/source, authorized situation, open
+loops/decisions, recall items, domain index, budget/deadline snapshot,
+availability map and digest. Stable policy/profile/contract bytes precede the
+cache breakpoint; all dynamic evidence follows it. Children receive only the
+brief and narrowed relevant envelope, not daemon/domain session composition.
+Read calls may append their own immutable ledger receipt but never update fact
+reference_count, last_referenced_at, authority, rule priority or ranking.
+Any later read-history ranking fold needs its separately adopted owner-only,
+unexposed contract; this spec does not enable one.
+
+Recall uses rank-level fusion, not unrelated raw domain scores. Each whole
+item includes source/region/reference, age, category and authority/taint label,
+conflict-set ID and source evidence. Order of credence is explicit owner
+correction/endorsement, owner-authored evidence, domain-sourced evidence, then
+attributed third-party/unknown; this orders display, never grants trust or
+silently resolves conflicts. Timeout marks that domain degraded; all-failed
+is unavailable, not an empty success. Budget truncation omits whole items with
+reason/count, never clips a reference or label away from its body.
+
+Only owner-authored text and otherwise permitted typed data may inline; other
+material stays an opaque broker-resolved reference. Resolving it still joins
+its actual D6 label; a shape does not make a typed-value exception. Exposed and
+third-party goals get only owner availability (`busy_until` or unknown), never
+place/health/routine details. Default recall excludes all six sensitive
+categories. Explicit search is grant/category checked and its owner card names
+the categories; it cannot bypass the availability-only situational view,
+private custody, exposure restrictions or raw-coordinate exclusion.
+
+`owner-fast` is a versioned interactive profile, not a new role or runtime.
+Its fields are profile ID/revision, lead role, stable policy/profile digests,
+finite runtime-config budget refs and eager capability IDs. Eager IDs are
+chosen from replay and intersected with the current grant; they never grant.
+Model Resolution's existing role/tier/priority/eligibility and escalation
+rules remain unchanged. Reserve one owner-origin slot within total capacity
+five; waiting releases a slot, recovery reclaims through the lease fence.
+Content-free timings correlate ingest, admission, queue, runtime start,
+first-visible sign, first answer word and final delivery; absent timing is
+unknown, not zero. First switch records comparable median/p95 baselines only.
+
+### S6. Owner delivery, acknowledgement and recovery
+
+One canonical ledger subject references exactly one existing effect/decision,
+goal answer or pending ask; it is not another approval authority. Fields are
+subject UUID/kind, owner entity, source goal/effect or ask ref, immutable content
+and action digests, generation, state `pending/delivered/acknowledged/decided/
+cancelled/expired/unknown`, typed urgency/holding-reason slots and receipt refs.
+Presentation rows carry subject/generation, authenticated route/surface,
+provider delivery ref, retry key and state `pending/sent/failed/unknown/retracted`.
+Many presentations share one canonical decision/ack. Recipients come from the
+live owner identity and trusted route, never model-provided surface text.
+
+An action token binds subject, action, exact argument/recipient digest,
+owner/surface, generation, nonce and finite expiry; store only its verifier.
+Tokens use an unpredictable 256-bit nonce and SHA256 verifier; tokens and
+provider IDs are not telemetry or push payload. A token is not authentication.
+The authenticated callback preserves the existing owner/route allowlist,
+auth-before-body/pool and CSRF/Origin contract, validates every binding and the
+current subject fence. Subject CAS, effect approval/decision and receipt are atomic; duplicate
+callbacks return the same outcome. Ack is not approval. Changed arguments,
+wrong owner/surface, expired/stale token or generation refuses without effect.
+Winning action invalidates every competing presentation token; attempt
+retraction, but failed retraction leaves harmless stale UI, never a live action.
+
+Retry uses unique `(subject,surface,generation)`. Ambiguous provider send stays
+unknown with a receipt and is reconciled, never blindly retried as new success.
+Initial answers use the original reply target. Desk-first 3-minute fallback,
+presence-based selection, streaming and advanced Why/push surfaces remain
+later-owned. A push interface may carry only a fixed non-sensitive cause and
+opaque subject reference; no title, health/location value, message, URL action
+token or credential. Opening it requires normal owner authentication before
+subject details/actions. Urgency, step-up and platform provisioning remain
+.18/.22/operational policy, not a grant from this schema.
+
+`bu-dhloi1.13` is the sole delivery identity/token writer and migrates existing
+RFC0023 approval-delivery, attention and decision presentation references with
+an explicit source-to-subject map. Shadow reads prove parity before the atomic
+sole-writer switch; no permanent second callback family or double dispatch.
+Rollback disables new delivery/actions, preserves verifier generations,
+receipts and old-ID mappings, and never makes stale callbacks executable.
+
+Capability health (.14) uses `available/degraded/blind/down/held/unconfigured`
+plus source age/generation and closed cause IDs `oauth_revoked`,
+`credential_missing`, `provider_unavailable`, `domain_unreachable`,
+`signal_unmeasurable`, `policy_held`, `not_configured`, `unknown`.
+An unreadable projection returns `state=null, availability=unknown`; this is
+not an extra healthy state or an exception string. Unreadable projection is
+unknown: preserve normal authorization and underlying call checks, never
+report healthy or grant access. Known down returns capability_unavailable
+without waiting for a timeout. One generation-CAS reducer publishes system.dep
+through .9. Terminal failed/budget-exhausted/admission-refused owner asks with
+no delivery create one model-free cause line and one pending-ask ID. Recovery
+coalesces one Run/Drop subject; Run admits new work under current rules once,
+Drop never runs it, and age over 24h expires dropped(stale), not auto-replay.
+
+### S7. Gateway and later static-key interface
+
+One reviewed git workload profile declares authenticated workload identity,
+internal peers, external DNS hostnames and ports. There is no runtime widening
+API or model-supplied identity header. Host/SNI/request identity must agree;
+refuse IP literals, metadata, private/link-local/LAN/tailnet destinations and
+undeclared endpoints, including every redirect (3xx is a refusal, not an
+implicit second host grant). DNS/connection rebinding must not turn a declared
+public host into a forbidden address. Multiple additive network policies must
+not leave another open path. Gateway outage denies external egress, records a
+content-free cause, and preserves connector cursors with finite backoff.
+Audit includes workload/host/byte counts/verdict, never payload, token or header.
+
+Later static-key support requires an explicitly registered non-OAuth endpoint,
+separate workload profile and credential handle, gateway-side custody and
+provider-specific header placement. Models and requesting workloads receive no
+key; logs, errors and redirects cannot disclose it. Missing eligibility or
+custody proof refuses. There is no fallback to a caller key, arbitrary URL,
+other workload's credential, live host addition or analysis-host admission.
+`bu-dhloi1.15` owns gateway enforcement; `bu-dhloi1.25` owns later static-key
+implementation/provisioning conditions. These interfaces authorize no secret
+read, credential use, host change, deployment or research execution.
+
+### S8. Two cutovers and closure boundaries
+
+The first switch includes conservative labels, representation and named
+perception/clock/reducer successors, waiting/epochs, minimal evaluator,
+read-pure context, owner-delivery identity, catalog/health interfaces,
+owner-fast baseline measurement and declared gateway enforcement. Representation
+may land dark before its producer/reader activation; existing .17 context,
+ASR and selection/approval contracts stay in force until their named successor.
+
+M7 separately owns typed boundary enforcement and its held semantic decision,
+decision-set UX/approval, streaming/Stop, live capability selection, advanced
+conditions/watches, procedure distillation and healing. Current per-event
+approval semantics and their decision-set/wait-envelope guards are retained;
+this split does not suspend them while M7 builds its richer surface. M7
+absolute latency targets are no-tool 4s median/10s p95, first-visible 1s p95 and
+first-word 2s median/4s p95; no first-switch performance acceptance is inferred
+from those targets. Exposure-causes/approval observations have no invented
+numeric tap ceiling.
+
+Before .19 closes, independent normative review and reserved exact-text
+adoption identify the immutable adopted commit, downstream owners consume that
+commit, and the coordinator applies the candidate requirement/source/boundary
+map to existing M6 `bu-enbrs2` after verifying real edges. M6 cannot archive or
+release the old contract while selected first-switch successors are absent,
+and must not depend on M7/later consumers. A source draft, green authoring
+checks or an owner direction alone is not that handoff, actual runtime proof,
+release approval or operational authorization.
+
 
 ## Alternatives considered
 

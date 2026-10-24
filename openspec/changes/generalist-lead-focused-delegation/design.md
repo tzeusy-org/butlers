@@ -86,3 +86,29 @@ use multi-WHEN scenarios, a MODIFIED block repeats its baseline ID, and
 REMOVED blocks carry `Reason`/`Migration` rather than `ID`/`Source`/`Scope`.
 Backfilling IDs across the baseline is left to the post-switch RFC and spec
 reorganization.
+
+## Shared contract authority and source composition (2026-10-24)
+
+The proposed RFC0038 S0–S8 section is the single field/state/API home. New
+independently named ADDED blocks reference it rather than replacing existing
+Model Resolution, goal008, adapter, origin or sandbox clauses. The complete
+old Model Resolution paragraph and Source line remain byte-identical. The
+closed source baseline and protected-span evidence are recorded in
+[shared-contract-coverage.md](shared-contract-coverage.md).
+
+PR4872's unmerged D20 source is not copied, repaired or adopted. Its existing
+replacement spans and insertion gaps remain unchanged. .19's fresh requirement
+IDs do not reuse its research identity or current017/018 owner contracts.
+Independent structural additions preserve existing roles/grants/eligibility;
+owner-fast is a profile, not a new role or fallback. Any future union must keep
+all adopted research bytes and its separate enqueue reservation. Its
+pre-existing identity collision remains foreign custody, not a .19 permission
+or a new global gate.
+
+The source ledger is actual switchboard/sw_047 → sw_050 → sw_051, including
+immutable attempt/source-to-canonical decision bindings and terminal
+recorded_without_goal dispositions; held sw_048/sw_049 are not delivered. Migration/producers/replay/
+shadow readers/enforcement are serialized as RFC S2/S3, with sole mutation
+owners and no permanent parallel writer or unsafe rollback. The coverage table
+keeps selected first-switch source and M6 gates distinct from M7/later owners;
+.19 cannot close on unbuilt behavior or unrecorded adoption.

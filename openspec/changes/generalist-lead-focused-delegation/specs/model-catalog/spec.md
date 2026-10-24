@@ -118,3 +118,24 @@ Scope: v1-mandatory
 - **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
 - **THEN** the initial resolver load-balances across them using a per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
 - **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter)
+
+## ADDED Requirements
+
+### Requirement: Owner-fast is a bounded lead profile
+The catalog and runner SHALL implement S5's versioned owner-fast profile, grant-intersected eager IDs, reserved capacity and correlated timing fields. This SHALL add no role, runtime, fallback or eligibility exception and SHALL preserve the complete existing Model Resolution requirement and scenarios.
+
+ID: REQ-model-catalog-005
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S5; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: An eager profile names an ungranted capability
+- **WHEN** an owner turn uses owner-fast
+- **THEN** only the intersection is presented and no additional capability becomes listed or callable
+
+#### Scenario: Owner and background work contend
+- **WHEN** background work fills the eligible shared capacity and an owner ask arrives
+- **THEN** one owner-origin slot is reserved inside total capacity five; waiting/recovery cannot leak or exceed slots
+
+#### Scenario: A latency segment is absent
+- **WHEN** a runtime/transport has no first-visible or first-word evidence
+- **THEN** that segment is unknown, with available baseline timings retained and no streaming or M7 threshold pass claimed

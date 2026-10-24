@@ -213,3 +213,43 @@ Scope: v1-mandatory
 #### Scenario: Unexposed owner notifications are unchanged
 - **WHEN** an unexposed invocation calls `notify` for the owner
 - **THEN** the notification is delivered with its existing formatting and link behavior
+
+## ADDED Requirements
+
+### Requirement: Owner notifications use canonical delivery subjects
+Owner notify and reply integration SHALL use S6's one subject/many presentations, route identity, generation/token and honest receipt interface. Existing per-event approvals, RFC0023 recovery, inert links and reply delivery accounting SHALL remain in force until their named successor is verified and atomically activated.
+
+ID: REQ-core-notify-036
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S6; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: One decision appears on two surfaces
+- **WHEN** the owner decides the same subject on dashboard and Telegram concurrently
+- **THEN** one canonical action wins, all other tokens become stale, and failed retraction leaves no executable stale action
+
+#### Scenario: Provider delivery is ambiguous
+- **WHEN** the transport cannot prove whether a send reached its provider
+- **THEN** the presentation stays unknown with a receipt, not delivered or blindly resent under a new identity
+
+#### Scenario: No successor is activated
+- **WHEN** new delivery tables exist dark
+- **THEN** the existing delivery writer remains authoritative with no double dispatch or premature retired callback
+
+### Requirement: Recovery prompts never silently rerun failed asks
+Capability health and owner-failure handling SHALL use S6 typed dependency/cause/pending-ask and Run/Drop semantics through the canonical owner subject. Model-free failure lines and push slots SHALL NOT imply a heal action, urgency decision, deployment or automatic retry.
+
+ID: REQ-core-notify-037
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S6; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: An owner failure has no delivery
+- **WHEN** an owner ask ends failed/budget_exhausted/admission_refused without a delivery receipt
+- **THEN** one cause line and pending-ask identity are recorded; recovery coalesces one Run/Drop card
+
+#### Scenario: Run races Drop or an old retry
+- **WHEN** a duplicate/stale callback or an ask older than24h is acted on
+- **THEN** subject fencing admits new work at most once for a valid Run; Drop and dropped(stale) never rerun
+
+#### Scenario: Health projection is unreadable
+- **WHEN** dependency status cannot be read
+- **THEN** status remains unknown and normal call/authorization checks remain, with no fabricated healthy result or bypass

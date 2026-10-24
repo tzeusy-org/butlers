@@ -41,3 +41,15 @@
 
 The RFC corpus rewrite (owner decision 10) runs after this change is archived, so it is not a task
 here; it is tracked as `bu-bda935`, deferred until 4.2 is done.
+
+## 5. Proposed shared-contract conversion (all pending)
+
+These pending tasks do not alter the completed historical tasks above or claim
+new runtime delivery. Requirements and exact ownership are in
+[shared-contract-coverage.md](shared-contract-coverage.md).
+
+- [ ] 5.1 Independently review the complete RFC S0–S8 and eleven capability delta interfaces, including field/state/API and every failure/retry/concurrency/rollback scenario; record reserved exact-text adoption and immutable adopted commit.
+- [ ] 5.2 Hand the exact adopted requirement/owner/source map to .6–.15 and named perception, delivery and gateway successors; coordinator updates existing M6 candidate coverage and verifies real predecessor edges before .19 closure.
+- [ ] 5.3 Deliver selected first-switch schemas/roles, labels/producers, original-identity replay, shadow reader parity and one sole-writer/enforcement transition in their existing source owners; retain all migrated-Postgres and current contract evidence.
+- [ ] 5.4 Qualify the exact M6 candidate against the selected first-switch map and existing release/approval gates; do not archive/release absent source successors or depend on M7/later consumers.
+- [ ] 5.5 Retain separate M7 typed/cited holds and later decision-set, streaming, speech, surface, watch and healing obligations; none is activated or ticked by authoring this contract.
