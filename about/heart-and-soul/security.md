@@ -383,7 +383,8 @@ The principle: **services get the minimum network access they need and
 nothing more.** The network, firewall, and port-binding contract lives in
 [RFC 0008](../legends-and-lore/rfcs/0008-deployment-network-security.md).
 Containers receive only the environment they declare, and goal invocations run
-in the session sandbox with only `PATH` and their model credential.
+in the session sandbox with only `PATH`, their model credential, their MCP config
+and adapter-owned pointers to files staged inside the sandbox.
 
 ### Principles
 

@@ -121,7 +121,7 @@ surviving scenarios unless this change removes the requirement.
 
 | Conflict | Disposition | Owner |
 | --- | --- | --- |
-| REQ-core-spawner-010 and RFC 0038 D3 allow a goal invocation's environment to hold only `PATH`, the staged credential and the MCP config. The Gemini adapter also sets non-secret file pointers (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_SYSTEM_MD`). | Owner decision: admit adapter-owned, non-secret file pointers, or keep Gemini out of the goal runtime until it can run without them. Until that decision, the current text stands. | owner decision ([HOLD]) |
+| REQ-core-spawner-010 and RFC 0038 D3 allow a goal invocation's environment to hold only `PATH`, the staged credential and the MCP config. The Gemini adapter also sets non-secret file pointers (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_SYSTEM_MD`). | Amended. The owner admitted adapter-owned, non-secret pointers to files staged inside the invocation's sandbox (`bu-u5euwb.22` = A, 2026-10-24T14:30Z). D3 and REQ-core-spawner-010 now admit them, and secrets stay limited to the staged model credential and the invocation's own MCP config. Each adapter still proves D3 eligibility at the switch (`bu-enbrs2`). | `bu-u5euwb.26` |
 | `tool_exposure_policy` in runtime config has no consumer, and RFC 0038 does not name it. | Keep it or delete it at the switch. Either way, the runtime-config card's copy changes to match. | `bu-ondtw.8` |
 
 ## Frozen-path beads

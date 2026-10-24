@@ -263,9 +263,14 @@ listener; the session host itself exposes no inbound port to the dashboard.
 Each invocation runs in its own kernel-enforced filesystem and process domain
 (Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
 host must permit unprivileged user namespaces) holding only `PATH`, its staged
-model credential and its MCP config. One invocation cannot read another's
-token or files, and the whole descendant domain is terminated before results
-are accepted.
+model credential, its MCP config and adapter-owned file pointers. A file pointer
+is an environment variable the runtime adapter sets whose value is only the path
+of a file or directory staged inside that invocation's own domain, such as
+Gemini's `GEMINI_SYSTEM_MD` and `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. A pointer's
+value is never secret, and the files it names hold no secret other than the
+staged model credential and the invocation's own MCP config. One invocation cannot
+read another's token or files, and the whole descendant domain is terminated
+before results are accepted.
 
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
 MCP servers, and no provider-hosted tools (server-side web search or fetch,
@@ -1324,6 +1329,7 @@ hard-cutover gates or alter the private-custody boundary.
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |
 
 ## Proposed shared switch and M7 interfaces (2026-10-24)
 
