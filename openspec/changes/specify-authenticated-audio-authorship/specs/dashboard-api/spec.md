@@ -27,8 +27,3 @@ Scope: v1-mandatory
 - **WHEN** the owner submits a clip identified as room, forwarded or quoted material rather than their own recording
 - **THEN** authentication does not remove its third-party provenance or exposure
 - **AND** a missing source binding does not turn an arbitrary upload into an authenticated owner recording
-
-## Source References
-
-- RFC 0038 D5/D6/D18; `docs/identity_and_secrets/dashboard-owner-auth.md`
-- Owner decision `bu-2utmy5`, dashboard recording scope only

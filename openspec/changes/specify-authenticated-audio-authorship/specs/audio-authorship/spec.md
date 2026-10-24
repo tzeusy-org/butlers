@@ -1,8 +1,3 @@
-## Purpose
-
-Preserve authenticated source authorship through a narrowly qualified speech-to-text transform,
-without letting transcript content or transform output grant authority to itself.
-
 ## ADDED Requirements
 
 ### Requirement: Instruction-free ASR preserves only authenticated source authorship
@@ -99,9 +94,3 @@ Scope: v1-mandatory
 - **WHEN** an owner audio file exceeds the configured finite byte, duration or execution bound
 - **THEN** processing ends with its explicit non-success outcome and owned cleanup rather than unbounded transcription
 - **AND** changing a bound later does not change the source's authorship rules or create a second goal for an already accepted submission
-
-## Source References
-
-- RFC 0038 D5/D6/D18; RFC 0017 owner-channel authorization
-- Owner decision `bu-2utmy5`, 2026-10-20 14:37Z; exact amendment adoption remains pending
-- `about/heart-and-soul/vision.md`: deterministic infrastructure and runtime-enforced authority

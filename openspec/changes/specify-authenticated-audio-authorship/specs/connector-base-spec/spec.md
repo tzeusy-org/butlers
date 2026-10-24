@@ -26,8 +26,3 @@ Scope: v1-mandatory
 #### Scenario: Ordinary envelopes remain compatible
 - **WHEN** a message has no evaluated transcription attempt
 - **THEN** its transcription outcome field remains absent and its existing text, attachment, deduplication and origin handling is unchanged
-
-## Source References
-
-- RFC 0038 D5/D6/D18; REQ-connector-base-spec-004
-- `specify-telegram-voice-note-transcription-contract`, Transcription Outcome Payload Field

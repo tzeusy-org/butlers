@@ -122,3 +122,33 @@ accepted identities/exposure and stop admitting unproved owner-audio input.
   finite cleanup, privacy and truthful non-success; no transport implementation in this task.
 - Modality decision: owner `bu-2utmy5`, 2026-10-20 14:37Z. Exact text adoption remains pending;
   neither this author nor an independent conformance review substitutes for it.
+
+## Relocated specification presentation notes
+
+These unchanged notes are retained here outside the delta-operation specification files.
+
+### Audio authorship purpose
+
+Preserve authenticated source authorship through a narrowly qualified speech-to-text transform,
+without letting transcript content or transform output grant authority to itself.
+
+### audio-authorship source references
+
+- RFC 0038 D5/D6/D18; RFC 0017 owner-channel authorization
+- Owner decision `bu-2utmy5`, 2026-10-20 14:37Z; exact amendment adoption remains pending
+- `about/heart-and-soul/vision.md`: deterministic infrastructure and runtime-enforced authority
+
+### connector-base-spec source references
+
+- RFC 0038 D5/D6/D18; REQ-connector-base-spec-004
+- `specify-telegram-voice-note-transcription-contract`, Transcription Outcome Payload Field
+
+### connector-telegram-bot source references
+
+- RFC 0017; RFC 0038 D5/D6/D18
+- Existing `specify-telegram-voice-note-transcription-contract` transport scope; `bu-r0dsz`
+
+### dashboard-api source references
+
+- RFC 0038 D5/D6/D18; `docs/identity_and_secrets/dashboard-owner-auth.md`
+- Owner decision `bu-2utmy5`, dashboard recording scope only

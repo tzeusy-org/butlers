@@ -26,8 +26,3 @@ Scope: v1-mandatory
 #### Scenario: Legacy or unsupported media has no qualified transform
 - **WHEN** the dark transport does not support the media type or returns a failed or unavailable transform
 - **THEN** its existing attachment, caption and explicit failure/fallback behavior remains intact, without a fabricated owner transcript
-
-## Source References
-
-- RFC 0017; RFC 0038 D5/D6/D18
-- Existing `specify-telegram-voice-note-transcription-contract` transport scope; `bu-r0dsz`
