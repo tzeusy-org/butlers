@@ -131,7 +131,12 @@ async def insight_pool(migrated_db_url: str):
         await pool.execute("""
             TRUNCATE insight_amendments, insight_feedback, insight_engagement,
                 insight_candidates, insight_cooldowns, insight_settings,
-                attention_daily_rollup, public.user_context
+                attention_daily_rollup
+        """)
+        await pool.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
         """)
         await _set_owner_attention_policy(
             pool,

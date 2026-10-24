@@ -139,7 +139,11 @@ class TestDeliveryPreferencesDB:
             migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
         )
         await p.execute("TRUNCATE deferred_notifications, delivery_preferences CASCADE")
-        await p.execute("TRUNCATE public.user_context")
+        await p.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
         await p.execute("""
             INSERT INTO public.approvals_policy
                 (id, quiet_start_hour, quiet_end_hour, timezone)
