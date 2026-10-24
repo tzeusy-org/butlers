@@ -2,13 +2,11 @@
 
 ### Requirement: Multi-Runtime Adapter Support
 Runtime launches SHALL delegate to a `RuntimeAdapter` abstract base class, both for the goal invocations that the goal runner launches on the session host and for the engineering executors that the Spawner launches. Four concrete adapters are registered: `claude` (ClaudeCodeAdapter via subprocess), `codex` (CodexAdapter via subprocess), `gemini` (GeminiAdapter via subprocess), and `opencode` (OpenCodeAdapter via subprocess). Each adapter SHALL implement `invoke()`, `build_config_file()`, `parse_system_prompt_file()`, `binary_name`, `create_worker()`, and `reset()`.
-
 For a lead or child goal invocation, an adapter SHALL disable every runtime built-in tool (shell, filesystem, web fetch, local MCP servers) and every provider-hosted tool, SHALL NOT pass a permission- or sandbox-bypass flag, and SHALL use a strict MCP config that names only the broker. A runtime and model tuple whose adapter cannot prove these restrictions SHALL be ineligible for lead or child goal invocations. Engineering executors keep their existing sandboxed contracts.
-
 A research invocation SHALL use the separate RFC 0038 D20 profile, with exactly one provider-hosted search tool, every runtime built-in tool disabled, no MCP servers and no broker authority. The runner SHALL launch it only on the separate research host and only on a runtime/model tuple proven to honor the broker-selected live or cached mode and required limits and audit evidence. Version 1 SHALL admit only Codex research tuples; inability to prove the profile SHALL refuse launch. In the existing session-host requirements and scenarios below, an unqualified goal invocation means a lead or child; a research invocation follows this distinct D20 profile and has no MCP configuration.
-
 The launcher (the goal runner or the Spawner) SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) keyed by runtime type. When model resolution selects a runtime type different from the TOML-configured adapter, the launcher instantiates the required adapter on demand via `get_adapter(type).create_worker()` and caches it for reuse.
 
+ID: REQ-core-spawner-015
 Source: RFC 0038 D3, D10, D16, D18 and D20
 Scope: v1-mandatory
 
