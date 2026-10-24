@@ -105,10 +105,15 @@ async def test_projection_refuses_missing_mode_gate_and_partial_resource_marks(m
 
 async def test_default_projection_preserves_final_schema_without_mutable_aliases(monkeypatch):
     monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
-    final = await _roster_catalog("messenger")
+    final = await _roster_catalog("relationship")
     from butlers.capability_broker.catalog import project_catalog
 
-    first = project_catalog(final, domain="messenger")
+    messenger = await _roster_catalog("messenger")
+    messenger_projection = project_catalog(messenger, domain="messenger")
+    assert "calendar_list_calendars" not in messenger
+    assert "calendar_respond" in messenger
+    assert all(c.name != "calendar_list_calendars" for c in messenger_projection.capabilities)
+    first = project_catalog(final, domain="relationship")
     read = next(c for c in first.capabilities if c.name == "calendar_list_calendars")
     assert final[read.name].approval_policy["mode"] == "default"
     assert not read.always_per_event and not read.approval_required
@@ -117,7 +122,7 @@ async def test_default_projection_preserves_final_schema_without_mutable_aliases
     read.input_schema["properties"]["injected"] = {"type": "string"}
     assert "injected" not in final[read.name].input_schema["properties"]
     again = next(
-        c for c in project_catalog(final, domain="messenger").capabilities if c.name == read.name
+        c for c in project_catalog(final, domain="relationship").capabilities if c.name == read.name
     )
     assert "injected" not in again.input_schema["properties"]
     owner_final = await _roster_catalog("relationship")
@@ -137,11 +142,11 @@ async def test_default_projection_preserves_final_schema_without_mutable_aliases
 async def test_actual_broker_call_consumes_projection_and_rejects_changed_catalog(monkeypatch):
     """Real service/ledger consumer, controlled rows and domain (no PG/receipt claim)."""
     monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
-    final = await _roster_catalog("messenger")
+    final = await _roster_catalog("relationship")
     from butlers.capability_broker.catalog import project_catalog
     from tests.capability_broker.test_broker import build
 
-    projected = project_catalog(final, domain="messenger")
+    projected = project_catalog(final, domain="relationship")
     capability = next(c for c in projected.capabilities if c.name == "calendar_list_calendars")
     broker, connection, authority, domains, token = build(
         capability=capability, grant=Grant(capability.identity)

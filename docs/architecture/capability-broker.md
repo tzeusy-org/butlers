@@ -37,8 +37,25 @@ generation digest is not substituted for that fleet pin. There is no cache,
 pool acquisition or network request under this reader. Retirement, incomplete
 publication or changed definitions refuse rather than reusing an older view.
 
-This adapter supports ordinary reads whose metadata declares no recipient or
-inherited-party condition. It supplies no standing rule, owner default or
+This adapter supports reads and records whose complete metadata declares no
+recipient or inherited-party condition. Health's real `measurement_log`
+registration is a recipient-free, non-owner-authority record. It reaches the
+existing current-Grant, exposure, budget, duplicate and Stop checks; exposed
+owner-authority records still refuse. Ordinary handler acknowledgement remains
+UNKNOWN without an authoritative owning effect receipt.
+
+A durable `park_only` Grant still requires enabled owning approvals. Health's
+checked-in approvals section currently omits `enabled=true`, so its mandatory
+PARK path refuses before charging. Positive software and authored PostgreSQL
+controls use an explicit enabled test configuration through the actual finalizer,
+not a deployment change or a synthesized descriptor. The purpose-bound owning
+consumer stores the exact call, waits for the owner decision and executes the
+stored original or edited arguments at most once after committed consumption.
+Ambiguous acknowledgement never grants another execution. Calendar's separate
+canonical prepared-command integration remains unfinished; no raw Calendar PARK
+or execution success is implied.
+
+The adapter supplies no standing rule, owner default or
 actuation risk. Calls requiring those policy facts and all selection-bound
 resource checks refuse until their actual owning producers are integrated.
 Listing an otherwise granted definition does not promise its policy-dependent

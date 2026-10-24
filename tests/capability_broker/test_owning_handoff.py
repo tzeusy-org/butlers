@@ -772,3 +772,224 @@ async def test_actual_approved_abandon_preserves_gate_event_and_execution_fences
         assert store.gate["phase"] == "negative_terminal" and store.gate["state_version"] == 3
         assert store.gate["approved_args_digest"] == before[1]["approved_args_digest"]
         assert len(store.events) == 1 and store.events[0][0] == "action_abandoned"
+
+
+@pytest.mark.parametrize("edited,lost_ack", [(False, False), (True, False), (True, True)])
+async def test_real_health_park_only_replays_stored_original_once(monkeypatch, edited, lost_ack):
+    """Real registration/Broker/owning consumer; SQL and private peer are software controls."""
+    import asyncio
+    import copy
+    import time
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    from butlers.capability_broker.catalog import project_catalog
+    from butlers.capability_broker.contracts import BrokerRefused, Decision, Reservation
+    from butlers.capability_broker.handoff import sign_handoff, verify_handoff
+    from butlers.capability_broker.ledger import BrokerLedger
+    from butlers.capability_broker.transport.protocol import identity, reply, request
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from butlers.modules.approvals.models import ActionStatus
+    from tests.capability_broker.test_published_catalog import registered_health_record_broker
+    from tests.modules.approvals.test_goal_control import DurableStore
+
+    class HealthStore(DurableStore):
+        def __init__(self):
+            super().__init__()
+            self.lock = asyncio.Lock()
+            self.in_transaction = False
+
+        @asynccontextmanager
+        async def transaction(self):
+            async with self.lock:
+                self.in_transaction = True
+                try:
+                    async with super().transaction():
+                        yield self
+                finally:
+                    self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "current_schema()" in sql and "current_user" in sql:
+                return dict(
+                    schema="health",
+                    role="butler_health_rw",
+                    unsafe=False,
+                    schemas=["pg_catalog", "health", "public"],
+                )
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(args[1]),
+                    park_authorization_digest=args[2],
+                    park_call_id=args[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            if "SET phase='dispatch_intent'" in sql:
+                if self.gate["dispatch_intent_id"] is not None:
+                    return None
+                self.gate.update(
+                    phase="dispatch_intent",
+                    dispatch_intent_id=args[1],
+                    dispatch_snapshot_digest=args[2],
+                    dispatch_consumed_at=None,
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            if "SET dispatch_consumed_at=" in sql:
+                if self.gate["dispatch_consumed_at"] is not None:
+                    return None
+                self.gate.update(
+                    dispatch_consumed_at="software-observed-consume",
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return {"effect_id": args[0]}
+            return await super().fetchrow(sql, *args)
+
+    (
+        broker,
+        conn,
+        domains,
+        token,
+        _,
+        catalog,
+        originals,
+        facts,
+    ) = await registered_health_record_broker(monkeypatch, park_only=True, approvals_enabled=True)
+    store = HealthStore()
+    store.goal_id = conn.goal
+    original = {"type": "weight", "value": 72.5}
+    store.arguments, store.digest = original, arguments_digest(original)
+    now = int(time.time())
+    broker.clock = lambda: now
+    op = GoalDispatch(
+        store,
+        "health",
+        catalog,
+        originals,
+        {broker.signer.kid: broker.signer.private_key.public_key()},
+        clock=lambda: now,
+    )
+    peer = SimpleNamespace(role="broker-control", domain="health")
+    seen = []
+
+    async def exchange(self, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        seen.append(copy.deepcopy(value))
+        store.action_id = UUID(value["identity"]["action_id"])
+        return await op(request(value, "health"), peer)
+
+    monkeypatch.setattr(PrivateClient, "call", exchange)
+    client = PrivateClient(
+        TransportConfig(
+            "https://localhost:4200/mcp",
+            PeerPolicy("owning-service", "health", frozenset({"DNS:localhost"})),
+        ),
+        None,
+    )
+    broker.approvals = PrivateApprovals({"health": client})
+    try:
+        result = await broker.call(conn.goal, token, "health__measurement_log", original)
+    finally:
+        await client.aclose()
+    assert result.status == "parked" and conn.used == 1 and facts == [] and domains.calls == []
+    parked = seen[0]
+    proof = verify_handoff(
+        parked["handoff"], keys=op.keys, audience="health", purpose="PARK", now=now
+    )
+    assert proof.grant == conn.grants[0] and proof.grant.park_only
+    assert proof.central_rule_match is False and store.row["tool_args"] == original
+    assert store.row["invocation_id"] == conn.invocation
+    assert store.gate["park_call_id"] == UUID(proof.payload["d7"]["call_id"])
+    async with conn.transaction():
+        principal = await BrokerLedger(conn).authenticate(conn.goal, token)
+    cap = next(
+        c
+        for c in project_catalog(catalog, domain="health").capabilities
+        if c.identity == "health__measurement_log"
+    )
+    reservation = Reservation(
+        principal,
+        cap,
+        Decision(Disposition.PARK),
+        UUID(proof.payload["d7"]["call_id"]),
+        result.effect_id,
+        store.digest,
+        conn.grants[0],
+    )
+
+    def envelope(purpose, res=reservation, version=None):
+        return request(
+            {
+                "protocol": "broker-approvals-v2",
+                "operation": purpose,
+                "request_id": str(uuid4()),
+                "identity": parked["identity"],
+                "handoff": sign_handoff(
+                    broker.signer,
+                    res,
+                    purpose=purpose,
+                    issued_at=now,
+                    original_args_digest=store.digest,
+                    approval_ref=str(store.action_id) if version is not None else None,
+                    snapshot_version=version,
+                ),
+            },
+            "health",
+        )
+
+    # Pending state cannot execute, even with a genuine signed request.
+    with pytest.raises((ValueError, BrokerRefused)):
+        await op(envelope("SNAPSHOT"), peer)
+    assert facts == []
+    if edited:
+        store.row["tool_args"] = {"type": "weight", "value": 73.0}
+    await op.owner.transition(
+        identity(parked["identity"]),
+        target_status=ActionStatus.APPROVED,
+        decided_by="human:owner",
+        event_actor="owner",
+        event_reason="record",
+    )
+    snap_request = envelope("SNAPSHOT")
+    snap = reply(await op(snap_request, peer), snap_request)["receipt"]
+    assert snap["call"]["args"] == store.row["tool_args"] and facts == []
+    # The same production validator used by central approved preparation still
+    # resolves the edited snapshot against the complete current publication.
+    async with conn.transaction():
+        checked, decision = await BrokerLedger(conn).resolve_call(
+            principal,
+            cap.identity,
+            snap["call"]["args"],
+            arguments_digest(snap["call"]["args"]),
+            broker.authorities,
+        )
+    assert checked == cap and decision.disposition is Disposition.PARK
+    approved = replace(
+        reservation,
+        call_id=uuid4(),
+        args_digest=arguments_digest(store.row["tool_args"]),
+        decision=Decision(Disposition.DISPATCH),
+    )
+    claim = envelope("CLAIM", approved, snap["version"])
+    witness = reply(await op(claim, peer), claim)["receipt"]
+    lookup = envelope("WITNESS", approved, snap["version"])
+    assert reply(await op(lookup, peer), lookup)["receipt"] == witness and facts == []
+    execute = envelope("EXECUTE", approved, snap["version"])
+
+    async def invoke():
+        outcome = await op(execute, peer)
+        assert not store.in_transaction and store.gate["dispatch_consumed_at"] is not None
+        if lost_ack:
+            raise ConnectionError("controlled_execute_reply_loss")
+        return outcome
+
+    outcomes = await asyncio.gather(invoke(), invoke(), return_exceptions=True)
+    assert len(facts) == 1 and facts[0]["metadata"]["value"] == (73.0 if edited else 72.5)
+    assert sum(isinstance(v, dict) for v in outcomes) == (0 if lost_ack else 1)
+    assert sum(isinstance(v, ConnectionError) for v in outcomes) == (1 if lost_ack else 0)
+    assert store.gate["dispatch_intent_id"] == UUID(witness["intent_id"])
+    with pytest.raises((ValueError, BrokerRefused)):
+        await op(execute, peer)
+    assert len(facts) == 1 and domains.calls == []

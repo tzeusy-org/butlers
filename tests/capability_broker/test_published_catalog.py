@@ -158,7 +158,11 @@ async def test_missing_selection_recipient_rule_and_risk_authority_is_not_invent
             )
         assert selected.value.reason is Reason.SELECTION
         for changed in (
-            replace(capability, effect_class="record"),
+            replace(
+                capability,
+                effect_class="record",
+                recipient_params=RecipientParameters(("recipient",)),
+            ),
             replace(capability, effect_class="actuate"),
             replace(
                 capability,
@@ -298,3 +302,176 @@ async def test_published_notify_refuses_unavailable_identity_and_foreign_provena
         with pytest.raises(BrokerRefused, match=Reason.POLICY.value):
             await broker.authorities.policy(connection, None, projected.capabilities[0], {})
     assert len(store.current) == len(DOMAINS) and connection.used == 0 and not domains.calls
+
+
+async def registered_health_record(monkeypatch, *, approvals_enabled=False):
+    """Real finalizer/originals and current fleet; DB/embedding are software controls."""
+    from butlers.daemon import ButlerDaemon
+    from butlers.tools.health import measurements
+
+    captured = []
+    finalize = ButlerDaemon._finalize_tool_catalog
+
+    async def capture(daemon):
+        result = await finalize(daemon)
+        captured.append(daemon)
+        return result
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    from tests.contracts import test_tool_authorization_catalog as registration_owner
+
+    load = registration_owner.load_config
+
+    def configured(path):
+        config = load(path)
+        # An explicit test configuration, not current Health deployment/activation.
+        if approvals_enabled:
+            config.modules["approvals"]["enabled"] = True
+        return config
+
+    with monkeypatch.context() as registration:
+        registration.setattr(registration_owner, "load_config", configured)
+        registration.setattr(ButlerDaemon, "_finalize_tool_catalog", capture)
+        final = await _roster_catalog("health")
+    originals = await captured[0]._broker_owning_originals()
+    facts = []
+    owner = uuid4()
+    engine = object()
+    monkeypatch.setattr(measurements, "_get_owner_entity_id", AsyncMock(return_value=owner))
+    monkeypatch.setattr(measurements, "_get_embedding_engine", lambda: engine)
+
+    async def store_fact(pool, **kwargs):
+        assert kwargs["entity_id"] == owner and kwargs["embedding_engine"] is engine
+        facts.append(kwargs)
+        return {"id": uuid4()}
+
+    monkeypatch.setattr("butlers.modules.memory.storage.store_fact", store_fact)
+    return final, originals, facts
+
+
+async def registered_health_record_broker(monkeypatch, *, park_only=False, approvals_enabled=False):
+    final, originals, facts = await registered_health_record(
+        monkeypatch, approvals_enabled=approvals_enabled
+    )
+    broker, conn, domains, token, store, publishers = await current_broker()
+    await publishers["health"].publish(final)
+    conn.grants = (Grant("health__measurement_log", park_only=park_only),)
+    async with conn.transaction():
+        conn.catalog_digest = (await PublishedCatalogProvider().snapshot(conn)).digest
+    return broker, conn, domains, token, store, final, originals, facts
+
+
+async def test_real_health_record_registration_dispatches_original_after_central_commit(
+    monkeypatch,
+):
+    (
+        broker,
+        conn,
+        domains,
+        token,
+        _,
+        final,
+        originals,
+        facts,
+    ) = await registered_health_record_broker(monkeypatch)
+    descriptor = final["measurement_log"]
+    assert descriptor.effect_class == "record" and descriptor.owner_authority is False
+    assert descriptor.recipient_params == RecipientParameters()
+    calls = []
+
+    async def dispatch(reservation, args, assertion, *, idempotency_key):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        assert reservation.selected_grant == conn.grants[0]
+        calls.append(await originals["measurement_log"](**args))
+        return DomainReceipt("unknown")
+
+    monkeypatch.setattr(domains, "dispatch", dispatch)
+    args = {"type": "weight", "value": 72.5, "notes": "explicit owner entry"}
+    result = await broker.call(conn.goal, token, "health__measurement_log", args)
+    assert result.status == "unknown" and result.value is None and result.effect_id is not None
+    assert len(calls) == len(facts) == 1 and calls[0]["value"] == args["value"]
+    assert facts[0]["predicate"] == "measurement_weight"
+    assert facts[0]["metadata"] == {
+        "value": 72.5,
+        "source": "owner_log",
+        "notes": "explicit owner entry",
+    }
+    assert conn.used == 1 and conn.exposed
+    with pytest.raises(BrokerRefused):
+        await broker.call(conn.goal, token, "health__measurement_log", args)
+    assert len(facts) == 1 and conn.used == 1
+
+
+async def test_actual_health_disabled_approvals_refuse_mandatory_park_before_charge(monkeypatch):
+    broker, conn, domains, token, _, final, _, facts = await registered_health_record_broker(
+        monkeypatch, park_only=True
+    )
+    assert final["measurement_log"].approval_policy["enabled"] is False
+    with pytest.raises(BrokerRefused) as refused:
+        await broker.call(
+            conn.goal, token, "health__measurement_log", {"type": "weight", "value": 72}
+        )
+    assert refused.value.reason is Reason.UNAVAILABLE
+    assert facts == [] and domains.calls == [] and conn.used == 0 and conn.effect is None
+
+
+@pytest.mark.parametrize(
+    "fault", ["stopped", "revoked", "epoch", "budget", "resource", "changed", "retired"]
+)
+async def test_registered_health_record_keeps_current_grant_and_ledger_refusals(monkeypatch, fault):
+    broker, conn, domains, token, store, final, _, facts = await registered_health_record_broker(
+        monkeypatch
+    )
+    if fault == "stopped":
+        conn.status = "stopped"
+    elif fault == "revoked":
+        conn.invocation_count = 0
+    elif fault == "epoch":
+        conn.epoch = 1
+    elif fault == "budget":
+        conn.budget = 0
+    elif fault == "resource":
+        conn.grants = (Grant("health__measurement_log", resources=(("fabricated", ("value",)),)),)
+    elif fault == "changed":
+        conn.catalog_digest = "changed-current-fleet"
+    else:
+        store.current["health"]["live"] = False
+    with pytest.raises(BrokerRefused):
+        await broker.call(
+            conn.goal, token, "health__measurement_log", {"type": "weight", "value": 72}
+        )
+    assert conn.used == 0 and conn.effect is None and domains.calls == [] and facts == []
+
+
+async def test_record_policy_preserves_exposed_owner_authority_and_party_refusals(monkeypatch):
+    from butlers.capability_broker.contracts import Disposition
+    from butlers.capability_broker.policy import decide
+
+    broker, conn, _, token, _, _, _, _ = await registered_health_record_broker(monkeypatch)
+    async with conn.transaction():
+        principal = await BrokerLedger(conn).authenticate(conn.goal, token)
+        cap = next(
+            c
+            for c in (await broker.authorities.catalog(conn, principal)).capabilities
+            if c.identity == "health__measurement_log"
+        )
+        evidence = await broker.authorities.policy(conn, principal, cap, {})
+        exposed = replace(principal, exposed=True)
+        assert decide(exposed, cap, conn.grants[0], evidence).disposition is Disposition.DISPATCH
+        assert (
+            decide(
+                exposed, replace(cap, owner_authority=True), conn.grants[0], evidence
+            ).disposition
+            is Disposition.REFUSE
+        )
+        for parties in (
+            RecipientParameters(("recipient",)),
+            RecipientParameters(undeterminable=True),
+            RecipientParameters(default_owner_condition="native"),
+            RecipientParameters(undeterminable_condition="native"),
+        ):
+            with pytest.raises(BrokerRefused) as refused:
+                await broker.authorities.policy(
+                    conn, principal, replace(cap, recipient_params=parties), {}
+                )
+            assert refused.value.reason is Reason.POLICY
