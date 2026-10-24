@@ -1461,17 +1461,18 @@ async def _get_suppressing_context_signal_detail(
     max-hold suppression-end instant (bu-kqnum.3 slice 3's broker catch-up
     cycle) without a second context-bus read.
     """
+    from butlers.core.approvals_policy import AttentionReadUnavailable
+
     if pool is None:
-        return None
+        raise AttentionReadUnavailable("context_store_unavailable")
     if now is None:
         now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
         signals = await get_active_context(pool)
-    except Exception:
-        logger.debug("insight-delivery-cycle: context bus unavailable; failing open", exc_info=True)
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("context_store_unavailable") from exc
 
     held = [
         s
@@ -1496,8 +1497,8 @@ async def get_suppressing_context_signal(
     (sub-urgent) insight delivery, or None.
 
     Deterministic, zero-LLM read of ``public.user_context`` via the existing
-    context-bus module. Fails open (returns None) on any error, matching
-    every other context-bus reader in this codebase.
+    context-bus module. Unavailable reads raise; they cannot authorize routine
+    delivery. A successful empty read returns None.
     """
     detail = await _get_suppressing_context_signal_detail(pool, now=now)
     return detail[0] if detail is not None else None
@@ -2056,9 +2057,18 @@ async def delivery_cycle(
     _suppression_signal: str | None = None
     policy: dict[str, Any] | None = None
     if not urgent_only:
-        policy = await get_approvals_policy_quiet_hours(pool)
-        _quiet_hours_active = is_policy_quiet_now(policy, now=now)
-        _context_signal = await get_suppressing_context_signal(pool, now=now)
+        try:
+            policy = await get_approvals_policy_quiet_hours(pool)
+            _quiet_hours_active = is_policy_quiet_now(policy, now=now)
+            _context_signal = await get_suppressing_context_signal(pool, now=now)
+        except Exception:
+            # Restrict this attempt to the existing urgent-only working set.
+            # Routine rows retain their original expiry and remain pending;
+            # unavailable storage cannot create safety authority or a wake time.
+            urgent_only = True
+            _quiet_hours_active = False
+            _context_signal = None
+            result.update(skipped=True, reason="attention_store_unavailable")
         if _quiet_hours_active:
             _suppression_reason = "quiet_hours"
             _suppression_signal = "quiet_hours"
@@ -2137,6 +2147,10 @@ async def delivery_cycle(
 
     if not pending_ids:
         return result
+    if urgent_only and result.get("reason") == "attention_store_unavailable":
+        # Only the already-urgent working set can proceed. The routine attempt
+        # remains unavailable, including when the eligible urgent set is empty.
+        result["skipped"] = False
 
     if not urgent_only and _suppression_reason is not None:
         urgent_rows = await pool.fetch(

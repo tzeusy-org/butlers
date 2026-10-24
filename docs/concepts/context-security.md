@@ -1,7 +1,8 @@
 # Context rendering and attention-read failures
 
-This is the proposed bu-dhloi1.17 contract for bu-dhloi1.2. It is not shipped
-runtime behavior. Exact RFC text adoption and implementation remain pending.
+This implementation follows the adopted bu-dhloi1.17 contract (PR4980).
+It changes rendering, explicit context mutation and routine delivery gates;
+it does not activate RFC0038 runtime features.
 See the [active change](../../openspec/changes/specify-safe-context-rendering-and-bounded-read-failures/design.md)
 for numerical source bindings and the complete requirement/test accounting.
 
@@ -42,12 +43,38 @@ Deterministically authorized safety/urgent paths keep their existing bypass.
 Routine failures cannot block that bypass; an arbitrary priority label or source
 instruction cannot create it or waive owner/approval/recipient checks.
 
-## Current implementation gap
+## Implementation notes
 
-At the task baseline, src/butlers/context_bus.py still renders raw values;
-src/butlers/jobs/context_producers.py still copies calendar titles and conflates
-read failure with absent policy. src/butlers/core/attention_ledger.py and the
-insight broker still fail open on unavailable context reads. This docs-only PR
-changes none of them. The implementation successor must amend the named existing
-behavior tests in the same PR as its production correction and retain unaffected
-assertions/cases. No runtime test was executed or changed by this authoring task.
+`set_calendar_context()` records an exact returned-row witness in the producer's
+own process and pool, including the database-observed `xmin` row revision.
+Only an unexpired, unchanged row version witnessed through that
+path can render busy/focused. The cache holds at most 16 pools and two rows per
+pool. A replacement, clear, eviction or restart revokes the witness. Another
+pool/process and legacy rows safely render type/confidence only; this is not
+durable producer authentication. Stored `source`, writer labels or matching
+values cannot reconstruct the witness. Suppression still uses the actual signal
+and bounded expiry, including when its value is omitted from a prompt.
+
+General's set/clear tools resolve the bound runtime invocation using the existing
+server routing accessor and owner-entity resolver. An unbound session locator,
+forged tool arguments or third-party routing context refuses before the context
+write or canonical DND gateway. The existing DND generation/replay protocol is
+unchanged.
+
+Immediate owner-default notify and the scheduler's actual deferred transport
+callback both re-read policy and context. Unavailable reads return a retryable
+error or leave the existing deferred item pending; neither path invents a wake
+anchor, refreshes a deadline or records delivery. A model `priority="high"` is
+not a bypass credential. Insight's existing server-owned urgent cycle remains
+separate: an unavailable routine consult narrows evaluation to that existing
+urgent working set and leaves routine candidates pending. It does not promote a
+candidate to urgent or override an explicit owner opt-out.
+
+The sleep producer treats successful absent/invalid policy as a clear of its
+own assertion, and failed reads as unavailable without writing. Existing sleep
+TTL and continuous `set_at` semantics bound retained state. A successful later
+read determines recovery; elapsed time alone cannot authorize a send.
+
+Targeted software tests exercise the actual registered tools, producer-to-row
+renderer path and deferred callback. Migrated database cases remain separate
+hosted evidence; a software pool double is not role or PostgreSQL proof.

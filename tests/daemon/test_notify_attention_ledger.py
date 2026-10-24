@@ -7,8 +7,7 @@ quiet-hours gate:
     instead of vanishing without a trace
   - context-bus dnd/sleeping signals are consulted deterministically,
     alongside (not instead of) the existing hour-based quiet-hours policy
-  - priority="high" always fails open — bypasses both quiet hours and the
-    context bus, consistent with existing notify() semantics
+  - a model-assigned priority="high" cannot bypass owner attention policy
   - a successfully delivered notification is recorded as outcome="delivered"
 
 These tests boot a real ``ButlerDaemon`` with every I/O boundary mocked
@@ -723,7 +722,7 @@ class TestQuietHoursLedgerRecording:
             == 1
         )
 
-    async def test_context_lookup_failure_fails_open(self, butler_dir: Path) -> None:
+    async def test_context_lookup_failure_refuses_without_delivery(self, butler_dir: Path) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -738,10 +737,11 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "attention_context_unavailable"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
-    async def test_high_priority_bypasses_quiet_hours_and_context_bus(
+    async def test_model_priority_label_cannot_bypass_quiet_hours_and_context_bus(
         self, butler_dir: Path
     ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
@@ -765,13 +765,13 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "deferred"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         outcomes = [c[8] for c in ledger_calls]
         assert "suppressed" not in outcomes
-        assert "delivered" in outcomes
+        assert "deferred" in outcomes
 
     # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
     @pytest.mark.parametrize("publish_failure", [False, True])

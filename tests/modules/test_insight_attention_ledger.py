@@ -458,7 +458,10 @@ class TestUrgentOnlySubCycle:
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
 
-    async def test_bypasses_quiet_hours_without_querying_context_bus(self, insight_pool):
+    @pytest.mark.parametrize("urgent_only", [True, False])
+    async def test_bypasses_quiet_hours_without_querying_context_bus(
+        self, insight_pool, urgent_only
+    ):
         """urgent_only skips the quiet-hours/context-bus consult entirely — it
         isn't just bypassed after being computed, it is never queried."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -484,9 +487,11 @@ class TestUrgentOnlySubCycle:
             ),
         ):
             result = await delivery_cycle(
-                insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+                insight_pool, notify_fn=notify_mock, urgent_only=urgent_only, now=_PINNED_NOW
             )
 
+        if not urgent_only:
+            assert result["reason"] == "attention_store_unavailable"
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
         row = await insight_pool.fetchrow(
