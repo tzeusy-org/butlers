@@ -53,3 +53,18 @@ The [proposed context-security contract](context-security.md) distinguishes
 successful invalid/absent policy from transient storage-read failure and records
 finite hold expiry/recovery without new signal types or duration settings. It is
 not implemented by this documentation change; exact RFC adoption remains pending.
+
+## Dark obligation preparation
+
+The optional private Insight collector preparation records the actual selected
+raw/decorated candidates and exact synthesis inputs in the owning source
+transaction before today's formatting and delivery. It is OFF by default and
+never replaces dispatch, calls a model, sends a notification or marks a candidate
+delivered. Unavailable source preparation leaves ordinary delivery behavior
+intact. The current STAFFER notification/catalog refusal remains unresolved for
+actual obligation admission; captured prepared-action/premise observations do
+not grant action or recipient authority. See
+[obligation declarations](obligation-declarations.md#insight-selected-content-dark-preparation)
+for replay/fencing and source lifecycle details. Real role/locking/readback cases
+are authored separately from the recording-SQL software controls; neither source
+code nor collection establishes a PostgreSQL or runner outcome.

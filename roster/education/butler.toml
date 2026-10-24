@@ -53,6 +53,16 @@ Data-gathering guardrails:
    and stop.
 """
 
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+    { capability = "education__analytics_get_cross_topic" },
+    { capability = "education__analytics_get_trend" },
+    { capability = "education__analytics_get_snapshot" },
+    { capability = "education__mastery_get_map_summary" },
+    { capability = "education__notify" },
+]
+
 [[butler.schedule]]
 name = "weekly-stale-flow-check"
 cron = "0 4 * * 1"
@@ -68,6 +78,19 @@ schedule cleanup for an already abandoned map after a prior cleanup failure with
 If any flows were abandoned, notify the user via notify(channel="telegram", intent="send",
 message=<cleanup_summary>).
 """
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+    { capability = "education__mind_map_list" },
+    { capability = "education__mind_map_get" },
+    { capability = "education__teaching_flow_get" },
+    { capability = "education__teaching_flow_abandon" },
+    { capability = "education__mind_map_update_status" },
+    { capability = "education__spaced_repetition_schedule_cleanup" },
+    { capability = "education__memory_store_fact", resources = { predicate = ["study_pattern"] } },
+    { capability = "education__notify" },
+]
 
 [[butler.schedule]]
 name = "daily-spaced-repetition-nudge"
@@ -89,6 +112,14 @@ Delivery:
 - notify(channel="telegram", intent="send", message=<summary>)
 - Keep it short and actionable; end with: "Reply ‘review’ and I’ll start the next one."
 """
+
+[butler.schedule.obligation]
+version = 1
+capabilities = [
+    { capability = "education__mind_map_list" },
+    { capability = "education__spaced_repetition_pending_reviews" },
+    { capability = "education__notify" },
+]
 
 [[butler.schedule]]
 name = "daily_briefing_contribution"

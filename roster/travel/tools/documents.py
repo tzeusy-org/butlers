@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+import asyncio
+import json
+from datetime import UTC, date, datetime
 from typing import Any
 
 import asyncpg
@@ -108,3 +110,72 @@ async def add_document(
         "created_at": result["created_at"],
         "metadata": result.get("metadata", {}),
     }
+
+
+async def document_expiry_inventory(pool: asyncpg.Pool | None) -> dict[str, Any]:
+    """Read all stored document types/trip statuses in one bounded snapshot.
+
+    A complete empty result attests only this owning store, never passports in
+    Memory or provider reminders. Blob references and arbitrary metadata are
+    deliberately absent. No document is inferred from a trip's lifecycle.
+    """
+    result: dict[str, Any] = {
+        "status": "unavailable",
+        "complete": False,
+        "coverage": "owning_store",
+        "as_of": datetime.now(UTC).isoformat(),
+        "items": [],
+        "unresolved_count": 0,
+        "reason": "store_unavailable",
+    }
+    if pool is None:
+        return result
+    try:
+        async with asyncio.timeout(5):
+            async with pool.acquire() as connection:
+                async with connection.transaction(isolation="repeatable_read", readonly=True):
+                    await connection.execute("SELECT set_config('statement_timeout', '4000', true)")
+                    snapshot_at = await connection.fetchval("SELECT transaction_timestamp()")
+                    result["as_of"] = snapshot_at.isoformat()
+                    rows = []
+                    async for row in connection.cursor(
+                        """SELECT d.id, d.trip_id, d.type, d.expiry_date
+                           FROM travel.documents AS d
+                           JOIN travel.trips AS t ON t.id = d.trip_id
+                           ORDER BY d.id LIMIT 1001""",
+                        prefetch=100,
+                    ):
+                        rows.append(dict(row))
+                    result.update(status="complete", complete=True, reason="exhausted")
+                    if len(rows) > 1000:
+                        result.update(status="incomplete", complete=False, reason="row_limit")
+                    for row in rows[:1000]:
+                        expiry = row["expiry_date"]
+                        if expiry is not None and (
+                            not isinstance(expiry, date) or isinstance(expiry, datetime)
+                        ):
+                            result["unresolved_count"] += 1
+                            continue
+                        if row["type"] not in _VALID_DOCUMENT_TYPES:
+                            result["unresolved_count"] += 1
+                            continue
+                        result["items"].append(
+                            {
+                                "document_id": str(row["id"]),
+                                "trip_id": str(row["trip_id"]),
+                                "type": row["type"],
+                                "expiry_date": expiry.isoformat() if expiry else None,
+                            }
+                        )
+                    if result["unresolved_count"]:
+                        result.update(status="incomplete", complete=False, reason="unresolved")
+                    # Serialization is part of the same aggregate I/O/CPU budget.
+                    if len(json.dumps(result).encode()) > 262144:
+                        result.update(
+                            status="incomplete", complete=False, reason="output_limit", items=[]
+                        )
+    except TimeoutError:
+        result.update(status="incomplete", complete=False, reason="timeout")
+    except Exception:
+        result.update(status="unavailable", complete=False, reason="store_unavailable", items=[])
+    return result

@@ -341,6 +341,7 @@ async def narrate_daily_rollup(
     *,
     local_date: date,
     timezone: str = DEFAULT_TIMEZONE,
+    preparation=None,
 ) -> dict[str, Any]:
     """Run the bounded once-daily labeling pass for one already-materialized
     local day.
@@ -383,6 +384,25 @@ async def narrate_daily_rollup(
         flag_rows=flag_rows,
         top_episode_titles=top_episode_titles,
     )
+
+    if preparation is not None:
+        from butlers.core.obligation_admission import SourceUnavailable
+        from butlers.core.obligation_sources import SourceConflict
+
+        try:
+            await preparation(
+                local_date=local_date,
+                timezone=timezone,
+                rollup_rows=rollup_rows,
+                flag_rows=flag_rows,
+                top_episode_titles=top_episode_titles,
+                user_message=user_message,
+                system_prompt=_SYSTEM_PROMPT,
+            )
+        except (SourceConflict, SourceUnavailable, TimeoutError):
+            # Staging is not admission. Fail closed for this observation without
+            # changing the existing narration result/model/write behavior.
+            logger.warning("chronicler dark preparation unavailable")
 
     dispatcher = DiscretionDispatcher(
         pool,

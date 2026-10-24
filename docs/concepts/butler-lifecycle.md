@@ -54,6 +54,11 @@ DB-owned operational tuning is seeded from `[butler.runtime_seed]` on first boot
 
 Scheduled tasks declared in `butler.toml` are synchronized to the database before any module starts. New tasks become TOML-owned, changed tasks update, and removed TOML tasks are disabled. This ordering lets a module-default registration observe a disabled TOML orphan while leaving DB-owned operator schedules untouched.
 
+Schedules remain the typed `ScheduleSpec` objects validated by the configuration
+loader. Their optional obligation declaration is parsed once into a closed,
+immutable carrier; the actual sync projection consumes it without changing SQL,
+dispatch or writing obligation/admission records while the switch is off.
+
 ### Step 11: Module on_startup
 
 Each healthy module's `on_startup()` method is called in topological order after schedule synchronization. This is where modules perform post-migration initialization, open connections, start background resources, load cached data, and register provenance-aware defaults. Failures are non-fatal and trigger cascade failures for dependent modules.
@@ -69,6 +74,14 @@ A FastMCP server is created and core tools are registered: status, trigger, stat
 ### Step 14: Register Module Tools and Gates
 
 Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module and is surfaced as declared-but-not-registered in the console's tool-surface diff.
+
+After approval wrapping and final catalog construction, startup diagnoses loaded
+schedule and session-waking subscription declarations with fixed index/reason warnings. Local registrations can
+disprove a local grant, but cannot establish a complete verified fleet catalog.
+Missing fleet authority stays an explicit warning in this dark integration;
+current dispatch continues. Authoritative error-after-switch validation still
+requires the actual trusted control/catalog producers. It cannot use an early
+pre-module catalog at Step 10 or promote a local snapshot to fleet authority.
 
 ### Step 15: Start the FastMCP Server
 
@@ -167,3 +180,24 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - [Trigger Flow](trigger-flow.md) --- details on how triggers are sourced and dispatched
 - [MCP Model](mcp-model.md) --- how MCP tools and the spawner interact
 - [Modules and Connectors](modules-and-connectors.md) --- the module lifecycle in detail
+
+
+### Private Git occurrence admission lifecycle
+
+After final approval wrapping/registry capture and complete owning source
+reconciliation, lifecycle may bind the private Switchboard Git consumer when
+`[butler.scheduler].obligation_admission_mode = "dark"` and source staging is
+also dark. Both selectors default off; no roster is enabled. This factory
+uses the captured config/current registered tools, not a request, session
+locator, creator hint or local-catalog-as-fleet assertion.
+
+The existing scheduler submits only after source commit/release and its
+unchanged dispatch/outcome handling. Admission rechecks the full source/claim
+on GoalAdmission's passed connection, after central attempt/source locks, and
+retains owning locks through decision commit. It verifies the actual current
+fleet and limits. Occurrence identity is stable across an unknown commit;
+there is no automatic retry or new runner/listener. Refusal leaves legacy
+dispatch intact. Cancellation propagates, and teardown settles retained work
+within its original five-second operation deadline or explicitly fails as
+incomplete before closing the pool. Durable admission does not establish
+runner prompt execution, runtime creator/cause lineage or recipient authority.

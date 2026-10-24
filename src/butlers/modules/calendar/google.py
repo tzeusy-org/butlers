@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -413,6 +414,74 @@ class _GoogleProvider(CalendarProvider):
             if event is not None:
                 events.append(event)
         return events
+
+    async def _reminder_event_page(
+        self,
+        *,
+        calendar_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_token: str | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Stream through the configured client before parsing untrusted JSON.
+
+        The caller owns the one absolute scan deadline. A single refresh on 401
+        retains it; redirects, eager response reads and stateful sync are absent.
+        """
+        params: dict[str, Any] = {
+            "singleEvents": True,
+            "showDeleted": False,
+            "orderBy": "startTime",
+            "maxResults": 250,
+            "timeMin": _google_rfc3339(start_at),
+            "timeMax": _google_rfc3339(end_at),
+        }
+        if page_token is not None:
+            params["pageToken"] = page_token
+        url = f"{GOOGLE_CALENDAR_API_BASE_URL}/calendars/{quote(calendar_id, safe='')}/events"
+        for refresh in (False, True):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            token = await self._oauth.get_access_token(force_refresh=refresh)
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError
+            async with self._http_client.stream(
+                "GET",
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"},
+                timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
+                follow_redirects=False,
+            ) as response:
+                if response.status_code == 401 and not refresh:
+                    continue
+                if response.status_code != 200:
+                    raise ValueError("provider_unavailable")
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    # Avoid decompression allocating an unbounded chunk before
+                    # the consumer can enforce its decoded-byte budget.
+                    raise ValueError("unsupported_encoding")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > 262144:
+                        raise ValueError("page_byte_limit")
+                    body.extend(chunk)
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError
+                payload = json.loads(body)
+                if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                    raise ValueError("malformed_page")
+                if len(payload["items"]) > 250:
+                    raise ValueError("page_event_limit")
+                next_token = payload.get("nextPageToken")
+                if next_token is not None and (
+                    not isinstance(next_token, str) or not next_token or len(next_token) > 4096
+                ):
+                    raise ValueError("malformed_cursor")
+                return payload
+        raise ValueError("provider_unavailable")
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> CalendarEvent | None:
         normalized_event_id = event_id.strip()

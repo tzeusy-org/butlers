@@ -76,6 +76,11 @@ def register_tools(mcp: Any, module: Any) -> None:
         )
 
     @mcp.tool()
+    async def document_expiry_inventory() -> dict[str, Any]:
+        """Inventory all stored travel documents; incomplete never proves absence."""
+        return await _documents.document_expiry_inventory(module._get_pool())
+
+    @mcp.tool()
     async def health_medication_snapshot() -> dict[str, Any]:
         """Get active medication preparation fields from Health through Switchboard MCP."""
         return await _health.request_health_medication_snapshot(

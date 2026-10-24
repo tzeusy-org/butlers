@@ -17,6 +17,7 @@ import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+from butlers.core.tool_catalog import RecipientParameters
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 from butlers.transport_identifiers import is_whatsapp_transport_identifier
 
@@ -316,13 +317,34 @@ class MemoryModule(Module):
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the full reclassification command as safety-critical."""
         return {
+            "memory_fact_inventory": ToolMeta(
+                arg_sensitivities={},
+                canonical_name="memory_fact_inventory",
+                module_name="memory",
+                group_name="core",
+                namespace="memory.core",
+                llm_presentable=True,
+                load_posture="deferred",
+                effect_class="read",
+                output_trust="untrusted",
+                output_sensitivity="sensitive",
+                resource_params=("predicate", "scope"),
+                selection_bound={"predicate": False, "scope": False},
+                safety_args=(),
+                idempotency="none",
+                owner_authority=False,
+                recipient_params=RecipientParameters(),
+                read_stores=("facts", "runtime_config"),
+                write_stores=(),
+                unknown_output_source=True,
+            ),
             "memory_reclassify": ToolMeta(
                 arg_sensitivities={
                     "memory_type": True,
                     "memory_id": True,
                     "permanence_target": True,
                 }
-            )
+            ),
         }
 
     def migration_revisions(self) -> str | None:
@@ -1327,6 +1349,61 @@ class MemoryModule(Module):
                 memory_id,
                 read_policy=read_policy,
             )
+
+        @_tool("core")
+        async def memory_fact_inventory(
+            predicate: str = "passport_expiry",
+            scope: str | None = None,
+        ) -> dict[str, Any]:
+            """Inventory passport dates in authorized Travel/global memory only.
+
+            The ceiling is a held runtime snapshot, possibly TTL/default normal;
+            complete never attests hidden facts, upstream coverage or freshness.
+            """
+            from butlers.modules.memory.tools._helpers import _search as _search_helper
+
+            unavailable = {
+                "status": "unavailable",
+                "complete": False,
+                "items": [],
+                "authority_source": "held_runtime_config",
+                "coverage": "authorized_scope",
+                "reason": "authority_unavailable",
+                "unresolved_count": 0,
+            }
+            if (
+                butler_name != "travel"
+                or predicate != "passport_expiry"
+                or scope
+                not in (
+                    None,
+                    "travel",
+                    "global",
+                )
+            ):
+                return {**unavailable, "reason": "unsupported_scope"}
+            accessor = getattr(module._db, "runtime_config_accessor", None)
+            if accessor is None:
+                return unavailable
+            try:
+                async with asyncio.timeout(5):
+                    held = await accessor.get()
+                    policy = _search_helper.resolve_catalog_read_policy(
+                        held.catalog_read_sensitivity
+                    )
+                    if policy.policy_defaulted:
+                        return unavailable
+                    return await _reading.memory_fact_inventory(
+                        module._get_pool(),
+                        predicate=predicate,
+                        scopes=(scope,) if scope else ("travel", "global"),
+                        tenant_id="shared",
+                        read_policy=policy,
+                    )
+            except TimeoutError:
+                return {**unavailable, "reason": "timeout"}
+            except Exception:
+                return unavailable
 
         # --- Feedback tools ---
 

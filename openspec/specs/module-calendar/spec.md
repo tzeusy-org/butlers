@@ -1041,6 +1041,32 @@ Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programma
 - **THEN** the guarded path SHALL read current permission state again
 - **AND** existing request-id idempotency and approval behavior SHALL remain in force
 
+### Requirement: One bounded target-bound reminder scan
+
+Calendar SHALL expose `calendar_scan_reminder_events(start_at,end_at,marker,calendar_id=None)`
+as a read-only operation. It SHALL resolve the intended creation-role calendar
+once, require discovered authorization, and carry that exact explicit target and
+aware interval through every page and result. Ordinary list/create defaults,
+sync state, write admission and existing provider interfaces SHALL remain intact.
+An optional private nonabstract provider page capability SHALL fail incomplete
+when unsupported; it SHALL NOT force old subclasses to implement a new method.
+
+#### Scenario: Complete versus partial provider evidence
+
+- **WHEN** the deterministic owning scan checks a reminder
+- **THEN** one absolute 20-second deadline SHALL include token readiness, acquisition, all pages/retries, streaming, parsing, projection and final serialization
+- **AND** at most 20 pages/5000 events SHALL be examined, each streamed decoded page bounded to 262144 bytes before parsing, compressed responses refused before decoding, and the final result JSON projection bounded to 65536 bytes
+- **AND** only a validated terminal page SHALL yield complete; repeated/malformed cursors, invalid events, caps with continuation, errors or deadline expiry SHALL remain incomplete
+- **AND** external cancellation SHALL close the owned stream and propagate without a successful absence result
+
+#### Scenario: Exact reminder identity
+
+- **WHEN** an event's description has the exact marker line and its interval exactly equals the query
+- **THEN** presence may be reported even if remaining coverage is incomplete
+- **AND** absence SHALL require a complete scan, not a title/substring match, empty first page or internal reminder list
+- **AND** a subsequent separately authorized create SHALL use the returned explicit target and interval
+- **AND** this read SHALL NOT claim atomic create uniqueness, uncertain-write recovery, owner authority or delivery
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

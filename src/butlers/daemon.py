@@ -1103,6 +1103,11 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            **(
+                {"insight_admission": self.obligation_insight_admission}
+                if getattr(self, "obligation_insight_admission", None) is not None
+                else {}
+            ),
         )
 
     async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:
@@ -1206,6 +1211,11 @@ class ButlerDaemon:
             completion_hooks=runtime_context.completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
             default_timezone=runtime_context.default_timezone,
+            **(
+                {"source_runtime": self.obligation_schedule_runtime}
+                if getattr(self, "obligation_schedule_runtime", None) is not None
+                else {}
+            ),
         )
 
     def _resolve_memory_module(self) -> Any | None:

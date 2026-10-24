@@ -25,6 +25,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from butlers.background import _deterministic_jobs_for_butler
 from butlers.catalogue_bootstrap import upsert_provider_feature_catalogue
 from butlers.config import (
     ButlerType,
@@ -37,6 +38,11 @@ from butlers.core.approvals_policy import (
 from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
+from butlers.core.obligation_catalog import (
+    diagnose_loaded_job_schedules,
+    diagnose_loaded_schedules,
+    diagnose_loaded_subscriptions,
+)
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
 from butlers.core.scheduler import sync_schedules
@@ -108,6 +114,7 @@ class StartupState:
     db_url: str = ""
     migration_schema: str | None = None
     credential_store: Any = None
+    effective_runtime: Any = None
     started_modules: list[Any] = field(default_factory=list)
 
 
@@ -447,6 +454,7 @@ async def _startup_runtime_config(daemon: Any, state: StartupState) -> None:
     effective_runtime = await daemon._runtime_config_accessor.seed_if_empty(
         daemon.config.runtime_seed, daemon.config.name
     )
+    state.effective_runtime = effective_runtime
     daemon.db.runtime_config_accessor = daemon._runtime_config_accessor
     if effective_runtime.seeded_at == effective_runtime.updated_at:
         logger.info("Seeded runtime config from butler.toml for %s", daemon.config.name)
@@ -557,7 +565,81 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
     daemon._gated_tool_originals = await daemon._apply_approval_gates()
 
     # 14b.1. Snapshot only the final post-approval FastMCP definitions.
-    await daemon._finalize_tool_catalog()
+    final_tool_catalog = await daemon._finalize_tool_catalog()
+    # Freeze real source material only after final approval wrapping. This is
+    # local registration/held-policy provenance, not a verified fleet catalog
+    # or an admission-mode selector. OFF performs no obligation source IO.
+    from butlers.core.obligation_git_sources import (
+        capture_loaded_git_sources,
+        start_schedule_sources,
+    )
+    from butlers.core.obligations import DeclarationError
+
+    daemon.obligation_git_sources = None
+    daemon.obligation_schedule_runtime = None
+    try:
+        daemon.obligation_git_sources = capture_loaded_git_sources(
+            daemon.config, state.effective_runtime, final_tool_catalog
+        )
+    except DeclarationError as exc:
+        logger.warning("Git obligation source material unavailable reason=%s", exc)
+    daemon.obligation_schedule_runtime = await start_schedule_sources(
+        state.pool,
+        daemon.obligation_git_sources,
+        mode=daemon.config.scheduler.obligation_source_mode,
+    )
+    from butlers.core.obligation_git_admission import bind_private_git_admission
+
+    daemon.obligation_schedule_runtime = bind_private_git_admission(
+        state.pool,
+        daemon.obligation_schedule_runtime,
+        daemon.obligation_git_sources,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_admission_mode,
+    )
+    from butlers.core.obligation_insight_admission import start_insight_admission
+
+    daemon.obligation_insight_admission = start_insight_admission(
+        state.pool,
+        daemon.obligation_git_sources,
+        final_tool_catalog,
+        source_mode=daemon.config.scheduler.obligation_source_mode,
+        admission_mode=daemon.config.scheduler.obligation_admission_mode,
+    )
+    from butlers.core.obligation_domain_sources import start_domain_sources
+
+    daemon.obligation_domain_runtime = start_domain_sources(
+        state.pool,
+        daemon,
+        state.effective_runtime,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_source_mode,
+    )
+    from butlers.core.obligation_feed_admission import start_feed_admission
+
+    daemon.obligation_feed_runtime = start_feed_admission(
+        state.pool,
+        daemon,
+        final_tool_catalog,
+        mode=daemon.config.scheduler.obligation_feed_admission_mode,
+    )
+    diagnose_loaded_schedules(
+        daemon.config.schedules,
+        owner_domain=daemon.config.name,
+        local_catalog=final_tool_catalog,
+    )
+    diagnose_loaded_subscriptions(
+        daemon.config.subscriptions,
+        owner_domain=daemon.config.name,
+        local_catalog=final_tool_catalog,
+    )
+
+    diagnose_loaded_job_schedules(
+        daemon.config.schedules,
+        owner_domain=daemon.config.name,
+        local_catalog=final_tool_catalog,
+        job_handlers=_deterministic_jobs_for_butler(daemon.config.name),
+    )
 
     # 14c. Wire calendar overlap-approval enqueuer when both modules are loaded
     daemon._wire_calendar_approval_enqueuer()
@@ -734,16 +816,27 @@ async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
 
 
 async def run_shutdown(daemon: Any) -> None:
-    """Retain shutdown across caller cancellation when publication owns resources.
+    """Retain shutdown across caller cancellation when publication/admission owns resources.
 
     Retirement has its existing single five-second absolute bound. Subsequent
     existing owners retain their own bounds; repeated cancellation never starts
     another retirement or abandons their cleanup. Propagate cancellation after
     the retained lifetime settles, even if retirement also fails.
     """
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
     task = getattr(daemon, "_catalog_shutdown_task", None)
     if task is None:
-        if getattr(daemon, "_catalog_publication", None) is None:
+        runtime = getattr(daemon, "obligation_schedule_runtime", None)
+        if (
+            getattr(daemon, "_catalog_publication", None) is None
+            and getattr(runtime, "admission", None) is None
+            and getattr(daemon, "obligation_domain_runtime", None) is None
+            and getattr(daemon, "obligation_feed_runtime", None) is None
+            and getattr(daemon, "obligation_insight_admission", None) is None
+            and chronicler_preparation_owner(getattr(getattr(daemon, "db", None), "pool", None))
+            is None
+        ):
             await _run_shutdown(daemon)
             return
         task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
@@ -875,42 +968,136 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._scheduler_loop_task = None
 
-    # 5c. Cancel route_inbox recovery task
+    # Admission retains its original per-call deadline. Downstream owners share
+    # the existing configured shutdown budget, captured ONCE before joining it;
+    # an expired admission never earns another admission grace period.
+    source_runtime = getattr(daemon, "obligation_schedule_runtime", None)
+    domain_runtime = getattr(daemon, "obligation_domain_runtime", None)
+    feed_runtime = getattr(daemon, "obligation_feed_runtime", None)
+    insight_runtime = getattr(daemon, "obligation_insight_admission", None)
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
+    chronicler_runtime = chronicler_preparation_owner(
+        getattr(getattr(daemon, "db", None), "pool", None)
+    )
+    bounded = (
+        getattr(source_runtime, "admission", None) is not None
+        or domain_runtime is not None
+        or feed_runtime is not None
+        or insight_runtime is not None
+        or chronicler_runtime is not None
+    )
+    deadline = asyncio.get_running_loop().time() + (
+        daemon.config.shutdown_timeout_s if daemon.config else 30.0
+    )
+    admission_error = None
+    if source_runtime is not None:
+        try:
+            await source_runtime.close_admission()
+        except BaseException as exc:
+            admission_error = exc
+    if domain_runtime is not None:
+        try:
+            await domain_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
+    if feed_runtime is not None:
+        try:
+            await feed_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
+    if insight_runtime is not None:
+        try:
+            await insight_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
+    if chronicler_runtime is not None:
+        try:
+            await chronicler_runtime.aclose()
+        except BaseException as exc:
+            if admission_error is None:
+                admission_error = exc
+    await _shutdown_after_admission(daemon, admission_error, deadline if bounded else None)
+
+
+async def _shutdown_after_admission(daemon: Any, admission_error, deadline) -> None:
+    """Attempt every remaining owner; retain and report any incomplete release.
+
+    A pool close can wait on the still-owned admission connection. Do not await
+    cancellation-resistant releases beyond the single downstream deadline, or
+    detach them and report success. Repeated shutdown joins the same owner.
+    """
+    from butlers.core.obligation_chronicler_sources import chronicler_preparation_owner
+
+    errors = []
+    retained = getattr(daemon, "_admission_cleanup_tasks", None)
+    if deadline is not None and retained is None:
+        retained = set()
+        daemon._admission_cleanup_tasks = retained
+
+    def retain(task):
+        retained.add(task)
+
+        def finished(done):
+            retained.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        return task
+
+    async def release(operation):
+        if deadline is None:
+            await operation
+            return True
+        task = retain(asyncio.create_task(operation, name="private-admission-owner-release"))
+        await asyncio.wait({task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
+        if not task.done():
+            task.cancel()
+            errors.append(RuntimeError("private_git_admission_downstream_cleanup_incomplete"))
+            return False
+        try:
+            task.result()
+        except BaseException as exc:
+            errors.append(exc)
+            return False
+        return True
+
+    async def stop_task(task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # 5c/d. Recovery and liveness must stop even after admission close refusal.
     if daemon._route_inbox_recovery_task is not None:
-        daemon._route_inbox_recovery_task.cancel()
-        try:
-            await daemon._route_inbox_recovery_task
-        except asyncio.CancelledError:
-            pass
-        daemon._route_inbox_recovery_task = None
-
-    # 5d. Cancel liveness reporter loop
+        if await release(stop_task(daemon._route_inbox_recovery_task)):
+            daemon._route_inbox_recovery_task = None
     if daemon._liveness_reporter_task is not None:
-        daemon._liveness_reporter_task.cancel()
-        try:
-            await daemon._liveness_reporter_task
-        except asyncio.CancelledError:
-            pass
-        daemon._liveness_reporter_task = None
+        if await release(stop_task(daemon._liveness_reporter_task)):
+            daemon._liveness_reporter_task = None
 
-    # 6. Module shutdown in reverse topological order (active modules only)
+    # 6. Module shutdown in reverse topological order (active modules only).
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 
-    await stop_approval_delivery_worker(daemon)
-
+    await release(stop_approval_delivery_worker(daemon))
     active_set = {m.name for m in daemon._active_modules}
     for mod in reversed(daemon._modules):
         if mod.name not in active_set:
             continue
         try:
-            await mod.on_shutdown()
+            await release(mod.on_shutdown())
         except Exception:
             logger.exception("Error during shutdown of module: %s", mod.name)
 
-    # 6b. Close S3 blob store
+    # 6b. Close S3 blob store.
     if daemon.blob_store is not None:
-        await daemon.blob_store.close()
-        daemon.blob_store = None
+        if await release(daemon.blob_store.close()):
+            daemon.blob_store = None
 
     # 6c. Detach the butler DB log handler before tearing down the pool so
     # in-flight fire-and-forget writes can finish and no new writes are
@@ -924,16 +1111,54 @@ async def _shutdown_resources(daemon: Any) -> None:
 
     # 7. Close audit DB pool (if separate from main DB)
     if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
+        if await release(daemon._audit_db.close()):
+            daemon._audit_db = None
 
     # 8. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
-        daemon._shared_credentials_db = None
+        if await release(daemon._shared_credentials_db.close()):
+            daemon._shared_credentials_db = None
 
-    # 9. Close DB pool
-    if daemon.db:
-        await daemon.db.close()
+    # 9. asyncpg closes by terminating holders if cancelled. Even attempting
+    # close at the downstream deadline is unsafe while an admission still owns
+    # a connection. All services are closed above, so their retained task set
+    # cannot grow. Keep the pool and its eventual release owned by this daemon.
+    database = daemon.db
+    if database:
+        schedule = getattr(daemon, "obligation_schedule_runtime", None)
+        services = (
+            getattr(schedule, "admission", None),
+            getattr(daemon, "obligation_domain_runtime", None),
+            getattr(daemon, "obligation_feed_runtime", None),
+            getattr(daemon, "obligation_insight_admission", None),
+            chronicler_preparation_owner(getattr(database, "pool", None)),
+        )
+        pending = {
+            task
+            for service in services
+            for task in getattr(service, "_pending", ())
+            if not task.done()
+        }
+        if pending:
 
+            async def close_after_admission():
+                # This wait retains ownership, not a fresh execution allowance.
+                # Pool close still uses the original downstream deadline, and
+                # can be cancelled only AFTER every retained owner has settled.
+                await asyncio.wait(pending)
+                await release(database.close())
+
+            retain(
+                asyncio.create_task(close_after_admission(), name="admission-deferred-pool-close")
+            )
+            errors.append(RuntimeError("private_git_admission_downstream_cleanup_incomplete"))
+        else:
+            await release(database.close())
+
+    if admission_error is not None:
+        if errors:
+            raise admission_error from BaseExceptionGroup("Downstream shutdown failures", errors)
+        raise admission_error
+    if errors:
+        raise BaseExceptionGroup("Downstream shutdown failures", errors)
     logger.info("Butler shutdown complete")

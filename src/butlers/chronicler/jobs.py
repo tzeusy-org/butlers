@@ -651,6 +651,8 @@ async def run_rollup_daily(
 async def run_narrate_daily(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
+    *,
+    preparation=None,
 ) -> dict[str, Any]:
     """Run the bounded once-daily LLM labeling pass over yesterday's rollup
     (bu-v9y18, telemetry-distillation bead 6, design doc §3.5/§6.6).
@@ -697,7 +699,10 @@ async def run_narrate_daily(
     now = _now()
     yesterday_local = now.astimezone(tzinfo).date() - timedelta(days=1)
 
-    return await narrate_daily_rollup(db_pool, local_date=yesterday_local, timezone=timezone)
+    kwargs = {} if preparation is None else {"preparation": preparation}
+    return await narrate_daily_rollup(
+        db_pool, local_date=yesterday_local, timezone=timezone, **kwargs
+    )
 
 
 __all__ = [

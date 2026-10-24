@@ -166,6 +166,11 @@ class PublishedCatalogProvider:
 
     async def load(self, connection) -> CatalogView:
         snapshot = await self.snapshot(connection)
+        return self.project(snapshot)
+
+    @staticmethod
+    def project(snapshot: FleetSnapshot) -> CatalogView:
+        """Project one already verified snapshot without a second SQL read."""
         capabilities = tuple(
             Capability(
                 f"{registration.domain}__{item.canonical_name}",
@@ -176,6 +181,7 @@ class PublishedCatalogProvider:
                 # never that explicit or inherited recipients are the owner.
                 owner_default=_owner_notify_eligible(item, registration.domain),
                 presentable=item.grantable,
+                resource_params=tuple(item.resource_params),
             )
             for registration in snapshot.registrations
             for item in registration.catalog.descriptors

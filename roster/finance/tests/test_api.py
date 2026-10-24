@@ -691,10 +691,23 @@ async def test_list_obligations_empty():
 
 
 @pytest.mark.asyncio
-async def test_list_obligations_known_door_carries_warn_and_days_remaining():
+@pytest.mark.parametrize(
+    ("request_day_offset", "expected_days"), [(0, 3), (1, 2)], ids=["same-day", "next-day"]
+)
+async def test_list_obligations_known_door_carries_warn_and_days_remaining(
+    monkeypatch, request_day_offset, expected_days
+):
     """A known-door row surfaces the door fields and days-remaining-to-act."""
-    cancel_by = _TODAY + timedelta(days=3)
-    warn_by = _TODAY - timedelta(days=4)
+    reference_day = date(2026, 10, 23)
+
+    class RequestDate(date):
+        @classmethod
+        def today(cls):
+            return reference_day + timedelta(days=request_day_offset)
+
+    monkeypatch.setattr(_finance_router_mod, "date", RequestDate)
+    cancel_by = reference_day + timedelta(days=3)
+    warn_by = reference_day - timedelta(days=4)
     rows = [
         _obligation_row(
             service="Adobe",
@@ -720,7 +733,7 @@ async def test_list_obligations_known_door_carries_warn_and_days_remaining():
     assert item["notice_period_days"] == 7
     assert item["cancel_by"] == str(cancel_by)
     assert item["warn_by"] == str(warn_by)
-    assert item["days_remaining_to_act"] == 3
+    assert item["days_remaining_to_act"] == expected_days
 
 
 @pytest.mark.asyncio

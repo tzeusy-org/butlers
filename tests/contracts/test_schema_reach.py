@@ -307,6 +307,18 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/obligation_chronicler_sources.py",
+        "chronicler.scheduled_tasks",
+    ): (
+        "sanctioned:RFC0038-D18: fixed Chronicler module-default model-job source; "
+        "the Chronicler owning-role guard and inventory/source locks precede this "
+        "same-transaction scheduled-row read; no foreign role or authority grant"
+    ),
+    (
+        "src/butlers/core/obligation_git_sources.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0038-D5: own-domain Git scheduled-row reconciliation under exact owning role/schema/relation guards in one source transaction; no cross-domain schema access",
+    (
         "roster/chronicler/tests/_inline_ddl.py",
         '<dynamic:"{schema_name}".sessions>',
     ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
@@ -734,6 +746,26 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/obligation_feed_admission.py",
+        "switchboard.connector_registry",
+    ): "sanctioned:RFC-0038-D1/D5: private Switchboard feed reader locks the exact owning connector endpoint and requires explicit feed metadata on the same verified Switchboard admission transaction; no foreign-domain SQL or legacy message fallback authority",
+    (
+        "src/butlers/core/obligation_feed_admission.py",
+        "switchboard.message_inbox",
+    ): "sanctioned:RFC-0038-D1/D5: private Switchboard feed reader locks its owning canonical accepted inbox after admission ledger locks and binds full persisted material through the same verified runtime transaction; no caller envelope or foreign-domain SQL authority",
+    (
+        "src/butlers/core/obligation_domain_sources.py",
+        '<dynamic:"{self.owner_domain}".scheduled_tasks>',
+    ): "dynamic-local:RFC-0038-D5: exact quoted owning scheduled_tasks selector after validated ObligationSourceRepository current-schema/exact-runtime-role/no-temp-shadow guards and inventory/source locks; durable bus/task material and occurrence are checked on that same owning transaction, not foreign-domain SQL authority",
+    (
+        "src/butlers/core/obligation_schedule_sources.py",
+        '<dynamic:"{repository.owner_domain}".scheduled_tasks>',
+    ): "dynamic-local:RFC-0038-D5: quoted owning scheduled_tasks selector after validated ObligationSourceRepository transaction/current-schema/exact-role guard; source and row locks remain on that same connection, not a cross-domain SQL exception",
+    (
+        "src/butlers/core/obligation_schedule_sources.py",
+        "<dynamic:{table}>",
+    ): "dynamic-local:RFC-0038-D5: table is only the quoted validated owning-domain scheduled_tasks relation on the guarded repository connection; same-transaction source/row persistence and tombstone readback, not caller-selected or cross-domain SQL",
     (
         "src/butlers/core/runtime_config.py",
         "<dynamic:{self._schema}.runtime_config>",

@@ -578,6 +578,7 @@ class TestLifecycle:
 
 EXPECTED_TOOL_NAMES = {
     "memory_store_episode",
+    "memory_fact_inventory",
     "memory_store_fact",
     "memory_store_rule",
     "memory_search",
@@ -1416,14 +1417,15 @@ class TestToolGroups:
         assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
-        """groups=['core'] registers only the 9 core tools."""
+        """groups=['core'] registers only the 10 core tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 9
+        assert len(tools) == 10
+        assert "memory_fact_inventory" in tool_names
         assert "memory_search" in tool_names
         assert "memory_store_fact" in tool_names
         assert "memory_context" in tool_names
@@ -1432,14 +1434,15 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names
 
     async def test_core_plus_entity(self):
-        """groups=['core', 'entity'] registers 16 tools."""
+        """groups=['core', 'entity'] registers 17 tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 16  # 9 core + 7 entity
+        assert len(tools) == 17  # 10 core + 7 entity
+        assert "memory_fact_inventory" in tool_names
         assert "memory_entity_create" in tool_names
         assert "memory_catalog_search" in tool_names
         assert "memory_stats" not in tool_names  # admin

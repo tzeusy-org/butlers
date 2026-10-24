@@ -556,3 +556,166 @@ async def test_atomic_flow_and_populated_curriculum_on_migrated_runtime(pool, mo
     assert dict(
         await pool.fetchrow("SELECT value,version FROM state WHERE key=$1", f"flow:{map_id}")
     ) == dict(settled)
+
+
+async def test_registered_review_schedule_refusal_rolls_back_progress_and_prior_deletion(
+    pool, migrated_db_url
+):
+    """Real owning role and actual registered callbacks; no canned insert receipt."""
+    from types import SimpleNamespace
+
+    from butlers.core.scheduler import schedule_create
+    from roster.education.modules import EducationModule, EducationModuleConfig
+
+    class Registry:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return register
+
+    registry, module = Registry(), EducationModule()
+    await module.register_tools(
+        registry, EducationModuleConfig(), SimpleNamespace(pool=pool), "education"
+    )
+    call = registry.tools["spaced_repetition_record_response"]
+    map_id = await _create_map(pool, title="Atomic review")
+    await _add_node(pool, map_id, age_days=0)
+    node_id = str(
+        await pool.fetchval("SELECT id FROM education.mind_map_nodes WHERE mind_map_id=$1", map_id)
+    )
+    old_names = [f"review-{node_id}-rep{index}" for index in range(20)]
+    batch_name = f"review-{map_id}-batch"
+    for name in [*old_names, batch_name]:
+        await schedule_create(pool, name, "0 9 * * *", "Isolated review fixture")
+    before = dict(
+        await pool.fetchrow(
+            "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
+            "FROM education.mind_map_nodes WHERE id=$1",
+            node_id,
+        )
+    )
+    # Existing batches now refresh in place. A real owning-table trigger
+    # supplies a genuine SQL refusal AFTER progress and prior deletions, so the
+    # original rollback/readback invariant survives the intentional bug fix.
+    suffix = uuid.uuid4().hex
+    function = f"test_review_refusal_{suffix}"
+    trigger = f"test_review_refusal_{suffix}"
+    owner = await asyncpg.connect(migrated_db_url, timeout=5)
+    try:
+        await owner.execute(
+            f"CREATE FUNCTION education.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN IF OLD.name=TG_ARGV[0] THEN RAISE EXCEPTION "
+            "'controlled_review_batch_refusal' USING ERRCODE='23514'; END IF; RETURN NEW; END $$"
+        )
+        # batch_name is composed solely from the generated UUID of this test map.
+        await owner.execute(
+            f"CREATE TRIGGER {trigger} BEFORE UPDATE ON public.scheduled_tasks "
+            f"FOR EACH ROW EXECUTE FUNCTION education.{function}('{batch_name}')"
+        )
+        with pytest.raises(asyncpg.CheckViolationError, match="controlled_review_batch_refusal"):
+            await call(node_id, map_id, 4)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT current_user") == "butler_education_rw"
+            assert (
+                dict(
+                    await conn.fetchrow(
+                        "SELECT ease_factor,repetitions,next_review_at,last_reviewed_at,mastery_status "
+                        "FROM education.mind_map_nodes WHERE id=$1",
+                        node_id,
+                    )
+                )
+                == before
+            )
+            names = await conn.fetch(
+                "SELECT name FROM scheduled_tasks WHERE name=ANY($1::text[])",
+                [*old_names, batch_name],
+            )
+            assert {row["name"] for row in names} == {*old_names, batch_name}
+    finally:
+        try:
+            await owner.execute(f"DROP TRIGGER IF EXISTS {trigger} ON public.scheduled_tasks")
+            await owner.execute(f"DROP FUNCTION IF EXISTS education.{function}()")
+        finally:
+            await owner.close(timeout=5)
+    original_batch_id = await pool.fetchval(
+        "SELECT id FROM scheduled_tasks WHERE name=$1", batch_name
+    )
+    result = await call(node_id, map_id, 4)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT repetitions,next_review_at FROM education.mind_map_nodes WHERE id=$1", node_id
+        )
+        assert row["repetitions"] == result["repetitions"] == 1
+        assert row["next_review_at"].isoformat() == result["next_review_at"]
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM scheduled_tasks WHERE name=ANY($1::text[])", old_names
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval("SELECT count(*) FROM scheduled_tasks WHERE name=$1", batch_name)
+            == 1
+        )
+
+    assert (
+        await pool.fetchval("SELECT id FROM scheduled_tasks WHERE name=$1", batch_name)
+        == original_batch_id
+    )
+
+    # Two actual registered requests for this node serialize on the owning rows;
+    # neither may overwrite progress computed before the other commits.
+    import asyncio
+
+    await pool.execute("DELETE FROM scheduled_tasks WHERE name=$1", batch_name)
+    # Hold the real map row until BOTH registered calls are observed waiting
+    # inside their actual SELECT ... FOR UPDATE. This forces overlap; gather
+    # alone would also pass if the two calls happened to execute sequentially.
+    tasks = []
+    observer = await asyncpg.connect(migrated_db_url, timeout=5)
+    try:
+        async with pool.acquire() as blocker, blocker.transaction():
+            await blocker.fetchval(
+                "SELECT id FROM education.mind_maps WHERE id=$1 FOR UPDATE", map_id
+            )
+            tasks = [asyncio.create_task(call(node_id, map_id, 4)) for _ in range(2)]
+            async with asyncio.timeout(5):
+                # PostgreSQL lock state has no application event to await.
+                while True:  # noqa: ASYNC110
+                    waiting = await observer.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND wait_event_type='Lock' "
+                        "AND query LIKE '%JOIN education.mind_maps AS m%' "
+                        "AND query LIKE '%FOR UPDATE OF m, n%'"
+                    )
+                    if waiting == 2:
+                        break
+                    await asyncio.sleep(0.02)
+            assert all(not task.done() for task in tasks)
+        concurrent = await asyncio.wait_for(asyncio.gather(*tasks), timeout=20)
+    finally:
+        try:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+        finally:
+            await observer.close(timeout=5)
+    assert sorted(row["repetitions"] for row in concurrent) == [2, 3]
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT repetitions FROM education.mind_map_nodes WHERE id=$1", node_id
+            )
+            == 3
+        )
+        names = await conn.fetch(
+            "SELECT name FROM scheduled_tasks WHERE name LIKE $1", f"review-{node_id}-rep%"
+        )
+        assert [row["name"] for row in names] == [f"review-{node_id}-rep3"]

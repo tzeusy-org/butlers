@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from asyncpg.pgproto.pgproto import UUID as NativeUUID
 
 from butlers.core import domain_event_wake
 from butlers.core.domain_event_wake import (
@@ -266,3 +267,415 @@ class TestWakePromptClosesTheLoop:
         )
         fence = prompt[prompt.index("<domain_event>") : prompt.index("</domain_event>")]
         assert "report_event_reaction" not in fence
+
+
+async def domain_source_consumer(
+    tmp_path, monkeypatch, *, mode="dark", owning_pool=None, uuid_type=uuid.UUID
+):
+    """Real startup/registrar/receive/wake/source SQL; software, never PG proof."""
+    import copy
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from fastmcp import FastMCP
+
+    from butlers.config import load_config
+    from butlers.core.runtime_config import RuntimeConfig
+    from butlers.daemon import ButlerDaemon
+    from butlers.lifecycle import _startup_module_tools
+    from tests.core.test_obligation_schedule_dispatch import OccurrenceConnection
+    from tests.core.test_obligation_schedule_sources import RecordingPool
+
+    class Connection(OccurrenceConnection):
+        def __init__(self):
+            super().__init__()
+            self.event = {
+                "id": uuid_type(str(uuid.UUID(int=901))),
+                "event_type": "travel.trip_booked",
+                "source_butler": "travel",
+                "payload": {"trip": "reference"},
+            }
+            self.subscription = {
+                "id": uuid_type(str(uuid.UUID(int=902))),
+                "subscriber_butler": "health",
+                "event_type": "travel.trip_booked",
+                "active": True,
+            }
+            self.delivery = {
+                "id": uuid_type(str(uuid.UUID(int=903))),
+                "event_id": self.event["id"],
+                "subscriber_butler": "health",
+                "status": "pending",
+                "task_id": None,
+                "task_name": None,
+            }
+            self.bus_shadow = False
+
+        async def fetchval(self, sql, *args):
+            if "INSERT INTO scheduled_tasks" in sql:
+                key = uuid_type(str(uuid.uuid4()))
+                keys = [
+                    "name",
+                    "cron",
+                    "dispatch_mode",
+                    "prompt",
+                    "job_name",
+                    "job_args",
+                    "complexity",
+                    "timezone",
+                    "start_at",
+                    "end_at",
+                    "until_at",
+                    "display_title",
+                    "description",
+                    "location",
+                    "calendar_event_id",
+                    "next_run_at",
+                ]
+                from butlers.core.obligation_schedule_sources import SCHEDULE_FIELDS
+
+                self.rows[key] = (
+                    dict.fromkeys(SCHEDULE_FIELDS)
+                    | dict(zip(keys, args, strict=True))
+                    | {
+                        "id": key,
+                        "source": "db",
+                        "enabled": True,
+                        "task_type": "cron",
+                        "continuity": False,
+                        "max_token_budget": None,
+                    }
+                )
+                return key
+            return await super().fetchval(sql, *args)
+
+        async def fetchrow(self, sql, *args):
+            if "AS domain_relations" in sql:
+                return {"domain_relations": not self.bus_shadow}
+            for name, value in (
+                ("public.domain_events", self.event),
+                ("public.butler_subscriptions", self.subscription),
+                ("public.domain_event_deliveries", self.delivery),
+            ):
+                if f"FROM {name}" in sql:
+                    assert self.depth == 1 and "FOR SHARE" in sql
+                    self.calls.append(sql)
+                    return copy.deepcopy(value)
+            if "SELECT id, name, prompt FROM scheduled_tasks" in sql:
+                return next(
+                    (copy.deepcopy(v) for v in self.rows.values() if v["name"] == args[0]), None
+                )
+            return await super().fetchrow(sql, *args)
+
+        async def fetch(self, sql, *args):
+            if "FROM obligation_source_outbox" in sql:
+                return [
+                    {"reference": copy.deepcopy(v[4])}
+                    for v in self.outbox
+                    if v[1] == args[0]
+                    and v[2] == args[1]
+                    and v[3] == "occurrence_captured"
+                    and v[4]["occurrence_id"] == args[2]
+                ]
+            return await super().fetch(sql, *args)
+
+    (tmp_path / "butler.toml").write_text(f'''
+[butler]
+name="health"
+port=41100
+[butler.scheduler]
+obligation_source_mode="{mode}"
+[[butler.subscription]]
+name="trip-review"
+kind="domain"
+source="travel.trip_booked"
+[butler.subscription.obligation]
+version=1
+capabilities=[{{capability="health__entity_graph_walk"}}]
+''')
+    pool = owning_pool
+    if pool is None:
+        pool = RecordingPool()
+        pool.connection = Connection()
+        for method in ("fetch", "fetchrow", "fetchval", "execute"):
+            setattr(pool, method, getattr(pool.connection, method))
+    daemon = ButlerDaemon(tmp_path, db=SimpleNamespace(pool=pool))
+    daemon.config = load_config(tmp_path)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(update={"core_groups": None})
+    # The loaded source digest tracks material; effective policy is separately held.
+    from butlers.config import obligation_config_material_digest
+
+    daemon.config.source_material_sha256 = obligation_config_material_digest(daemon.config)
+    daemon.mcp = FastMCP("domain-source-consumer")
+    daemon.spawner = MagicMock()
+    daemon._register_core_tools()
+    monkeypatch.setattr(daemon, "_init_module_runtime_states", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.core.approval_delivery_worker.start_approval_delivery_worker", AsyncMock()
+    )
+    monkeypatch.setattr(domain_event_wake, "record_reaction", AsyncMock())
+    await _startup_module_tools(
+        daemon, SimpleNamespace(pool=pool, effective_runtime=RuntimeConfig("health"))
+    )
+    receive = (await daemon.mcp.get_tool("receive_domain_event")).fn
+    return daemon, pool, receive
+
+
+@pytest.mark.parametrize("uuid_type", [uuid.UUID, NativeUUID], ids=["stdlib", "asyncpg"])
+async def test_registered_receive_commits_full_domain_material_then_revalidates(
+    tmp_path, monkeypatch, uuid_type
+):
+    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch, uuid_type=uuid_type)
+    c = pool.connection
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": c.event["payload"],
+    }
+    result = await receive(**args)
+    assert result["state"] == "task_created" and len(c.rows) == 1
+    assert len(c.occurrences) == 1, "successful registered receive must commit its dark source"
+    assert type(c.event["id"]) is type(c.subscription["id"]) is uuid_type
+    assert type(c.delivery["id"]) is type(next(iter(c.rows))) is uuid_type
+    runtime = daemon.obligation_domain_runtime
+    submitted = await runtime.read_committed(uuid.UUID(result["task_id"]), **args)
+    assert submitted.dark.obligation.created_exposed is True
+    assert submitted.dark.source.kind == "domain" and c.depth == 0
+    assert json.loads(submitted.material_json)["event"]["payload"] == c.event["payload"]
+    assert "reference" not in json.dumps(c.outbox, default=str)
+    # Fan-out marks delivery after receive returns. Both its initial NULL and
+    # its later driver-native task UUID must preserve the same committed bind.
+    c.delivery["task_id"] = uuid_type(result["task_id"])
+    assert await receive(**args) == result | {"reconciled": True}
+    assert len(c.occurrences) == 1
+    assert await runtime.read_committed(uuid.UUID(result["task_id"]), **args) == submitted
+    # Exact IDs/footer cannot substitute for full current prompt/event material.
+    c.rows[uuid.UUID(result["task_id"])]["prompt"] += " altered"
+    from butlers.core.obligation_sources import SourceConflict
+
+    with pytest.raises(SourceConflict, match="domain_task_mismatch"):
+        await runtime.read_committed(uuid.UUID(result["task_id"]), **args)
+    await runtime.aclose()
+
+
+async def test_domain_database_uuid_strings_and_duck_types_cannot_rebind_material(
+    tmp_path, monkeypatch
+):
+    import copy
+
+    from butlers.core.obligation_sources import SourceConflict
+
+    class UUIDLookalike:
+        def __init__(self, value):
+            self.value = value
+            self.bytes = value.bytes
+
+        def __str__(self):
+            return str(self.value)
+
+    daemon, pool, receive = await domain_source_consumer(
+        tmp_path, monkeypatch, uuid_type=NativeUUID
+    )
+    c, runtime = pool.connection, daemon.obligation_domain_runtime
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": c.event["payload"],
+    }
+    result = await receive(**args)
+    task_id = NativeUUID(result["task_id"])
+    c.delivery["task_id"] = task_id
+    submitted = await runtime.read_committed(task_id, **args)
+    original = copy.deepcopy((c.definitions, c.revisions, c.occurrences, c.outbox))
+    for row_name, key in (
+        ("event", "id"),
+        ("subscription", "id"),
+        ("delivery", "id"),
+        ("delivery", "event_id"),
+        ("delivery", "task_id"),
+        ("task", "id"),
+    ):
+        for invalid in (str, UUIDLookalike):
+            # The rollback-aware collaborator replaces stored task rows after
+            # refusal; mutate the current row, never a pre-rollback copy.
+            row = c.rows[task_id] if row_name == "task" else getattr(c, row_name)
+            value = row[key]
+            row[key] = invalid(value)
+            with pytest.raises(SourceConflict, match="domain_database_identity_invalid"):
+                await runtime.read_committed(task_id, **args)
+            assert (c.definitions, c.revisions, c.occurrences, c.outbox) == original
+            row = c.rows[task_id] if row_name == "task" else getattr(c, row_name)
+            row[key] = value
+    assert await runtime.read_committed(task_id, **args) == submitted
+    assert len(c.rows) == len(c.occurrences) == 1
+    await runtime.aclose()
+
+
+async def test_domain_durable_refusals_replay_and_legacy_success(tmp_path, monkeypatch):
+    import copy
+
+    from butlers.core.obligation_sources import SourceConflict
+
+    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch)
+    c, runtime = pool.connection, daemon.obligation_domain_runtime
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": copy.deepcopy(c.event["payload"]),
+    }
+    # Durable activity, not the transport's assertion, authorizes dark staging.
+    c.subscription["active"] = False
+    result = await receive(**args)
+    assert result["status"] == "ok" and len(c.rows) == 1 and not c.occurrences
+    c.subscription["active"] = True
+    task_id = uuid.UUID(result["task_id"])
+    result = await receive(**args)
+    submitted = await runtime.read_committed(task_id, **args)
+    original = copy.deepcopy((c.definitions, c.revisions, c.occurrences, c.outbox))
+    event, subscription, delivery, row = copy.deepcopy(
+        (c.event, c.subscription, c.delivery, c.rows[task_id])
+    )
+    for fault in (
+        "absent_event",
+        "event_identity",
+        "publisher",
+        "payload",
+        "inactive",
+        "absent_subscription",
+        "subscriber",
+        "absent_delivery",
+        "delivery",
+        "delivery_task",
+        "role",
+        "shadow",
+        "task",
+        "registry",
+        "declaration",
+        "cancelled",
+        "claim",
+    ):
+        c.event, c.subscription, c.delivery, c.rows[task_id] = copy.deepcopy(
+            (event, subscription, delivery, row)
+        )
+        if fault == "absent_event":
+            c.event = None
+        if fault == "event_identity":
+            c.event["id"] = uuid.uuid4()
+        if fault == "publisher":
+            c.event["source_butler"] = "other"
+        if fault == "payload":
+            c.event["payload"] = {"trip": "changed"}
+        if fault == "inactive":
+            c.subscription["active"] = False
+        if fault == "absent_subscription":
+            c.subscription = None
+        if fault == "subscriber":
+            c.subscription["subscriber_butler"] = "other"
+        if fault == "absent_delivery":
+            c.delivery = None
+        if fault == "delivery":
+            c.delivery["event_id"] = uuid.uuid4()
+        if fault == "delivery_task":
+            c.delivery["task_id"] = uuid.uuid4()
+        if fault == "role":
+            c.role = "butler_other_rw"
+        if fault == "shadow":
+            c.schedule_shadow = True
+        if fault == "task":
+            c.rows[task_id]["job_name"] = "other"
+        if fault == "registry":
+            daemon._tool_catalog = None
+        if fault == "declaration":
+            daemon.config.subscriptions[0].source = "other.event"
+        if fault == "cancelled":
+            c.occurrences[submitted.dark.occurrence_id]["state"] = "cancelled"
+        if fault == "claim":
+            c.occurrences[submitted.dark.occurrence_id]["claim_token"] = uuid.uuid4()
+        with pytest.raises(SourceConflict):
+            await runtime.read_committed(task_id, **args)
+        c.role, c.schedule_shadow, daemon._tool_catalog = (
+            "butler_health_rw",
+            False,
+            runtime.registry,
+        )
+        daemon.config.subscriptions[0].source = "travel.trip_booked"
+        c.definitions, c.revisions, c.occurrences, c.outbox = copy.deepcopy(original)
+    c.event, c.subscription, c.delivery, c.rows[task_id] = copy.deepcopy(
+        (event, subscription, delivery, row)
+    )
+    # Matching new event AND prompt still cannot rewrite the first journal.
+    c.event["payload"] = args["payload"] = {
+        "trip": "new",
+        "exposed": False,
+        "owner_authority": True,
+        "caused_by_goal": "forged",
+    }
+    c.rows[task_id]["prompt"] = _build_wake_task_prompt(
+        **{k: v for k, v in args.items() if k != "event_id"},
+        event_id=c.event["id"],
+        subscriber_butler="health",
+    )
+    with pytest.raises(SourceConflict, match="domain_capture_binding_changed"):
+        await runtime.read_committed(task_id, **args)
+    assert (c.definitions, c.revisions, c.occurrences, c.outbox) == original
+    assert len(c.rows) == 1
+    await runtime.aclose()
+
+
+async def test_domain_off_refusal_and_unknown_commit_keep_legacy_task(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from butlers.core.obligation_domain_sources import start_domain_sources
+
+    class NoAccess:
+        def __getattribute__(self, key):
+            raise AssertionError("OFF must not inspect material")
+
+    assert start_domain_sources(NoAccess(), NoAccess(), NoAccess(), NoAccess()) is None
+    daemon, pool, receive = await domain_source_consumer(tmp_path, monkeypatch, mode="off")
+    c = pool.connection
+    args = {
+        "event_id": str(c.event["id"]),
+        "event_type": c.event["event_type"],
+        "source_butler": "travel",
+        "payload": c.event["payload"],
+    }
+    assert (await receive(**args))["status"] == "ok"
+    assert not c.definitions and not c.occurrences and daemon.obligation_domain_runtime is None
+    # Same loaded declaration, actual registration and private factory; codec
+    # compatibility follows the bus writer's existing serialized JSON object.
+    runtime = start_domain_sources(
+        pool,
+        daemon,
+        __import__("butlers.core.runtime_config", fromlist=["RuntimeConfig"]).RuntimeConfig(
+            "health"
+        ),
+        daemon._tool_catalog,
+        mode="dark",
+    )
+    daemon.obligation_domain_runtime = runtime
+    c.event["payload"] = json.dumps(args["payload"])
+    acquire = pool.acquire
+    lose_reply = True
+
+    @asynccontextmanager
+    async def lost_commit():
+        nonlocal lose_reply
+        async with acquire() as connection:
+            yield connection
+        if lose_reply:
+            lose_reply = False
+            raise OSError("synthetic lost commit acknowledgement")
+
+    pool.acquire = lost_commit
+    assert (await receive(**args))["status"] == "ok"
+    assert len(c.occurrences) == 1  # staged TX committed but acknowledgement lost
+    first = next(iter(c.occurrences))
+    assert (await receive(**args))["reconciled"] is True
+    assert list(c.occurrences) == [first] and len(c.rows) == 1
+    submitted = await runtime.read_committed(next(iter(c.rows)), **args)
+    assert submitted.dark.obligation.created_exposed is True
+    await runtime.aclose()

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import uuid
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -382,3 +385,137 @@ async def predicate_search(
             results.append(row)
 
     return results
+
+
+async def memory_fact_inventory(
+    pool: Pool,
+    *,
+    predicate: str,
+    scopes: tuple[str, ...],
+    tenant_id: str,
+    read_policy: _search.CatalogReadPolicy,
+) -> dict[str, Any]:
+    """Inventory canonical expiry facts under server-held, authorized scope.
+
+    This is not ranked search. Visibility predicates precede the cursor limit;
+    hidden rows/counts and lifecycle bumps are never returned. Conflicting
+    current properties and non-canonical dates remain unresolved.
+    """
+    now = datetime.now(UTC)
+    result: dict[str, Any] = {
+        "status": "unavailable",
+        "complete": False,
+        "items": [],
+        "authority_source": "held_runtime_config",
+        "coverage": "authorized_scope",
+        "as_of": now.isoformat(),
+        "unresolved_count": 0,
+        "reason": "store_unavailable",
+    }
+    tenant_id = validate_tenant_id(tenant_id)
+    if predicate != "passport_expiry" or not scopes or set(scopes) - {"travel", "global"}:
+        result["reason"] = "unsupported_scope"
+        return result
+    if read_policy.policy_defaulted or pool is None:
+        result["reason"] = "authority_unavailable"
+        return result
+    try:
+        async with asyncio.timeout(5):
+            async with pool.acquire() as connection:
+                async with connection.transaction(isolation="repeatable_read", readonly=True):
+                    await connection.execute("SELECT set_config('statement_timeout', '4000', true)")
+                    now = await connection.fetchval("SELECT transaction_timestamp()")
+                    result["as_of"] = now.isoformat()
+                    rows = []
+                    async for row in connection.cursor(
+                        """SELECT f.id, left(f.subject, 256) AS subject,
+                                  f.entity_id, f.object_entity_id, f.scope,
+                                  CASE WHEN char_length(f.content) = 10
+                                       THEN f.content ELSE NULL END AS content,
+                                  left(f.source_butler, 256) AS source_butler,
+                                  (char_length(f.subject) <= 256
+                                   AND char_length(f.source_butler) <= 256) AS identity_bounded,
+                                  f.observed_at,
+                                  f.content_authority, f.authority_entity_id
+                           FROM facts AS f
+                           WHERE f.tenant_id = $1 AND f.predicate = $2
+                             AND f.scope = ANY($3::text[])
+                             AND f.sensitivity = ANY($4::text[])
+                             AND f.validity IN ('active', 'fading')
+                             AND (f.valid_at IS NULL OR f.valid_at <= $5)
+                             AND (f.invalid_at IS NULL OR f.invalid_at > $5)
+                             AND f.observed_at IS NOT NULL AND f.observed_at <= $5
+                             AND f.subject <> '' AND f.source_butler IS NOT NULL
+                             AND f.content_authority IN (
+                                 'owner', 'owner_device', 'system', 'third_party', 'mixed'
+                             )
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM facts AS newer
+                                 WHERE newer.supersedes_id = f.id
+                                   AND newer.tenant_id = f.tenant_id
+                                   AND newer.validity IN ('active', 'fading')
+                                   AND newer.observed_at <= $5
+                                   AND (newer.valid_at IS NULL OR newer.valid_at <= $5)
+                                   AND (newer.invalid_at IS NULL OR newer.invalid_at > $5)
+                             )
+                           ORDER BY f.id LIMIT 1001""",
+                        tenant_id,
+                        predicate,
+                        list(scopes),
+                        list(read_policy.allowed_sensitivities),
+                        now,
+                        prefetch=100,
+                    ):
+                        rows.append(dict(row))
+                    result.update(status="complete", complete=True, reason="exhausted")
+                    if len(rows) > 1000:
+                        result.update(status="incomplete", complete=False, reason="row_limit")
+                    properties: dict[tuple, list[dict[str, Any]]] = {}
+                    for row in rows[:1000]:
+                        if not row["identity_bounded"]:
+                            result["unresolved_count"] += 1
+                            continue
+                        key = (
+                            row["scope"],
+                            str(row["entity_id"] or row["subject"]),
+                            str(row["object_entity_id"] or ""),
+                        )
+                        properties.setdefault(key, []).append(row)
+                    for candidates in properties.values():
+                        dates = {row["content"] for row in candidates}
+                        if len(dates) != 1:
+                            result["unresolved_count"] += len(candidates)
+                            continue
+                        for row in candidates:
+                            try:
+                                expiry = date.fromisoformat(row["content"])
+                                if expiry.isoformat() != row["content"]:
+                                    raise ValueError("noncanonical")
+                            except (TypeError, ValueError):
+                                result["unresolved_count"] += 1
+                                continue
+                            result["items"].append(
+                                {
+                                    "fact_id": str(row["id"]),
+                                    "subject": row["subject"],
+                                    "entity_id": str(row["entity_id"])
+                                    if row["entity_id"]
+                                    else None,
+                                    "scope": row["scope"],
+                                    "expiry_date": expiry.isoformat(),
+                                    "source_butler": row["source_butler"],
+                                    "content_authority": row["content_authority"],
+                                    "observed_at": row["observed_at"].isoformat(),
+                                }
+                            )
+                    if result["unresolved_count"]:
+                        result.update(status="incomplete", complete=False, reason="unresolved")
+                    if len(json.dumps(result).encode()) > 262144:
+                        result.update(
+                            status="incomplete", complete=False, reason="output_limit", items=[]
+                        )
+    except TimeoutError:
+        result.update(status="incomplete", complete=False, reason="timeout")
+    except Exception:
+        result.update(status="unavailable", complete=False, reason="store_unavailable", items=[])
+    return result

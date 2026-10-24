@@ -1269,6 +1269,16 @@ _SYNTHESIS_MAX_SENTENCE_CHARS = 280
 _SYNTHESIS_TIMEOUT_SECONDS = 12
 
 
+def _cluster_synthesis_prompt(cluster: list[dict[str, Any]]) -> str:
+    """The actual deterministic synthesis input, shared with dark preparation."""
+    bullets = "\n".join(f"- [{c.get('origin_butler', '')}] {c['message']}" for c in cluster)
+    return (
+        "These notes were flagged as related. In ONE short sentence "
+        "(under 20 words), state what connects them. Respond with just "
+        "the sentence — no preamble, no quotes, no markdown.\n\n" + bullets
+    )
+
+
 async def _synthesize_cluster_sentence(
     pool: asyncpg.Pool,
     cluster: list[dict[str, Any]],
@@ -1320,12 +1330,7 @@ async def _synthesize_cluster_sentence(
         if not quota.allowed:
             return None
 
-        bullets = "\n".join(f"- [{c.get('origin_butler', '')}] {c['message']}" for c in cluster)
-        prompt = (
-            "These notes were flagged as related. In ONE short sentence "
-            "(under 20 words), state what connects them. Respond with just "
-            "the sentence — no preamble, no quotes, no markdown.\n\n" + bullets
-        )
+        prompt = _cluster_synthesis_prompt(cluster)
         adapter = create_adapter("api", credential_store=credential_store, butler_name=butler_name)
         text, _tool_calls, usage = await asyncio.wait_for(
             adapter.invoke(
@@ -1927,6 +1932,7 @@ async def delivery_cycle(
     daily_hold_mode: bool = False,
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
+    dark_prepare_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
 
@@ -2330,6 +2336,8 @@ async def delivery_cycle(
 
     candidates.sort(key=_selection_key)
     selected = candidates[:effective_budget]
+    # Copies only for the private, explicitly configured dark consumer.
+    selected_raw = [dict(c) for c in selected] if dark_prepare_fn is not None else None
     selected_ids = [str(c["id"]) for c in selected]
     unselected_ids = [str(c["id"]) for c in candidates[effective_budget:]]
     if unselected_ids:
@@ -2351,6 +2359,7 @@ async def delivery_cycle(
     # decided elsewhere) before formatting. This never touches the stored
     # insight_candidates.message -- only the ephemeral copy used for this
     # cycle's delivery text.
+    _prepared_statuses = {}
     if any(c.get("prepared_action_id") is not None for c in selected):
         _prepared_statuses = await _resolve_prepared_action_statuses(pool, selected)
         selected = [
@@ -2368,6 +2377,40 @@ async def delivery_cycle(
         else c
         for c in selected
     ]
+
+    if dark_prepare_fn is not None:
+        # All inputs are the real collector's selection, before model/notify IO.
+        # Decorated content is an observation, never prepared-action authority.
+        try:
+            result["dark_preparation"] = await dark_prepare_fn(
+                selected_raw,
+                selected,
+                {
+                    "urgent_only": urgent_only,
+                    "daily_hold_mode": daily_hold_mode,
+                    "selection_reference": now,
+                    "settings": settings,
+                    "effective_budget": effective_budget,
+                    "category_budget_reasons": result["category_budget_reasons"],
+                    "prepared_action_statuses": _prepared_statuses,
+                    "premise_verdicts": {
+                        str(c["id"]): premise_verdicts.get(str(c["id"])) for c in selected
+                    },
+                    "clusters": [
+                        {
+                            "ids": [str(c["id"]) for c in cluster],
+                            "prompt": _cluster_synthesis_prompt(cluster)
+                            if len(cluster) > 1
+                            else None,
+                        }
+                        for cluster in _cluster_candidates(selected)
+                    ],
+                },
+            )
+        except Exception:
+            # Dark preparation failure cannot change legacy dispatch or publish
+            # contents. Cancellation/BaseException still propagate.
+            result["dark_preparation"] = "unavailable"
 
     # Step 7: Deliver
     # Guard: if no notify function is wired, skip delivery entirely rather than

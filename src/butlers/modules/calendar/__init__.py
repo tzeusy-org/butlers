@@ -270,7 +270,29 @@ class CalendarModule(
         # Conditional registrations declare their complete descriptive metadata
         # through the same module channel as argument sensitivities. The daemon
         # binds the actual owner and configured approval policy after registration.
-        metadata: dict[str, ToolMeta] = {}
+        metadata: dict[str, ToolMeta] = {
+            "calendar_scan_reminder_events": ToolMeta(
+                arg_sensitivities={},
+                canonical_name="calendar_scan_reminder_events",
+                module_name="calendar",
+                group_name="core",
+                namespace="calendar.core",
+                llm_presentable=True,
+                load_posture="deferred",
+                effect_class="read",
+                output_trust="untrusted",
+                output_sensitivity="sensitive",
+                resource_params=("calendar_id",),
+                selection_bound={"calendar_id": False},
+                safety_args=(),
+                idempotency="none",
+                owner_authority=False,
+                recipient_params=RecipientParameters(),
+                read_stores=("external:calendar",),
+                write_stores=(),
+                unknown_output_source=True,
+            )
+        }
         if self._butler_name in RESPONSE_FENCE_OWNERS:
             metadata["calendar_response_fence_status"] = ToolMeta(
                 arg_sensitivities={"request": True},

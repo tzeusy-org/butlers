@@ -557,6 +557,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         name=f"ingest-route-{result.request_id}",
                     )
 
+        # Canonical acceptance and legacy queue setup are complete. The held
+        # private consumer rereads persisted material; an envelope is not authority.
+        feed = getattr(daemon, "obligation_feed_runtime", None)
+        if feed is not None:
+            feed.offer(result.request_id)
+
         return result.model_dump(mode="json")
 
     async def _dispatch_dashboard_target(

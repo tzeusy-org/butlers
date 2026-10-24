@@ -2339,52 +2339,57 @@ class Spawner:
             )
             system_prompt = resolved_system_prompt.prompt
 
-            # Fetch situational context preamble (fail-open)
-            context_preamble_ctx = await fetch_situational_context_preamble(
-                self._pool, self._config.name
-            )
-            general_timezone_instruction = await fetch_general_timezone_instruction(
-                self._pool,
-                self._config.name,
-                self._credential_store,
-            )
-
-            # Fetch owner routing instructions (switchboard only)
-            # Intentional name check: routing instructions are the switchboard's classifier
-            # context. No other staffer or domain butler uses this context injection.
+            # Engineering executors must not read ambient owner state (RFC0038 D18).
+            # Empty MCP configuration alone is too late: these readers precede invoke.
+            context_preamble_ctx = None
+            general_timezone_instruction = None
             routing_ctx: str | None = None
-            if self._config.name == "switchboard":
-                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
-
             memory_ctx: str | None = None
+            blind_spot_preamble = None
             memory_enabled = _memory_module_enabled(self._config)
-            if memory_enabled:
-                memory_ctx = await fetch_memory_context(
+            if trigger_source not in ("qa", "healing"):
+                # Fetch situational context preamble (fail-open)
+                context_preamble_ctx = await fetch_situational_context_preamble(
+                    self._pool, self._config.name
+                )
+                general_timezone_instruction = await fetch_general_timezone_instruction(
                     self._pool,
                     self._config.name,
-                    final_prompt,
-                    token_budget=_memory_context_token_budget(self._config),
+                    self._credential_store,
                 )
 
-            blind_spot_preamble_enabled = True
-            if self._runtime_config_accessor is not None:
-                try:
-                    blind_spot_preamble_enabled = (
-                        await self._runtime_config_accessor.get()
-                    ).blind_spot_preamble_enabled
-                except Exception:
-                    logger.warning(
-                        "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
-                        self._config.name,
-                        exc_info=True,
-                    )
-            blind_spot_preamble = await fetch_blind_spot_preamble(
-                self._pool,
-                self._config.name,
-                self._config,
-                enabled=blind_spot_preamble_enabled,
-            )
+                # Fetch owner routing instructions (switchboard only)
+                # Intentional name check: routing instructions are the switchboard's classifier
+                # context. No other staffer or domain butler uses this context injection.
+                if self._config.name == "switchboard":
+                    routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
 
+                if memory_enabled:
+                    memory_ctx = await fetch_memory_context(
+                        self._pool,
+                        self._config.name,
+                        final_prompt,
+                        token_budget=_memory_context_token_budget(self._config),
+                    )
+
+                blind_spot_preamble_enabled = True
+                if self._runtime_config_accessor is not None:
+                    try:
+                        blind_spot_preamble_enabled = (
+                            await self._runtime_config_accessor.get()
+                        ).blind_spot_preamble_enabled
+                    except Exception:
+                        logger.warning(
+                            "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                            self._config.name,
+                            exc_info=True,
+                        )
+                blind_spot_preamble = await fetch_blind_spot_preamble(
+                    self._pool,
+                    self._config.name,
+                    self._config,
+                    enabled=blind_spot_preamble_enabled,
+                )
             _composed_prompt_digest = compose_prompt_digest(
                 system_prompt,
                 memory_ctx,

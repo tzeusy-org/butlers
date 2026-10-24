@@ -254,3 +254,359 @@ async def test_narrate_daily_rollup_end_to_end_against_real_rows(pool, monkeypat
     assert result["status"] == "labeled"
     rows = await list_daily_rollups(pool, local_date=d)
     assert {r.narrative for r in rows} == {"An ordinary day."}
+
+
+@pytest.fixture(scope="module")
+async def chronicler_sources(postgres_container):
+    """Real core+Chronicler chains and production bootstrap/runtime role.
+
+    Separate from the historical narrative-only fixture above. No substitute
+    tables, runtime privilege grants or protected-history cleanup.
+    """
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from urllib.parse import urlparse
+
+    import psycopg2
+
+    from butlers.db import Database
+    from butlers.scheduled_jobs import _read_chronicler_narration_registration
+    from butlers.testing.migration import init_db_sql_for_dbapi, migration_bootstrap_db_url
+
+    # Use the real server assembly before direct core adapter/readback calls.
+    _read_chronicler_narration_registration()
+    name = migration_db_name()
+    url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        name,
+        ["core", "chronicler"],
+        {"core": "chronicler", "chronicler": "chronicler"},
+    )
+    parsed = urlparse(url)
+
+    def bootstrap():
+        admin_url = urlparse(migration_bootstrap_db_url(postgres_container, name))
+        with psycopg2.connect(admin_url._replace(scheme="postgresql").geturl()) as connection:
+            connection.autocommit = True
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('butlers.connecting_user', %s, false)", (parsed.username,)
+                )
+                cursor.execute(init_db_sql_for_dbapi())
+
+    await asyncio.to_thread(bootstrap)
+
+    @asynccontextmanager
+    async def administrator():
+        admin_url = urlparse(migration_bootstrap_db_url(postgres_container, name))
+        connection = await asyncpg.connect(
+            admin_url._replace(scheme="postgresql").geturl(), timeout=5
+        )
+        try:
+            await register_jsonb_codec(connection)
+            yield connection
+        finally:
+            await connection.close(timeout=5)
+
+    db = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="chronicler",
+        role="butler_chronicler_rw",
+        host=parsed.hostname,
+        port=parsed.port,
+        user=parsed.username,
+        password=parsed.password,
+        min_pool_size=1,
+        max_pool_size=4,
+        strict_role_enforcement=True,
+    )
+    try:
+        await db.connect()
+        await db.pool.execute(
+            "INSERT INTO chronicler.scheduled_tasks "
+            "(name,cron,dispatch_mode,job_name,timezone,source) "
+            "VALUES ('chronicler_narrate_daily','20 1 * * *','job',"
+            "'chronicler_narrate_daily','Asia/Singapore','db')"
+        )
+        yield SimpleNamespace(pool=db.pool, administrator=administrator)
+    finally:
+        await db.close()
+
+
+async def _source_day_inputs(pool, local_date):
+    from butlers.chronicler.narration import (
+        _SYSTEM_PROMPT,
+        _fetch_top_episode_titles,
+        _local_day_bounds_utc,
+        build_narration_prompt,
+    )
+
+    await upsert_daily_rollup(
+        pool, local_date=local_date, lane="work", seconds=100, episode_count=1
+    )
+    await upsert_daily_rollup_flag(
+        pool, local_date=local_date, flag_type="sleep_missing", severity="warning", detail={}
+    )
+    rollups = await list_daily_rollups(pool, local_date=local_date)
+    flags = await list_daily_rollup_flags(pool, local_date=local_date)
+    start, end = _local_day_bounds_utc(local_date, _TZ)
+    titles = await _fetch_top_episode_titles(pool, day_start_utc=start, day_end_utc=end)
+    return dict(
+        local_date=local_date,
+        timezone="Asia/Singapore",
+        rollup_rows=rollups,
+        flag_rows=flags,
+        top_episode_titles=titles,
+        user_message=build_narration_prompt(
+            local_date=local_date, rollup_rows=rollups, flag_rows=flags, top_episode_titles=titles
+        ),
+        system_prompt=_SYSTEM_PROMPT,
+    )
+
+
+async def test_registered_chronicler_source_commits_before_legacy_model(
+    chronicler_sources, monkeypatch
+):
+    """Actual registered caller and SQL commit; model transport remains replaced."""
+    from uuid import UUID
+
+    from butlers import scheduled_jobs
+    from butlers.chronicler import jobs
+    from butlers.core.obligation_chronicler_sources import JOB
+
+    pool, seen = chronicler_sources.pool, []
+    day = date(2025, 1, 1)
+    await _source_day_inputs(pool, day)
+    monkeypatch.setenv("BUTLERS_CHRONICLER_DARK_PREPARATION", "1")
+    monkeypatch.setenv("CHRONICLER_NARRATION_ENABLED", "true")
+    monkeypatch.setattr(jobs, "_now", lambda: _local(day + timedelta(days=1), 1))
+
+    class Dispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def call(self, message, *, system_prompt):
+            async with pool.acquire() as observer:
+                assert await observer.fetchval("SELECT current_user") == "butler_chronicler_rw"
+                rows = await observer.fetch(
+                    "SELECT body FROM obligation_revisions "
+                    "WHERE body->'payload'->'material'->>'local_date'=$1",
+                    day.isoformat(),
+                )
+                assert len(rows) == 1
+                assert rows[0]["body"]["family"] == "model_job"
+                assert rows[0]["body"]["declaration"]["capabilities"] == []
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1",
+                        UUID(rows[0]["body"]["source_id"]),
+                    )
+                    == 1
+                )
+            seen.append((message, system_prompt))
+            return (
+                '{"day_summary":"A quiet day.","flag_labels":{"sleep_missing":"No sleep logged."}}'
+            )
+
+    monkeypatch.setattr("butlers.chronicler.narration.DiscretionDispatcher", Dispatcher)
+    result = await scheduled_jobs._run_chronicler_narrate_daily_job(pool, None)
+    assert result["status"] == "labeled" and len(seen) == 1
+    assert JOB == "chronicler_narrate_daily"
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval("SELECT narrative FROM daily_rollups WHERE local_date=$1", day)
+            == "A quiet day."
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_source_outbox o JOIN obligation_revisions r "
+                "ON r.source_id=o.source_id AND r.revision=o.revision "
+                "WHERE o.kind='occurrence_captured' "
+                "AND r.body->'payload'->'material'->>'local_date'=$1",
+                day.isoformat(),
+            )
+            == 1
+        )
+
+
+async def test_chronicler_source_concurrent_duplicate_committed_readback(chronicler_sources):
+    import asyncio
+
+    from butlers.core.obligation_chronicler_sources import ChroniclerPreparation, ChroniclerRuntime
+
+    pool = chronicler_sources.pool
+    inputs = await _source_day_inputs(pool, date(2025, 1, 2))
+    async with asyncio.timeout(6):
+        first, second = await asyncio.gather(
+            ChroniclerPreparation(pool, None).prepare_committed(**inputs),
+            ChroniclerPreparation(pool, None).prepare_committed(**inputs),
+        )
+    assert first == second
+    async with pool.acquire() as observer, observer.transaction():
+        assert await ChroniclerRuntime().read_submission_in_transaction(observer, first) == first
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_occurrences WHERE source_id=$1",
+                first.definition.source_id,
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM obligation_source_outbox "
+                "WHERE source_id=$1 AND kind='occurrence_captured'",
+                first.definition.source_id,
+            )
+            == 1
+        )
+        assert first.obligation.capabilities == () and first.obligation.created_exposed
+        assert first.definition.creator is None
+
+
+async def test_chronicler_source_outbox_failure_rolls_back_all_rows(
+    chronicler_sources, monkeypatch
+):
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.core.obligation_chronicler_sources import ChroniclerPreparation
+    from butlers.core.obligation_sources import ObligationSourceRepository
+
+    pool = chronicler_sources.pool
+    inputs = await _source_day_inputs(pool, date(2025, 1, 3))
+    original = ObligationSourceRepository._outbox
+    source_ids = []
+
+    async def refuse(self, source_id, *args):
+        source_ids.append(source_id)
+        await original(self, source_id, *args)
+        raise OSError("synthetic unavailable outbox acknowledgement")
+
+    monkeypatch.setattr(ObligationSourceRepository, "_outbox", refuse)
+    with pytest.raises(SourceUnavailable):
+        await ChroniclerPreparation(pool, None).prepare_committed(**inputs)
+    async with pool.acquire() as observer:
+        for table in (
+            "obligation_definitions",
+            "obligation_revisions",
+            "obligation_source_outbox",
+            "obligation_occurrences",
+            "obligation_source_commands",
+        ):
+            key = "id" if table == "obligation_definitions" else "source_id"
+            assert (
+                await observer.fetchval(
+                    f"SELECT count(*) FROM {table} WHERE {key}=$1", source_ids[0]
+                )
+                == 0
+            )
+    monkeypatch.setattr(ObligationSourceRepository, "_outbox", original)
+    assert await ChroniclerPreparation(pool, None).prepare_committed(**inputs)
+
+
+async def test_chronicler_source_material_fence_through_commit(chronicler_sources):
+    import asyncio
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.core.obligation_chronicler_sources import (
+        ChroniclerPreparation,
+        ChroniclerRuntime,
+        _registration,
+        reconcile_chronicler_source,
+    )
+    from butlers.core.obligation_sources import ObligationSourceRepository, SourceConflict
+    from tests.polling import poll_until
+
+    pool = chronicler_sources.pool
+    inputs = await _source_day_inputs(pool, date(2025, 1, 4))
+    first = await ChroniclerPreparation(pool, None).prepare_committed(**inputs)
+    task = None
+    writer = await pool.acquire()
+    try:
+        async with pool.acquire() as held, held.transaction():
+            holder_pid, contender_pid = (
+                await held.fetchval("SELECT pg_backend_pid()"),
+                await writer.fetchval("SELECT pg_backend_pid()"),
+            )
+            assert await ChroniclerRuntime().read_submission_in_transaction(held, first) == first
+            task = asyncio.create_task(
+                writer.execute(
+                    "UPDATE chronicler.daily_rollups SET seconds=101 WHERE local_date=$1",
+                    inputs["local_date"],
+                )
+            )
+            async with chronicler_sources.administrator() as monitor:
+
+                async def waiting():
+                    if task.done():
+                        task.result()
+                        pytest.fail("material writer completed before source commit")
+                    return await monitor.fetchval(
+                        "SELECT $1::int=ANY(pg_blocking_pids($2::int)) "
+                        "AND EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$2 "
+                        "AND datname=current_database() AND wait_event_type='Lock')",
+                        holder_pid,
+                        contender_pid,
+                    )
+
+                async with asyncio.timeout(3):
+                    await poll_until(waiting, interval_s=0.02)
+            assert not task.done()
+        async with asyncio.timeout(5):
+            await task
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await pool.release(writer)
+    async with pool.acquire() as observer, observer.transaction():
+        with pytest.raises(SourceConflict, match="material_changed"):
+            await ChroniclerRuntime().read_submission_in_transaction(observer, first)
+    _, registration = _registration()
+    snapshot = SimpleNamespace(
+        owner_domain="chronicler",
+        source_sha256=registration["source_sha"],
+        config_digest=registration["config_digest"],
+    )
+    async with pool.acquire() as observer, observer.transaction():
+        repository = ObligationSourceRepository(observer, "chronicler")
+        await repository.lock_git_inventory()
+        command = uuid4()
+        await repository.read_command(command)
+        await repository.lock_source(first.definition.source_id)
+        await reconcile_chronicler_source(repository, first.definition, snapshot, command)
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval(
+                "SELECT state FROM obligation_definitions WHERE id=$1", first.definition.source_id
+            )
+            == "deleted"
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT state FROM obligation_occurrences WHERE id=$1", first.occurrence_id
+            )
+            == "cancelled"
+        )
+
+
+async def test_chronicler_source_real_role_and_material_shadow_refuse(chronicler_sources):
+    from butlers.core.obligation_chronicler_sources import ChroniclerPreparation, ChroniclerRuntime
+    from butlers.core.obligation_sources import SourceConflict
+
+    inputs = await _source_day_inputs(chronicler_sources.pool, date(2025, 1, 5))
+    first = await ChroniclerPreparation(chronicler_sources.pool, None).prepare_committed(**inputs)
+    async with chronicler_sources.administrator() as admin:
+        await admin.execute("SET search_path=chronicler,public")
+        async with admin.transaction():
+            with pytest.raises(SourceConflict, match="owning_role_required"):
+                await ChroniclerRuntime().read_submission_in_transaction(admin, first)
+        # Fixture administrator creates a same-backend shadow before entering the
+        # actual runtime role; production runtime receives no TEMP privilege.
+        await admin.execute("CREATE TEMP TABLE daily_rollups(id uuid)")
+        await admin.execute("SET ROLE butler_chronicler_rw")
+        async with admin.transaction():
+            with pytest.raises(SourceConflict, match="material_shadowed"):
+                await ChroniclerRuntime().read_submission_in_transaction(admin, first)
+        await admin.execute("RESET ROLE")

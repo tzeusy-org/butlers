@@ -52,13 +52,13 @@ def validate_deadline_input(
             )
 
 
-def compute_days_remaining(*, target_date: date) -> int:
+def compute_days_remaining(*, target_date: date, as_of: date | None = None) -> int:
     """Compute the number of days remaining until target_date.
 
     Returns:
         (target_date - today).days — may be negative if target has passed.
     """
-    today = datetime.now(UTC).date()
+    today = as_of if as_of is not None else datetime.now(UTC).date()
     return (target_date - today).days
 
 
@@ -128,8 +128,9 @@ def compute_expiry_transition(
     *,
     current_status: str,
     target_date: date,
+    as_of: date | None = None,
 ) -> tuple[str, bool]:
-    """Check if a deadline should be marked expired.
+    """Check expiry at the pass date, or the current date for legacy callers.
 
     Returns:
         (new_status, should_disable) — If target_date has passed and the deadline
@@ -142,7 +143,7 @@ def compute_expiry_transition(
     if current_status == "expired":
         return current_status, False
 
-    today = datetime.now(UTC).date()
+    today = as_of if as_of is not None else datetime.now(UTC).date()
     if target_date < today:
         return "expired", True
 

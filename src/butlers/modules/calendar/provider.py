@@ -36,6 +36,18 @@ class CalendarProvider(abc.ABC):
         """Return events in a time window."""
         ...
 
+    async def _reminder_event_page(
+        self,
+        *,
+        calendar_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_token: str | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Read one byte-bounded page for the owning aggregate scan, if supported."""
+        raise NotImplementedError("reminder_scan_unsupported")
+
     @abc.abstractmethod
     async def get_event(self, *, calendar_id: str, event_id: str) -> CalendarEvent | None:
         """Fetch a single event by id."""

@@ -24,6 +24,14 @@ cron = "<cron-expression>"      # Standard 5-field cron expression.
 prompt = """<prompt>"""         # Prompt sent to runtime instance (prompt mode, default).
 # dispatch_mode = "prompt"      # Default. Explicit only when needed.
 
+[butler.schedule.obligation]   # Optional dark declaration for this prompt schedule.
+version = 1
+capabilities = []              # Explicit empty ceiling, never an inferred default.
+# Nonempty entries name actual registered domain__canonical_name capabilities,
+# with optional exact resource sets and park_only narrowing.
+# Format and limits: docs/concepts/obligation-declarations.md.
+# preconditions is reserved for the allowance successor; v1 refuses it.
+
 [[butler.schedule]]             # Optional. Job-mode scheduled task.
 name = "<job-name>"             # Kebab-case identifier.
 cron = "<cron-expression>"      # Standard 5-field cron expression.
@@ -342,3 +350,15 @@ token_env = "BUTLER_TELEGRAM_TOKEN"   # Module validates this env var exists at 
 
 - Unresolved required references are startup-blocking errors.
 - Inline secrets in config values are prohibited — always use env var references.
+
+## Goal obligation ceilings
+
+Prompt schedules use `[butler.schedule.obligation]`; session-waking inputs use
+`[[butler.subscription]]` with unique `name`, `kind="domain"` or `kind="feed"`,
+and exact `source`, followed by `[butler.subscription.obligation]`. Both use the
+single version1 declaration parser in
+[obligation declarations](../../../../../../docs/concepts/obligation-declarations.md).
+Include every real tool dependency and resource restriction; a local declaration
+never supplies verified creator/grant/exposure or registered ingress authority.
+Keep deterministic presence/departure/safety work in job mode. Current OFF
+startup only diagnoses against the final local catalog and does not admit work.

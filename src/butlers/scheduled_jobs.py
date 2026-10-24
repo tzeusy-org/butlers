@@ -14,9 +14,11 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
+
+from butlers.core.obligation_chronicler_sources import _bind_chronicler_registration_reader
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +295,8 @@ def _build_switchboard_insight_amend_fn(pool: asyncpg.Pool) -> Any:
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
+    *,
+    insight_admission: Any | None = None,
 ) -> dict[str, Any]:
     """Run the proactive insight delivery cycle for the Switchboard butler.
 
@@ -312,20 +316,29 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    preparation = (
+        insight_admission.preparer("insight_delivery_cycle")
+        if insight_admission is not None
+        else configured_insight_preparer(pool, "insight_delivery_cycle")
+    )
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+        **({"dark_prepare_fn": preparation} if preparation is not None else {}),
     )
 
 
 async def _run_switchboard_insight_urgent_subcycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
+    *,
+    insight_admission: Any | None = None,
 ) -> dict[str, Any]:
     """Run the hourly urgent insight sub-cycle for the Switchboard butler.
 
@@ -340,14 +353,21 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.obligation_insight_sources import configured_insight_preparer
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    preparation = (
+        insight_admission.preparer("insight_urgent_subcycle")
+        if insight_admission is not None
+        else configured_insight_preparer(pool, "insight_urgent_subcycle")
+    )
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
         urgent_only=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+        **({"dark_prepare_fn": preparation} if preparation is not None else {}),
     )
 
 
@@ -1967,14 +1987,52 @@ async def _run_chronicler_rollup_daily_job(
     return await run_rollup_daily(pool, job_args)
 
 
+@_bind_chronicler_registration_reader
+def _read_chronicler_narration_registration():
+    """Resolve the actual module/config/handler here; return no caller authority."""
+    import json
+
+    from butlers.config import load_config, obligation_config_material_digest
+    from butlers.core.obligation_chronicler_sources import JOB, _json
+    from butlers.core.obligation_git_sources import _registered_model_job_handler
+    from butlers.core.obligation_sources import SourceConflict
+    from butlers.core.obligations import parse_declaration
+    from butlers.modules.registry import default_registry
+
+    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "chronicler")
+    modules = default_registry().load_from_config(config.modules)
+    module = next(m for m in modules if m.name == "chronicler")
+    entries = [
+        e for e in sys.modules[type(module).__module__]._DEFAULT_SCHEDULES if e["name"] == JOB
+    ]
+    if (
+        len(entries) != 1
+        or entries[0]["job_name"] != JOB
+        or config.name != "chronicler"
+        or _registered_model_job_handler("chronicler", JOB) is not _run_chronicler_narrate_daily_job
+    ):
+        raise SourceConflict("chronicler_registration_changed")
+    declaration = parse_declaration(entries[0].get("obligation"))
+    if declaration.capabilities:
+        raise SourceConflict("chronicler_writer_unavailable")
+    return declaration, {
+        "entry": json.loads(_json(entries[0])),
+        "source_sha": config.source_sha256,
+        "config_digest": obligation_config_material_digest(config),
+    }
+
+
 async def _run_chronicler_narrate_daily_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Run Chronicler's bounded once-daily LLM rollup-labeling pass (bu-v9y18)."""
     from butlers.chronicler.jobs import run_narrate_daily
+    from butlers.core.obligation_chronicler_sources import configured_chronicler_preparer
 
-    return await run_narrate_daily(pool, job_args)
+    preparation = configured_chronicler_preparer(pool, job_args)
+    kwargs = {} if preparation is None else {"preparation": preparation}
+    return await run_narrate_daily(pool, job_args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -2284,6 +2342,38 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_retention_pruner_job_handlers("qa"),
         },
     }
+
+
+def classify_schedule_job(
+    handler: object,
+) -> Literal["model_backed", "deterministic", "unclassified"]:
+    """Classify only traced entrypoints, never a job name or dispatch mode.
+
+    The legacy registry name is retained for compatibility. Some handlers reach
+    model-backed owner-facing synthesis or a session, so membership alone does
+    not prove a deterministic service-plane job. Unknown transitive closures
+    remain explicitly unclassified. This value grants no source/goal authority.
+    """
+    if any(
+        handler is known
+        for known in (
+            _run_switchboard_insight_delivery_cycle_job,
+            _run_switchboard_insight_urgent_subcycle_job,
+            _run_chronicler_narrate_daily_job,
+            _run_memory_consolidation_job,
+        )
+    ):
+        return "model_backed"
+    if any(
+        handler is known
+        for known in (
+            _run_home_safety_sentinel_job,
+            _run_context_producer_home_presence_job,
+            _run_context_producer_commuting_eta_job,
+        )
+    ):
+        return "deterministic"
+    return "unclassified"
 
 
 def get_deterministic_schedule_job_registry() -> dict[
