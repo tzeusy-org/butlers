@@ -45,7 +45,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `authorize-qa-local-scheduler-policy` | staffer-qa | archive-first | QA-local scheduler reads are deterministic. QA triage becomes a staffer goal. | `bu-u5euwb` |
 | `capture-ci-shard-watchdog-diagnostics` | testing | archive-first | CI diagnostics only; no runtime overlap. | `bu-ly3lv5.10.3` |
 | `chronicler-telemetry-distillation` | butler-chronicler | re-scope | Projection adapters stay deterministic. Day-close narration becomes a Chronicler obligation goal. | `bu-u5euwb` |
-| `compose-general-capture-with-private-custody` | butler-general | fold-in | Capture classification and routing become goal admission. The capture ledger, receipts and collections stay domain-owned. | `bu-u5euwb`; blocks `bu-2jtfw.9.4.2`, `bu-2jtfw.9.4.4` |
+| `compose-general-capture-with-private-custody` | butler-general | fold-in | The whole General Butler Tool Surface block is folded here and removed from the source delta: collection/item/calendar inventory and complete ordinary-capture/privacy/source/group scenario retained; control-plane registration supersedes runtime spawning. Capture reasoning becomes deterministic ingress-deduplicated goal admission, while the ledger, receipts, search and collections stay domain-owned. The source remains active for all six general-capture requirements; historical packet/task evidence is retained and successor implementation remains pending. No archive or runtime completion is claimed. | `bu-u5euwb.18`; outstanding delivery `bu-2jtfw.9.4.2`, `bu-2jtfw.9.4.4` |
 | `confine-qa-publication-authority` | qa-investigation-dispatch, staffer-qa | archive-first | Publication fences hold. Engineering executors stay the named D18 exception. | `bu-mc01y5` |
 | `decide-consolidation-throughput-policy` | module-memory | archive-first | Records four policy declines and no runtime change. The rebuilt consolidation block keeps them. | `bu-u5euwb` |
 | `decision-loop-one-tap-approvals` | autonomy-tracker, core-notify, module-approvals, module-telegram | re-scope | Archive first, then amend the synced specs. Approvals carry goal, invocation and exposure, and park-only effects always wait for the owner tap. | `bu-24lu6.8` |
@@ -96,7 +96,7 @@ surviving scenarios unless this change removes the requirement.
 | `add-runtime-tool-surface-discovery` | core-daemon | Core Tool Surface | removes |
 | `add-runtime-tool-surface-discovery` | core-spawner | Ephemeral MCP Config Generation | removes |
 | `add-runtime-tool-surface-discovery` | runtime-config-api | PATCH runtime config endpoint | modifies |
-| `compose-general-capture-with-private-custody` | butler-general | General Butler Tool Surface | modifies |
+| `compose-general-capture-with-private-custody` | butler-general | General Butler Tool Surface | folded here; source block removed, ordinary-capture scenario preserved and registration trigger retained |
 | `decide-consolidation-throughput-policy` | module-memory | LLM-driven memory consolidation pipeline | modifies |
 | `durable-dashboard-terminal-action-recovery` | butler-switchboard | Dashboard Chat-Widget Classification Lanes | removes |
 | `durable-dashboard-terminal-action-recovery` | staffer-qa | Pluggable Discovery Source Architecture | modifies |
