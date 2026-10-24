@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+from importlib.util import resolve_name
 from pathlib import Path
 
 import pytest
@@ -356,16 +357,22 @@ def test_tests_do_not_execute_canonical_roster_names_by_path(tmp_path):
 
 def _dotted_roster_test_imports(paths):
     """Inspect executable imports/lookup targets, not prose or policy literals."""
+
+    def literal_argument(call, position, keyword):
+        if len(call.args) > position:
+            return call.args[position]
+        return next((item.value for item in call.keywords if item.arg == keyword), None)
+
     found = []
     for path in paths:
         tree = ast.parse(path.read_text())
-        lookup_names = {"__import__", "import_module", "patch"}
+        lookup_names = {name: name for name in ("__import__", "import_module", "patch")}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 lookup_names.update(
-                    alias.asname or alias.name
+                    (alias.asname or alias.name, alias.name)
                     for alias in node.names
-                    if alias.name in {"import_module", "patch"}
+                    if alias.name in {"__import__", "import_module", "patch"}
                 )
         for node in ast.walk(tree):
             names = []
@@ -375,7 +382,7 @@ def _dotted_roster_test_imports(paths):
                 names = [node.module or ""]
                 if node.module == "roster":
                     names = [f"roster.{alias.name}" for alias in node.names]
-            elif isinstance(node, ast.Call) and node.args:
+            elif isinstance(node, ast.Call):
                 name = (
                     node.func.attr
                     if isinstance(node.func, ast.Attribute)
@@ -383,9 +390,19 @@ def _dotted_roster_test_imports(paths):
                     if isinstance(node.func, ast.Name)
                     else None
                 )
-                if name in lookup_names and isinstance(node.args[0], ast.Constant):
-                    value = node.args[0].value
+                operation = lookup_names.get(name)
+                argument = literal_argument(node, 0, "target" if operation == "patch" else "name")
+                if operation and isinstance(argument, ast.Constant):
+                    value = argument.value
                     if isinstance(value, str):
+                        if operation == "import_module" and value.startswith("."):
+                            package = literal_argument(node, 1, "package")
+                            if isinstance(package, ast.Constant) and isinstance(package.value, str):
+                                try:
+                                    value = resolve_name(value, package.value)
+                                except ImportError:
+                                    # An invalid literal relative import has no resolved target.
+                                    pass
                         names = [value]
             found.extend(
                 (str(path), node.lineno, name) for name in names if name.startswith("roster.")
@@ -406,6 +423,16 @@ def test_tests_do_not_import_dotted_roster_names(tmp_path):
         "from unittest.mock import patch as replace\n"
         "replace('roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger')\n",
         "__import__('roster.chronicler.modules')\n",
+        "import importlib\nimportlib.import_module(name='roster.education.modules')\n",
+        "__import__(name='roster.chronicler.modules')\n",
+        "from unittest.mock import patch\n"
+        "patch(target='roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger')\n",
+        "from importlib import import_module as load\nload(name='roster.education.modules')\n",
+        "from unittest.mock import patch as replace\n"
+        "replace(target='roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger')\n",
+        "import importlib\nimportlib.import_module(name='.modules', package='roster.education')\n",
+        "from importlib import import_module as load\nload('.modules', 'roster.education')\n",
+        "import importlib\nimportlib.import_module('.modules', package='roster.education')\n",
     ):
         planted.write_text(source)
         assert len(_dotted_roster_test_imports([planted])) == 1
@@ -415,6 +442,11 @@ def test_tests_do_not_import_dotted_roster_names(tmp_path):
         "from . import test_finder_no_llm_transitive as _module\n"
         "from unittest.mock import patch\n"
         "patch('butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger')\n"
+        "from importlib import import_module as load\n"
+        "load(name='butlers.modules._roster_education')\n"
+        "load(name='.finance_jobs', package='butlers.jobs._roster')\n"
+        "__import__(name='butlers.modules._roster_chronicler')\n"
+        "patch(target='butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger')\n"
         "# from roster.health.tools import measurement_list\n"
         "assert f'roster.{other_butler}' not in src\n"
     )
