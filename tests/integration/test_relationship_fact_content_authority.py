@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import socket
 import sys
 import uuid
@@ -1153,6 +1154,17 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
     # at the same bridge, before a pending/context/evidence/use-count effect.
     from butlers.tools.relationship.fact_temporal import CUTOVER_PENDING, TemporalError
 
+    def temporal_rule_endpoint(constraints):
+        async def create_temporal_rule():
+            return await create_approval_rule(
+                env.rel,
+                "relationship_assert_fact",
+                constraints,
+                "Synthetic explicitly bounded temporal permission",
+            )
+
+        return create_temporal_rule
+
     assert await env.rel.fetchval("SELECT to_regclass('relationship.uq_ef_spo_active') IS NOT NULL")
     for kind, temporal_args in (
         (
@@ -1170,15 +1182,13 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
             key: {"type": "exact", "value": value} for key, value in temporal_args.items()
         }
         async with _owner_app(env) as (client, _service, headers):
-
-            @client._transport.app.post(f"/api/test-temporal-rule/{kind}")
-            async def create_temporal_rule(*, temporal_constraints=temporal_constraints):
-                return await create_approval_rule(
-                    env.rel,
-                    "relationship_assert_fact",
-                    temporal_constraints,
-                    "Synthetic explicitly bounded temporal permission",
-                )
+            app = client._transport.app
+            path = f"/api/test-temporal-rule/{kind}"
+            app.post(path)(temporal_rule_endpoint(temporal_constraints))
+            registered = next(route for route in app.routes if route.path == path)
+            assert not inspect.signature(registered.endpoint).parameters
+            assert not registered.dependant.query_params
+            assert not registered.dependant.body_params
 
             admitted = await client.post(f"/api/test-temporal-rule/{kind}", headers=headers)
             assert admitted.status_code == 200 and "error" not in admitted.json()
@@ -1201,6 +1211,7 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
         original_rule = await env.rel.fetchrow(
             "SELECT * FROM approval_rules WHERE id=$1", temporal_rule_id
         )
+        assert original_rule["arg_constraints"] == temporal_constraints
         async with _context(report):
             with pytest.raises(TemporalError) as refused:
                 await gate(**temporal_args, why="Synthetic temporal fence must remain", evidence=[])
