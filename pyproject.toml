@@ -164,18 +164,14 @@ markers = [
     # pg_clock: tests whose pass/fail hinges on comparing a Postgres-clock
     # timestamp (a column DEFAULT now(), an inline SQL now()/CURRENT_TIMESTAMP,
     # or a PG-computed age/decay/window band) against a Python-clock value
-    # (datetime.now() used to build a cutoff or assertion). These pass normally
-    # because both clocks are the same wall time, but they FALSE-FAIL under the
-    # nightly faketime matrix legs (.github/workflows/nightly.yml): libfaketime
-    # shifts only the Python process clock (+45d/+120d), not the Postgres
-    # testcontainer, so the two sides skew by the offset. They are NOT
-    # wall-clock time-bombs (nothing breaks in prod, where both clocks are real
-    # and synced), so the faketime legs deselect them via `-m "not pg_clock"`;
-    # they stay in every other job (default CI, regular nightly). See bu-szgi9.
-    # Since bu-29wkwj.6 the root conftest runs the shared Postgres testcontainer
-    # under the same libfaketime offset, so a new DB test needs no pg_clock mark;
-    # the existing marks predate that and stay until they are re-admitted.
-    "pg_clock: Test mixes Postgres-clock and Python-clock time; deselected only from the faketime matrix legs (see bu-szgi9)",
+    # (datetime.now() used to build a cutoff or assertion). bu-szgi9 excluded
+    # these from the nightly faketime legs when only Python shifted, because
+    # the clocks disagreed by +45d/+120d. Since bu-29wkwj.6 the root conftest
+    # shifts the shared Postgres testcontainer by the same offset; bu-29wkwj.12
+    # re-admits the existing marked cases to both legs. The marker documents
+    # sensitive clock comparisons, not an exclusion or a requirement for new
+    # DB tests. Independent bench/perf/nightly/faketime_fragile exclusions stay.
+    "pg_clock: Test compares Postgres-clock and Python-clock time; included in both shifted-Postgres faketime legs (see bu-29wkwj.12)",
     # faketime_fragile: tests whose progress DEPENDS on a timed thread-sync
     # primitive actually EXPIRING — threading.Event.wait(timeout)/Lock.acquire(
     # timeout)/Thread.join(timeout)/Future.result(timeout). CPython implements
