@@ -119,7 +119,8 @@ def test_excluded_trigger_sources_contains_expected_values() -> None:
 def test_deadline_prefix_not_excluded() -> None:
     """deadline:* sessions are user-proxied work and must NOT be excluded.
 
-    Decision: bu-ve8ne. If this test fails, re-read roster/chronicler/AGENTS.md.
+    Decision: bu-ve8ne. If this test fails, re-read docs/butlers/chronicler.md
+    (excluded trigger_source values).
     """
     assert "deadline:" not in EXCLUDED_TRIGGER_SOURCES
     assert not EXCLUDED_TRIGGER_SOURCE_PREFIX.startswith("deadline")
@@ -181,7 +182,7 @@ async def test_only_user_rows_projected() -> None:
 async def test_deadline_rows_are_projected() -> None:
     """deadline:<task-name> sessions must be projected into the Tasks lane.
 
-    See roster/chronicler/AGENTS.md for the decision rationale (bu-ve8ne).
+    See docs/butlers/chronicler.md for the decision rationale (bu-ve8ne).
     """
     deadline_row = _make_row(
         session_id=99,
