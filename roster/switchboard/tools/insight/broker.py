@@ -1591,9 +1591,19 @@ async def _schedule_insight_catchup(
     scheduled" like every other path in this module if the signal cannot be
     re-resolved (e.g. it cleared between the two reads).
     """
+    from butlers.core.approvals_policy import AttentionReadUnavailable
+
     context_signal_set_at: datetime | None = None
     if suppression_signal in _CONTEXT_MAX_HOLD:
-        detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        try:
+            detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        except AttentionReadUnavailable:
+            # The primary read already chose suppression. An unavailable
+            # optional reread cannot supply a finite catch-up anchor.
+            logger.warning(
+                "insight-delivery-cycle: context detail unavailable; no catch-up scheduled"
+            )
+            return
         if detail is not None and detail[0] == suppression_signal:
             context_signal_set_at = detail[1]
     deliver_at = _compute_catchup_deliver_at(
