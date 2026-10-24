@@ -60,13 +60,14 @@ Scope: v1-mandatory
 
 ### Requirement: Declared gateway interfaces cannot widen workload egress
 Gateway consumers SHALL implement S7's workload/profile identity, destination, redirect, static-key custody, denial and bounded-recovery interfaces. Static-key eligibility SHALL be registered and gateway-owned; it SHALL NOT grant a model, caller or unregistered analysis workload credentials, hosts or a runtime widening path.
+S7's authenticated internal-peer route SHALL require exact source/destination principal, discovery identity, protocol and port with default deny. External private/IP/metadata/LAN/tailnet/redirect/rebinding refusal applies to the external gateway route and SHALL NOT become a broad private-range exemption or deny a separately authorized exact internal peer. No peer or host is authorized merely by this interface.
 
 ID: REQ-capability-authorization-021
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S7; bu-dhloi1.19
 Scope: v1-mandatory
 
 #### Scenario: A host or redirect escapes the declared destination
-- **WHEN** a workload requests an undeclared host, IP literal, private/metadata/LAN/tailnet destination, mismatched SNI or redirect
+- **WHEN** an external gateway request targets an undeclared host, IP literal, private/metadata/LAN/tailnet destination, mismatched SNI or redirect
 - **THEN** the request is refused with a content-free receipt and no redirected connection or credential forwarding
 
 #### Scenario: Unavailable gateway preserves owned work
@@ -81,6 +82,17 @@ Scope: v1-mandatory
 - **WHEN** a profile or gateway release must be rolled back
 - **THEN** affected workloads remain held/disabled unless their reviewed previous restrictive profile is proven, including additive policy union
 
+#### Scenario: A declared internal peer retains its exact allowed leg
+- **WHEN** an existing reviewed profile authorizes both authenticated principals and the exact internal control-plane or Dolt service protocol/port
+- **THEN** only that identity-bound internal connection is allowed despite its private address; all ordinary service authority remains
+
+#### Scenario: An internal address alone grants nothing
+- **WHEN** a caller names an undeclared peer, wrong port/protocol, mismatched service identity or spoofed source header
+- **THEN** the internal route denies it without fallback or CIDR-wide allowance
+
+#### Scenario: External redirection cannot become internal routing
+- **WHEN** an external public hostname redirects/rebinds to a private peer or metadata/LAN/tailnet/IP endpoint
+- **THEN** the gateway refuses before redirected connection/credential forwarding even if another profile separately authorizes that peer internally
 
 ### Requirement: Sessions run in a sandbox that reaches only the broker
 The goal runner SHALL launch every lead and child invocation on a session host

@@ -1279,9 +1279,77 @@ owner reply's genuine delivery receipt and honest dependent-effect outcomes.
 | Epoch | `(goal_id, epoch)` unique; predecessor invocation, `reason` (`initial`, `wake`, `recovery`, `escalation`), input/inbox refs, label snapshot, grant digest, durable launch intent and state `pending/launching/running/finished/failed`; one live lead remains enforced by the existing partial unique index |
 | Thread | UUID PK; owner entity, channel and opaque conversation key with a unique `(owner,channel,key)` identity; goals reference this one owner thread registry by FK, not a second waiting-thread table |
 | Plan | `(goal_id,version)` PK; predecessor version, premise/source refs, bounded step refs, created epoch and digest; append-only; goal/envelope `(goal_id,plan_version)` FKs bind it; changed premise creates a new version, never edits the approved one |
-| Wait envelope | UUID PK, goal/epoch, immutable condition IDs, finite deadline, positive maximum wakes, consumed wakes, permitted source set, grant snapshot/digest, plan version/digest, label snapshot, approval effect/ref if required, generation and state `open/fired/expired/cancelled`; no arbitrary text predicate |
-| Inbox extension | Preserve existing id/decision/source/delivery/reply-effect refs and consumption; add event identity, label snapshot and consumed epoch; uniqueness remains source/decision based; a source retry cannot create a second input |
+| Wait envelope | UUID PK, original goal/epoch, immutable predicate definitions/digest and source set, generation-owned condition-instance IDs, finite deadline, positive maximum wakes, consumed wakes, permitted source set, grant snapshot/digest, plan version/digest, label snapshot, approval effect/ref if required, generation and state `open/fired/expired/cancelled`; no arbitrary text predicate |
+| Inbox extension | One discriminated inbox as S2.1 below; retain every existing reply binding, source/decision uniqueness, role fence and historical consumption; new input kinds never fabricate reply effects |
 | Wake intent | Stable `(envelope_id,generation,fire_event_id)` identity, successor epoch and outbox state `pending/claimed/launched/failed`; unique successor per fired generation; no receipt is an instruction to replay an effect |
+
+#### S2.1. Discriminated admission and one-time inbox consumption
+
+The existing inbox is extended, not replaced by a second queue. Every row keeps
+`id UUID PK`, `goal_id UUID NOT NULL`, `decision_id UUID NOT NULL UNIQUE`,
+`source_key TEXT NOT NULL UNIQUE`, `source_ref TEXT NOT NULL`, original
+`created_at`, and immutable label/input provenance. Add `input_kind` with exactly
+`owner_reply`, `owner_non_reply`, `condition_fire`; `event_id UUID NULL`;
+`envelope_id UUID NULL`; `envelope_generation BIGINT NULL`; `consumed_epoch
+BIGINT NULL`; and immutable `legacy_consumed BOOLEAN NOT NULL DEFAULT false`.
+The kind-specific constraints are:
+
+| Input kind | Trusted source identity / admission | Delivery/effect and event bindings |
+|---|---|---|
+| owner_reply | Existing verified message source key/ref and joined canonical decision; no caller-asserted owner | `delivery_ref TEXT NOT NULL` and `reply_effect_id UUID NOT NULL`; retain the existing composite FK `(goal_id,reply_effect_id)` to effects; event_id may be absent when the original ingress had no UUID; envelope fields null |
+| owner_non_reply | Verified same-thread owner message source key/ref, within S2's running join fence; source_kind=message, joined reason=input_joined | Both delivery_ref and reply_effect_id NULL; event_id is the original ingress UUID if present, otherwise NULL; envelope fields null; no prior outgoing reply is required |
+| condition_fire | Trusted evaluator SourceRef(kind=occurrence, id=`condition:<envelope UUID>`, occurrence=`gen:<generation>:event:<fire-event UUID>`), joined reason=condition_joined; source_ref retains this id and decision.occurrence_key retains the occurrence | delivery_ref/reply_effect_id NULL; event_id, envelope_id and envelope_generation NOT NULL, bound to that envelope generation/fire receipt for this goal; never a fake message or reply effect |
+
+All source_key values retain the existing SourceRef.key algorithm: SHA256 of
+UTF-8 json.dumps([kind,id,occurrence], sort_keys=True, separators=(",",":"));
+occurrence is NULL for messages. The evaluator alone constructs condition
+components from its durable fire receipt, not a caller-supplied string.
+Owner message source keys retain the verified transport's original identity,
+not a model-supplied dedup token. Existing message/occurrence/feed/domain/staffer
+source_kind values remain unchanged. The target admission decision adds the
+same immutable input_kind discriminator, nullable for decisions without an
+inbox input (initial admission, refusal or record-only). New joined inbox
+decisions require the matching non-null kind; validated historical reply joins
+backfill owner_reply. The new input_joined/condition_joined reasons are allowed
+only with result=joined and the matching kind. Existing
+reply_joined/new_goal/refusal/recorded_without_goal reasons keep their exact
+meaning. The native admission writer derives all fields; a caller cannot
+select a joined reason or authenticate itself by providing them. Refused or
+record-only decisions create no inbox row, goal or wake. A condition joins the
+existing goal without resetting its budget or counting as a new-goal admission.
+
+Keep decision/source uniqueness and sw050 attempt bindings. Add a validated
+unique decision key `(id,goal_id,source_key)` and composite inbox FK to it;
+its goal/source must match the original canonical decision. Envelope-generation
+and consumption-epoch FKs bind `(goal_id,envelope_id,generation)` and
+`(goal_id,consumed_epoch)` to their owning records. A condition row's event_id additionally matches that
+generation's immutable fire event/receipt. No cross-goal event/effect
+binding is accepted. Only the existing restricted admission/evaluator writer
+can insert; only the fenced goal runner consumes. Retain Switchboard runtime
+RLS, immutable source fields and non-grantable writer authority.
+
+Consumption changes `(consumed_at,consumed_epoch)` atomically from `(NULL,NULL)`
+to `(finite server time, actual running epoch)` once, under that goal/epoch's
+Stop/lease fence. Every other column is immutable. A duplicate read returns the
+existing tuple without changing it; another epoch, timestamp rewrite or partial
+tuple update refuses. For original already-consumed rows alone, migration sets
+legacy_consumed=true, keeps the exact non-null consumed_at, and leaves
+consumed_epoch=NULL rather than inventing a historical epoch. Such rows are
+never consumed again. All unconsumed legacy rows have legacy_consumed=false
+and use the new two-column transition when first consumed. New rows cannot set
+the legacy marker; it requires the bounded migration role/backfill.
+
+Before activation, classify every old inbox row as owner_reply, retain its
+non-null delivery/effect/source/decision fields and validate its existing
+same-goal effect FK. Add/backfill the discriminator/legacy marker and composite
+keys, then atomically replace the reply-only NOT NULL/check constraints and
+consumed_at-only trigger with the discriminated checks and one-time tuple
+trigger. Keep the old trigger until its replacement is installed in the same
+transaction; no unguarded writer interval. Preserve all old timestamps/rows and
+sw050/sw051 reasons, RLS and downgrade refusals. Parity must prove old reply
+joins still work before new kinds are admitted. Rollback holds new-kind
+admission/consumption and retains rows/epochs; never coerce a new row to a fake
+reply or deploy an old consumer that would redeliver a consumed legacy row.
 
 Creating an envelope checks the current condition snapshot before subscribing.
 The evaluator's conditional `open -> fired` CAS, wake-count increment, inbox
@@ -1295,6 +1363,56 @@ exposed run cannot extend it. Waiting solely for the owner's answer needs no
 additional approval; that answer is still authenticated and cannot approve an
 unrelated effect. Deadline/horizon exhaustion produces `partial` with pending
 work and receipts; it never silently executes or loses a parked effect.
+
+#### S2.2. Cumulative subsequent wakes under one approval
+
+An envelope's UUID, original approval/digest, AST/condition source set, plan
+binding, original deadline and maximum_wakes are immutable. consumed_wakes is
+a cumulative counter across all generations, initially 0. Each immutable generation registration is keyed `(goal_id,envelope_id,generation)` with its condition
+instance IDs, predecessor fire/epoch and registration cursor. Its winning
+fire cursor and unique successor intent are append-only receipts, never
+rewritten registration facts; generation starts 0 and increases by one without reuse.
+Conditions are generation-owned instances of the same immutable predicate,
+not mutated fired instances or a second evaluator.
+
+After its unique successor has actually run and returns to waiting, only the
+fenced lifecycle owner may request rearm. In one goal/envelope lock/CAS
+transaction, verify that the successor belongs to this exact fired generation,
+no live competing lead exists, the goal is nonterminal/not Stopped,
+consumed_wakes < maximum_wakes and the original deadline has not passed.
+The AST, source set, plan/digest and approval must be unchanged; effective grants
+must be the same or narrower and invocation labels retain every accumulated
+join. This reuses the approval only within those unchanged bounds. Added
+sources, changed plan/predicate/effect arguments, later deadline, larger maximum
+or any widening require a genuinely new envelope and whatever original approval
+that envelope requires; exposure cannot extend it. A new envelope never erases
+old cumulative history or grants permission through that history.
+
+Rearm atomically appends generation+1, snapshots the durable source cursor,
+creates its condition instances and moves envelope fired→open; count/approval/
+deadline remain unchanged. The new replay cursor starts at the prior fire
+cursor; the current snapshot high-water is recorded separately and cannot
+advance consumption past unseen events. Evaluate the complete interval after
+the prior fire through that high-water, then continue its durable stream. The preceding fire cursor/event is its exclusive
+lower bound. A source arriving between this snapshot and commit is caught by
+the same durable replay stream, not a lossy subscription. Only a new eligible
+trusted event after that bound may trigger another generation. Already-true
+levels may contribute to an all/any result but cannot themselves manufacture
+another wake; the old owner input, settled effect, transition or fixed at tick
+is not a new event. A fixed at leaf fires at most once per envelope. This
+adds no repeating timer or advanced M7 predicate.
+
+Each winning fire increments the cumulative counter exactly once and commits
+its condition cursor/result, fired state, condition_joined decision/inbox binding, one successor epoch and outbox intent
+in one transaction. Generation/event uniqueness and the same goal fence apply
+to rearm/fire/launch. Concurrent rearm retries return the existing generation;
+a crash before commit leaves the old fired generation, and after commit resumes
+the new cursor without a second generation/count. Launch retry claims the same
+intent and consumes that inbox tuple once, never counts a second wake. Stop or
+expiry winning the lock prevents rearm/fire/launch; a prior committed winner
+remains honest history, with pending launch cancelled by Stop. When pending work requests another wait, deadline or
+count exhaustion expires that wait with partial/pending receipts, no reset or
+new approval invented. Old generation events cannot fire a newer generation.
 
 Stop locks/fences the goal, cancels open envelopes/pending wake intents and
 pending decisions, revokes tokens and prevents a post-Stop launch. A call/fire
@@ -1340,14 +1458,60 @@ named future activation, the old context projection; they do not authorize
 Registry entries declare `kind`, schema version, owning domain/writer role,
 primitive type (`boolean`, finite number, bounded enum, timestamp, opaque
 reference), bounds/enum, category set, freshness policy, and read visibility.
-No arbitrary title, prose, URL or raw coordinate is a typed primitive. Writer
+Bounded products/sets of these declared primitives have fixed field/enum schemas,
+not free JSON. No arbitrary title, prose, URL or raw coordinate is a typed primitive. Writer
 identity is derived from the authenticated database/service role and declared
 kind, never a request's `writer` field or a grantable generic record tool.
+
+#### S3.1. Initial kind, alias and mode wire registry
+
+The following is the closed initial registry (schema_version=1). UUID references
+resolve under the existing owner/domain grants; no arbitrary string is a ref.
+All reads retain labels and S5's availability-only restriction for exposed or
+third-party goals. Detail visibility below is owner-authenticated or explicitly
+granted private domain detail, never a grant created by this table. Each source
+has a validated finite freshness profile; migration caps fresh_until at its
+original expires_at and existing per-signal maximum in context_bus.py. Missing
+profile/evidence is unknown. No legacy timestamp/TTL is renewed by conversion.
+
+| Canonical kind | Exact typed value / subject | Sole projection writer and visibility | Legacy/read aliases (never an extra store or writer) |
+|---|---|---|---|
+| owner.place | Product `{presence: inside / outside, place_ref: UUID|null, locality_ref: UUID|null}`; subject actual owner UUID; refs resolve named place or elsewhere+city/country, never raw coordinates | Home Dots .17 reducer; location category, owner-only timeline | owner.presence aliases this kind; at_home/in_space/away feed their original source-labelled evidence to Home, not direct slot writes or a second presence table; unmapped room text stays an opaque source ref/unknown |
+| owner.activity | Set of at most8 enum members `traveling,sleeping,meeting,focused,exercising,sick,socializing,commuting`; subject owner UUID | .21's deterministic activity projection, preserving each authorized producer's evidence/expiry; categories routine plus health for sleeping/sick/exercising | Each of those8 legacy signals maps to its same enum member; concurrent assertions remain separately attributable, never a priority-picked arbitrary winner |
+| owner.clock | Product `{zone: validated IANA name, basis: phone / owner / home / utc_fallback / owner_confirmed_booking, evidence_ref: UUID}`; subject owner UUID | .21; location/routine detail | owner_clock is a read alias only; phone fix changes zone with notice+undo, booking/flight-only evidence asks once; no automatic change from an unconfirmed booking |
+| system.dep | Enum `available,degraded,blind,down,held,unconfigured`, with S6 closed cause/source age; subject registered dependency UUID | .14 health reducer; privacy-filtered health/holding reason under existing surface policy | system.dep.<registered-id>, including system.dep.conditions, resolve to this kind+subject; no arbitrary suffix creates a kind |
+| expect.window | Product `{start: UTC,end: UTC,deviation: pending|within|missed, expectation_kind: registered enum}` with start<end; subject confirmed routine UUID | Chronicler's confirmed bu-xxfkhk feeder; routine category | expect.<registered-kind>[subject] resolves to this row; draft/inferred routines create no expectation or obligation |
+| home.sensing | Enum `available,degraded,unavailable`; subject configured Home sensing-group UUID | Home deterministic health projection; permitted Home detail only | Historical home.sensing name is canonical; all-inputs-unmeasurable is the slot state, not a fabricated available value |
+| owner.mode | Set of the8 mode IDs below, with separate finite duration/hold/source refs in owner_modes; subject owner UUID | .21 owner-authenticated mutation only at first switch; routine/health/location labels as applicable | Read projection of owner_modes only, not a second slot copy; no mode entry from a legacy activity alias |
+| owner.suppression | Product `{active: boolean, record_ref: UUID|null}` referencing the existing versioned suppression/DND record; NULL ref only for confirmed configured absence, never unavailable read; subject owner UUID | Existing canonical attention/DND mutation owner; .21 adapter retains that authority | dnd aliases this record/read; existing generation/replay, bounded-read unavailable and exact expiry semantics remain |
+
+The actual twelve legacy signal names are all accounted for above. Original
+Travel/Health/General/Relationship/Home/Switchboard producer permissions,
+verified owner invocation requirements and source records remain; adapters
+submit typed evidence only through the named reducer interface, never gain
+canonical slot mutation by copying a legacy writer string. Multiple old source
+assertions/receipts remain evidence refs with their individual expiry; if an
+input cannot be safely mapped it stays unknown with its source record retained,
+and parity blocks that consumer's activation. No deletion or silent all-clear.
+
+The closed git mode IDs are exactly `asleep`, `travel`, `house_unattended`,
+`sick`, `focus`, `hosting`, `holiday`, `emergency`. Display phrase “house
+unattended” aliases house_unattended; sleep/asleep aliases asleep and
+focus/focused aliases focus only when explicitly referring to an owner mode.
+Activity sleeping/focused does not itself mutate a mode. “In flight” is a
+travel-derived posture flag, not a ninth mode. Unknown/custom IDs refuse.
+The eight names come from the recorded closed-list direction bu-u33sb7 and
+its historical pursuit carrier (218607d8e, feat-situation-modes); their wire
+slugs are fixed here for .9/.21. Owner-only duration/holds/break-through edits,
+.5 step-up on loosening, sick exemptions, owner-confirmed travel-only absence
+arming and wake brief earliest 06:00/fallback 09:30 remain as recorded there.
+No automatic entry rule, desk selector or mode-policy activation is added;
+.18 retains policy wording and .21 the separately authorized switch.
 
 | Projection | Required identity and fields |
 |---|---|
 | situation_slots | UUID PK; `(kind,subject_entity)` unique with `NULLS NOT DISTINCT` (or equivalent separate partial indexes for null/non-null); state `known/unknown/unmeasurable/unconfigured`, typed value or opaque ref, source, observed_at, fresh_until, evidence refs, I/D/C, generation, registered writer |
-| timeline | Stable event UUID plus unique `(source,event_key)`; kind, nullable subject, class `transition/record/occurrence/point`, effective span, observed_at, IANA zone/lived date, bounded typed measures, source refs, labels and generation; no second copy of source prose |
+| timeline | Stable event UUID plus unique `(source,event_key)`; kind, nullable subject, class `transition/record/occurrence/point`, operation `assert/retract`, nullable retracts_event_id, at/confirmed_at/late as S3.2, effective span, observed_at, IANA zone/lived date, bounded typed measures, source refs, labels and generation; no second copy of source prose |
 | owner_modes | Versioned projection of declared mode IDs, effective interval, source/ref, label, generation and cause; .18 owns tightening policy, .21 activation, not the registry writer |
 | conditions / suppressions | Stable ID, registry kind/subject or goal binding, immutable predicate/source boundary, finite interval, generation, source/ref, label and state; existing approval/attention authority is not replaced by an anonymous bool |
 
@@ -1361,7 +1525,7 @@ must use the original key, never a newly generated UUID.
 
 The one trusted writer API accepts `(kind, subject, source, event_key,
 expected_generation, observed_at, effective_span, typed_value_or_ref,
-evidence_refs, labels)`. The registry derives the writer and validates type,
+evidence_refs, labels, at, confirmed_at, retracts_event_id=null)`. The registry derives the writer and validates type,
 source authority, finite times and permitted kind before DML. A retry with the
 same source/event key and digest returns the same event/receipt; changed bytes
 under that key refuse. CAS loss returns conflict/current generation, never
@@ -1370,6 +1534,69 @@ transition event/receipt atomically. Stale evidence cannot move a current slot
 backward; late data can append explicitly historical timeline evidence without
 changing present state. Reducer-specific hysteresis belongs to its named owner,
 not a second ingestion or authority API.
+
+#### S3.2. Confirmation, late evidence and history-preserving retraction
+
+A transition additionally stores from_state/to_state (the four slot states)
+and from_value/to_value under the kind schema, with a value NULL exactly when
+its state is not known. These fields are NULL for non-transition records.
+A place leave specifically means known inside→known outside; an unknown prior
+state cannot fabricate one. The CAS writer captures the actual prior slot,
+not a caller-asserted from_value.
+
+For new timeline assertions, `at` is the effective UTC transition/occurrence
+instant from the source; `confirmed_at` is the finite UTC instant at which the
+owning reducer durably confirmed it, with confirmed_at>=at. Both are immutable
+source-event facts reused on replay, not regenerated from retry wall time.
+`observed_at` remains the underlying observation time. `late BOOLEAN` is derived
+and stored as confirmed_at-at>15 minutes (exactly 15 is not late), never accepted
+as a caller override. Historical imported rows lacking confirmation keep an
+explicit legacy-unknown confirmation receipt and cannot become real-time
+wake evidence by inventing confirmed_at. All fields are in the event digest.
+
+A normal event has operation=assert and retracts_event_id=NULL. Home Dots .17
+alone confirms leave/enter using its existing three-minute/two-fix/SSID-veto
+and symmetric-enter rules; this contract changes none of that hysteresis. A
+confirmed re-entry within 10 minutes of a prior leave's at uses the same writer
+API with retracts_event_id=that original leave UUID. The target must be an
+existing asserted owner.place leave for the same owner/source/reducer lineage;
+its at must precede the re-entry at by at most 10 minutes. Missing/foreign/
+non-leave target, unearned reducer authority or out-of-window retraction refuses
+before DML. Input sources remain authorized projections; no Home cross-schema
+coordinate read or new raw retention is permitted.
+
+The one slot CAS transaction appends the new enter assertion and a separate
+history-preserving retraction record targeting that leave, plus its receipt.
+The enter assertion keeps operation=assert and target NULL; the request's
+retracts_event_id parameter creates only its bound auxiliary retraction.
+The retraction has class=record, operation=retract, target UUID NOT NULL,
+typed_value/from_value/to_value/from_state/to_state=NULL and the enter's
+at/confirmed_at/late with the union of enter and original leave labels; it does not delete
+or update the original leave. Its source is the same reducer and event_key is
+`retract:<enter-event UUID>:<leave-event UUID>`; the S3 UUIDv5 rule derives its
+stable event ID. A same-kind/subject target FK and unique retract target
+constrain it; one enter/CAS may not create multiple retractions. The tuple and
+both event/receipt inserts commit or roll back together, with one slot
+increment, never a second CAS/lock protocol. Duplicate enter/retraction replay
+returns both original receipts; changed key bytes or concurrent stale CAS
+refuse without an orphan record or loss of history. Historical late input may
+append its labelled history/retraction under the same target checks, but cannot
+move current state backward or reverse an already committed downstream effect.
+
+`timeline.query` returns immutable original records, operation/target,
+confirmed_at/late and derived `retracted` (true iff a valid target record
+exists); filters/pagination must include the target relation in one consistent
+snapshot, even when the retraction is outside the page/window. Default real-time
+transition readers and the evaluator skip late or retracted assertions and
+never treat a retraction record itself as a new transition/absence. Owner-only
+Home/Chronicles history renders the original leave with its retraction link and
+late status, not a deleted edge. Four-state situation reads still obey slot
+freshness. S4's separate10-minute event-age horizon also applies; neither rule
+relabels old data fresh. Already fired work/effects retain honest receipts;
+a retraction alone cannot replay, undo or authorize them. Old readers that lack
+these flags cannot activate until .21 parity proves this disposition. Rollback
+holds the new reader/reducer, retains all events/targets and canonical receipts,
+and cannot fall back to a competing presence/clock store.
 
 Read APIs return state, typed value/ref, source/age/freshness, labels and
 availability reason. A known value past fresh_until reads as unknown with its
@@ -1417,6 +1644,9 @@ An `at` leaf crossed by a clock jump fires once late before expiry, never
 replays each missed tick. Time resolves from owner clock, configured home zone,
 then UTC, with source/age; no hidden local-machine/Singapore timezone default.
 
+Each condition instance is keyed to its envelope generation. S2.2 alone
+creates the next generation with its exclusive prior-fire cursor and unchanged
+approval/count/deadline bounds; a fired instance itself is never reset.
 Restart resumes its durable cursor and replays to the same unique intent.
 Evaluator unavailability retains work and reports `system.dep.conditions`;
 no guessed wake or fake healthy snapshot. Scheduler delivers trusted time
@@ -1531,14 +1761,26 @@ Drop never runs it, and age over 24h expires dropped(stale), not auto-replay.
 
 ### S7. Gateway and later static-key interface
 
-One reviewed git workload profile declares authenticated workload identity,
-internal peers, external DNS hostnames and ports. There is no runtime widening
-API or model-supplied identity header. Host/SNI/request identity must agree;
-refuse IP literals, metadata, private/link-local/LAN/tailnet destinations and
-undeclared endpoints, including every redirect (3xx is a refusal, not an
-implicit second host grant). DNS/connection rebinding must not turn a declared
-public host into a forbidden address. Multiple additive network policies must
-not leave another open path. Gateway outage denies external egress, records a
+One reviewed git workload profile declares authenticated workload identity and
+two disjoint route classes. An internal peer entry binds the exact source
+workload principal, destination service principal, verified service-discovery
+identity, transport/protocol and destination port. Both endpoints authenticate;
+a caller header, DNS spelling or membership in a private address range is not
+authority. Only that exact reviewed peer/port is allowed, including the existing
+session-host→control-plane listener or deliberately declared beads-export/Dolt
+leg where its profile already authorizes it. Wrong peer/port/source/protocol,
+undeclared internal destination or identity mismatch is default-denied; there
+is no CIDR-wide exemption, new peer/host authorization or implicit lateral route.
+
+External entries instead bind exact public DNS hostname/port and workload
+identity through the shared gateway. On this external route Host/SNI/request
+identity must agree; refuse IP literals, metadata, private/link-local/LAN/tailnet
+destinations and undeclared endpoints, including every redirect (3xx is a
+refusal, not an implicit second host or internal-peer grant). DNS/connection
+rebinding must not turn a declared public host into a forbidden address.
+An external request can never fall back to the internal-peer route. There is
+no runtime widening API or model-supplied identity header for either class.
+Multiple additive network policies must not leave another open path. Gateway outage denies external egress, records a
 content-free cause, and preserves connector cursors with finite backoff.
 Audit includes workload/host/byte counts/verdict, never payload, token or header.
 

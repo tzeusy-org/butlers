@@ -112,3 +112,16 @@ shadow readers/enforcement are serialized as RFC S2/S3, with sole mutation
 owners and no permanent parallel writer or unsafe rollback. The coverage table
 keeps selected first-switch source and M6 gates distinct from M7/later owners;
 .19 cannot close on unbuilt behavior or unrecorded adoption.
+
+## Accepted interface-review corrections (R1–R4)
+
+RFC S2.1 discriminates real owner-reply, non-reply and condition-fire inputs in
+the one inbox; kind-specific nullability/composite FKs and the one-time
+consumed_at/epoch tuple retain historical consumed rows without invented epochs.
+S2.2 rearms only a new generation of the unchanged approved envelope with a
+cumulative count/deadline and durable prior-fire cursor. S3.1 fixes the initial
+kind/alias/eight-mode wire; S3.2 retains Dots confirmation/late/history-preserving
+retraction and page-independent reader disposition. S7 separates exact
+authenticated internal peers from restrictive external gateway egress.
+These complete existing boundaries; all original task states, ownership, held
+choices, adoption/activation/M6 and current-source invariants remain unchanged.

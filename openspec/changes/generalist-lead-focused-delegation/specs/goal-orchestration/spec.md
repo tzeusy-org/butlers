@@ -185,6 +185,7 @@ Scope: v1-mandatory
 
 ### Requirement: Waiting goals wake through one fenced epoch intent
 The ledger and runner SHALL implement S2's thread/plan/wait-envelope/inbox/epoch/wake-intent schemas and S4 evaluator interface. Conditional fire, wake consumption, labelled inbox and durable intent SHALL commit atomically; every wake SHALL narrow authority and retain finite horizon/budget. Waiting SHALL release capacity without erasing obligations or effects.
+The lifecycle/admission owner SHALL implement S2.1's discriminated inbox/decision schema, kind-specific nullability and same-goal/source FKs, and atomic one-time consumed_at/consumed_epoch tuple with immutable legacy_consumed provenance. S2.2's generation rearm SHALL retain the same approved envelope, cumulative wake count/deadline, exclusive prior-fire cursor, same-or-narrower grants and accumulated labels. A genuinely changed envelope SHALL use its original approval rules; no reset, fake reply effect or duplicate re-fire is permitted.
 
 ID: REQ-goal-orchestration-009
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2/S4; bu-dhloi1.19
@@ -210,8 +211,41 @@ Scope: v1-mandatory
 - **WHEN** a plan premise changes or an envelope exhausts its deadline/wake count
 - **THEN** a new immutable plan version is recorded; no envelope is enlarged and unresolved work ends partial with preserved receipts
 
+#### Scenario: A timer or transition wakes before any reply exists
+- **WHEN** a trusted condition fires for a valid waiting goal that has never emitted a reply effect
+- **THEN** one condition_fire inbox row uses its real event/envelope/generation and condition_joined decision, with delivery_ref/reply_effect_id NULL; its intent/epoch/fire/count commit together
+
+#### Scenario: A running owner input needs no fabricated delivery
+- **WHEN** a verified same-thread non-reply arrives inside the join window before any outgoing reply
+- **THEN** one owner_non_reply input joins with original transport source identity and NULL reply bindings; caller-asserted owner or a waiting non-reply cannot use this path
+
+#### Scenario: Inbox input bindings cannot cross goals
+- **WHEN** a new row names another goal's decision, reply effect, fire generation or consumed epoch
+- **THEN** the matching composite FK/kind constraint and restricted writer refuse it without an inbox or launch
+
+#### Scenario: Consumption is one atomic fenced tuple
+- **WHEN** two epochs race to consume one unconsumed input, or one update changes only half the tuple
+- **THEN** one actual running epoch may record consumed_at plus consumed_epoch once; the partial or losing mutation refuses and immutable input fields remain
+
+#### Scenario: A second bounded wake reuses only its original approval
+- **WHEN** an approved envelope with remaining wakes returns to waiting under unchanged plan/source/effect bounds before its original deadline
+- **THEN** rearm creates exactly generation+1 and new owned instances; the next eligible event increments the same cumulative counter once without resetting approval/deadline/grants
+
+#### Scenario: Already true or replayed events cannot manufacture a second wake
+- **WHEN** rearm observes the old true level, old owner input, settled effect, transition or fixed timer tick again
+- **THEN** none is a new eligible cause after the prior-fire cursor; the fixed at tick is at most once per envelope
+
+#### Scenario: An event during the running to waiting gap is not lost
+- **WHEN** a new eligible trusted event arrives after the first fire but before rearm snapshots its high-water
+- **THEN** the new generation replays the complete interval after the prior fire before advancing; snapshot/subscription timing loses no accepted event
+
+#### Scenario: Rearm retry and Stop preserve one winner
+- **WHEN** rearm/fire/launch races a duplicate request, crash, expiry or Stop
+- **THEN** the shared goal/generation fence retains one committed winner and cumulative count; a losing or post-Stop launch cannot proceed, and exhaustion yields partial receipts without a reset
+
 ### Requirement: Ledger conversion preserves every existing state and effect
 The migration and lifecycle owner SHALL apply the complete S2 mapping from actual switchboard sw_047 → sw_050 → sw_051, preserving immutable attempt/source-to-canonical decision bindings, composite FK/backfill, runtime RLS, terminal recorded_without_goal, atomic constraint replacement and durable-row downgrade refusals, as well as all identities, statuses, parked/unknown effects, joined labels, inbox consumption, origin/ceiling/budgets and receipts. Conversion SHALL retain source status/provenance and refuse inconsistent legacy bindings. It SHALL NOT create a second control ledger or destructive rollback.
+Conversion SHALL implement the bounded S2.1 trigger/check/FK replacement atomically, retaining every original reply binding and source row. Only already-consumed historical rows may carry legacy_consumed with an unknown epoch; they SHALL never be redelivered. Sw050 attempt binding, sw051 record-only semantics, RLS and durable-row downgrade refusals remain unchanged.
 
 ID: REQ-goal-orchestration-010
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S2; bu-dhloi1.19
@@ -232,6 +266,18 @@ Scope: v1-mandatory
 #### Scenario: A rollback retains newly written restrictions
 - **WHEN** the new consumer must be disabled after recording labels or wake receipts
 - **THEN** new admissions/wakes stop, all evidence remains and no unknown dispatch or cancelled decision is replayed
+
+#### Scenario: Already consumed legacy input keeps its real history
+- **WHEN** conversion encounters a legacy reply with non-null consumed_at but no reconstructable epoch
+- **THEN** it preserves the exact timestamp/identities, marks immutable legacy_consumed and NULL epoch, and forbids replay or invented historical epoch
+
+#### Scenario: Unconsumed legacy reply uses the new tuple once
+- **WHEN** conversion encounters an unconsumed reply with valid original delivery/effect FKs
+- **THEN** the original bindings remain and its first fenced consumption atomically records real consumed_at/epoch; backfill does not claim it consumed
+
+#### Scenario: A new-kind constraint or trigger install fails
+- **WHEN** migration cannot validate a kind/FK or complete the guarded trigger replacement
+- **THEN** the transaction rolls back with old protection/rows intact; new input admission stays dark and rollback cannot cast a new input into a fake reply
 
 ### Requirement: Owner thread inputs obey running and waiting bindings
 Admission SHALL use S2's sole owner-thread identity, configured 2–10 minute running join window, exact waiting reply/button binding, labelled inbox and Stop-aware between-call delivery. Joining SHALL NOT widen ceiling, reset budget or imply approval.

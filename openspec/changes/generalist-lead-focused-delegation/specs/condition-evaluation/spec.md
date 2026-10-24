@@ -21,6 +21,7 @@ Scope: v1-mandatory
 
 ### Requirement: Evaluation persists one fire and recoverable intent
 The evaluator SHALL implement S4's register/evaluate/consume_fire contract and S2's transactional fire/outbox boundary, stable events, durable cursor, generation CAS and finite expiry. Restart, duplicates and concurrency SHALL neither lose accepted work nor create a second successor.
+Each instance SHALL be owned by one envelope generation and use S2.2's exclusive prior-fire cursor and cumulative envelope bound. Fired instances SHALL NOT be reset; the fenced lifecycle owner alone creates the next generation. Rearm/cursor replay/fire/consumption SHALL preserve the exact original approval and no-second-wake identity.
 
 ID: REQ-condition-evaluation-002
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S4/S2; bu-dhloi1.19
@@ -41,3 +42,11 @@ Scope: v1-mandatory
 #### Scenario: Evaluator access fails
 - **WHEN** snapshot or cursor persistence is unavailable
 - **THEN** accepted work remains recoverable and system.dep.conditions reports unavailable, never an invented wake
+
+#### Scenario: A subsequent generation resumes from the prior fire
+- **WHEN** a successor returns to waiting and its bounded rearm commits, then the evaluator crashes
+- **THEN** restart resumes that generation and complete unseen cursor interval, returns the same intent for duplicate events and never resets count or fired instances
+
+#### Scenario: Widening is not a rearm
+- **WHEN** a request changes predicate/plan/source/effect digest, deadline or maximum rather than narrowing effective grants
+- **THEN** the existing approval cannot cover it; the rearm refuses and a genuinely new envelope must satisfy its original approval boundary
