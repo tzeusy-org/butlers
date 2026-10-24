@@ -391,6 +391,22 @@ Rules:
 
 - **Email is never owner origin by itself.** A message is owner-origin only when
   RFC 0017 authorizes its channel and sender; otherwise it is third-party.
+- **Audio preserves authorship only through qualified ASR.** The transcript of
+  the verified owner's own non-forwarded Telegram voice note, Telegram audio
+  file or authenticated dashboard recording is owner input when produced by
+  the instruction-free ASR-class transform defined in D18. The connector or
+  dashboard ingress holds and binds the sender authorization, actual source
+  media, forwarding/quotation/embedding evidence, transform identity and
+  successful outcome, and exact transcript to the original ingest identity;
+  no payload field, transcript words or model output establishes these facts.
+  Forwarded, quoted, embedded, non-owner and room audio remains third-party
+  material. An owner forwarding such material stays the enclosing sender, but
+  the goal starts exposed and the material is fenced as data. If transformed
+  span boundaries cannot be established, mark the whole affected transcript.
+  Missing or mismatched evidence cannot authorize owner-authored speech;
+  retries and replay retain the original deduplicated admission and can never
+  upgrade authorship or reduce exposure. Failure supplies no invented words.
+  Independently authenticated captions or typed text retain their own handling.
 - **Device and telemetry feeds are not messages.** Home Assistant state,
   wellness readings and other feeds that carry no message from a person wake
   reasoning only through a declared subscription, admitted with origin
@@ -865,7 +881,22 @@ and never reaches the broker or a domain capability:
   benchmark probes, which send fixed prompts and record only measurements.
   They have no tools; any consequence comes from the deterministic code that
   reads their typed output, and their output entering a goal is third-party
-  content.
+  content except for the narrow authorship-preserving transform below.
+
+**Instruction-free ASR-class transcription** preserves the source's authorship,
+not a model's asserted authorship. It takes only audio and fixed server-held
+decoding configuration, no task or conversation instructions, tools or
+capabilities, and transcribes rather than composes, summarizes, translates or
+answers. Only a verified implementation of this class and its bound successful
+outcome can preserve the owner authorship of the D5 sources. A tool-less
+instructable model, an outcome's `stt_backend` label or transcript text cannot
+qualify itself. All other model-function outputs remain third-party. ASR never
+removes source forwarding, quotation, embedding, room or non-owner provenance,
+and never raises the source's authority. An unavailable, timed-out, cancelled,
+empty or unacceptable result creates no transcript or owner-audio admission.
+Finite engineering-configured byte, decoded-duration and execution bounds and
+owned cleanup still apply, with no outside speech-service or instructable-model
+fallback. `payload.transcription` remains outcome metadata, not authorization.
 
 Model use that today runs outside a session but composes owner-facing text or
 judgment, such as briefing elaboration, chronicler narration, insight
