@@ -31,6 +31,7 @@ async def ask_gap_interview(
     *,
     date_label: str,
     timezone: str = "UTC",
+    credential_store: Any | None = None,
 ) -> dict[str, Any]:
     """Run the once-daily day-close gap interview ask for *date_label*.
 
@@ -107,7 +108,9 @@ async def ask_gap_interview(
     episode_dicts = [asdict(ep) for ep in episodes]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        transport = await build_telegram_transport(pool, http_client=client)
+        transport = await build_telegram_transport(
+            pool, http_client=client, credential_store=credential_store
+        )
         if transport is None:
             return {
                 "status": "not_configured",
@@ -136,6 +139,7 @@ async def run_gap_interview_job(
     job_args: dict[str, Any] | None = None,
     *,
     now: datetime | None = None,
+    credential_store: Any | None = None,
 ) -> dict[str, Any]:
     """Ask the gap interview for yesterday in the owner's general timezone."""
     from butlers.chronicler.day_close_writer import _compute_day_window
@@ -147,4 +151,7 @@ async def run_gap_interview_job(
         )
     timezone = await resolve_general_timezone(pool)
     yesterday, _, _ = _compute_day_window(now or datetime.now(UTC), timezone)
-    return await ask_gap_interview(pool, date_label=yesterday.isoformat(), timezone=timezone)
+    store_kwargs = {"credential_store": credential_store} if credential_store is not None else {}
+    return await ask_gap_interview(
+        pool, date_label=yesterday.isoformat(), timezone=timezone, **store_kwargs
+    )

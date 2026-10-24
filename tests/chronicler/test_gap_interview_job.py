@@ -98,3 +98,60 @@ async def test_tool_and_job_share_one_ask_and_pass_status_through(monkeypatch, a
         }
     )
     assert tool_status == job_status == {"status": "no_gap", "date": "sentinel"}
+
+
+async def test_started_module_uses_selected_store_for_the_real_ask(monkeypatch):
+    """A shared-only token reaches the real resolver, decision engine and HTTP boundary."""
+    from butlers.credential_store import CredentialStore
+    from butlers.modules.registry import default_registry
+
+    default_registry()
+    mod = importlib.import_module("butlers.modules._roster_chronicler")
+    local = MagicMock()
+    local_conn = AsyncMock()
+    local_conn.fetchrow.return_value = None
+    local.acquire.return_value.__aenter__ = AsyncMock(return_value=local_conn)
+    shared = MagicMock()
+    shared_conn = AsyncMock()
+    shared_conn.fetchrow.return_value = {"secret_value": "synthetic-shared-token"}
+    shared.acquire.return_value.__aenter__ = AsyncMock(return_value=shared_conn)
+    store = CredentialStore(local, fallback_pools=[shared])
+    writes = AsyncMock()
+    monkeypatch.setattr("butlers.core.state.state_get", AsyncMock(return_value=None))
+    monkeypatch.setattr("butlers.core.state.state_set", writes)
+    monkeypatch.setattr("butlers.chronicler.storage.list_episodes", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "butlers.core.temporal.delivery_db.get_delivery_preferences", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.gap_interview_telegram.resolve_owner_chat_id",
+        AsyncMock(return_value="synthetic-owner-chat"),
+    )
+    http = MagicMock()
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"result": {"message_id": 7}}
+    http.post = AsyncMock(return_value=response)
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=http)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client_factory = MagicMock(return_value=client)
+    monkeypatch.setattr("httpx.AsyncClient", client_factory)
+    module = mod.ChroniclerModule()
+    monkeypatch.setattr(module, "_register_default_schedules", AsyncMock())
+    await module.on_startup({}, MagicMock(pool=local), credential_store=store)
+    registered = {}
+    mcp = MagicMock()
+    mcp.tool.side_effect = lambda: lambda fn: registered.__setitem__(fn.__name__, fn) or fn
+    await module.register_tools(mcp, {}, module._db, "chronicler")
+    try:
+        result = await registered["chronicler_gap_interview"]("2026-10-21", "UTC")
+        assert result["status"] == "asked"
+        assert http.post.await_count == 1
+        assert http.post.await_args.args[0].endswith("synthetic-shared-token/sendMessage")
+        assert shared_conn.fetchrow.await_count == 1
+        assert writes.await_count == 2
+        client_factory.assert_called_once_with(timeout=30.0)
+    finally:
+        await module.on_shutdown()
+    assert module._db is None
+    assert module._credential_store is None
