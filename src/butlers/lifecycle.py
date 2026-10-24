@@ -30,7 +30,10 @@ from butlers.config import (
     ButlerType,
     load_config,
 )
-from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
+from butlers.core.approvals_policy import (
+    AttentionReadUnavailable,
+    get_approvals_policy_quiet_hours,
+)
 from butlers.core.general_settings import resolve_general_timezone
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
@@ -71,11 +74,14 @@ async def _sync_toml_schedules(daemon: Any, pool: Any, credential_store: Any) ->
     # UTC. Resolved from the shared general settings via the credential store.
     default_timezone = await resolve_general_timezone(credential_store.shared_pool)
     # Owner quiet window, used only for the warn-only always-suppressed schedule lint.
-    quiet_policy = (
-        await get_approvals_policy_quiet_hours(credential_store.shared_pool)
-        if credential_store.shared_pool is not None
-        else None
-    )
+    quiet_policy = None
+    if credential_store.shared_pool is not None:
+        try:
+            quiet_policy = await get_approvals_policy_quiet_hours(credential_store.shared_pool)
+        except AttentionReadUnavailable:
+            # This optional lint never authorizes delivery; actual delivery
+            # consumers retain the strict unavailable-read refusal.
+            logger.warning("TOML schedule advisory quiet-window lint unavailable")
     await sync_schedules(
         pool,
         schedules,

@@ -10,11 +10,9 @@ Covers per bu-e38f:
 7. Digest formatting with multiple butlers
 8. dedup_key format validation errors
 
-These tests are unit-level (no Docker required) — they use in-process asyncpg
-mocks or an in-memory SQLite-style fixture via inline table creation on a real
-Postgres container fixture when available. For CI portability we use the
-``provisioned_postgres_pool`` session fixture for DB-backed scenarios, but
-mark Docker-requiring tests so they are skipped when Docker is unavailable.
+Unit cases use in-process mocks without Docker. DB-backed scenarios use a
+core-migrated PostgreSQL database with per-test Insight state cleanup, and are
+marked as requiring Docker.
 
 Issue: bu-e38f
 """
@@ -27,7 +25,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
+
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 
@@ -57,15 +59,11 @@ _PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 # default core_160 writes into ``public.approvals_policy`` for this single-owner
 # (Asia/Singapore) deployment.
 #
-# Seeding it is what gives ``_PINNED_NOW`` something to be quiet or loud
-# *relative to*. Without the row the table does not exist at all, so
-# ``get_approvals_policy_quiet_hours`` catches the UndefinedTableError, returns
-# ``None``, and ``is_policy_quiet_now`` reports every hour of every day as
-# awake: the quiet-hours branch of ``delivery_cycle`` was unreachable and a
-# cycle that omitted ``now=`` could not observe suppression however loud the
-# wall clock got. With the row present the window is real — 23:00-08:00 SGT is
-# 15:00-24:00 UTC — so a cycle handed the wall clock is suppressed for nine
-# hours of every day, and every call site has to name its own instant.
+# Seeding it gives ``_PINNED_NOW`` a real quiet window to evaluate. The migrated
+# schema also supplies user_context, so an empty context read succeeds rather
+# than being confused with an unavailable table. Missing/unreadable attention
+# state must hold routine delivery, not authorize it. The real 23:00-08:00 SGT
+# window is 15:00-24:00 UTC; each cycle still names its own instant.
 _DEFAULT_QUIET_START_HOUR = 23
 _DEFAULT_QUIET_END_HOUR = 8
 _DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
@@ -114,19 +112,27 @@ class TestInsightExpiryHelpers:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables and the owner policy.
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision the actual shared context/policy schema once for this module."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
-    The Owner Attention Policy is part of the schema every one of these tests
-    runs against in production, so it is seeded here with its production
-    default. A test that is *about* suppression overrides it with
-    :func:`_set_owner_attention_policy`.
-    """
+
+@pytest.fixture
+async def insight_pool(migrated_db_url: str):
+    """Reset test-owned Insight state on the migrated core schema."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    async with provisioned_postgres_pool() as pool:
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await create_insight_tables(pool)
+        await pool.execute("""
+            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
+                insight_candidates, insight_cooldowns, insight_settings,
+                attention_daily_rollup, public.user_context
+        """)
         await _set_owner_attention_policy(
             pool,
             quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
@@ -134,6 +140,39 @@ async def insight_pool(provisioned_postgres_pool):
             timezone=_DEFAULT_QUIET_TIMEZONE,
         )
         yield pool
+    finally:
+        await pool.close()
+
+
+async def _insert_history_candidate(
+    pool,
+    *,
+    delivered_at: datetime,
+    category: str = "history",
+    origin_butler: str = "health",
+) -> str:
+    """Create a real terminal parent for an independent engagement-history row."""
+    now = datetime.now(UTC)
+    # Recent creation keeps this parent outside retention's candidate-delete
+    # target while its engagement timestamp exercises the intended history day.
+    # Delivered status prevents the parent from entering a delivery working set.
+    return str(
+        await pool.fetchval(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivered_at, created_at)
+            VALUES ($1, 1, $2, $3, $4, 'Historical engagement', 'delivered', $5, $6)
+            RETURNING id
+            """,
+            origin_butler,
+            category,
+            f"history:{uuid.uuid4()}",
+            now + timedelta(days=1),
+            delivered_at,
+            now,
+        )
+    )
 
 
 async def _set_owner_attention_policy(
@@ -548,8 +587,14 @@ class TestEndToEndInsightFlow:
                 """
                 INSERT INTO insight_engagement
                     (insight_id, delivered_at, engaged, category, origin_butler)
-                VALUES (gen_random_uuid(), $1, $2, 'Health', 'health')
+                VALUES ($1::uuid, $2, $3, 'Health', 'health')
                 """,
+                await _insert_history_candidate(
+                    insight_pool,
+                    delivered_at=_PINNED_NOW - timedelta(minutes=index),
+                    category="Health",
+                    origin_butler="health",
+                ),
                 _PINNED_NOW - timedelta(minutes=index),
                 index == 0,
             )
@@ -557,8 +602,11 @@ class TestEndToEndInsightFlow:
             """
             INSERT INTO insight_engagement
                 (insight_id, delivered_at, engaged, category, origin_butler)
-            VALUES (gen_random_uuid(), $1, TRUE, 'Finance', 'finance')
+            VALUES ($1::uuid, $2, TRUE, 'Finance', 'finance')
             """,
+            await _insert_history_candidate(
+                insight_pool, delivered_at=_PINNED_NOW, category="Finance", origin_butler="finance"
+            ),
             _PINNED_NOW,
         )
 
@@ -1023,7 +1071,7 @@ class TestConfiguredGlobalCapacity:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
         """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=1)),
             now - timedelta(days=1),
         )
         for i in range(9):
@@ -1032,7 +1080,7 @@ class TestConfiguredGlobalCapacity:
                 INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
                 VALUES ($1::uuid, $2, FALSE)
             """,
-                str(uuid.uuid4()),
+                await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=i)),
                 now - timedelta(days=i),
             )
 
@@ -1819,8 +1867,8 @@ class TestCleanup:
 
         old_delivered_at = datetime.now(UTC) - timedelta(days=35)
         recent_delivered_at = datetime.now(UTC) - timedelta(days=5)
-        old_id = str(uuid.uuid4())
-        recent_id = str(uuid.uuid4())
+        old_id = await _insert_history_candidate(insight_pool, delivered_at=old_delivered_at)
+        recent_id = await _insert_history_candidate(insight_pool, delivered_at=recent_delivered_at)
 
         await insight_pool.execute(
             """
@@ -1869,7 +1917,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=2)
+            ),
             old_day_midnight + timedelta(hours=2),
         )
         await insight_pool.execute(
@@ -1877,7 +1927,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=3)
+            ),
             old_day_midnight + timedelta(hours=3),
         )
         await insight_pool.execute(
@@ -1885,7 +1937,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=recent_day_midnight + timedelta(hours=2)
+            ),
             recent_day_midnight + timedelta(hours=2),
         )
 
@@ -2122,7 +2176,7 @@ class TestAutoOffTotalDisengagement:
             # and <= day -1), safely below the exclusive window_end (today_midnight).
             day_ts = today_midnight - timedelta(days=num_days - day_offset) + timedelta(hours=1)
             for _ in range(insights_per_day):
-                insight_id = str(uuid.uuid4())
+                insight_id = await _insert_history_candidate(pool, delivered_at=day_ts)
                 await pool.execute(
                     """
                     INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
@@ -2190,7 +2244,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight - timedelta(hours=12)
+            ),
             today_midnight - timedelta(hours=12),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
@@ -2252,7 +2308,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=1)
+            ),
             today_midnight + timedelta(hours=1),
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
@@ -2274,7 +2332,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=2)
+            ),
             today_midnight + timedelta(hours=2),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
