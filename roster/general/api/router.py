@@ -20,9 +20,10 @@ import sys
 from pathlib import Path
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.tools.general.source_authority import (
     ORDINARY_PARENT,
@@ -51,11 +52,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/general", tags=["general"])
 
 BUTLER_DB = "general"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -101,7 +97,8 @@ _HISTOGRAM_BRACKETS = ["0", "1-10", "11-100", "101+"]
 @router.get("/stats", response_model=GeneralStats)
 @_ordinary_only
 async def get_stats(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> GeneralStats:
     """Return aggregated KPIs and collection size histogram.
 
@@ -210,7 +207,8 @@ async def list_collections(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Collection]:
     """List collections with entity counts, paginated.
 
@@ -283,7 +281,8 @@ async def list_collection_entities(
     collection_id: str,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Entity]:
     """List entities within a specific collection, paginated."""
     pool = _pool(db)
@@ -351,7 +350,8 @@ async def list_entities(
     tag: str | None = Query(None, description="Filter by tag"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Entity]:
     """Search or list all entities across collections."""
     pool = _pool(db)
@@ -422,7 +422,8 @@ async def list_entities(
 @_ordinary_only
 async def get_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Entity]:
     """Get a single entity by ID."""
     pool = _pool(db)

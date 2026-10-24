@@ -14,8 +14,9 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from fastapi import Depends
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
@@ -614,146 +615,30 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
-def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> None:
-    """Override all router-level ``_get_db_manager`` stubs with the singleton.
+# The public dependency and legacy singleton accessor share one callable identity.
+get_db = get_db_manager
+Db = Annotated[DatabaseManager, Depends(get_db)]
 
-    Parameters
-    ----------
-    app:
-        The FastAPI application instance.
-    dynamic_modules:
-        Optional list of dynamically-loaded router modules (from roster/{butler}/api/).
-        Each module is scanned for a _get_db_manager stub function.
+
+def get_db_optional() -> DatabaseManager | None:
+    """Allow existing best-effort reads before manager initialization.
+
+    Only the manager's existing uninitialized RuntimeError is suppressed; pool,
+    query and authorization errors retain their original handling.
     """
-    from butlers.api.routers import (
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        entities,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    )
+    try:
+        return get_db()
+    except RuntimeError:
+        return None
 
-    # Wire static routers (existing core routers)
-    for module in [
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        entities,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    ]:
-        app.dependency_overrides[module._get_db_manager] = get_db_manager
 
-    # Wire the rollup router's separate dependency stub
-    app.dependency_overrides[ingestion_events._get_rollup_db_manager] = get_db_manager
+OptionalDb = Annotated[DatabaseManager | None, Depends(get_db_optional)]
 
-    # Wire the QA credentials-status callable from the CredentialStore so the
-    # dashboard reports REAL credential presence (gh_token / git-author) instead
-    # of null/"unknown". Without this the QA settings card degrades to unknown
-    # in production because no other path supplies credentials_status_fn.
+
+def wire_qa_credentials(app: FastAPI) -> None:
+    """Bind the separate QA credential-presence reader after pool startup."""
+    from butlers.api.routers import qa
+
     app.dependency_overrides[qa._get_credentials_status_fn] = qa.make_credentials_status_fn(
         get_db_manager
     )
-
-    # Wire dynamically-loaded butler routers
-    if dynamic_modules:
-        for module in dynamic_modules:
-            if hasattr(module, "_get_db_manager"):
-                app.dependency_overrides[module._get_db_manager] = get_db_manager
-                logger.debug(
-                    "Wired DB dependency for dynamic module: %s",
-                    module.__name__,
-                )

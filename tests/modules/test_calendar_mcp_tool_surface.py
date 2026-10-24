@@ -77,12 +77,23 @@ async def _registered_tools(groups: list[str] | None) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    "groups",
-    [None, [], ["core", "butler_events", "attendees"]],
-    ids=["default", "empty", "explicit-including-retired"],
+    ("groups", "expected"),
+    [
+        (None, EXPECTED_CALENDAR_TOOLS),
+        ([], EXPECTED_CALENDAR_TOOLS),
+        (["core", "butler_events", "attendees"], None),
+        (["core", "butler_events", "attendees", "response"], EXPECTED_CALENDAR_TOOLS),
+        (["response"], {"calendar_respond", "calendar_response_fence_status"}),
+    ],
+    ids=["default", "empty", "explicit-missing-response", "explicit-all", "response-only"],
 )
-async def test_calendar_module_registers_the_full_tool_surface(groups):
-    assert await _registered_tools(groups) == EXPECTED_CALENDAR_TOOLS
+async def test_calendar_module_registers_the_full_tool_surface(groups, expected):
+    # REQ-module-calendar-032: explicit groups select response independently.
+    if expected is None:
+        with pytest.raises(RuntimeError, match="response registration group"):
+            await _registered_tools(groups)
+    else:
+        assert await _registered_tools(groups) == expected
 
 
 def test_calendar_package_source_units_stay_bounded():

@@ -14,10 +14,10 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.core.entity_graph_edges import (
     DOSSIER_RECEIPT_LIMIT,
@@ -28,11 +28,6 @@ from butlers.core.entity_graph_edges import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 class DossierReceipt(BaseModel):
@@ -82,7 +77,8 @@ async def get_entity_dossier(
         le=DOSSIER_RECEIPT_LIMIT_MAX,
         description="Max live receipts returned (counts are always the true totals)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EntityDossier]:
     """Return the entity's live projected relationships grouped by source, with coverage."""
     try:

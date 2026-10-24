@@ -45,10 +45,9 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
-from butlers.api.routers import schedules as schedules_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, log_audit_entry
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
@@ -107,7 +106,7 @@ def audit_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.pool.return_value = pool
 
     application = create_app()
-    application.dependency_overrides[audit_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -183,7 +182,7 @@ async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
     )
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
     mock_client = AsyncMock()
     mock_client.call_tool.return_value = [MagicMock(text=json.dumps(result))]
     mock_manager = AsyncMock(spec=MCPClientManager)
@@ -265,7 +264,7 @@ async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
     )
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
     mock_client = AsyncMock()
     mock_client.call_tool.return_value = [MagicMock(text=json.dumps(mcp_result))]
     mock_manager = AsyncMock(spec=MCPClientManager)
@@ -538,7 +537,7 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     transport = httpx.ASGITransport(app=audit_app)
     async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
@@ -601,7 +600,7 @@ async def test_model_delete_impact_counts_live_overrides_without_mutation(
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     response = await _get(audit_app, f"/api/settings/models/{entry_id}/delete-impact")
 
@@ -623,7 +622,7 @@ async def test_model_create_rolls_back_when_audit_is_unavailable(
     alias = f"audit-create-rollback-{uuid.uuid4()}"
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -674,7 +673,7 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
     )
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -760,7 +759,7 @@ async def test_override_reason_audit_commits_once_and_sql_fault_rolls_back(
     )
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
     action = "model.override.upsert" if method == "PUT" else "model.override.delete"
     base_path = "/api/butlers/general/model-overrides"
 

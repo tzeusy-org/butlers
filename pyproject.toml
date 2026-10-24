@@ -258,8 +258,8 @@ allow_indirect_imports = true
 # Baseline: existing violations, to only shrink. Move the shared read-model and
 # conversation helpers below api, then delete the entry.
 ignore_imports = [
-    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.insights_v1",
-    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.sessions_v1",
+    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.insights",
+    "butlers.modules.dashboard_read.queries -> butlers.api.read_models.sessions",
     "butlers.modules.pipeline -> butlers.api.conversations",
 ]
 

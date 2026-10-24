@@ -969,6 +969,7 @@ async def test_real_goal_abandon_HTTP_audit_and_event_share_gate_commit(stores, 
     import httpx
     from fastapi import FastAPI
 
+    from butlers.api.deps import get_db
     from butlers.api.owner_auth.config import OwnerAuthConfig
     from butlers.api.owner_auth.http import OwnerAuthMiddleware
     from butlers.api.routers import approvals as route
@@ -1020,7 +1021,7 @@ async def test_real_goal_abandon_HTTP_audit_and_event_share_gate_commit(stores, 
         OwnerAuthMiddleware, config=OwnerAuthConfig(origin=None, rp_id=None, api_key=key)
     )
     app.include_router(route.router)
-    app.dependency_overrides[route._get_db_manager] = lambda: Manager()
+    app.dependency_overrides[get_db] = lambda: Manager()
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),

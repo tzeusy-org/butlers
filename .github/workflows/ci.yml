@@ -64,6 +64,36 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci_route.py
 
+  go-bridge:
+    # New lane: source-derived bound, not measured healthy/p95 calibration.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    needs: [route]
+    if: needs.route.outputs.backend == 'true'
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Go 1.25.11
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.11'
+          check-latest: false
+          cache: true
+          cache-dependency-path: whatsapp-bridge/go.sum
+      - name: Test the Go bridge
+        run: timeout --signal=TERM --kill-after=30s 10m go test -mod=readonly -count=1 -timeout=5m ./...
+      - name: Verify Go lockfiles are unchanged
+        run: git diff --exit-code -- go.mod go.sum
+
   guards:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
@@ -738,7 +768,7 @@ jobs:
   check:
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected, frontend-e2e]
+    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected, frontend-e2e, go-bridge]
     if: always()
     steps:
       - name: Fail closed from prerequisite verdicts only
@@ -781,6 +811,7 @@ jobs:
                   "check-integration",
                   "check-affected",
                   "frontend-e2e",
+                  "go-bridge",
               }
               if not isinstance(needs, dict) or not expected <= needs.keys():
                   return False
@@ -843,6 +874,7 @@ jobs:
                   # Playwright e2e is required wherever it runs: every merge group
                   # and main push, and pull requests the route marks as frontend changes.
                   "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
+                  "go-bridge": "success" if outputs["backend"] == "true" else "skipped",
               }
               return all(job["result"] == results.get(name, "success") for name, job in needs.items())
           needs = json.loads(os.environ['NEEDS_JSON'])

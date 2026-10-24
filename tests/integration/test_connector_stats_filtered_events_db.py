@@ -39,6 +39,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers import ingestion_connectors
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -163,7 +164,7 @@ def app(pool: asyncpg.Pool) -> FastAPI:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     application = create_app()
-    application.dependency_overrides[ingestion_connectors._get_db_manager] = lambda: db
+    application.dependency_overrides[get_db] = lambda: db
     return application
 
 

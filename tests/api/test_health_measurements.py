@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _THIS_FILE = Path(__file__).resolve()
@@ -74,7 +75,7 @@ def _build_app(pool):
     else:
         module = sys.modules[module_name]
 
-    _get_db_manager = module._get_db_manager
+    _get_db_manager = get_db
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
@@ -271,7 +272,7 @@ class TestMeasurementsLatest:
         module = sys.modules[module_name]
 
         app = create_app(api_key="")
-        app.dependency_overrides[module._get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

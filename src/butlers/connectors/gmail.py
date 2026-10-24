@@ -99,6 +99,7 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
+from butlers.ingestion_spans import collapse_spans
 from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
 
@@ -2236,12 +2237,32 @@ class GmailConnectorRuntime:
                 _subject = self._get_subject(message_data)
                 _from_header = self._get_from_header(message_data)
                 replay_sender = _from_header
-                replay_body = self._extract_body_from_payload(message_data.get("payload", {}))
+                # Header/attachment facts do not depend on body decoding. Keep
+                # them even when malformed inline bytes take the error path.
+                replay_spans = (
+                    email_untrusted_spans(
+                        f"Subject: {html.escape(_subject)}",
+                        subject=_subject,
+                        has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                    )
+                    or None
+                )
+                try:
+                    replay_body, replay_quotes = self._extract_body_with_quotes(
+                        message_data.get("payload", {})
+                    )
+                except ValueError:
+                    # Policy can still select metadata-only delivery, whose
+                    # builder already tolerates malformed inline bytes. Full
+                    # delivery retains its actual decode/error behavior below.
+                    replay_body, replay_quotes = "", []
                 replay_spans = (
                     email_untrusted_spans(
                         f"Subject: {html.escape(_subject)}\n\n{html.escape(replay_body)}",
                         subject=_subject,
                         has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                        body_text=replay_body,
+                        body_quote_spans=replay_quotes,
                     )
                     or None
                 )
@@ -2737,6 +2758,27 @@ class GmailConnectorRuntime:
                 metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
             if known_contact is not None:
                 metadata_envelope["control"]["known_contact"] = known_contact
+            # No attachment/body fetch at metadata tier. Preserve only known
+            # exposure kinds from already supplied provider fields, never content.
+            supplied = message_data.get("payload")
+            supplied = supplied if isinstance(supplied, dict) else {}
+            try:
+                body, quotes = self._extract_body_with_quotes(supplied)
+            except ValueError:
+                # Metadata-only delivery must not start depending on decoding
+                # malformed inline body bytes. Subject evidence still applies.
+                body, quotes = "", []
+            known = email_untrusted_spans(
+                f"Subject: {html.escape(subject)}\n\n{html.escape(body)}",
+                subject=subject,
+                has_attached_message=_has_attached_message(supplied),
+                body_text=body,
+                body_quote_spans=quotes,
+            )
+            if known:
+                metadata_envelope["payload"]["untrusted_spans"] = collapse_spans(
+                    metadata_envelope["payload"]["normalized_text"], known
+                )
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
@@ -2754,7 +2796,7 @@ class GmailConnectorRuntime:
         await self._resolve_body_attachment_refs(message_id, payload)
 
         # Extract body
-        body = self._extract_body_from_payload(payload)
+        body, body_quotes = self._extract_body_with_quotes(payload)
 
         # Build normalized text
         normalized_text = f"Subject: {html.escape(subject)}\n\n{html.escape(body)}"
@@ -2813,6 +2855,8 @@ class GmailConnectorRuntime:
             normalized_text,
             subject=subject,
             has_attached_message=_has_attached_message(payload),
+            body_text=body,
+            body_quote_spans=body_quotes,
         )
         if untrusted_spans:
             envelope["payload"]["untrusted_spans"] = untrusted_spans
@@ -2949,6 +2993,12 @@ class GmailConnectorRuntime:
                 await self._resolve_body_attachment_refs(message_id, part, depth + 1)
 
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
+        """Existing text-only interface; normalization also retains selected HTML quote ranges."""
+        return self._extract_body_with_quotes(payload, depth)[0]
+
+    def _extract_body_with_quotes(
+        self, payload: dict[str, Any], depth: int = 0
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Recursively extract body text from Gmail message payload.
 
         Preference order: text/plain > text/html (stripped) > "(no body)".
@@ -2963,7 +3013,7 @@ class GmailConnectorRuntime:
         # Prevent stack overflow from malicious deeply nested messages
         if depth > 20:
             logger.warning("Maximum recursion depth reached in email parsing")
-            return "(body too deeply nested)"
+            return "(body too deeply nested)", []
 
         mime_type = payload.get("mimeType", "")
 
@@ -2973,7 +3023,7 @@ class GmailConnectorRuntime:
             logger.warning(
                 "S/MIME encrypted email (application/pkcs7-mime): body cannot be extracted"
             )
-            return "(S/MIME encrypted body — cannot extract)"
+            return "(S/MIME encrypted body — cannot extract)", []
 
         # Leaf node: text/plain — return immediately (highest priority)
         if mime_type == "text/plain":
@@ -2981,7 +3031,7 @@ class GmailConnectorRuntime:
             body_data = body.get("data") if isinstance(body, dict) else ""
             if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
-                return self._decode_part_bytes(raw_bytes, payload)
+                return self._decode_part_bytes(raw_bytes, payload), []
 
         # Leaf node: text/html — decode and strip tags (fallback candidate)
         if mime_type == "text/html":
@@ -2990,7 +3040,7 @@ class GmailConnectorRuntime:
             if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
                 raw_html = self._decode_part_bytes(raw_bytes, payload)
-                return self._strip_html(raw_html)
+                return self._strip_html_with_quotes(raw_html)
 
         # Multipart: collect plain and html candidates separately so we can
         # prefer plain regardless of part ordering in the MIME tree.
@@ -2998,8 +3048,8 @@ class GmailConnectorRuntime:
         # content part(s) contribute to the extracted body.
         parts = payload.get("parts")
         if isinstance(parts, list):
-            plain_candidate: str | None = None
-            html_candidate: str | None = None
+            plain_candidate: tuple[str, list[dict[str, Any]]] | None = None
+            html_candidate: tuple[str, list[dict[str, Any]]] | None = None
             for part in parts:
                 if not isinstance(part, dict):
                     continue
@@ -3007,8 +3057,8 @@ class GmailConnectorRuntime:
                 # Skip cryptographic signature parts — they carry no readable body.
                 if child_mime in self._SIGNATURE_MIME_TYPES:
                     continue
-                body = self._extract_body_from_payload(part, depth + 1)
-                if body in ("(no body)", "(body too deeply nested)"):
+                body = self._extract_body_with_quotes(part, depth + 1)
+                if body[0] in ("(no body)", "(body too deeply nested)"):
                     continue
                 # Classify by the child's own MIME type to preserve preference.
                 if child_mime == "text/plain" and plain_candidate is None:
@@ -3023,49 +3073,92 @@ class GmailConnectorRuntime:
             if html_candidate is not None:
                 return html_candidate
 
-        return "(no body)"
+        return "(no body)", []
 
     @staticmethod
     def _strip_html(raw_html: str) -> str:
-        """Strip HTML tags from *raw_html*, returning readable plain text.
+        return GmailConnectorRuntime._strip_html_with_quotes(raw_html)[0]
 
-        Uses stdlib ``html.parser.HTMLParser`` to skip ``<style>`` and
-        ``<script>`` blocks entirely and collect visible text nodes.
-        Collapses runs of whitespace into single spaces / newlines.
+    @staticmethod
+    def _strip_html_with_quotes(raw_html: str) -> tuple[str, list[dict[str, Any]]]:
+        """Retain citation ownership while preserving the existing visible-text transform.
+
+        Quote tags/classes are structural provider facts; quoted characters travel
+        through the same whitespace collapse as text, then through HTML escaping.
+        No hidden/script text or unselected MIME alternative becomes a body.
         """
 
         class _TextExtractor(HTMLParser):
-            """Collect visible text, skipping style/script content."""
-
             _SKIP_TAGS = frozenset({"style", "script", "head"})
+            _VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "wbr"})
 
             def __init__(self) -> None:
                 super().__init__(convert_charrefs=True)
-                self._skip_depth = 0
-                self._parts: list[str] = []
+                self.stack: list[tuple[str, bool]] = []
+                self.parts: list[str] = []
+                self.marked: list[bool] = []
+                self.quote_seen = False
 
-            def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
-                if tag in self._SKIP_TAGS:
-                    self._skip_depth += 1
+            def handle_starttag(self, tag: str, attrs: list) -> None:
+                values = dict(attrs)
+                classes = (values.get("class") or "").split()
+                quoted = (
+                    tag == "blockquote"
+                    or (values.get("type") or "").lower() == "cite"
+                    or bool({"gmail_quote", "yahoo_quoted"}.intersection(classes))
+                )
+                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
+                    self.quote_seen |= quoted
+                if tag not in self._VOID_TAGS:
+                    self.stack.append((tag, quoted))
 
-            def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
-                if tag in self._SKIP_TAGS and self._skip_depth > 0:
-                    self._skip_depth -= 1
+            def handle_startendtag(self, tag: str, attrs: list) -> None:
+                self.handle_starttag(tag, attrs)
+                self.handle_endtag(tag)
+
+            def handle_endtag(self, tag: str) -> None:
+                for index in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[index][0] == tag:
+                        del self.stack[index:]
+                        break
 
             def handle_data(self, data: str) -> None:
-                if self._skip_depth == 0:
-                    self._parts.append(data)
+                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
+                    self.parts.append(data)
+                    self.marked.extend([any(q for _, q in self.stack)] * len(data))
 
-            def get_text(self) -> str:
-                text = "".join(self._parts)
-                # Normalise whitespace: collapse blanks, preserve paragraph breaks
-                text = re.sub(r"[ \t]+", " ", text)
-                text = re.sub(r"\n{3,}", "\n\n", text)
-                return text.strip()
+            def result(self) -> tuple[str, list[dict[str, Any]]]:
+                text, marked = "".join(self.parts), self.marked
+                for pattern, replacement in ((r"[ \t]+", " "), (r"\n{3,}", "\n\n")):
+                    pieces, flags, offset = [], [], 0
+                    for match in re.finditer(pattern, text):
+                        pieces.append(text[offset : match.start()])
+                        flags.extend(marked[offset : match.start()])
+                        pieces.append(replacement)
+                        flags.extend([any(marked[match.start() : match.end()])] * len(replacement))
+                        offset = match.end()
+                    pieces.append(text[offset:])
+                    flags.extend(marked[offset:])
+                    text, marked = "".join(pieces), flags
+                lead = len(text) - len(text.lstrip())
+                text = text.strip()
+                marked = marked[lead : lead + len(text)]
+                spans, start = [], None
+                for index, flag in enumerate(marked + [False]):
+                    if flag and start is None:
+                        start = index
+                    elif not flag and start is not None:
+                        spans.append({"kind": "quoted", "start": start, "end": index})
+                        start = None
+                text = text or "(no body)"
+                if self.quote_seen and not spans:
+                    spans = [{"kind": "quoted", "start": 0, "end": len(text)}]
+                return text, spans
 
         extractor = _TextExtractor()
         extractor.feed(raw_html)
-        return extractor.get_text() or "(no body)"
+        extractor.close()
+        return extractor.result()
 
     def _extract_attachments(self, payload: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
         """Walk MIME parts tree, identify supported attachments.

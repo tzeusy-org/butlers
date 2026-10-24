@@ -1985,3 +1985,25 @@ def test_unforwarded_events_carry_no_spans(connector: WhatsAppUserClientConnecto
 
     assert "untrusted_spans" not in single["payload"]
     assert "untrusted_spans" not in batch["payload"]
+    assert single["event"]["in_reply_to_ref"] == "q-9"
+    assert batch["event"]["in_reply_to_ref"] == "q-9"
+    other = dict(event, message_id="other", content={"text": "ordinary owner message"})
+    mixed = connector._build_batch_envelope("chat-1", [other, event], "batch-mixed")
+    (span,) = mixed["payload"]["untrusted_spans"]
+    text = mixed["payload"]["normalized_text"]
+    assert span["kind"] == "quoted" and text[span["start"] : span["end"]] == "yes, that one"
+    assert "in_reply_to_ref" not in mixed["event"]
+    from butlers.connectors.filtered_event_buffer import _sanitize_replay_payload
+
+    connector._record_batch_filtered_event(
+        chat_jid="chat-1",
+        batch_event_id="batch-mixed",
+        filter_reason="synthetic",
+        events=[other, event],
+    )
+    stored = connector._filtered_event_buffer._rows[-1][9]
+    _sanitize_replay_payload(stored)
+    assert stored["payload"]["untrusted_spans"] == [
+        {"kind": "quoted", "start": 0, "end": len("[no text]")}
+    ]
+    assert batch["payload"]["raw"]["conversation_history"][0]["reply_to"] == "q-9"

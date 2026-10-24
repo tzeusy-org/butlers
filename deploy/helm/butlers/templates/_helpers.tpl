@@ -99,18 +99,6 @@ https://{{ .Values.publicUrl.host }}
   readOnly: true
 {{- end -}}
 
-{{/* Beads export PVC: a directory mount (not subPath) so the exporter's rename is followed. */}}
-{{- define "butlers.beadsExportVolume" -}}
-- name: beads-export
-  persistentVolumeClaim:
-    claimName: {{ .Release.Name }}-beads-export
-    readOnly: true
-{{- end -}}
-
-{{- define "butlers.beadsExportMount" -}}
-- {name: beads-export, mountPath: /app/.beads, readOnly: true}
-{{- end -}}
-
 {{/* Only dev opts into the key-absent topology; existing service port stays 41100. */}}
 {{- define "butlers.switchboardHost" -}}
 {{- if .Values.butlersControl.enabled -}}butlers-control{{- else -}}butlers-up{{- end -}}

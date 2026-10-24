@@ -19,9 +19,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import get_db, get_pricing
 from butlers.api.pagination import encode_cursor
-from butlers.api.routers.ingestion_events import _get_db_manager, _get_rollup_db_manager
 from butlers.core.pricing import PricingConfig
 
 pytestmark = pytest.mark.unit
@@ -227,7 +226,7 @@ def _app_with_mock_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None)
         mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return mock_db
 
@@ -1168,7 +1167,7 @@ def _app_with_mock_rollup_db(app: FastAPI, *, shared_pool=None, shared_pool_erro
             shared_pool.fetch = AsyncMock(return_value=[])
         mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_rollup_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -1297,7 +1296,7 @@ def _app_with_switchboard_pool(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return mock_db
 
@@ -1608,7 +1607,7 @@ async def test_event_rollup_writes_cost_usd_back(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     rollup_with_sessions = {
@@ -1657,7 +1656,7 @@ async def test_event_rollup_does_not_write_unknown_cost_coverage(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     unpriced_rollup = {
@@ -1710,7 +1709,7 @@ async def test_event_rollup_does_not_write_partial_cost_with_no_usage_sessions(a
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     partial_rollup = {
@@ -1764,7 +1763,7 @@ async def test_event_rollup_writes_known_zero_cost_back(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     known_zero_rollup = {
@@ -1819,7 +1818,7 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     rollup_empty = {

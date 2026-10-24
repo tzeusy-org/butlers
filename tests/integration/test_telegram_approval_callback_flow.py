@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as approvals_router
@@ -157,7 +158,7 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
     app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
-    app.dependency_overrides[approvals_router._get_db_manager] = lambda: _DbManager(pool)
+    app.dependency_overrides[get_db] = lambda: _DbManager(pool)
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
         mcp_mgr if mcp_mgr is not None else MagicMock()
     )

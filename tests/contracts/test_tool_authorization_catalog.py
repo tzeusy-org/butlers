@@ -94,7 +94,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
         response = catalog["calendar_respond"]
         assert {"calendar_respond", "calendar_response_fence_status"} <= set(catalog)
         assert response.classification_complete
-        assert response.group_name == "core"
+        assert response.group_name == "response"
         assert catalog["calendar_response_fence_status"].group_name == "direct"
         assert all(getattr(response, field, None) is not None for field in _D4_FIELDS)
         assert response.effect_class == "communicate"

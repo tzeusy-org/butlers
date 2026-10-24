@@ -397,7 +397,6 @@ export default function NotificationsPage() {
   >(() => requestedNotificationId);
 
   // Keep a direct `?notification=` deep link authoritative if it changes
-  // (mirrors DecisionsPage's identical `requestedBeadId` sync effect).
   useEffect(() => {
     setSelectedNotificationId(requestedNotificationId);
   }, [requestedNotificationId]);

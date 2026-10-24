@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.api.routers import approvals as routes
 from butlers.modules.approvals.previews import args_digest
 
@@ -39,6 +40,20 @@ async def test_changed_viewed_call_refuses_before_any_effect(app, monkeypatch, l
                 events.append("commit")
 
         async def fetchrow(self, sql, *args):
+            if sql == (
+                "SELECT to_jsonb(p)->>'goal_id' AS goal_id, "
+                "to_jsonb(p)->>'goal_effect_id' AS goal_effect_id, "
+                "to_jsonb(p)->>'goal_capability' AS goal_capability, "
+                "to_jsonb(p)->>'goal_args_digest' AS goal_args_digest "
+                "FROM pending_actions p WHERE id=$1"
+            ):
+                assert args == (action_id,)
+                return {
+                    "goal_id": None,
+                    "goal_effect_id": None,
+                    "goal_capability": None,
+                    "goal_args_digest": None,
+                }
             events.append("locked" if "FOR UPDATE" in sql else "read")
             return {"tool_name": "telegram_send_message", "tool_args": current}
 
@@ -62,7 +77,7 @@ async def test_changed_viewed_call_refuses_before_any_effect(app, monkeypatch, l
     monkeypatch.setattr(routes.approvals_ops, "approve_action", approve)
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     path = f"/api/approvals/{'actions/' if legacy else ''}{action_id}/approve"
     async with httpx.AsyncClient(
@@ -123,6 +138,20 @@ async def binding_http(app, monkeypatch):
                 state["events"].append("commit")
 
         async def fetchrow(self, sql, *args):
+            if sql == (
+                "SELECT to_jsonb(p)->>'goal_id' AS goal_id, "
+                "to_jsonb(p)->>'goal_effect_id' AS goal_effect_id, "
+                "to_jsonb(p)->>'goal_capability' AS goal_capability, "
+                "to_jsonb(p)->>'goal_args_digest' AS goal_args_digest "
+                "FROM pending_actions p WHERE id=$1"
+            ):
+                assert args == (state["row"]["id"],)
+                return {
+                    "goal_id": None,
+                    "goal_effect_id": None,
+                    "goal_capability": None,
+                    "goal_args_digest": None,
+                }
             assert "FOR UPDATE" in sql
             state["events"].append("lock")
             return deepcopy(state["row"])
@@ -169,7 +198,7 @@ async def binding_http(app, monkeypatch):
     monkeypatch.setattr(routes.approvals_ops, "approve_action", approve)
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -372,7 +401,7 @@ async def test_legacy_rule_memory_follows_owning_audit_commit(app, monkeypatch, 
         monkeypatch.setattr(routes.approvals_ops, hook, AsyncMock())
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     payload = {
         "create_rule": True,

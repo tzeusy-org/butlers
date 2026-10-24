@@ -22,7 +22,7 @@ from uuid import UUID
 
 import pytest
 
-from butlers.api.read_models.calendar_workspace_v1 import (
+from butlers.api.read_models.calendar_workspace import (
     PROPOSAL_COLUMNS,
     READ_MODEL_VERSION,
     SOURCE_COLUMNS,

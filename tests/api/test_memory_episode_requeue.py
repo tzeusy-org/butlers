@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -132,7 +132,7 @@ class _DB:
 
 
 async def _post(app, db: _DB, episode_id: object):
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -279,7 +279,7 @@ async def test_requeue_runs_nothing(app) -> None:
 async def test_the_per_butler_retry_consolidation_route_is_gone(app) -> None:
     episode_id = uuid.uuid4()
     pool = _Pool(episode=_episode(episode_id))
-    app.dependency_overrides[_get_db_manager] = lambda: _DB({"atlas": pool})
+    app.dependency_overrides[get_db] = lambda: _DB({"atlas": pool})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -292,7 +292,7 @@ async def test_the_per_butler_retry_consolidation_route_is_gone(app) -> None:
 
 
 async def test_there_is_no_collection_requeue_route(app) -> None:
-    app.dependency_overrides[_get_db_manager] = lambda: _DB({"atlas": _Pool()})
+    app.dependency_overrides[get_db] = lambda: _DB({"atlas": _Pool()})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -331,7 +331,7 @@ async def test_detail_and_list_carry_the_dossier_and_never_the_lease(app) -> Non
     db.pool.return_value = pool
     db.schema_for_butler.return_value = "atlas"
     db.memory_schema_for_butler.return_value = "atlas"
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -357,7 +357,7 @@ async def test_the_inspect_embedded_episode_carries_the_dossier_and_never_the_le
     db.pool.return_value = pool
     db.schema_for_butler.return_value = "atlas"
     db.memory_schema_for_butler.return_value = "atlas"
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

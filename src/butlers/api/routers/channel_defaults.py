@@ -21,21 +21,16 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from butlers.api.audit_emit import authenticated_principal
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.routers.audit import append as _audit_append
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/channel-defaults", tags=["ingestion"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +129,8 @@ class ChannelDefaultPatchRequest(BaseModel):
 @router.get("/{channel}", response_model=ChannelDefaultEntry)
 async def get_channel_default(
     channel: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChannelDefaultEntry:
     """Return the default policy document for a single channel.
 
@@ -179,7 +175,8 @@ async def upsert_channel_default(
     channel: str,
     body: ChannelDefaultPatchRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChannelDefaultEntry:
     """Upsert the default policy document for a channel.
 

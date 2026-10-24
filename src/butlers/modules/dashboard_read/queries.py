@@ -25,10 +25,10 @@ from uuid import UUID
 
 import asyncpg
 
-from butlers.api.read_models.insights_v1 import (
+from butlers.api.read_models.insights import (
     query_insight_delivery_state as _query_insight_delivery_state,
 )
-from butlers.api.read_models.sessions_v1 import decode_session_cursor, encode_session_cursor
+from butlers.api.read_models.sessions import decode_session_cursor, encode_session_cursor
 from butlers.core.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)

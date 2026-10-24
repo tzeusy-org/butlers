@@ -24,6 +24,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -90,12 +91,12 @@ def _load_chronicler_router():
 
 
 def _make_app(*, checkpoint_rows=None):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     pool = _mock_pool(fetch_return=checkpoint_rows or [])
     db = _mock_db(pool)
 
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app, pool
 
 

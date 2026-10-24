@@ -58,7 +58,6 @@ def test_owner_facing_schedules_fire_at_their_stated_local_hour(
         ("switchboard", "spend-rule-savings", 4, 15),
         ("switchboard", "fleet-case-lapse-sweep", 4, 10),
         ("switchboard", "commitment-escalation", 5, 40),
-        ("switchboard", "decision-review-digest", 9, 0),
         ("health", "insight_scan", 7, 0),
     ],
 )

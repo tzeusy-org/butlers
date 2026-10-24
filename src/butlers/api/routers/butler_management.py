@@ -29,6 +29,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -47,11 +48,6 @@ router = APIRouter(prefix="/api/butlers", tags=["butler-management"])
 _MCP_CALL_TIMEOUT_S = 30.0
 _ROSTER_ROOT = Path(__file__).resolve().parents[4] / "roster"
 _PROMPT_PROVENANCE_ADAPTER = TypeAdapter(list[PromptProvenance])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +160,8 @@ async def _get_shared_pool(db: DatabaseManager):
 async def get_butler_prompt(
     name: str,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[PromptVersion]:
     """Return the current versioned system prompt for a butler.
 
@@ -228,7 +225,8 @@ async def get_butler_effective_prompt(
     name: str,
     _owner: str = Depends(require_dashboard_owner_control),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ButlerEffectivePrompt]:
     """Return the latest prompt that ran and compare its roster inputs to disk.
 
@@ -364,7 +362,8 @@ async def update_butler_prompt(
     name: str,
     body: PromptUpdateRequest = Body(...),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[PromptVersion]:
     """Update a butler's system prompt.
 
@@ -435,7 +434,8 @@ async def get_butler_prompt_history(
     limit: int = Query(20, ge=1, le=100, description="Max versions to return"),
     offset: int = Query(0, ge=0),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[PromptVersion]:
     """Return version history for a butler's system prompt, newest first."""
     _assert_butler_exists(name, configs)
@@ -551,7 +551,8 @@ async def kill_butler(
     body: KillRequest = Body(...),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[KillResponse]:
     """Initiate a graceful shutdown of a butler.
 

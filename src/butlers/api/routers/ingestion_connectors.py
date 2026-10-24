@@ -44,11 +44,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
@@ -478,11 +479,6 @@ def _is_archive_candidate(
     return any(identity != endpoint_identity for identity in siblings)
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the switchboard butler's connection pool.
 
@@ -748,7 +744,8 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
     response_model_exclude_unset=True,
 )
 async def list_connector_summaries_with_aggregates(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectorSummaryResponse]:
     """Return the connector list. Every field is DB-sourced.
 
@@ -1292,7 +1289,8 @@ async def list_connector_summaries_with_aggregates(
 
 @router.get("/cross-summary", response_model=ApiResponse[dict])
 async def get_cross_connector_summary_with_aggregates(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Return cross-connector aggregate summary with ``aggregates_available`` flag.
 
@@ -1424,7 +1422,8 @@ async def get_cross_connector_summary_with_aggregates(
 async def get_connector_detail(
     connector_type: str,
     endpoint_identity: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectorDetailEntry]:
     """Return the full dashboard detail projection for one connector identity.
 
@@ -1494,7 +1493,8 @@ async def get_connector_stats(
     connector_type: str,
     endpoint_identity: str,
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
     """Return a durable, filtered-aware time series for a live registry identity."""
     pool = _pool(db)
@@ -1546,7 +1546,8 @@ async def update_connector_settings(
     endpoint_identity: str,
     request: Request,
     body: ConnectorSettingsUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectorDetailEntry]:
     """Shallow-merge dashboard settings and audit only the setting names.
 
@@ -1614,7 +1615,8 @@ async def pause_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Pause a connector — audit-only, no Approvals gate.
 
@@ -1709,7 +1711,8 @@ async def run_now_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Resume a paused connector and trigger the next poll cycle — audit-only, no Approvals gate.
 
@@ -1845,7 +1848,8 @@ async def archive_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Archive a superseded connector identity — audit-only, no Approvals gate (bu-33dm2).
 
@@ -1886,7 +1890,8 @@ async def unarchive_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Restore an archived connector identity to the active roster (bu-33dm2).
 
@@ -2032,7 +2037,8 @@ async def disconnect_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Disconnect a connector — Approvals-gated; soft-deletes via ``deleted_at`` (§4.4).
 
@@ -2175,7 +2181,8 @@ async def rotate_connector_token(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NoReturn:
     """Reject token rotation until it has a safe replayable command.
 
@@ -2512,7 +2519,8 @@ async def list_connector_events(
         le=_MAX_CONNECTOR_EVENTS,
         description="Max events to return (default 20, max 100)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorEventsResponse:
     """Return the most recent events for a specific connector.
 
@@ -2637,7 +2645,8 @@ async def list_connector_incidents(
         le=_MAX_CONNECTOR_INCIDENTS,
         description="Max incidents to return (default 10, max 50)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorIncidentsResponse:
     """Return recent incident events (failures and errors) for a specific connector.
 
@@ -2755,7 +2764,8 @@ async def list_connector_incidents(
 async def list_connector_routing_rules(
     connector_type: str,
     endpoint_identity: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorRoutingRulesResponse:
     """Return ingestion rules referencing this connector.
 

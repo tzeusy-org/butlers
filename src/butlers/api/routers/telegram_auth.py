@@ -47,10 +47,11 @@ import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -67,13 +68,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
 # ---------------------------------------------------------------------------
-# Dependency stub (wired at startup via wire_db_dependencies)
+# Shared database dependency
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +228,8 @@ async def _persist_verified_telegram_session(
 @router.post("/session/send-code", response_model=SendCodeResponse)
 async def send_code(
     req: SendCodeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SendCodeResponse:
     """Start Telegram auth: send OTP code to the user's phone."""
     try:
@@ -289,7 +286,8 @@ async def send_code(
 @router.post("/session/verify", response_model=VerifyCodeResponse)
 async def verify_code(
     req: VerifyCodeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> VerifyCodeResponse:
     """Complete Telegram auth: verify OTP code and persist session."""
     try:
@@ -420,7 +418,8 @@ async def verify_code(
 
 @router.get("/session/status", response_model=SessionStatusResponse)
 async def session_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SessionStatusResponse:
     """Check whether Telegram user credentials are configured on the owner entity."""
     pool = _get_pool(db)

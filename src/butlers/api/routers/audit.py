@@ -30,9 +30,10 @@ from datetime import datetime
 from typing import Any
 
 from asyncpg.exceptions import UndefinedTableError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.audit import AuditEntry, AuditLogEntry
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
@@ -110,11 +111,6 @@ _PRIVILEGED_CONSEQUENCE_SQL = f"""
     OR result = 'error'
 )
 """
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _empty_audit_page(*, offset: int, limit: int) -> PaginatedResponse[AuditLogEntry]:
@@ -252,7 +248,8 @@ async def list_audit_log(
             "and rows with an explicit error outcome."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
 
@@ -383,7 +380,8 @@ async def list_audit_log(
 @router.get("/{entry_id}", response_model=ApiResponse[AuditLogEntry])
 async def get_audit_log_entry(
     entry_id: int,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[AuditLogEntry]:
     """Return a single audit log entry by its integer id.
 

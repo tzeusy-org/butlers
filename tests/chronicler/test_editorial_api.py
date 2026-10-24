@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler import editorial
 from butlers.chronicler.editorial import (
     AttentionItem,
@@ -96,9 +97,9 @@ def _mock_db(pool: _Pool):
 
 
 def _make_app(conn: _Conn):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: _mock_db(_Pool(conn))
+    app.dependency_overrides[get_db] = lambda: _mock_db(_Pool(conn))
     return app
 
 

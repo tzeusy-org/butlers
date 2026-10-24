@@ -62,6 +62,17 @@ async def test_forwarded_text_is_one_forwarded_span_and_owner_stays_sender(conne
         }
     ]
 
+    # Telegram can identify a forward without giving its original author.
+    # Both bare signals still expose the whole text, never replace the sender.
+    bare_text = "🙂 forwarded text without author metadata"
+    for forward_metadata in ({"is_automatic_forward": True}, {"forward_date": 1}):
+        bare = await _envelope(connector, text=bare_text, **forward_metadata)
+        assert bare["sender"]["identity"] == str(_OWNER)
+        assert bare["payload"]["normalized_text"] == bare_text
+        assert bare["payload"].get("untrusted_spans") == [
+            {"kind": "forwarded", "start": 0, "end": len(bare_text)}
+        ]
+
     # The actual policy/error producers must retain the marking, without restoring
     # a policy-discarded body; an errored submission retains its original text.
     from types import SimpleNamespace

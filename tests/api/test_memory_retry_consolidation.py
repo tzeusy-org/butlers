@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -141,7 +141,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
     episode_id = uuid.uuid4()
     pool = _RetryPool(episode=_make_episode_row(episode_id=episode_id))
     db = _RetryDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -162,7 +162,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
 async def test_retry_consolidation_404_unknown_butler(app) -> None:
     """POST returns 404 when the named butler is not registered."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -175,7 +175,7 @@ async def test_retry_consolidation_404_unknown_butler(app) -> None:
 async def test_retry_consolidation_400_malformed_episode_id(app) -> None:
     """POST returns 400 when the path id is not a valid UUID."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -188,7 +188,7 @@ async def test_retry_consolidation_400_malformed_episode_id(app) -> None:
 async def test_retry_consolidation_404_unknown_episode(app) -> None:
     """POST returns 404 when the butler exists but has no episode with this id."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -205,7 +205,7 @@ async def test_retry_consolidation_409_when_not_dead_letter(app) -> None:
         episode=_make_episode_row(episode_id=episode_id, consolidation_status="pending")
     )
     db = _RetryDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

@@ -104,6 +104,27 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `frontend/`), and `scripts/pre_push.py` runs the same script for frontend paths. No frontend
    change on the branch: no cost.
 
+## Go bridge CI
+
+`go-bridge` runs `whatsapp-bridge`'s complete Go test population on every
+non-doc PR, merge group and main push using the existing backend route. This
+conservative predicate also runs Go for other backend/frontend changes; docs-only
+PRs explicitly skip it. The required `check` needs its verdict: Go failure,
+cancellation, missing result or an unexpected skip cannot read green. The Go job
+is separate from the five unit/six integration groups and coverage publication.
+
+The job uses the existing builder's Go1.25.11, a commit-pinned setup-go action,
+and a cache keyed by `whatsapp-bridge/go.sum`. It runs all packages with
+`-mod=readonly -count=1 -timeout=5m` and refuses tracked go.mod/go.sum changes.
+It starts no authenticated bridge, pairing, live session or real database.
+
+Its 15-minute cap is provisional and source-derived: a 600-second command bound,
+30-second KILL allowance and 270-second checkout/toolchain/cache/finalization
+reserve total900 seconds. The five-minute Go timer applies to each test binary;
+the command and job watchdogs also bound compile, dependency and setup phases.
+No healthy whole-job observation or current p95 calibration is claimed; the
+timeout registry retains that limitation until named hosted evidence exists.
+
 ## Scope names are not interchangeable
 
 No local gate command matches CI's scope; check which command produced a number.

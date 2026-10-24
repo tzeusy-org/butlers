@@ -18,9 +18,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastmcp.exceptions import ToolError
 
-from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_mcp_manager,
     is_tool_absent_error,
@@ -34,11 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/butlers", tags=["butlers", "state"])
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # Read endpoints
 # ---------------------------------------------------------------------------
@@ -50,7 +45,8 @@ def _get_db_manager() -> DatabaseManager:
 )
 async def list_state(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[StateEntry]]:
     """Return all state entries for a butler.
 
@@ -86,7 +82,8 @@ async def list_state(
 async def get_state(
     name: str,
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[StateEntry]:
     """Return a single state entry by key.
 
@@ -127,7 +124,8 @@ async def set_state(
     key: str,
     request: StateSetRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Set a state value via the butler's MCP ``state_set`` tool.
 
@@ -184,7 +182,8 @@ async def delete_state(
     name: str,
     key: str,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a state entry via the butler's MCP ``state_delete`` tool.
 

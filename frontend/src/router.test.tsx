@@ -478,6 +478,10 @@ describe('router-config unmatched routes and route errors', () => {
   }
 
   it('renders a not-found page inside the shell for an unmatched path, with a way home', () => {
+    const registeredPaths = routes[0].children?.map((route) => route.path)
+    expect(registeredPaths).not.toContain('/decisions')
+    expect(registeredPaths).not.toContain('/beads/:beadId')
+    expect(registeredPaths).toContain('/approvals')
     const catchAll = routes[0].children?.at(-1)
     expect(catchAll?.path).toBe('*')
 

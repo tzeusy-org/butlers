@@ -26,14 +26,10 @@ from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
-from butlers.api.routers.audit import (
-    AuditTableNotAvailableError,
-    _get_db_manager,
-    append,
-    audit_log_appended_total,
-)
+from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
 from butlers.core.credential_keys import normalize_credential_key
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -650,7 +646,7 @@ def _make_audit_app(rows: list[dict], total: int | None = None) -> tuple:
     mock_db.pool.return_value = sw_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool, mock_db
 
 
@@ -878,7 +874,7 @@ def test_list_audit_log_table_missing_returns_503():
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
     resp = client.get("/api/audit-log")
     assert resp.status_code == 503
@@ -904,7 +900,7 @@ def _make_audit_app_single(row: dict | None) -> tuple:
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool, mock_db
 
 
@@ -936,7 +932,7 @@ def test_get_audit_log_entry_table_missing_returns_503():
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
     resp = client.get("/api/audit-log/1")
     assert resp.status_code == 503

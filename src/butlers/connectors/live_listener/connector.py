@@ -62,6 +62,7 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
@@ -777,6 +778,8 @@ class LiveListenerConnector:
                 external_thread_id=None,
                 observed_at=observed_at.astimezone(UTC).isoformat(),
                 sender_identity="ambient",
+                untrusted_spans=email_untrusted_spans(text, subject="", has_attached_message=False)
+                or None,
                 raw={},
             ),
         )

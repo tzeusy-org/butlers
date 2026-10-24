@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator
 import butlers.api.routers.audit as audit
 from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
@@ -61,11 +61,6 @@ _VERIFY_ALL_CONCURRENCY = 8
 # concurrent request is rejected immediately instead of waiting behind a
 # long-running verification sweep.
 _verify_all_in_flight = False
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +590,8 @@ def _attention_episode(row: Any) -> ModelAttentionEpisode:
 
 @catalog_router.get("", response_model=ApiResponse[list[ModelCatalogEntry]])
 async def list_catalog_entries(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ModelCatalogEntry]]:
     """Return all catalog entries ordered by complexity_tier, priority, alias.
 
@@ -679,7 +675,8 @@ async def list_catalog_entries(
 @catalog_router.get("/attention", response_model=ApiResponse[ModelAttentionObservation])
 async def observe_model_attention(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionObservation]:
     """Return the latest sanitized episode for each model in one batch.
 
@@ -705,7 +702,8 @@ async def observe_model_attention(
 @catalog_router.get("/allowance", response_model=ApiResponse[AllowanceObservation])
 async def observe_model_allowance(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[AllowanceObservation]:
     """Return every provider allowance account with the catalog entries on it.
 
@@ -763,7 +761,8 @@ async def observe_model_allowance(
 async def reissue_model_attention(
     episode_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionReissueResult]:
     """Create or return the one pending successor for an uncertain episode."""
     pool = _shared_pool(db)
@@ -802,7 +801,8 @@ async def reissue_model_attention(
 @catalog_router.post("", response_model=ApiResponse[ModelCatalogEntry], status_code=201)
 async def create_catalog_entry(
     body: ModelCatalogCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Create a new catalog entry. Returns 409 on duplicate alias."""
     _validate_complexity_tier(body.complexity_tier)
@@ -867,7 +867,8 @@ async def create_catalog_entry(
 async def update_catalog_entry(
     entry_id: UUID,
     body: ModelCatalogUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Update a catalog entry by ID. Only provided fields are changed."""
     if body.complexity_tier is not None:
@@ -944,7 +945,8 @@ async def update_catalog_entry(
 @catalog_router.get("/{entry_id}/delete-impact", response_model=ApiResponse[ModelDeleteImpact])
 async def get_catalog_delete_impact(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelDeleteImpact]:
     """Return the current server-owned count of overrides a delete would cascade."""
     pool = _shared_pool(db)
@@ -969,7 +971,8 @@ async def get_catalog_delete_impact(
 @catalog_router.delete("/{entry_id}", response_model=ApiResponse[dict])
 async def delete_catalog_entry(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a catalog entry by ID. Cascades to butler_model_overrides."""
     pool = _shared_pool(db)
@@ -1018,7 +1021,8 @@ async def delete_catalog_entry(
 async def update_model_priority(
     entry_id: UUID,
     body: ModelPriorityDelta,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Adjust a model's priority by ``delta``.
 
@@ -1189,7 +1193,8 @@ async def run_verify_all_models(
 @catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
 async def verify_all_models(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[VerifyAllResult]:
     """Request a signed Switchboard runtime probe for every enabled model in parallel.
 
@@ -1236,7 +1241,8 @@ async def get_model_failures(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[FailureEntry]:
     """Return recent failure entries for a model catalog entry.
 
@@ -1333,7 +1339,8 @@ async def get_model_attempts(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance for a model catalog entry.
 
@@ -1438,7 +1445,8 @@ async def get_model_attempts(
 async def upsert_token_limits(
     entry_id: UUID,
     body: TokenLimitsRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenLimitsResponse]:
     """Set or update 24h/30d token limits for a catalog entry.
 
@@ -1504,7 +1512,8 @@ async def upsert_token_limits(
 async def reset_token_usage(
     entry_id: UUID,
     body: ResetUsageRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Reset the 24h, 30d, or both usage windows for a catalog entry.
 
@@ -1562,7 +1571,8 @@ async def reset_token_usage(
 @catalog_router.get("/{entry_id}/usage", response_model=ApiResponse[TokenUsageResponse])
 async def get_token_usage(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenUsageResponse]:
     """Return detailed token usage for a single catalog entry.
 
@@ -1661,7 +1671,8 @@ async def get_token_usage(
 )
 async def list_butler_model_overrides(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Return all model overrides for a butler, joined with catalog alias."""
     pool = _shared_pool(db)
@@ -1693,7 +1704,8 @@ async def upsert_butler_model_overrides(
     name: str,
     body: ButlerModelOverridesWrite,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Batch upsert model overrides for a butler.
 
@@ -1777,7 +1789,8 @@ async def delete_butler_model_override(
     override_id: UUID,
     body: ButlerModelOverrideReason,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
@@ -1818,7 +1831,8 @@ async def delete_butler_model_override(
 async def resolve_model_preview(
     name: str,
     complexity: str = Query(default="workhorse", description="Complexity tier to resolve"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.
 
@@ -1946,7 +1960,8 @@ _TEST_UNAVAILABLE_DETAIL = {
 async def test_catalog_entry(
     entry_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelTestResult]:
     """Probe one catalog entry through the signed runtime-probe control plane.
 
@@ -2085,7 +2100,8 @@ async def get_dispatch_attempts(
         description="Only valid with 'outcome'. Sort direction for ts ('asc' or 'desc').",
     ),
     limit: int = Query(100, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance rows.
 
