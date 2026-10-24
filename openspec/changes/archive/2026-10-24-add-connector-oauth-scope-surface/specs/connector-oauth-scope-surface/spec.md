@@ -28,9 +28,9 @@ emissions, and re-uses the OAuth state-store infrastructure introduced by
 `google-multi-account-oauth/spec.md:76-83`.
 
 The capability applies non-uniformly: OAuth-bound connectors (Spotify,
-Gmail, Google Calendar, Google Drive, Google Health, Discord, …) receive the
+Gmail, Google Calendar, Google Drive and Google Health) receive the
 full scope surface; non-OAuth connectors (Telegram bot, Telegram user
-client, OwnTracks, Home Assistant, WhatsApp, Steam) return a structured
+client, OwnTracks, Home Assistant, WhatsApp, Steam and ActivityWatch) return a structured
 `unsupported` shape that keeps the dashboard grid uniform but exposes the
 alternative credential surface for each provider.
 
@@ -136,6 +136,10 @@ OAuth-bound connectors SHALL refresh `observed_scopes` and
 refresh AND on a configurable cadence (default every 6 hours) as a fallback
 for long-lived tokens.
 
+ID: REQ-connector-oauth-scope-surface-003
+Source: add-connector-oauth-scope-surface/design.md Decision 7 (existing refresh/fallback contract)
+Scope: v1-mandatory
+
 #### Scenario: Opportunistic refresh on token refresh
 
 - **WHEN** an OAuth connector successfully refreshes its access token (per
@@ -169,7 +173,7 @@ for long-lived tokens.
   `CONNECTOR_SCOPE_REINTROSPECT_INTERVAL_S` seconds (default 21600 = 6 hours)
 - **THEN** the connector SHALL invoke its provider-specific introspection
   endpoint (Google `https://oauth2.googleapis.com/tokeninfo?access_token=...`,
-  Spotify `GET /me` as a side-effect probe, Discord `/users/@me`)
+  Spotify `GET /me` as a side-effect probe)
 - **AND** SHALL update `observed_scopes` and `observed_scopes_fetched_at`
   identically to the opportunistic path
 
@@ -733,8 +737,16 @@ The reauth endpoint SHALL return HTTP 200 with a structured "unsupported" body f
 
 This spec SHALL maintain a normative matrix classifying every connector
 type by credential model. Implementations SHALL include a typed registry
-that maps `SourceProvider` enum values (per
-`connector-base-spec/spec.md:107`) to entries in this matrix.
+that maps the declared `SourceProvider` Literal values in
+`roster/switchboard/tools/contracts.py` and current connector types to
+entries in this matrix. Provider/channel and connector-type identifiers are
+distinct namespaces; aliases SHALL be explicit rather than inferred from
+string equality. A mapping SHALL NOT register an otherwise absent connector
+or authorize a new OAuth flow.
+
+ID: REQ-connector-oauth-scope-surface-011
+Source: bu-mrraij conformance repair; roster/switchboard/tools/contracts.py SourceProvider; add-connector-oauth-scope-surface/design.md Decision 6
+Scope: v1-mandatory
 
 #### Scenario: Matrix entries (v1)
 
@@ -748,16 +760,26 @@ that maps `SourceProvider` enum values (per
   | `google_calendar` | Google OAuth | same | Yes |
   | `google_drive` | Google OAuth | same | Yes |
   | `google_health` | Google OAuth | same | Yes |
-  | `discord` | OAuth 2.0 (planned) | same | Yes |
+  | `activitywatch` | Local/self-hosted environment configuration, no OAuth | `unsupported` | No |
+  | `discord` / `discord_user` | Retired; absent from accepted channels and connector registration | No active auth surface | No; ingest remains refused |
   | `telegram_bot` | Bot token (static) | `unsupported` | No |
   | `telegram_user_client` | TDLib session string | `unsupported` | No |
   | `owntracks` | Bearer token (static) | `unsupported` | No |
   | `home_assistant` | Long-lived access token | `unsupported` | No |
-  | `whatsapp` | Meta business app | `unsupported` | No |
+  | `whatsapp_user_client` (provider/legacy selector `whatsapp`) | whatsmeow QR/session pairing | `unsupported` | No; connector-owned Passport pairing |
   | `steam` | API key | `unsupported` | No |
   | `live-listener` | Internal (no remote auth) | `unsupported` | No |
   | `filtered_events` | Internal (no remote auth) | `unsupported` | No |
 
+- **AND** `telegram_bot` and `telegram_user_client` map to provider
+  `telegram`; `spotify` may use source channel `spotify_user_client`; Google
+  Health may use source channel `wellness`. Source-channel aliases SHALL NOT
+  be treated as connector identities.
+- **AND** declared providers `imap`, `internal` and `slack` without a current
+  connector type SHALL have an explicit no-OAuth mapping to the unsupported
+  fallback; they SHALL NOT gain registration or authority through this matrix
+- **AND** retired Discord rows describe refusal only, not a supported
+  provider or an alternative credential enrollment surface
 - **AND** each `unsupported` row's `alt_surface.remediation_path` SHALL
   point at the dashboard route that owns the alternative credential
   surface for that provider
@@ -866,14 +888,22 @@ The capability's implementation SHALL include tests covering the matrix
 completeness, drift classification, audit emission, and credential masking
 guarantees.
 
+ID: REQ-connector-oauth-scope-surface-014
+Source: add-connector-oauth-scope-surface/design.md Risk 4; existing capability matrix/state/audit/masking contract
+Scope: v1-mandatory
+
 #### Scenario: Matrix completeness test
 
 - **WHEN** the test suite runs
-- **THEN** a test SHALL assert that every value of the `SourceProvider`
-  enum (per `connector-base-spec/spec.md:107`) has an entry in the
-  per-connector applicability matrix
+- **THEN** a test SHALL assert that every declared `SourceProvider`
+  Literal value and every current connector type has an explicit mapping to
+  the per-connector applicability matrix and a defined auth-status resolver
+- **AND** the test SHALL cover shared-provider and source-channel aliases
+  without requiring equal strings or granting an absent connector authority
 - **AND** the test SHALL fail with a clear message if a new
-  `SourceProvider` value is added without a corresponding matrix entry
+  `SourceProvider` value or connector type lacks its corresponding mapping
+- **AND** unknown runtime connector types SHALL retain the specified
+  unsupported fallback, and retired Discord SHALL remain refused
 
 #### Scenario: Drift class coverage
 
@@ -925,6 +955,10 @@ Non-OAuth connectors SHALL surface their alternative credential model in a
 structured `alt_surface` block under the `auth` response field. The shape
 SHALL be uniform regardless of provider.
 
+ID: REQ-connector-oauth-scope-surface-015
+Source: Existing session-validity/alt-auth contract; bu-mrraij conformance repair; src/butlers/connectors/whatsapp_user_client.py and docs/connectors/whatsapp.md
+Scope: v1-mandatory
+
 #### Scenario: Static-token alt surface
 
 - **WHEN** the connector uses a static bearer or app password (Telegram
@@ -947,13 +981,23 @@ SHALL be uniform regardless of provider.
   timestamp when known, else `null`
 - **AND** `alt_surface.remediation_path` SHALL point at the dashboard route
   for re-pairing or re-establishing the session
+- **AND** WhatsApp QR pairing SHALL retain explicit user consent and
+  connector/bridge-owned session credential custody; the auth projection
+  SHALL NOT expose or mirror session material
+- **AND** WhatsApp SHALL remain `auth.status = unsupported` with empty
+  scopes; QR re-pairing restores its managed session, not generic OAuth
+- **AND** a managed-session connector SHALL use `session-validity` even
+  when its initial pairing or re-pairing uses a QR or device code
 
 #### Scenario: Device-pairing alt surface
 
-- **WHEN** the connector requires QR-code or device-code pairing (no v1
-  connectors currently use this, but the kind is reserved)
+- **WHEN** a non-OAuth connector requires QR-code or device-code pairing
+  AND does not maintain a managed session covered by the session-validity
+  scenario above
 - **THEN** `alt_surface.kind = "device-pairing"`
 - **AND** the remaining fields follow the `static-token` defaults
+- **AND** this reserved kind SHALL NOT override `session-validity` for
+  WhatsApp or another managed-session connector
 
 ## Source References
 
