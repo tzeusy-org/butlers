@@ -510,7 +510,7 @@ async def test_calendar_row_attestation_is_local_exact_expiring_and_bounded(monk
     assert format_context_preamble(entries) == "[User Context: meeting (busy, explicit)]"
     # Even an identical payload rewritten by another transaction is not the
     # actual row version that this producer witnessed.
-    stored["meeting"]["producer_revision"] = "remote-rewrite"
+    stored["meeting"]["producer_revision"] = "900001"
     assert format_context_preamble(await get_active_context(pool)) == (
         "[User Context: meeting (explicit)]"
     )
