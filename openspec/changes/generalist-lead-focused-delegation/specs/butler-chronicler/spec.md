@@ -32,9 +32,10 @@ Scope: v1-mandatory
 
 The Chronicler butler SHALL reconstruct past time from already-captured
 evidence and SHALL NOT plan, schedule, dispatch, ingest externally, or send
-proactive notifications. The single sanctioned owner-facing message is the
-existing once-daily retrospective day-close summary: a scheduled recap, not a
-proactive notification, and no other owner-facing messages are permitted.
+proactive notifications. The sanctioned owner-facing messages are the
+existing once-daily retrospective day-close summary (a scheduled recap, not a
+proactive notification) and the opted-in correction prompts in the amendment
+below. No other owner-facing messages are permitted.
 
 **Amendment (memory write-back):** the Chronicler MAY synthesize durable
 insights into a private memory schema it owns (`chronicler_mem`) via the memory
@@ -47,7 +48,18 @@ schema directly. `chronicler_mem` is a bounded, module-private schema owned by
 the Chronicler, kept distinct from the domain `chronicler.episodes` table; it
 is not generic cross-schema access.
 
-Source: RFC 0038 D1, D2, D7
+**Amendment (opted-in correction prompts, owner decision bu-idc5mx.8 = A):**
+opted-in correction prompts are the second sanctioned owner-facing surface.
+Today the only one is the day-close gap interview ask
+(`REQ-butler-chronicler-008`). It sends at most one prompt per closed day, passes
+the owner's delivery-preferences and quiet-hours gate, and takes its answer
+through the Chronicler corrections contract. It is a retrospective correction
+request, not a plan, schedule or nudge. Any other owner-facing message,
+including a new kind of correction prompt, remains forbidden unless its own
+requirement sanctions it.
+
+ID: REQ-butler-chronicler-011
+Source: RFC 0038 D1, D2, D7; owner decision bu-idc5mx.8 (2026-10-24); bu-whhll.12; REQ-butler-chronicler-008
 Scope: v1-mandatory
 
 #### Scenario: No ingestion ownership
@@ -79,6 +91,13 @@ Scope: v1-mandatory
 - **THEN** it is proposed by a call to `relationship`'s proposal capability through the broker, within the day-close obligation's declared capability set
 - **AND** the Chronicler daemon makes no direct call to `relationship`'s model-reachable tools
 - **AND** the Chronicler does not write `entity_facts` directly
+
+#### Scenario: Only the sanctioned surfaces reach the owner
+
+- **WHEN** the Chronicler sends anything to the owner
+- **THEN** it SHALL be either the once-daily day-close summary or the opted-in
+  gap interview ask, which sends at most one prompt per closed day
+- **AND** no other proactive, coaching or correction message SHALL be sent
 
 ### Requirement: No Per-Event LLM Invocation
 

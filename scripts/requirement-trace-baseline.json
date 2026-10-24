@@ -106,7 +106,6 @@
   "generalist-lead-focused-delegation/butler-base-spec/butler.toml Configuration Schema": "1b8d283ff474ac334ecb5d8ac1e547bfdf4bb073c234b9ea0014eed6e667cf09",
   "generalist-lead-focused-delegation/butler-chronicler/Butler Identity and Wire Contract": "71f0f7b9c849097a961c4e616f237239acf41cd7139783a890d7eba4677f08c1",
   "generalist-lead-focused-delegation/butler-chronicler/No Per-Event LLM Invocation": "51341fb6164e622b6ae4cedfd7a8d23a2b35656c238538946793c3eeea801dae",
-  "generalist-lead-focused-delegation/butler-chronicler/Retrospective-Only Scope": "10b110d6b027c950b7e6697dac2f8226227b304fed5e8da77fbd8c834313c02c",
   "generalist-lead-focused-delegation/butler-concierge/Concierge Staffer Identity": "2811a1da5fc0b7332fad924fce3469990e116d1eaf553c74886873227f8e2ecf",
   "generalist-lead-focused-delegation/butler-concierge/System-Plane Scope Boundary": "da70d8c3c4552d161f9927dcbe0f79fe8ff8beef67a6a9918c956e12cfc03b11",
   "generalist-lead-focused-delegation/butler-education/CLAUDE.md System Prompt": "3b5956bfaf8798edf66df5afac2f2740c0e6dd1261e60e2d6236975501320ab5",
