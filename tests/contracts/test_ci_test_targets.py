@@ -1198,6 +1198,16 @@ def _vitest_concurrent_receipt_controls(root, pair, monkeypatch, tmp_path, bound
     """Additional interval/cache cases retain the original consumer body verbatim."""
     import ci_vitest as vitest
 
+    # Unequal JSON lists are normal nonmatches in either direction; boolean
+    # values must also remain distinct from numeric values inside equal lists.
+    assert vitest.same_json_value({"nested": [[1, True], []]}, {"nested": [[1, True], []]})
+    for observed, expected in (
+        ([[1], []], [[1]]),
+        ([[1]], [[1], []]),
+        ([[1, True]], [[1, 1]]),
+    ):
+        assert vitest.same_json_value(observed, expected) is False
+
     with monkeypatch.context() as local:
         for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "VITEST_CONTROL"):
             local.delenv(name, raising=False)

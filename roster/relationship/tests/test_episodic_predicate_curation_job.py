@@ -669,6 +669,7 @@ async def test_insight_candidate_proposed_with_correct_params(pool):
     call_args = mock_propose.call_args.args if mock_propose.call_args.args else ()
 
     # Either way, verify key params
+    # Only supplied positional args are mapped; remaining names come from kwargs.
     all_args = {**dict(zip(["db_pool", "origin_butler"], call_args, strict=False)), **call_kwargs}
     assert all_args.get("origin_butler") == "relationship"
     assert all_args.get("category") == "episodic-predicate-in-durable"

@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -165,6 +166,57 @@ async def test_flush_failure_records_only_failure_class(
     assert chat_jid not in caplog.text
     assert "222222222222222@lid" not in caplog.text
     assert connector._record_batch_filtered_event.call_args.kwargs["error_detail"] == "RuntimeError"
+
+
+@pytest.mark.parametrize("result_shape", ["valid", "short", "extra"])
+async def test_flush_all_buffers_preserves_snapshot_and_result_cardinality(
+    connector: WhatsAppUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    result_shape: str,
+) -> None:
+    jids = ("first-private-chat", "second-private-chat")
+    connector._chat_buffers.update(dict.fromkeys(jids))
+    completed = []
+    failure = RuntimeError("private flush failure text")
+
+    async def flush(jid):
+        await asyncio.sleep(0)
+        # Concurrent buffer changes must not change this gather's population.
+        connector._chat_buffers.pop(jid, None)
+        connector._chat_buffers["later-private-chat"] = None
+        completed.append(jid)
+        if jid == jids[1]:
+            raise failure
+
+    native_gather = asyncio.gather
+
+    async def gather_results(*tasks, **kwargs):
+        results = await native_gather(*tasks, **kwargs)
+        assert kwargs == {"return_exceptions": True}
+        assert results == [None, failure]
+        # Fault the producer's completed result, never zip or live coroutines.
+        if result_shape == "short":
+            return results[:-1]
+        if result_shape == "extra":
+            return [*results, None]
+        return results
+
+    monkeypatch.setattr(connector, "_flush_chat_buffer", flush)
+    monkeypatch.setattr(asyncio, "gather", gather_results)
+    with caplog.at_level(logging.WARNING):
+        if result_shape == "valid":
+            await connector._flush_all_buffers()
+        else:
+            with pytest.raises(ValueError):
+                await connector._flush_all_buffers()
+    assert sorted(completed) == list(jids)
+    assert set(connector._chat_buffers) == {"later-private-chat"}
+    if result_shape != "short":
+        assert len(caplog.records) == 1
+        assert "failure_class=RuntimeError" in caplog.text
+    for private in (*jids, "later-private-chat", str(failure)):
+        assert private not in caplog.text
 
 
 async def test_flush_and_drain_uses_runtime_connector_type(

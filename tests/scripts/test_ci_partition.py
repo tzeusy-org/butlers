@@ -505,10 +505,11 @@ def test_reconciliation_requires_complete_node_identity(
         timed[timer_label]["nodes"],
         key=lambda node: (timed[timer_label]["node_files"][node] != timer_file, node),
     )
+    # Seed only the first two nodes; all other collected nodes retain zero timers.
     for node, durations in zip(
         timer_nodes, ((0.001, 0.001, 0.001), (0.001, 0.3, 0.7)), strict=False
     ):
-        for phase, seconds in zip(("setup", "call", "teardown"), durations, strict=False):
+        for phase, seconds in zip(("setup", "call", "teardown"), durations, strict=True):
             timed[timer_label]["nodes"][node][phase]["duration_s"] = seconds
     timed[timer_label]["file_durations_s"] = {
         name: math.fsum(
