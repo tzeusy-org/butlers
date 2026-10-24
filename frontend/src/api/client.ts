@@ -2314,23 +2314,6 @@ export function submitInsightFeedback(
   ).then((response) => response.data);
 }
 
-/**
- * Fetch the open decision-bead digest for the dashboard Decisions lane
- * (bu-ckkpz.2).
- *
- * GET /api/decisions — returns the full envelope (not just `.data`) so
- * callers can read `meta.decisions_available`: `false` means the beads-export
- * digest could not be read (never a fabricated "no decisions waiting").
- */
-export function getDecisions(): Promise<import("./types").DecisionsListResponse> {
-  return apiFetch<import("./types").DecisionsListResponse>("/decisions");
-}
-
-/** Read one strict-allowlisted Bead detail from the mounted snapshot only. */
-export function getBeadDetail(id: string): Promise<import("./types").BeadDetailResponse> {
-  return apiFetch<import("./types").BeadDetailResponse>(`/beads/${encodeURIComponent(id)}`);
-}
-
 /** Fetch a paginated list of health research notes. */
 export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<HealthResearch>> {
   const sp = new URLSearchParams();

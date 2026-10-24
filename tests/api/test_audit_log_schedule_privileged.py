@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import audit as audit_module
+from butlers.api.deps import get_db
 from butlers.api.routers.audit import _PRIVILEGED_CONSEQUENCE_SQL
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -94,7 +94,7 @@ def audit_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.credential_shared_pool.return_value = pool
     mock_db.pool.return_value = pool
     application = create_app()
-    application.dependency_overrides[audit_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 

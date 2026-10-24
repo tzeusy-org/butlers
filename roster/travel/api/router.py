@@ -13,9 +13,10 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.tools.travel._helpers import _row_to_dict
 from butlers.tools.travel.connections import connection_reason
@@ -49,11 +50,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/travel", tags=["travel"])
 
 BUTLER_DB = "travel"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -145,7 +141,8 @@ async def list_trips(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TripModel]:
     """List trips with optional status and date range filters."""
     pool = _pool(db)
@@ -225,7 +222,8 @@ async def get_trip_summary(
     trip_id: str,
     include_documents: bool = Query(True, description="Include document pointers"),
     include_timeline: bool = Query(True, description="Include chronological timeline"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TripSummaryModel:
     """Return full trip summary with all linked entities."""
     pool = _pool(db)
@@ -476,7 +474,8 @@ def _compute_alerts(legs: list[LegModel], documents: list[DocumentModel]) -> lis
 @router.get("/trips/{trip_id}/legs", response_model=list[LegModel])
 async def list_trip_legs(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[LegModel]:
     """List all transport legs for a specific trip."""
     pool = _pool(db)
@@ -507,7 +506,8 @@ async def list_trip_legs(
 @router.get("/trips/{trip_id}/accommodations", response_model=list[AccommodationModel])
 async def list_trip_accommodations(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AccommodationModel]:
     """List all accommodations for a specific trip."""
     pool = _pool(db)
@@ -536,7 +536,8 @@ async def list_trip_accommodations(
 @router.get("/trips/{trip_id}/reservations", response_model=list[ReservationModel])
 async def list_trip_reservations(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ReservationModel]:
     """List all reservations for a specific trip."""
     pool = _pool(db)
@@ -565,7 +566,8 @@ async def list_trip_reservations(
 @router.get("/trips/{trip_id}/documents", response_model=list[DocumentModel])
 async def list_trip_documents(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[DocumentModel]:
     """List all documents attached to a specific trip."""
     pool = _pool(db)
@@ -594,7 +596,8 @@ async def list_trip_documents(
 async def get_upcoming_travel(
     within_days: int = Query(14, ge=1, le=365, description="Look-ahead window in days"),
     include_pretrip_actions: bool = Query(True, description="Include pre-trip action items"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> UpcomingTravelModel:
     """List upcoming trips with urgency-ranked pre-trip action items."""
     pool = _pool(db)
@@ -731,7 +734,8 @@ async def get_expiring_documents(
         180,
         description=("Look-ahead window in days. Allowed values: 30, 60, 90, 180, 365."),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ExpiringDocumentsResponse:
     """Return documents expiring within the given look-ahead window, sorted by expiry_date asc.
 

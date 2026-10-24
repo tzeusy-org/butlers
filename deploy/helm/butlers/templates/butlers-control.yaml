@@ -61,13 +61,11 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
-            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
       volumes:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
-        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
 ---
 # Existing service callers use 41100. Session 41199 is separately restricted
 # by the control ingress policy and never used as a liveness probe.

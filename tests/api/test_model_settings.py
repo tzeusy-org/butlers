@@ -24,7 +24,7 @@ import pytest
 
 from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.model_settings import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 
@@ -115,7 +115,7 @@ def _app_with_pool(
         mock_db.credential_shared_pool.side_effect = pool_raises
     else:
         mock_db.credential_shared_pool.return_value = mock_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool
 
 
@@ -570,7 +570,7 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
 
     app, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     mock_db.credential_shared_pool.side_effect = [KeyError("No shared pool"), mock_pool]
 
     async with httpx.AsyncClient(
@@ -1537,7 +1537,7 @@ def _override_http(store):
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = store
     db.pool.return_value = store
-    application.dependency_overrides[_get_db_manager] = lambda: db
+    application.dependency_overrides[get_db] = lambda: db
     return application, db
 
 

@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.api.routers import approvals as routes
 from butlers.modules.approvals.previews import args_digest
 
@@ -62,7 +63,7 @@ async def test_changed_viewed_call_refuses_before_any_effect(app, monkeypatch, l
     monkeypatch.setattr(routes.approvals_ops, "approve_action", approve)
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     path = f"/api/approvals/{'actions/' if legacy else ''}{action_id}/approve"
     async with httpx.AsyncClient(
@@ -169,7 +170,7 @@ async def binding_http(app, monkeypatch):
     monkeypatch.setattr(routes.approvals_ops, "approve_action", approve)
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -372,7 +373,7 @@ async def test_legacy_rule_memory_follows_owning_audit_commit(app, monkeypatch, 
         monkeypatch.setattr(routes.approvals_ops, hook, AsyncMock())
     monkeypatch.setattr(routes.audit_router, "append", audit)
     monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
-    app.dependency_overrides[routes._get_db_manager] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: object()
     app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
     payload = {
         "create_rule": True,

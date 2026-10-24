@@ -21,6 +21,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.deps import get_db
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -569,9 +571,7 @@ class TestRecordBookingIdentity:
         router_module = _load_travel_router()
         app = FastAPI()
         app.include_router(router_module.router)
-        app.dependency_overrides[router_module._get_db_manager] = lambda: SimpleNamespace(
-            pool=lambda _name: pool
-        )
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(pool=lambda _name: pool)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

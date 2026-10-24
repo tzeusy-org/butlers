@@ -26,6 +26,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -49,7 +50,7 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
-from butlers.api.read_models.butlers_v1 import query_sessions_24h
+from butlers.api.read_models.butlers import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 from butlers.core.pricing import PricingConfig, estimate_session_cost
@@ -75,11 +76,6 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
 def _get_roster_dir() -> Path:
     """Return the roster directory path. Override in tests."""
     return _DEFAULT_ROSTER_DIR
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +146,7 @@ async def _fetch_sessions_24h(
 ) -> dict[str, int]:
     """Return a mapping of butler_name -> session count for the last 24 hours.
 
-    Delegates to :func:`~butlers.api.read_models.butlers_v1.query_sessions_24h`
+    Delegates to :func:`~butlers.api.read_models.butlers.query_sessions_24h`
     from the versioned read-model boundary.  This call is best-effort: any DB
     or query failure returns an empty mapping so the list endpoint stays
     available when the DB is unhealthy.
@@ -167,7 +163,8 @@ async def _fetch_sessions_24h(
 async def list_butlers(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerSummary]]:
     """Return all discovered butlers with live status and 24h session counts."""
     config_names = [info.name for info in configs]
@@ -882,7 +879,8 @@ def _compute_board_aggregates(
 async def get_butlers_board(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[BoardResponse]:
     """Return the consolidated fleet status board in one round trip.
@@ -951,7 +949,8 @@ async def get_butler_detail(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
     roster_dir: Path = Depends(_get_roster_dir),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ButlerDetail]:
     """Return detailed information for a single butler.
 
@@ -1519,7 +1518,8 @@ async def trigger_butler(
     request: TriggerRequest,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TriggerResponse]:
     """Trigger a runtime session on the named butler with the provided prompt.
 
@@ -1607,7 +1607,8 @@ async def force_butler_tick(
     name: str,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TickResponse] | JSONResponse:
     """Force a scheduler tick on the specified butler.
 

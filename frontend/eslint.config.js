@@ -260,6 +260,46 @@ const OWNER_TIME_EXEMPT = [
 const OWNER_TIME_MESSAGE = 'Use <Time> or formatOwnerDateTime (components/ui/time.tsx) for owner-visible ' +
   'timestamps, not locale or Intl date formatting (bu-6jv4m.14).'
 
+// Keep this separate from no-restricted-syntax: later file-family lists replace
+// that rule. Resolve Date bindings so numeric toLocaleString keeps working.
+const OWNER_TIME_PLUGIN = {
+  rules: {
+    'no-local-date-format': {
+      meta: { type: 'problem', schema: [], messages: { ownerTime: OWNER_TIME_MESSAGE } },
+      create(context) {
+        const source = context.sourceCode
+        const isDate = (node, seen = new Set()) => {
+          if (!node) return false
+          if (node.type === 'NewExpression') return node.callee.name === 'Date'
+          if (node.type !== 'Identifier') return false
+          let scope = source.getScope(node)
+          while (scope && !scope.set.has(node.name)) scope = scope.upper
+          const variable = scope?.set.get(node.name)
+          if (!variable || seen.has(variable)) return false
+          seen.add(variable)
+          return variable.defs.some((definition) =>
+            definition.name.typeAnnotation?.typeAnnotation?.typeName?.name === 'Date' ||
+            (definition.type === 'Variable' && isDate(definition.node.init, seen)))
+        }
+        return {
+          CallExpression(node) {
+            const callee = node.callee
+            if (callee.type === 'MemberExpression' &&
+                (callee.computed ? callee.property.value : callee.property.name) === 'toLocaleString' &&
+                isDate(callee.object)) context.report({ node, messageId: 'ownerTime' })
+          },
+          Property(node) {
+            if ((!node.computed && node.key.name === 'timeZone' || node.key.value === 'timeZone') &&
+                node.value.value === 'UTC') {
+              context.report({ node, messageId: 'ownerTime' })
+            }
+          },
+        }
+      },
+    },
+  },
+}
+
 // Selector parts shared by every file family (see the note above).
 const SHARED = [
   ...HSL_VAR_SELECTORS, ...RETIRED_CARD_SELECTORS, ...TOKEN_FALLBACK_SELECTORS,
@@ -319,7 +359,9 @@ export default defineConfig([
   {
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['**/*.test.{ts,tsx}', ...OWNER_TIME_EXEMPT],
+    plugins: { 'owner-time': OWNER_TIME_PLUGIN },
     rules: {
+      'owner-time/no-local-date-format': 'error',
       'no-restricted-properties': ['error',
         { property: 'toLocaleDateString', message: OWNER_TIME_MESSAGE },
         { property: 'toLocaleTimeString', message: OWNER_TIME_MESSAGE },

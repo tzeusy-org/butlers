@@ -20,10 +20,11 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from asyncpg.exceptions import UndefinedTableError
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.deps import Db
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -80,11 +81,6 @@ _EPISODE_DOSSIER_COLUMNS = (
     "consolidation_attempts, last_consolidation_error, dead_letter_reason,"
     " next_consolidation_retry_at"
 )
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _memory_pool_names(db: DatabaseManager) -> list[str]:
@@ -388,7 +384,8 @@ async def _resolve_rule_provenance(db: DatabaseManager, rule: Rule) -> Rule:
 
 @router.get("/stats", response_model=ApiResponse[MemoryStats])
 async def get_memory_stats(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[MemoryStats]:
     """Return aggregated counts across all memory tiers."""
     from butlers.modules.memory import storage as _storage
@@ -742,7 +739,8 @@ async def list_episodes(
     until: str | None = Query(None, description="Created before this timestamp"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Episode]:
     """List episodes with optional filters, paginated."""
     conditions: list[str] = []
@@ -826,7 +824,8 @@ async def list_episodes(
 @router.get("/episodes/{episode_id}", response_model=ApiResponse[Episode])
 async def get_episode(
     episode_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Episode]:
     """Return a single episode by ID."""
 
@@ -864,7 +863,8 @@ async def list_memory_links(
     memory_type: Literal["episode", "fact", "rule"],
     memory_id: _uuid.UUID,
     direction: Literal["incoming", "outgoing", "both"] = Query("both"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[MemoryLink]]:
     """Return content-free provenance links for one memory record.
 
@@ -920,7 +920,8 @@ async def list_facts(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Fact]:
     """List/search facts with optional filters, paginated."""
     conditions: list[str] = []
@@ -1025,7 +1026,8 @@ async def list_facts(
 @router.get("/facts/{fact_id}", response_model=ApiResponse[Fact])
 async def get_fact(
     fact_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Fact]:
     """Return a single fact by ID."""
 
@@ -1101,7 +1103,8 @@ def _fact_select_query(relation: str, *, episodes_relation: str, tombstones_rela
 @router.post("/facts/{fact_id}/confirm", response_model=ApiResponse[Fact])
 async def confirm_fact(
     fact_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Fact]:
     """Re-ink a fact: reset its confidence-decay timer (set last_confirmed_at=now).
 
@@ -1183,7 +1186,8 @@ async def confirm_fact(
 @router.post("/facts/{fact_id}/retract", response_model=ApiResponse[Fact])
 async def retract_fact(
     fact_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Fact]:
     """Retract a fact: mark it invalid (set validity='retracted').
 
@@ -1285,7 +1289,8 @@ async def list_rules(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[Rule]:
     """List/search rules with optional filters, paginated.
 
@@ -1386,7 +1391,8 @@ async def list_rules(
 @router.get("/rules/{rule_id}", response_model=ApiResponse[Rule])
 async def get_rule(
     rule_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Rule]:
     """Return a single rule by ID."""
 
@@ -1430,7 +1436,8 @@ async def get_rule(
 @router.patch("/rules/{rule_id}/retire", response_model=ApiResponse[Rule])
 async def retire_rule(
     rule_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Rule]:
     """Retire a rule: it stops firing but stays on the books (sets retired_at).
 
@@ -1516,7 +1523,8 @@ async def retire_rule(
 @router.post("/rules/{rule_id}/endorse", response_model=ApiResponse[RuleEndorsement])
 async def endorse_held_rule(
     rule_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RuleEndorsement]:
     """Endorse a held rule so it may steer sessions (owner action).
 
@@ -1592,7 +1600,8 @@ async def list_memory_gaps(
     ),
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None, description="Opaque `next_cursor` from the previous page"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Page[MemoryGap]:
     """Owner questions no butler could answer yet, newest first, across memory pools.
 
@@ -1640,7 +1649,8 @@ async def list_memory_gaps(
 @router.post("/gaps/{gap_id}/dismiss", response_model=ApiResponse[MemoryGapDismissal])
 async def dismiss_memory_gap(
     gap_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[MemoryGapDismissal]:
     """Dismiss an owner knowledge gap (terminal; idempotent).
 
@@ -1743,7 +1753,8 @@ async def search_memory_catalog(
     mode: str = Query(
         "hybrid", description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[MemoryCatalogSearchResult]]:
     """Fleet-knowledge search across all butlers via public.memory_catalog.
 
@@ -1807,7 +1818,8 @@ async def search_memory_catalog(
 @router.get("/activity", response_model=ApiResponse[list[MemoryActivity]])
 async def list_activity(
     limit: int = Query(50, ge=1, le=200, description="Max activity items to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[MemoryActivity]]:
     """Return recent memory activity interleaved from all three tables."""
 
@@ -1992,7 +2004,8 @@ async def list_entities(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[EntitySummary]:
     """List entities from public.entities with optional search and type filter.
 
@@ -2138,7 +2151,8 @@ async def get_entity(
     entity_id: str,
     facts_offset: int = Query(0, ge=0, description="Facts page offset"),
     facts_limit: int = Query(20, ge=1, le=200, description="Facts page size"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EntityDetail]:
     """Return a single entity with recent facts and linked contact info."""
     import uuid as _uuid
@@ -2301,7 +2315,8 @@ async def get_entity(
 async def update_entity(
     entity_id: str,
     body: UpdateEntityRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EntitySummary]:
     """Update entity core fields (canonical_name, aliases, metadata merge)."""
     import uuid as _uuid
@@ -2410,7 +2425,8 @@ async def update_entity(
 async def delete_entity(
     entity_id: str,
     retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete an entity by setting metadata.deleted_at.
 
@@ -2524,7 +2540,8 @@ async def delete_entity(
 @router.post("/entities/{entity_id}/archive", status_code=204)
 async def archive_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Archive an entity by setting metadata.archived_at.
 
@@ -2572,7 +2589,8 @@ async def archive_entity(
 @router.post("/entities/{entity_id}/unarchive", status_code=204)
 async def unarchive_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Restore an archived entity by removing metadata.archived_at."""
     import uuid as _uuid
@@ -2611,7 +2629,8 @@ async def unarchive_entity(
 @router.post("/entities/{entity_id}/promote", response_model=ApiResponse[EntitySummary])
 async def promote_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EntitySummary]:
     """Promote a transitory (unidentified) entity by clearing the unidentified flag.
 
@@ -2789,7 +2808,8 @@ butler_memory_router = APIRouter(prefix="/api/butlers", tags=["butlers", "memory
 @butler_memory_router.get("/{name}/memory/stats", response_model=ApiResponse[ButlerMemoryStats])
 async def get_butler_memory_stats(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ButlerMemoryStats]:
     """Return per-butler memory subsystem counts with 24-hour deltas.
 
@@ -2910,7 +2930,8 @@ def _is_recovery_eligible_source(db: DatabaseManager, butler_name: str) -> bool:
 @router.post("/episodes/{episode_id}/requeue", response_model=ApiResponse[Episode])
 async def requeue_episode(
     episode_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[Episode]:
     """Queue one dead_letter episode for the next scheduled consolidation.
 
@@ -2990,7 +3011,8 @@ async def requeue_episode(
 
 @router.get("/retention-policies", response_model=ApiResponse[list[MemoryRetentionPolicy]])
 async def get_retention_policies(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[MemoryRetentionPolicy]]:
     """Return all rows from public.memory_retention_policies."""
     pool = _any_pool(db)
@@ -3030,7 +3052,8 @@ async def get_retention_policies(
 @router.put("/retention-policies", response_model=ApiResponse[list[MemoryRetentionPolicy]])
 async def update_retention_policies(
     body: UpdateRetentionPoliciesRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[MemoryRetentionPolicy]]:
     """Bulk-update retention policies; one audit entry per changed row.
 
@@ -3101,7 +3124,8 @@ async def update_retention_policies(
 @router.get("/compaction-log", response_model=ApiResponse[list[CompactionLogEntry]])
 async def get_compaction_log(
     limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[CompactionLogEntry]]:
     """Return recent compaction events from public.memory_compaction_log."""
     pool = _any_pool(db)
@@ -3147,7 +3171,8 @@ async def inspect_memory(
     kind: str | None = Query(None, description="Filter by kind: episode|fact|rule"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[MemoryInspectResult]:
     """Search across memory tiers (episodes, facts, rules) with optional kind filter."""
     if kind is not None and kind not in _INSPECT_VALID_KINDS:
@@ -3374,7 +3399,8 @@ async def get_reembed_pending(
             "Rows whose stored embedding_model_version differs from this are counted as stale."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ReembedPendingCounts]:
     """Count stale embeddings per tier without performing any DB writes.
 
@@ -3462,7 +3488,8 @@ async def get_reembed_pending(
 @router.post("/reembed", response_model=ApiResponse[ReembedRunResult])
 async def run_reembed(
     body: ReembedRunRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ReembedRunResult]:
     """Trigger a synchronous re-embedding run for stale memory rows.
 

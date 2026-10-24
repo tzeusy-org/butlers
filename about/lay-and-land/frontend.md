@@ -86,7 +86,7 @@ the Dispatch primitives (`Section`, `Tile`, `Row`, `Pill`, `Eyebrow`, `Mono`, `V
 `time`, `query-boundary`, `error-state`, `empty-state`, `confirm-dialog`, …); `layout/` holds
 the shell; every other folder is one domain or surface (`qa/`, `butler-detail/`, `memory/`,
 `health/`, `relationship/`, `chronicles/`, `approvals/`, `ingestion/`, `overview/`, `chat/`,
-`decisions/`, `spend/`, `system/`, `topology/`, …). `ls frontend/src/components/` is the current
+`spend/`, `system/`, `topology/`, …). `ls frontend/src/components/` is the current
 list.
 
 `ui/Section.tsx` is the default semantic surface, with Header/Title/Description/Action/Content/Footer

@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.secrets import _get_db_manager as _secrets_get_db
+from butlers.api.deps import get_db as _secrets_get_db
 
 pytestmark = pytest.mark.unit
 

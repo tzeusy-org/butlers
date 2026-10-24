@@ -15,8 +15,8 @@ from uuid import uuid4
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models import calendar_workspace_v1 as rm
-from butlers.api.read_models.calendar_workspace_v1 import _cluster_key, _dedup_workspace_rows
+from butlers.api.read_models import calendar_workspace as rm
+from butlers.api.read_models.calendar_workspace import _cluster_key, _dedup_workspace_rows
 
 pytestmark = pytest.mark.unit
 

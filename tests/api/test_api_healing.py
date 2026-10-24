@@ -20,8 +20,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
+from butlers.api.deps import get_db, get_mcp_manager
+from butlers.api.routers.healing import _get_dispatch_fn
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -123,7 +123,7 @@ def _build_app(
         mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager or _make_mcp_manager()
     return app, mock_pool
 

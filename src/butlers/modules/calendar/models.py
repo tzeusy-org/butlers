@@ -78,6 +78,7 @@ class CalendarConfig(ToolGroupMixin, BaseModel):
     -----------
     core : list_events, get_event, create_event, update_event, delete_event,
            sync_status, force_sync, set_primary
+    response : approval-bound self invitation response (requires response_enabled)
     butler_events : create_butler_event, update_butler_event,
                     delete_butler_event, toggle_butler_event
     """

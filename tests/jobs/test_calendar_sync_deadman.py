@@ -42,7 +42,7 @@ from uuid import uuid4
 
 import pytest
 
-from butlers.api.read_models.calendar_workspace_v1 import CalendarSourceRow
+from butlers.api.read_models.calendar_workspace import CalendarSourceRow
 from butlers.core.infra_conditions import ConditionTransition
 from butlers.jobs.calendar_sync_deadman import (
     CalendarSyncDeadmanReport,

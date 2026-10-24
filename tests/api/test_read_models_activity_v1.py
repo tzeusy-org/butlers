@@ -20,7 +20,7 @@ from uuid import uuid4
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
-from butlers.api.read_models.activity_v1 import (
+from butlers.api.read_models.activity import (
     ACTION_COLUMNS,
     EPISODE_COLUMNS,
     READ_MODEL_VERSION,

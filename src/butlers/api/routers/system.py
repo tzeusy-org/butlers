@@ -80,9 +80,9 @@ from opentelemetry import trace
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.deps import ButlerConnectionInfo, Db, get_butler_configs
 from butlers.api.models import ApiResponse
-from butlers.api.read_models.insights_v1 import query_insight_delivery_state
+from butlers.api.read_models.insights import query_insight_delivery_state
 from butlers.api.runtime_attention_status import (
     CONDITION_ATTENTION_GRACE,
     CONDITION_ATTENTION_PASS_ALLOWANCE,
@@ -111,11 +111,6 @@ router = APIRouter(prefix="/api/system", tags=["system"])
 # The lifespan startup imports all routers, so this approximates the
 # FastAPI lifespan start time closely enough for v1.
 _PROCESS_START: datetime = datetime.now(UTC)
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +539,8 @@ def _deployment_row_to_record(row: dict) -> DeploymentRecord:
 
 @router.get("/deployments", response_model=ApiResponse[DeploymentFacts])
 async def get_deployment_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DeploymentFacts]:
     """Return the current (most recent) deployment plus recent history.
 
@@ -592,7 +588,8 @@ async def get_deployment_facts(
 
 @router.get("/drift", response_model=ApiResponse[DriftFacts])
 async def get_drift_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DriftFacts]:
     """Return the migration-drift sentinel's current comparison (bu-9r3hd.1).
 
@@ -664,7 +661,8 @@ async def get_drift_facts(
 
 @router.get("/stored-functions", response_model=ApiResponse[StoredFunctionFacts])
 async def get_stored_function_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[StoredFunctionFacts]:
     """Return the stored-function body comparison (bu-bi5an).
 
@@ -750,7 +748,8 @@ async def get_stored_function_facts(
 
 @router.get("/database", response_model=ApiResponse[DatabaseFacts])
 async def get_database_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DatabaseFacts]:
     """Return PostgreSQL catalog size facts for the current database.
 
@@ -863,7 +862,8 @@ _RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
 
 @router.get("/backups", response_model=ApiResponse[BackupFacts])
 async def get_backup_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackupFacts]:
     """Return backup recency, verified artifact health, and restore-drill state.
 
@@ -996,7 +996,8 @@ async def _assert_owner_contact(pool) -> None:
 
 @router.get("/egress", response_model=ApiResponse[EgressCatalog])
 async def get_egress_catalog(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EgressCatalog]:
     """Return the data-egress catalog for this instance (owner-only).
 
@@ -1130,7 +1131,8 @@ async def get_egress_catalog(
 
 @router.get("/butlers/heartbeat", response_model=ApiResponse[HeartbeatFacts])
 async def get_butlers_heartbeat(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
 ) -> ApiResponse[HeartbeatFacts]:
     """Return per-butler liveness registry snapshots and session facts.
@@ -1257,7 +1259,8 @@ async def get_butlers_heartbeat(
 
 @router.get("/insights/delivery-state", response_model=ApiResponse[InsightDeliveryState])
 async def get_insight_delivery_state(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[InsightDeliveryState]:
     """Return the current state of the proactive insight delivery pipeline.
 
@@ -1408,7 +1411,8 @@ async def get_conditions(
     state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConditionsFacts]:
     """Return standing conditions from a durable ledger (bu-27dxl.6.2 / bu-ep4ks.6).
 

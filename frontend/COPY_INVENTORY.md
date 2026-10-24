@@ -146,26 +146,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Toggle selected entry
 - Toggle selected audit entry
 
-## `frontend/src/pages/BeadDetailPage.tsx`
-
-- Snapshot export as of
-- Bead snapshot is unavailable.
-- The detail cannot be verified until the exported snapshot is readable and fresh.
-- Retry
-- Details
-- Labels
-- Bead labels
-- Timestamps
-- Description
-- Design
-- Acceptance criteria
-- Dependencies
-- Direct dependencies
-- External reference
-- Decisions
-- Bead not found
-- This Bead is not present in the current readable snapshot.
-
 ## `frontend/src/pages/ButlerDetailPage.tsx`
 
 - Overview
@@ -272,24 +252,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Deny selected attention item
 - Defer selected
 - Defer selected attention item
-
-## `frontend/src/pages/DecisionsPage.tsx`
-
-- Choice:
-- Open Bead detail
-- Created:
-- Due:
-- Options
-- Default:
-- Read-only context: this digest cannot apply a default or close a decision.
-- system · decisions
-- Decisions
-- loading…
-- No decisions waiting.
-- Decision context for {}
-- Decision options
-- Recorded choices
-- Open decisions
 
 ## `frontend/src/pages/EducationPage.tsx`
 
@@ -2419,10 +2381,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Total
 - No sessions in the selected window.
 - Session activity
-
-## `frontend/src/components/decisions/decisions-verdict-opener.tsx`
-
-- decision digest
 
 ## `frontend/src/components/education/CrossTopicChart.tsx`
 

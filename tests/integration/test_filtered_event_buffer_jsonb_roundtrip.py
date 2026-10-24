@@ -45,6 +45,7 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
+from butlers.api.deps import get_db
 from butlers.api.routers.ingestion_events import bulk_retry_ingestion_events, replay_ingestion_event
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.core.ingestion_events import ingestion_dropped_known_summary
@@ -107,13 +108,13 @@ async def _queue_replay(pool, row_id, *, bulk=False):
     db = SimpleNamespace(credential_shared_pool=lambda: pool, pool=lambda _: pool)
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
     if bulk:
-        assert await bulk_retry_ingestion_events(request, {"event_ids": [str(row_id)]}, db) == {
+        assert await bulk_retry_ingestion_events(request, {"event_ids": [str(row_id)]}, db=db) == {
             "results": [{"event_id": str(row_id), "status": "replay_pending"}],
             "succeeded": 1,
             "failed": 0,
         }
     else:
-        assert await replay_ingestion_event(str(row_id), request, db) == {
+        assert await replay_ingestion_event(str(row_id), request, db=db) == {
             "status": "replay_pending",
             "id": str(row_id),
         }
@@ -941,7 +942,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
     from fastapi import FastAPI
 
     from butlers.api.db import DatabaseManager
-    from butlers.api.routers.ingestion_events import _get_db_manager, router
+    from butlers.api.routers.ingestion_events import router
     from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
     from butlers.connectors.gmail_policy import GmailPolicyEvaluator
 
@@ -1023,7 +1024,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         manager._pools["switchboard"] = registry_pool
         app = FastAPI()
         app.include_router(router)
-        app.dependency_overrides[_get_db_manager] = lambda: manager
+        app.dependency_overrides[get_db] = lambda: manager
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://dashboard.example.test"
         ) as client:

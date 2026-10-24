@@ -26,6 +26,7 @@ import pytest
 import butlers.tools.health as health_tools
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.credential_store import CredentialStore
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -36,7 +37,7 @@ _NOW = datetime.now(tz=UTC)
 # Trigger router discovery so the dependency + module hooks are importable.
 _APP_SEED = create_app(api_key="")
 _health_router = sys.modules["health_api_router"]
-_health_get_db_manager = _health_router._get_db_manager
+_health_get_db_manager = get_db
 
 
 @pytest.fixture(autouse=True)

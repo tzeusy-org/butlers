@@ -459,11 +459,11 @@ reaches a triage pass and mints these as its children.
 gauge for consecutive days the fleet ran without owner intervention, funnel
 telemetry for the proactivity pipeline, and a live scoreboard for routing
 accuracy.
-**Why parked:** deferred behind moves 1 (proactivity spine), 7 (deploy
-spine), and 8 (decision desk) — each of those has to exist and be reliable
-before its own telemetry is worth building.
-**Unpark condition:** moves 1/7/8 (07-10 numbering) are all shipped and
-stable in production — then instrument them, in that order, starting with
+**Why parked:** deferred behind moves 1 (proactivity spine) and 7 (deploy
+spine). The former move8 product prerequisite was retired by owner decision
+bu-g2zuv2 = A.
+**Unpark condition:** moves 1/7 (07-10 numbering) are shipped and stable
+in production, then instrument them, starting with
 the intervention/days-autonomous gauge since it's the vision's most-cited
 unmeasurable marker (SC-6/SC-8 per `proj:direction`).
 **Source:** 07-10 Dropped #16.
@@ -706,11 +706,11 @@ landed and its gate is closed.
 
 ---
 
-## Owner Decision Desk seed queue
+## Engineering owner-decision seed queue
 
 These are **decisions the owner has not yet made**; only an owner choice can
-unpark them. The Owner Decision Desk (`/decisions`) has shipped, so each
-belongs there. (Delegation-ledger adopt-or-descope and `PRODUCT.md`
+unpark them. Review these through local `bd` or an owner session; the former
+product destination is retired by owner decision bu-g2zuv2 = A. (Delegation-ledger adopt-or-descope and `PRODUCT.md`
 adopt-or-delete are resolved: the ledger is built and wired, and `PRODUCT.md`
 no longer exists.)
 

@@ -503,11 +503,11 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/activity_v1.py",
+        "src/butlers/api/read_models/activity.py",
         "<dynamic:{episodes_relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/search_v1.py",
+        "src/butlers/api/read_models/search.py",
         "relationship.entity_facts",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
@@ -687,14 +687,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "src/butlers/core/decision_desk.py",
-        "switchboard.decision_intents",
-    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/core/decision_desk.py",
-        "switchboard.decision_prompts",
-    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
-    (
         "src/butlers/core/deployments.py",
         '<dynamic:"{schema}".alembic_version>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
@@ -838,14 +830,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/jobs/context_producers.py",
         "travel.trips",
     ): "burn-down: existing travel.trips coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/jobs/decision_routing.py",
-        "switchboard.decision_intents",
-    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/jobs/decision_routing.py",
-        "switchboard.decision_prompts",
-    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/jobs/deploy_drift.py",
         '<dynamic:"{schema}".alembic_version>',

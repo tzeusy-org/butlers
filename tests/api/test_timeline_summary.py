@@ -25,11 +25,12 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.timeline_v1 import (
+from butlers.api.deps import get_db
+from butlers.api.read_models.timeline import (
     query_timeline_notifications_single,
     query_timeline_sessions_fan_out,
 )
-from butlers.api.routers.timeline import _get_db_manager, _session_to_event
+from butlers.api.routers.timeline import _session_to_event
 from butlers.api.session_presentation import derive_session_summary as _derive_session_summary
 
 pytestmark = pytest.mark.unit
@@ -379,7 +380,7 @@ def _app_with_mock_db(app: FastAPI, *, fan_out_results) -> FastAPI:
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -439,7 +440,7 @@ async def test_timeline_trace_scope_filters_sessions_and_notifications_by_trace(
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[notification_row])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -477,7 +478,7 @@ async def test_timeline_event_lookup_forwards_exact_id_and_scope(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[notification_row])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -762,7 +763,7 @@ async def test_timeline_endpoint_reports_degraded_sessions_source(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -783,7 +784,7 @@ async def test_timeline_endpoint_names_degraded_session_butlers_without_replacin
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -804,7 +805,7 @@ async def test_timeline_endpoint_reports_degraded_notifications_source(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(side_effect=RuntimeError("notifications db unreachable"))
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -852,7 +853,7 @@ async def test_timeline_endpoint_error_filter_forwards_only_errors_true(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -871,7 +872,7 @@ async def test_timeline_endpoint_session_filter_forwards_only_errors_false(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -914,7 +915,7 @@ async def test_timeline_error_lens_includes_failed_delivery(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[failed_row])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -943,7 +944,7 @@ async def test_timeline_notification_lens_unaffected_by_error_widening(app):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1010,7 +1011,7 @@ async def test_histogram_reports_exact_source_availability(
     mock_db.pool = (
         MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     params = [
         ("since", "2026-01-01T12:00:00Z"),
         ("until", "2026-01-01T13:00:00Z"),
@@ -1064,7 +1065,7 @@ async def test_timeline_attention_is_capped_content_blind_and_current_status_sco
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=notification_rows)
     mock_db.pool = MagicMock(return_value=mock_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1125,7 +1126,7 @@ async def test_timeline_attention_reports_explicit_source_availability(
     mock_db.pool = (
         MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

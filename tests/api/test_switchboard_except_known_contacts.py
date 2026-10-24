@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -46,7 +47,7 @@ def _db_dependency():
         module = importlib.util.module_from_spec(spec)
         sys.modules[_MODULE_NAME] = module
         spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+    return get_db
 
 
 def _row(data: dict):

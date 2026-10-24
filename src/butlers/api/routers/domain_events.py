@@ -23,10 +23,11 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi import Path as PathParam
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.domain_events import (
     ContractEntry,
@@ -50,11 +51,6 @@ from butlers.core.domain_events import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/domain-events", tags=["domain-events"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _any_pool(db: DatabaseManager) -> object:
@@ -156,7 +152,8 @@ async def list_domain_event_subscriptions(
     subscriber_butler: str | None = Query(None, description="Filter by the subscribing butler."),
     event_type: str | None = Query(None, description="Filter by event type."),
     active_only: bool = Query(False, description="When true, only return active subscriptions."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[SubscriptionEntry]]:
     """List standing ``(subscriber_butler, event_type)`` subscriptions.
 
@@ -182,7 +179,8 @@ async def list_domain_event_deliveries(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DeliveryEntry]:
     """List fan-out deliveries joined with their event, most-recent first."""
     if status is not None and status not in VALID_DELIVERY_STATUSES:
@@ -220,7 +218,8 @@ async def list_domain_event_deliveries(
 )
 async def replay_domain_event_delivery(
     delivery_id: str = PathParam(..., description="The failed delivery row id."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DeliveryReplayResult]:
     """Requeue one ``failed_permanent`` delivery exactly once.
 
@@ -250,7 +249,8 @@ async def replay_domain_event_delivery(
 @router.get("/events/{event_id}/reactions", response_model=ApiResponse[list[ReactionEntry]])
 async def list_domain_event_reactions(
     event_id: str = PathParam(..., description="The public.domain_events row id."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ReactionEntry]]:
     """Return the full collaboration trace for one event, oldest step first.
 
@@ -271,7 +271,8 @@ async def list_domain_event_reactions(
 @router.get("/contracts", response_model=ApiResponse[list[ContractEntry]])
 async def list_domain_event_contracts(
     publisher: str | None = Query(None, description="Filter by the declaring butler."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ContractEntry]]:
     """List the materialized publisher-owned contracts.
 

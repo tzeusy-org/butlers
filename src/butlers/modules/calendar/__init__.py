@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from butlers.calendar_action_result import reconstruct_action_result as reconstruct_action_result
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION
 from butlers.core.tool_catalog import RecipientParameters
-from butlers.modules.base import Module, ToolMeta, tool_registrar
+from butlers.modules.base import Module, ToolMeta, group_enabled, tool_registrar
 from butlers.modules.calendar_response import CalendarResponseCoordinator, CalendarResponseError
 from butlers.modules.calendar_response_fence import RESPONSE_FENCE_OWNERS, CalendarResponseFence
 
@@ -326,7 +326,7 @@ class CalendarModule(
             },
             canonical_name="calendar_respond",
             module_name="calendar",
-            group_name="core",
+            group_name="response",
             namespace="calendar.response",
             llm_presentable=True,
             load_posture="deferred",
@@ -740,6 +740,16 @@ class CalendarModule(
         credentials = await self._resolve_credentials(db=db, credential_store=credential_store)
         pool = getattr(db, "pool", None)
         self._provider = provider_cls(self._config, credentials, pool=pool)
+
+        # Invitation responses resolve their exact projected source and account
+        # at admission/execution. They need the credential-bound provider, but
+        # must not discover calendars or start the core projection workers.
+        if (
+            group_enabled(self._config, "response")
+            and not group_enabled(self._config, "core")
+            and not group_enabled(self._config, "butler_events")
+        ):
+            return
 
         self._resolved_calendar_id = await self._resolve_startup_calendar_id(credential_store)
 

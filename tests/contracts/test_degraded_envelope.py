@@ -53,13 +53,14 @@ from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.routers.memory import _get_db_manager as _memory_get_db
-from butlers.api.routers.notifications import _get_db_manager as _notifications_get_db
-from butlers.api.routers.search import _get_db_manager as _search_get_db
-from butlers.api.routers.secrets_v2 import _get_db_manager as _secrets_get_db
+from butlers.api.deps import get_db as _memory_get_db
+from butlers.api.deps import get_db as _notifications_get_db
+from butlers.api.deps import get_db as _search_get_db
+from butlers.api.deps import get_db as _secrets_get_db
 from butlers.core.pricing import ModelPricing, PricingConfig
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.api.test_api_approvals import (
@@ -659,7 +660,7 @@ def _case_settings_console() -> DegradedCase:
             app.dependency_overrides[get_butler_configs] = lambda: _CONSOLE_BUTLERS
             app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
             app.dependency_overrides[get_pricing] = lambda: _CONSOLE_PRICING
-            app.dependency_overrides[console_mod._get_db_manager] = lambda: None
+            app.dependency_overrides[get_db_optional] = lambda: None
 
             spend_err_item = console_mod.AttentionItem(
                 id="subsystem_error:spend",

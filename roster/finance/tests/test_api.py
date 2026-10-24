@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -257,7 +259,7 @@ def _make_app(
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool
 
@@ -1682,7 +1684,7 @@ async def test_transactions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1702,7 +1704,7 @@ async def test_subscriptions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1722,7 +1724,7 @@ async def test_obligations_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1958,7 +1960,7 @@ async def test_bulk_ingest_transactions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

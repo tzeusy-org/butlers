@@ -166,12 +166,13 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
     docs = copy.deepcopy(scoped)
     docs["route"]["outputs"].update(backend="false", mode="docs", test_paths="[]")
-    for name in ("check-preflight", "check-affected"):
+    for name in ("check-preflight", "check-affected", "go-bridge"):
         docs[name] = {"result": "skipped", "outputs": {}}
     contexts.append(("docs", "pull_request", "refs/pull/1/merge", docs, False))
     push = copy.deepcopy(docs)
     push["route"]["outputs"].update(backend="true", frontend="true", mode="push")
     push["frontend-e2e"]["result"] = "success"
+    push["go-bridge"]["result"] = "success"
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
     merge_group["route"]["outputs"]["frontend"] = "true"
@@ -230,6 +231,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             "check-preflight",
             "check-affected",
             "frontend-e2e",
+            "go-bridge",
             *heavy,
         ):
             changed = copy.deepcopy(needs)
@@ -346,11 +348,29 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             "check-unit",
             "skipped",
         ),
+        (
+            "go-failure",
+            gate["run"].replace(
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['go-bridge']['result']='success'",
+            ),
+            "go-bridge",
+            "failure",
+        ),
+        (
+            "go-omission",
+            gate["run"].replace('        "go-bridge",\n', ""),
+            "go-bridge",
+            "missing",
+        ),
     ]
     for label, mutated, job_name, verdict in mutations:
         assert mutated != gate["run"], label
         changed = copy.deepcopy(full)
-        changed[job_name] = {"result": verdict, "outputs": {}}
+        if verdict == "missing":
+            del changed[job_name]
+        else:
+            changed[job_name] = {"result": verdict, "outputs": {}}
         ordinary, _ = _run_fan_in(
             gate=gate,
             needs=changed,
@@ -1229,6 +1249,117 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     jobs = workflow["jobs"]
     # A structurally passing topology is unusable if GitHub cannot admit a job.
     assert all(job.get("runs-on") for job in jobs.values() if "steps" in job)
+    # Go has its own required result, not a pytest shard or coverage input.
+    go_bridge = jobs["go-bridge"]
+    assert go_bridge["needs"] == ["route"]
+    assert go_bridge["if"] == "needs.route.outputs.backend == 'true'"
+    assert go_bridge["permissions"] == {"contents": "read"}
+    assert go_bridge["defaults"]["run"] == {
+        "working-directory": "whatsapp-bridge",
+        "shell": "bash",
+    }
+    assert go_bridge["env"] == {"GOTOOLCHAIN": "local"}
+    assert not go_bridge.get("continue-on-error", False)
+    assert all(not step.get("continue-on-error", False) for step in go_bridge["steps"])
+    assert [step["uses"] for step in go_bridge["steps"] if "uses" in step] == [
+        "actions/checkout@v6",
+        "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+    ]
+    assert go_bridge["steps"][0]["with"] == {"persist-credentials": False}
+    setup_go = _workflow_step(job=go_bridge, name="Set up Go 1.25.11")
+    assert setup_go["with"] == {
+        "go-version": "1.25.11",
+        "check-latest": False,
+        "cache": True,
+        "cache-dependency-path": "whatsapp-bridge/go.sum",
+    }
+    assert "FROM golang:1.25.11-bookworm@sha256:" in (REPO_ROOT / "Dockerfile").read_text()
+    tracked_go = subprocess.run(
+        ["git", "ls-files", "whatsapp-bridge", "**/go.mod"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.splitlines()
+    assert [name for name in tracked_go if name.endswith("/go.mod")] == ["whatsapp-bridge/go.mod"]
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from ci_route import route as classify_route
+
+    for name in tracked_go:
+        if name.endswith((".go", "/go.mod", "/go.sum")):
+            classification = classify_route(
+                event="pull_request",
+                ref="refs/pull/1/merge",
+                files=[name],
+                docs=[],
+                base=None,
+            )
+            assert classification["backend"] == "true" and classification["mode"] == "full"
+    go_run = _workflow_step(job=go_bridge, name="Test the Go bridge")["run"]
+    assert shlex.split(go_run) == [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=30s",
+        "10m",
+        "go",
+        "test",
+        "-mod=readonly",
+        "-count=1",
+        "-timeout=5m",
+        "./...",
+    ]
+    go_locks = _workflow_step(job=go_bridge, name="Verify Go lockfiles are unchanged")["run"]
+    assert go_locks == "git diff --exit-code -- go.mod go.sum"
+    # Execute the extracted steps in an owned Git checkout: an error in Go
+    # cannot fall through to success, and real tracked lockfile drift refuses.
+    go_fixture = tmp_path / "go-fixture"
+    go_fixture.mkdir()
+    for name in ("go.mod", "go.sum"):
+        (go_fixture / name).write_text("fixture\n")
+    for command in (["git", "init", "-q"], ["git", "add", "go.mod", "go.sum"]):
+        subprocess.run(command, cwd=go_fixture, check=True, capture_output=True, timeout=10)
+    fake_bin = go_fixture / "bin"
+    fake_bin.mkdir()
+    fake_go = fake_bin / "go"
+    fake_go.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys, time\n"
+        "pathlib.Path('argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+        "if os.environ['GO_CONTROL'] == 'timeout': time.sleep(5)\n"
+        "if os.environ['GO_CONTROL'] == 'lock-mutation':\n"
+        "    pathlib.Path('go.sum').write_text('modified\\n')\n"
+        "raise SystemExit(23 if os.environ['GO_CONTROL'] == 'failure' else 0)\n"
+    )
+    fake_go.chmod(0o755)
+    for control, expected in (
+        ("healthy", 0),
+        ("failure", 23),
+        ("timeout", 124),
+        ("lock-mutation", 1),
+    ):
+        bounded_run = go_run.replace("10m", "0.25s") if control == "timeout" else go_run
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", bounded_run + "\n" + go_locks],
+            cwd=go_fixture,
+            env={
+                **os.environ,
+                **go_bridge["env"],
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "GO_CONTROL": control,
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == expected, (control, result.stderr)
+        assert json.loads((go_fixture / "argv.json").read_text()) == [
+            "test",
+            "-mod=readonly",
+            "-count=1",
+            "-timeout=5m",
+            "./...",
+        ]
     # Inventory and children must install the same full interpreter identity, and
     # every Python job gets it from the one composite action (bu-29wkwj.2).
     assert workflow.get("env", {}).get("UV_PYTHON") == "3.12.15"
@@ -1461,9 +1592,9 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         selected = [i for i in range(len(names)) if mask & (1 << i)]
         if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
             peak = max(peak, sum(weights[i] for i in selected))
-    assert sum(weights) + 1 == 20  # Includes the mutually exclusive affected row.
-    # Guards, eleven groups, two Vitest children and the browser job (bu-29wkwj.2).
-    assert peak == 15
+    assert sum(weights) + 1 == 21  # Includes the mutually exclusive affected row.
+    # Existing fifteen concurrent rows plus the independent Go bridge job.
+    assert peak == 16
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
         job=changes, name="Classify and conservatively plan with stdlib only"
@@ -1835,6 +1966,7 @@ else:
         "check-integration",
         "check-affected",
         "frontend-e2e",
+        "go-bridge",
     ]
     assert check_job["if"] == "always()"
     assert "cancelled" not in check_job["if"]
@@ -2079,6 +2211,12 @@ else:
     for row in register["jobs"]:
         assert declared[(row["workflow"], row["job"])] == row["installed_timeout_minutes"]
         assert row["state"] and row["sample_source"]
+        if row["workflow"] == ".github/workflows/ci.yml" and row["job"] == "go-bridge":
+            assert row["successful_sample_n"] == 0 and row["p95_s"] is None
+            assert not row.get("healthy_job_observations")
+            assert row["additional_provisional_cold_dependency_allowance_s"] == 270
+            assert row["installed_timeout_minutes"] * 60 == 600 + 30 + 270
+            assert "provisional" in row["state"]
         if row["p95_s"] is not None:
             reserve = (
                 row["review_uv_nominal_envelope_s"] + row["review_browser_hard_retry_interval_s"]

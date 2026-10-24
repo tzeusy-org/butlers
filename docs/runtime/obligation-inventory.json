@@ -410,7 +410,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "weekly-health-summary",
       "dispatch_mode": "prompt",
@@ -421,7 +421,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -431,7 +431,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -441,7 +441,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "insight_scan",
       "dispatch_mode": "job",
@@ -451,7 +451,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "baseline_watch",
       "dispatch_mode": "job",
@@ -461,7 +461,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "health_visit_brief",
       "dispatch_mode": "job",
@@ -471,7 +471,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "atmosphere-advisory",
       "dispatch_mode": "job",
@@ -481,7 +481,7 @@
     },
     {
       "path": "roster/health/butler.toml",
-      "source_sha256": "930bea486465d6452163a8175096c667a681ef970e53e93b9633bed0361af86e",
+      "source_sha256": "cb1c6cda6af8a0d6279fe27448f2a25f96191ff4e74bbd2423f37068924b4548",
       "butler": "health",
       "name": "context_producer_sleep_window",
       "dispatch_mode": "job",
@@ -612,7 +612,7 @@
     },
     {
       "path": "roster/messenger/butler.toml",
-      "source_sha256": "bf63288bb417ea4888c979359f24e2e5630a06c0fb8e842e400c86745ae1aad7",
+      "source_sha256": "cc54c565f43e0635978906f33ba5b191126af6bd1428d607cb2e50635b450235",
       "butler": "messenger",
       "name": "calendar_prep_contribution",
       "dispatch_mode": "job",
@@ -652,7 +652,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "upcoming-dates-check",
       "dispatch_mode": "job",
@@ -662,7 +662,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "relationship-maintenance",
       "dispatch_mode": "job",
@@ -672,7 +672,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "daily_briefing_contribution",
       "dispatch_mode": "job",
@@ -682,7 +682,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "calendar_overlay_contribution",
       "dispatch_mode": "job",
@@ -692,7 +692,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "calendar_prep_contribution",
       "dispatch_mode": "job",
@@ -702,7 +702,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "meeting-debrief",
       "dispatch_mode": "job",
@@ -712,7 +712,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "insight-scan",
       "dispatch_mode": "job",
@@ -722,7 +722,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "interaction-sync",
       "dispatch_mode": "job",
@@ -732,7 +732,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "loan-cost-claim-backfill",
       "dispatch_mode": "job",
@@ -742,7 +742,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "memory-curation",
       "dispatch_mode": "job",
@@ -752,7 +752,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "pending-actions-curation",
       "dispatch_mode": "job",
@@ -762,7 +762,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "fact-retraction-curation",
       "dispatch_mode": "job",
@@ -772,7 +772,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "prepared-action-orphan-sweep",
       "dispatch_mode": "job",
@@ -782,7 +782,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "entity-dedup-curation",
       "dispatch_mode": "job",
@@ -792,7 +792,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "episodic-predicate-curation",
       "dispatch_mode": "job",
@@ -802,7 +802,7 @@
     },
     {
       "path": "roster/relationship/butler.toml",
-      "source_sha256": "adaf0e74ea44739023d516a7a67ed4cc70f1fdf77eecb234ad209f2b729f2320",
+      "source_sha256": "95cf20f7f964a57a7bd6b4317ce82a8041211b1c050bb3f90cf55f3e7597216a",
       "butler": "relationship",
       "name": "email-identity-enrichment",
       "dispatch_mode": "job",
@@ -812,7 +812,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "eligibility_sweep",
       "dispatch_mode": "job",
@@ -822,7 +822,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "insight-delivery-cycle",
       "dispatch_mode": "job",
@@ -832,7 +832,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "insight-urgent-subcycle",
       "dispatch_mode": "job",
@@ -842,7 +842,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "commitment-escalation",
       "dispatch_mode": "job",
@@ -852,7 +852,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "spend-rule-savings",
       "dispatch_mode": "job",
@@ -862,7 +862,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "rule-promotion-trigger",
       "dispatch_mode": "job",
@@ -872,7 +872,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "dropped-known-watch",
       "dispatch_mode": "job",
@@ -882,37 +882,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
-      "butler": "switchboard",
-      "name": "decision-review-digest",
-      "dispatch_mode": "job",
-      "job_name": "decision_review_digest",
-      "declaration_status": "not_inferred_from_job_mode",
-      "classification": "unchanged_job_pending_closed_call_graph_review"
-    },
-    {
-      "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
-      "butler": "switchboard",
-      "name": "decision-escalation-check",
-      "dispatch_mode": "job",
-      "job_name": "decision_escalation_check",
-      "declaration_status": "not_inferred_from_job_mode",
-      "classification": "unchanged_job_pending_closed_call_graph_review"
-    },
-    {
-      "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
-      "butler": "switchboard",
-      "name": "decision-routing",
-      "dispatch_mode": "job",
-      "job_name": "decision_routing",
-      "declaration_status": "not_inferred_from_job_mode",
-      "classification": "unchanged_job_pending_closed_call_graph_review"
-    },
-    {
-      "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "domain-event-reconciliation-sweep",
       "dispatch_mode": "job",
@@ -922,7 +892,7 @@
     },
     {
       "path": "roster/switchboard/butler.toml",
-      "source_sha256": "96345931782603bb9548623dfd24ee50ed7612d54527a585f50d80b55723cac4",
+      "source_sha256": "c4c6a00fa444cbeeaec9c898f64642570d037b4ca579e24ac2cc00e0cda98a60",
       "butler": "switchboard",
       "name": "fleet-case-lapse-sweep",
       "dispatch_mode": "job",

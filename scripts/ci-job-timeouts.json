@@ -405,6 +405,21 @@
       "state": "provisional diagnostic subject retains original unit1 watchdog; healthy calibration UNKNOWN",
       "sample_source": "bu-ly3lv5.10.3 frozen original PR4484 profile; unchanged 28-minute job and UV640 nominal reserve; no timing claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "go-bridge",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 15,
+      "retry_extra_s": 0,
+      "state": "provisional source-derived bound; no healthy whole-job observation or current p95 calibration",
+      "sample_source": "bu-n7zmbp.16 source bounds: 600s command + 30s KILL allowance + 270s checkout/toolchain/cache/finalization reserve = 900s",
+      "review_uv_nominal_envelope_s": 0,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 270,
+      "installed_timeout_minutes": 15
     }
   ],
   "tests": [

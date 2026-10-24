@@ -30,8 +30,8 @@ def register_response_tools(
             return await module._response_fence.status(request)
 
     if module._config.response_enabled:
-        if not group_enabled(module._config, "core"):
-            raise RuntimeError("calendar response requires its core registration group")
+        if not group_enabled(module._config, "response"):
+            raise RuntimeError("calendar response requires its response registration group")
 
         @mcp.tool(exclude_args=["_command_id", "_command_digest"])
         async def calendar_respond(

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.connectors.home_assistant_statistics import (
@@ -87,11 +88,6 @@ _ENERGY_DATA_STATUS_HEADER = "X-Butlers-Energy-Data-Status"
 _ENERGY_OMITTED_SENSORS_HEADER = "X-Butlers-Omitted-Sensors"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the home butler's connection pool.
 
@@ -136,7 +132,8 @@ async def list_entities(
     area: str | None = Query(None, description="Filter by area_id stored in entity attributes"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[EntitySummaryResponse]:
     """List Home Assistant entities from the snapshot cache.
 
@@ -202,7 +199,8 @@ async def list_entities(
 @router.get("/entities/{entity_id:path}", response_model=EntityStateResponse)
 async def get_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityStateResponse:
     """Retrieve full state detail for a single Home Assistant entity.
 
@@ -240,7 +238,8 @@ async def get_entity(
 
 @router.get("/areas", response_model=list[AreaResponse])
 async def list_areas(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AreaResponse]:
     """List all areas found in the Home Assistant entity snapshot cache.
 
@@ -287,7 +286,8 @@ async def list_command_log(
     domain: str | None = Query(None, description="Filter by HA service domain"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[CommandLogEntry]:
     """Query the Home Assistant command audit log with optional time range and pagination."""
     pool = _pool(db)
@@ -371,7 +371,8 @@ async def list_command_log(
 
 @router.get("/snapshot-status", response_model=StatisticsResponse)
 async def get_snapshot_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> StatisticsResponse:
     """Return entity snapshot freshness and aggregate statistics.
 
@@ -428,7 +429,8 @@ async def list_devices(
     health: str | None = Query(None, description="Filter by health status: 'healthy' or 'offline'"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeviceInventoryResponse:
     """List all known HA devices with current state, area, and health status.
 
@@ -585,7 +587,8 @@ async def get_energy(
     period: str = Query("day", description="Aggregation period: 'day' or 'hour'"),
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """Return energy consumption time-series data.
 
@@ -706,7 +709,8 @@ async def get_energy_top_consumers(
     response: Response,
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """Return the top 10 energy-consuming devices for the given period.
 
@@ -887,7 +891,8 @@ async def list_maintenance(
     status: str | None = Query(
         None, description="Filter by computed status: overdue, due, upcoming, ok"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """List all maintenance items sorted by next_due_at ascending (NULLs first).
 
@@ -950,7 +955,8 @@ async def list_maintenance(
 async def create_maintenance_item(
     request: Request,
     body: MaintenanceItemCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Create a new maintenance item.
 
@@ -1010,7 +1016,8 @@ async def create_maintenance_item(
 async def complete_maintenance_item(
     item_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Mark a maintenance item as completed.
 
@@ -1066,7 +1073,8 @@ async def complete_maintenance_item(
 async def delete_maintenance_item(
     item_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a maintenance item.
 
@@ -1177,7 +1185,8 @@ async def _load_thresholds(pool) -> dict[str, Any]:
 
 @router.get("/settings/thresholds")
 async def get_thresholds(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Return the current threshold configuration for all home monitoring jobs.
 
@@ -1198,7 +1207,8 @@ async def get_thresholds(
 async def update_thresholds(
     request: Request,
     body: ThresholdUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Partially update threshold configuration.
 
@@ -1314,7 +1324,8 @@ _ATMOSPHERE_STALE_THRESHOLD = timedelta(hours=2)
 
 @router.get("/atmosphere/current", response_model=AtmosphereCurrentResponse)
 async def get_atmosphere_current(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AtmosphereCurrentResponse:
     """Return current weather/AQI/pollen conditions for the home location.
 
@@ -1403,7 +1414,8 @@ async def get_atmosphere_current(
 async def update_atmosphere_location(
     request: Request,
     body: AtmosphereLocationUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Set the home location used by the atmosphere context feed.
 
@@ -1452,7 +1464,8 @@ def _safety_watch_entry(row: Any) -> SafetyWatchEntry:
 @router.get("/safety-watch", response_model=list[SafetyWatchEntry])
 async def list_safety_watch(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[SafetyWatchEntry]:
     """The sensors the safety sentinel watches, as the owner declared them."""
     rows = await _pool(db).fetch(
@@ -1466,7 +1479,8 @@ async def upsert_safety_watch(
     request: Request,
     body: SafetyWatchUpsertRequest,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SafetyWatchEntry:
     """Declare a binary sensor as guarding against a hazard, or relabel it.
 
@@ -1501,7 +1515,8 @@ async def delete_safety_watch(
     entity_id: str,
     role: str,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Stop watching a sensor for one hazard; an open condition resolves on the next sweep."""
     status = await _pool(db).execute(

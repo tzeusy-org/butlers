@@ -34,7 +34,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
 from butlers.api.models import ApiResponse
 from butlers.api.models.ingestion_event import (
@@ -91,11 +91,6 @@ rollup_router = APIRouter(
 )
 
 _REPLAY_SAFETY_UNAVAILABLE_REASON = "Replay safety could not be confirmed"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_pricing_optional() -> PricingConfig | None:
@@ -223,7 +218,8 @@ async def list_ingestion_events(
             "returns an empty page, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Page[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
 
@@ -472,7 +468,8 @@ async def get_ingestion_events_histogram(
             "returns an empty histogram, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> IngestionHistogramResponse:
     """Return per-minute (or coarser) ingestion event counts by status.
 
@@ -606,7 +603,8 @@ _DROPPED_KNOWN_WINDOWS = {
 @router.get("/dropped-known", response_model=IngestionDroppedKnownSummary)
 async def get_ingestion_dropped_known(
     window: Literal["1h", "24h", "7d"] = Query("24h", description="Trailing window."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> IngestionDroppedKnownSummary:
     """Return how many messages from known contacts were dropped and not answered.
 
@@ -668,7 +666,8 @@ async def get_ingestion_event(
             "Omitting this flag returns only metadata fields."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionEventDetail]:
     """Return a single ingestion event by its UUID.
 
@@ -760,7 +759,8 @@ async def get_ingestion_event(
 @router.get("/{request_id}/sessions", response_model=ApiResponse[list[IngestionEventSession]])
 async def get_ingestion_event_sessions(
     request_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> ApiResponse[list[IngestionEventSession]]:
     """Return cross-butler sessions linked to this ingestion event.
@@ -787,7 +787,8 @@ async def get_ingestion_event_sessions(
 @router.get("/{request_id}/rollup", response_model=ApiResponse[IngestionEventRollup])
 async def get_ingestion_event_rollup(
     request_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[IngestionEventRollup]:
     """Return aggregated token and cost totals for this ingestion event.
@@ -832,7 +833,8 @@ _MAX_BULK_RETRY_BATCH = 100
 async def bulk_retry_ingestion_events(
     request: Request,
     body: Annotated[dict, Body(...)],
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """Bulk retry/replay up to 100 events across both ingestion and filtered tables.
 
@@ -1044,7 +1046,8 @@ async def bulk_retry_ingestion_events(
 async def replay_ingestion_event(
     event_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """Request replay of a failed or filtered event.
 
@@ -1167,7 +1170,8 @@ async def replay_ingestion_event(
 @router.get("/{event_id}/replays", response_model=ApiResponse[list[ReplayHistoryEntry]])
 async def get_ingestion_event_replays(
     event_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ReplayHistoryEntry]]:
     """Return the replay attempt history for an ingestion event.
 
@@ -1198,7 +1202,8 @@ async def get_ingestion_event_replays(
 @router.get("/{event_id}/sender-contact", response_model=ApiResponse[SenderContactResolution])
 async def get_ingestion_event_sender_contact(
     event_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SenderContactResolution]:
     """Resolve the sender_identity for an ingestion event to a contact name.
 
@@ -1264,7 +1269,8 @@ async def get_ingestion_event_sender_contact(
 async def get_ingestion_event_payload(
     event_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionEventPayload]:
     """Return the raw inbound payload for an ingestion event.
 
@@ -1342,11 +1348,6 @@ async def get_ingestion_event_payload(
 # ---------------------------------------------------------------------------
 
 
-def _get_rollup_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/rollup
 # ---------------------------------------------------------------------------
@@ -1388,7 +1389,8 @@ async def get_ingestion_window_rollup(
             "rollup, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_rollup_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> IngestionWindowRollup:
     """Return aggregate event/session/cost counts for the active filter window.

@@ -111,7 +111,8 @@ The delivered Chronicler gap-interview now runs its existing deterministic job;
 it retains no declaration and cannot inherit the day-close notify ceiling. Both
 Relationship prompt blocks remain undeclared pending their separately owned
 conversions. The census records that delivered dispatch mode while retaining
-all 102 schedule identities and 19 producer families, including unfinished ones.
+99 current schedule identities and 19 producer families, including unfinished ones.
+The historical 102 included three Decision Desk schedules retired by the adopted D19 decision.
 
 Health's skill now uses the registered history/trend APIs and distinguishes
 expected coverage from logged observations; General's unbound travel-time
@@ -460,7 +461,7 @@ complete source declarations, server-owned context/creator and cause producers,
 authenticated catalog publication and the real runner/result handoff remain
 mandatory before switching these jobs to goals. Direct dashboard model callers
 are not covered by the scheduled-job registry; their owner-goal conversion
-remains unfinished. The 102-schedule/19-family inventory, deterministic safety
+remains unfinished. The current 99-schedule/19-family inventory, deterministic safety
 contracts, genuine PostgreSQL execution and hosted delivery obligations remain.
 
 ### Held Git source factory and full owning reconciliation
@@ -664,7 +665,7 @@ excludes `notify`. Its two existing Insight declarations request
 `switchboard__notify` and therefore refuse against the actual final registry.
 The private mechanism's positive tests use a loaded Git read declaration for an
 actually registered Switchboard tool. They do not deliver those two Insight
-workflows or all 102 schedules/19 dynamic families. Runtime creator, Finance
+workflows or all 99 current schedules/19 dynamic families. Runtime creator, Finance
 reaction cause, feed, runner, genuine PostgreSQL and delivery gates remain.
 
 ## Insight selected-content dark preparation

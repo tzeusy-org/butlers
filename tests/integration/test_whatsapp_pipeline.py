@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.routers.whatsapp import _get_bridge_socket_path, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.whatsapp import _get_bridge_socket_path
 from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
@@ -544,7 +545,7 @@ class TestDashboardPairAPI:
     def whatsapp_app(self, mock_db_manager):
         app = create_app(api_key="")
         app.dependency_overrides[_get_bridge_socket_path] = lambda: "/tmp/test-wa-bridge.sock"
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db_manager
+        app.dependency_overrides[get_db] = lambda: mock_db_manager
         yield app
         app.dependency_overrides.clear()
 
@@ -645,7 +646,7 @@ class TestDashboardPairAPI:
         fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
         mock_db = MagicMock()
         mock_db.pool.return_value = fake_pool
-        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        whatsapp_app.dependency_overrides[get_db] = lambda: mock_db
 
         with (
             patch(
@@ -716,7 +717,7 @@ class TestDashboardPairAPI:
         fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
         mock_db = MagicMock()
         mock_db.pool.return_value = fake_pool
-        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        whatsapp_app.dependency_overrides[get_db] = lambda: mock_db
 
         with (
             patch(

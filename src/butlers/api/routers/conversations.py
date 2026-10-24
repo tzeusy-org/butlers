@@ -163,7 +163,7 @@ from butlers.api.conversations import (
     message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
@@ -224,11 +224,6 @@ _SWITCHBOARD_BUTLER: str = "switchboard"
 # handoff, target route recovery, and API process restarts. The map remains for
 # legacy callers that omit a message id and for session-timeout links.
 _ACTIVE_TURNS: dict[UUID, dict[str, str]] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -1529,7 +1524,8 @@ async def list_conversations(
     ] = "active",
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSummary]:
     """List conversations for a butler with optional status filter.
 
@@ -1567,7 +1563,8 @@ async def search_conversations(
     q: str | None = Query(None, description="Search query string"),
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSearchResult]:
     """Search conversations by message content (case-insensitive substring match).
 
@@ -1632,7 +1629,8 @@ async def search_messages(
     to: str | None = Query(
         None, description="ISO-8601 exclusive upper bound on message created_at."
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Page[MessageSearchResult]:
     """Owner-scoped full-text search across every butler's dashboard messages.
 
@@ -1703,7 +1701,8 @@ async def search_messages(
 @messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation_by_id(
     conversation_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationDetail:
     """Cross-butler conversation lookup by id (bu-0ynlk.11).
 
@@ -1743,7 +1742,8 @@ async def get_conversation_by_id(
 @router.get("/{name}/conversations/summary")
 async def get_conversation_summary(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationStats:
     """Return aggregate conversation statistics for a butler."""
     try:
@@ -1765,7 +1765,8 @@ async def create_conversation(
     name: str,
     body: ConversationCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Create a new conversation with the first user message.
@@ -1888,7 +1889,8 @@ async def list_messages(
     conversation_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationMessage]:
     """List messages in a conversation ordered by ``created_at ASC``.
 
@@ -1928,7 +1930,8 @@ async def send_message(
     conversation_id: UUID,
     body: MessageCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Send a follow-up message in an existing conversation.
@@ -2042,7 +2045,8 @@ async def cancel_dashboard_message_turn(
     name: str,
     message_id: UUID,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Stop the one immutable dashboard turn identified by ``message_id``.
 
@@ -2074,7 +2078,8 @@ async def cancel_conversation_turn(
         description="Exact persisted user-message id for durable cancellation.",
     ),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Compatibility cancel for an in-flight conversation turn.
 
@@ -2173,7 +2178,8 @@ async def update_conversation(
     name: str,
     conversation_id: UUID,
     body: ConversationUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationSummary:
     """Update a conversation's title or status.
 

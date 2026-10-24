@@ -22,7 +22,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.sessions_v1 import (
+from butlers.api.read_models.sessions import (
     DETAIL_COLUMNS,
     READ_MODEL_VERSION,
     SUMMARY_COLUMNS,
