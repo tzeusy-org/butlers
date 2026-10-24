@@ -1,3 +1,5 @@
+import { mockJson } from "./api-responses";
+import { emptyApiJson } from "./empty-api";
 import { expect, test as base } from "@playwright/test";
 import type { EducationSourceMaterial, MindMap } from "../../../src/api/types";
 
@@ -55,35 +57,35 @@ export const test = base.extend<{ registryAvailable: boolean }>({
         return route.abort("blockedbyclient");
       }
       if (!url.pathname.startsWith("/api/")) return route.continue();
-      const reply = (body: unknown, status = 200) => route.fulfill({ status, json: body });
+      const reply = (body: string, status = 200) => route.fulfill({ status, contentType: "application/json", body });
       if (request.method() === "GET") {
         switch (url.pathname) {
           // Reuse the existing local harness's synthetic owner session only.
           case "/api/auth/owner/status":
           case "/api/auth/owner/csrf": return route.fallback();
-          case "/api/settings/pricing": return reply({ data: {} });
-          case "/api/butlers/switchboard/conversations": return reply({ data: [], meta: { total: 0, offset: 0, limit: 50 } });
-          case "/api/settings/general": return reply({ data: { timezone: "UTC" } });
-          case "/api/butlers": return reply({ data: [{ name: "education", status: "running" }] });
-          case "/api/spend": return reply({ data: { total_cost_usd: 0 } });
-          case "/api/approvals/metrics": return reply({ data: { total_pending: 0 } });
-          case "/api/health": return reply({ status: "ok" });
+          case "/api/settings/pricing":
+          case "/api/butlers/switchboard/conversations":
+          case "/api/spend":
+          case "/api/approvals/metrics":
+          case "/api/health": return reply(emptyApiJson(url)!);
+          case "/api/settings/general": return reply(mockJson("getGeneralSettings", { data: { timezone: "UTC", timezone_label: "UTC", language: "en", date_format: "YYYY-MM-DD", time_format: "24h", week_starts_on: "monday", currency: "USD", measurement_system: "metric" }, meta: {} }));
+          case "/api/butlers": return reply(mockJson("getButlers", { data: [{ name: "education", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }));
           case "/api/education/mind-maps": {
             const status = url.searchParams.get("status");
             if (status === "active" || status === "draft") {
               const data = status === "active" ? [mindMap] : [];
-              return reply({ data, meta: { total: data.length, offset: 0, limit: 50 } });
+              return reply(mockJson("getEducationMindMaps", { data, meta: { total: data.length, offset: 0, limit: 50, has_more: false } }));
             }
             break;
           }
-          case `/api/education/mind-maps/${mapId}`: return reply(mindMap);
-          case `/api/education/mind-maps/${mapId}/frontier`: return reply([]);
-          case "/api/education/quiz-responses": return reply({ data: [], meta: { total: 0, offset: 0, limit: 20 } });
-          case "/api/education/curriculum-requests/latest": return reply({ receipts_available: true, receipt: null });
+          case `/api/education/mind-maps/${mapId}`: return reply(mockJson("getEducationMindMap", mindMap));
+          case `/api/education/mind-maps/${mapId}/frontier`: return reply(mockJson("getEducationMindMapFrontier", []));
+          case "/api/education/quiz-responses": return reply(mockJson("getEducationQuizResponses", { data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } }));
+          case "/api/education/curriculum-requests/latest": return reply(mockJson("getEducationLatestCurriculumRequest", { receipts_available: true, receipt: null }));
           case "/api/education/sources": {
             // A full-registry fetch must not accidentally satisfy this fixture.
             if (url.searchParams.get("source_ids") === "synthetic-linked,synthetic-offline,synthetic-removed") {
-              return registryAvailable ? reply(sources) : reply({ error: { code: "SYNTHETIC_UNAVAILABLE", message: "Synthetic registry unavailable" } }, 503);
+              return registryAvailable ? reply(mockJson("getEducationSources", sources)) : reply(JSON.stringify({ error: { code: "SYNTHETIC_UNAVAILABLE", message: "Synthetic registry unavailable" } }), 503);
             }
             break;
           }

@@ -4256,7 +4256,7 @@ export type {
 // ---------------------------------------------------------------------------
 
 /** Flat connector detail payload returned by the canonical detail routes. */
-interface _ConnectorDetailPayload {
+export interface _ConnectorDetailPayload {
   connector_type: string;
   endpoint_identity: string;
   instance_id: string | null;
@@ -4286,7 +4286,7 @@ interface _ConnectorDetailPayload {
 }
 
 /** Raw timeseries row returned by the canonical connector stats route. */
-interface _BackendStatsRow {
+export interface _BackendStatsRow {
   connector_type: string;
   endpoint_identity: string;
   /** ISO string for hourly rollup (period=24h). */
