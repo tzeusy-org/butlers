@@ -208,7 +208,7 @@ async def _transition(pool: asyncpg.Pool, job_id: UUID | str, action: str) -> di
             raise BackfillStateConflict(
                 (
                     f"Backfill job {job_id_val} is in terminal state {current!r} "
-                    f"and cannot be {action}d"
+                    f"and cannot be {target}"
                 )
                 if action != "resume"
                 else f"Backfill job {job_id_val} cannot be resumed from {current!r}",

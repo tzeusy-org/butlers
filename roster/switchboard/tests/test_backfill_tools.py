@@ -348,8 +348,11 @@ class TestBackfillCancel:
         """Raises ValueError when job is already completed."""
         existing = _fake_job_row(status="completed")
         pool = _make_pool(fetchrow_return=existing)
-        with pytest.raises(ValueError, match="terminal state"):
+        with pytest.raises(ValueError, match="terminal state") as exc_info:
             await backfill_cancel(pool, job_id=_JOB_ID)
+        assert str(exc_info.value) == (
+            f"Backfill job {_JOB_ID} is in terminal state 'completed' and cannot be cancelled"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["error", "cost_capped"])
