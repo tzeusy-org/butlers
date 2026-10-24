@@ -36,14 +36,19 @@ from tests.switchboard.goal_ledger_fixtures import configure
 pytestmark = pytest.mark.integration
 
 
-@pytest_asyncio.fixture
-async def git_admission(postgres_container, tmp_path):
-    url = create_migrated_test_db(
+@pytest.fixture
+def git_admission_url(postgres_container):
+    return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         ["core", "switchboard"],
         schemas={"core": "switchboard", "switchboard": "switchboard"},
     )
+
+
+@pytest_asyncio.fixture
+async def git_admission(git_admission_url, tmp_path):
+    url = git_admission_url
     # Explicit owning test configuration, not production activation. The actual
     # staffer Insight notify graph stays absent/refused in the software owner.
     (tmp_path / "butler.toml").write_text("""
