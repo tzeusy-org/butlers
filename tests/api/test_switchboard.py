@@ -289,6 +289,26 @@ async def test_heartbeat_missing_name_422(app):
     assert resp.status_code == 422
 
 
+async def test_heartbeat_rejects_invalid_names_before_roster_path_access(app):
+    module = _get_router_module()
+    roster_dir = MagicMock()
+    roster_dir.__truediv__.side_effect = AssertionError("Invalid heartbeat reached roster path")
+    with patch.object(module, "_ROSTER_DIR", roster_dir):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for name in ("../x", "/tmp/x"):
+                for row in (None, {"eligibility_state": "active", "last_seen_at": None}):
+                    _app, pool = _app_with_mock(app, fetchrow_result=row)
+                    resp = await client.post(
+                        "/api/switchboard/heartbeat", json={"butler_name": name}
+                    )
+                    assert resp.status_code == 422
+                    pool.fetchrow.assert_not_awaited()
+                    pool.execute.assert_not_awaited()
+    roster_dir.__truediv__.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Eligibility history
 # ---------------------------------------------------------------------------

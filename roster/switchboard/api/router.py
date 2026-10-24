@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -811,6 +812,9 @@ async def receive_heartbeat(
       protected operator policy retains the quarantine
     - ``active``: ``last_seen_at`` updated, state unchanged
     """
+    if re.fullmatch(r"[a-z][a-z0-9_]*", body.butler_name) is None:
+        raise HTTPException(status_code=422, detail="Invalid butler name")
+
     pool = _pool(db)
 
     now = datetime.datetime.now(datetime.UTC)
