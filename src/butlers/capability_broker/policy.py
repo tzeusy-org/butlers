@@ -95,7 +95,11 @@ def decide(
             and (evidence.recipient == "owner" or evidence.template_pinned)
         )
     )
-    approval = capability.approval_required or evidence.recipient == "non_owner"
+    approval = (
+        capability.approval_required
+        or evidence.recipient == "non_owner"
+        or capability.effect_class == "administer"
+    )
     if capability.effect_class == "actuate":
         approval |= evidence.actuation_risk != "safe"
     if principal.exposed:

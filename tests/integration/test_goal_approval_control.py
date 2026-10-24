@@ -31,6 +31,8 @@ from butlers.testing.migration import (
     migration_db_name,
 )
 
+# Synchronous provisioning stays outside the event loop; the Home fixture is unchanged.
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
@@ -1199,3 +1201,296 @@ async def test_real_module_goal_commit_precedes_independent_observations(
                 "DROP TRIGGER controlled_module_finish_refusal ON home.approval_goal_effects; "
                 "DROP FUNCTION home.controlled_module_finish_refusal()"
             )
+
+
+@pytest.fixture(scope="module")
+def administer_publication_url(postgres_container):
+    """Independent central DB; synchronous migration runs outside the async loop."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        ["core", "switchboard"],
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+    )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["stored", "edited", "rule", "exposed-rule", "park-only-rule", "drift", "stop", "rollback"],
+)
+async def test_real_registered_home_administer_park_and_stored_replay(
+    stores, administer_publication_url, monkeypatch, mode
+):
+    """AUTHOR/COLLECT ONLY: actual central and Home SQL, roles and originals.
+
+    Only the fixed private transport is in-process. An isolated fixture source
+    supplies owner admission; this does not authenticate a deployed caller or
+    prove a provider effect. No scheduler tick, runner or live daemon is started.
+    """
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from butlers.capability_broker.assertions import AssertionSigner
+    from butlers.capability_broker.catalog import PublishedAuthorities
+    from butlers.capability_broker.contracts import BrokerRefused
+    from butlers.capability_broker.owning import PrivateApprovals
+    from butlers.capability_broker.service import Broker
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+    from butlers.capability_broker.transport.protocol import identity as wire_identity
+    from butlers.capability_broker.transport.protocol import request as wire_request
+    from butlers.core.catalog_publication import CatalogPublisher
+    from butlers.core.goal_admission import (
+        Evidence,
+        GoalAdmission,
+        Grant,
+        SourceRef,
+        digest,
+        encode_grants,
+    )
+    from butlers.core.goal_stop import GoalStop
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from tests.capability_broker.test_published_catalog import registered_home_admin
+    from tests.integration.test_catalog_publication import publish_all, runtime_pool
+    from tests.switchboard.goal_admission_fixtures import Sources, limits
+    from tests.switchboard.goal_ledger_fixtures import configure
+
+    owner, observer, owning = stores
+    native = await registered_home_admin(monkeypatch, pool=owning)
+    async with owning.acquire() as role_check:
+        assert await role_check.fetchval("SELECT current_user") == "butler_home_rw"
+    async with AsyncExitStack() as cleanup:
+        admin = await asyncpg.create_pool(
+            administer_publication_url,
+            init=register_jsonb_codec,
+            min_size=1,
+            max_size=3,
+            command_timeout=5,
+        )
+        cleanup.push_async_callback(_close, admin)
+        # Explicit fixture owner setup, never runtime catalog-control authority.
+        await admin.execute(
+            "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
+        )
+        try:
+            await admin.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        finally:
+            await admin.execute(
+                "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
+            )
+        await publish_all(administer_publication_url)
+        publisher = await cleanup.enter_async_context(
+            runtime_pool(administer_publication_url, "home")
+        )
+        await CatalogPublisher(publisher, "home").publish(native.catalog)
+        await configure(admin, limits())
+        runtime = await cleanup.enter_async_context(
+            runtime_pool(administer_publication_url, "switchboard")
+        )
+        case = uuid4()
+        admitted = await GoalAdmission(
+            runtime, Sources(Evidence("message", f"administer-owner:{case}", owner=True))
+        ).admit_submission(SourceRef("message", str(case)), uuid4())
+        assert admitted.result == "admitted"
+        goal, invocation = admitted.goal_id, uuid4()
+        exposed = mode == "exposed-rule"
+        await admin.execute(
+            "UPDATE switchboard.goals SET status='running',exposed=$2 WHERE id=$1", goal, exposed
+        )
+        grant = Grant("home__schedule_create", park_only=mode == "park-only-rule")
+        grants = encode_grants((grant,))
+        await admin.execute(
+            "INSERT INTO switchboard.invocations "
+            "(id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) "
+            "VALUES($1,$2,0,'lead',0,'launching',$3::jsonb,$4,5,500)",
+            invocation,
+            goal,
+            grants,
+            digest(grants),
+        )
+        args = {"name": f"administer-{case.hex}", "cron": "0 8 * * *", "prompt": "original"}
+        rule = None
+        if "rule" in mode:
+            rule = uuid4()
+            await owner.execute(
+                "INSERT INTO approval_rules(id,tool_name,arg_constraints,description,max_uses) "
+                "VALUES($1,'schedule_create',$2::jsonb,'controlled administer rule',1)",
+                rule,
+                {k: {"type": "exact", "value": v} for k, v in args.items()},
+            )
+        signer = AssertionSigner("home-administer-contract", Ed25519PrivateKey.generate())
+        invoked = []
+        original = native.originals["schedule_create"]
+
+        async def observed_original(**kwargs):
+            # This physically independent observer sees consume COMMITTED before
+            # entering the unchanged registered scheduling implementation.
+            assert (
+                await observer.fetchval(
+                    "SELECT dispatch_consumed_at IS NOT NULL FROM approval_goal_effects WHERE effect_id=$1",
+                    result.effect_id,
+                )
+                is True
+            )
+            invoked.append(dict(kwargs))
+            return await original(**kwargs)
+
+        op = GoalDispatch(
+            owning,
+            "home",
+            native.catalog,
+            {**native.originals, "schedule_create": observed_original},
+            {signer.kid: signer.private_key.public_key()},
+        )
+        peer, exchanges = SimpleNamespace(role="broker-control", domain="home"), []
+
+        async def exchange(self, value, *, assertion=None):
+            assert assertion is None
+            # A different connection observes the central intent before owning
+            # PARK. The caller cannot keep its central transaction over this hop.
+            if value["operation"] == "PARK":
+                effect = await admin.fetchrow(
+                    "SELECT status FROM switchboard.effects WHERE id=$1",
+                    UUID(value["identity"]["effect_id"]),
+                )
+                assert effect is not None and effect["status"] == "requested"
+            exchanges.append(value)
+            return await op(wire_request(value, "home"), peer)
+
+        monkeypatch.setattr(PrivateClient, "call", exchange)
+        client = PrivateClient(
+            TransportConfig(
+                "https://localhost:4200/mcp",
+                PeerPolicy("owning-service", "home", frozenset({"DNS:localhost"})),
+            ),
+            None,
+        )
+        cleanup.push_async_callback(client.aclose)
+
+        class NeverDirect:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("administer_requires_committed_owning_approval")
+
+        broker = Broker(
+            runtime,
+            PublishedAuthorities(),
+            NeverDirect(),
+            signer,
+            approvals=PrivateApprovals({"home": client}),
+        )
+        token = await broker.issue_invocation_token(goal, invocation)
+        await admin.execute(
+            "UPDATE switchboard.invocations SET status='running' WHERE id=$1", invocation
+        )
+        if mode == "rollback":
+            await owner.execute(
+                "CREATE FUNCTION home.administer_contract_refuse() RETURNS trigger LANGUAGE plpgsql "
+                "AS $$ BEGIN RAISE EXCEPTION 'controlled_administer_refusal' USING ERRCODE='23514'; END $$; "
+                "CREATE TRIGGER administer_contract_refuse BEFORE INSERT ON home.pending_actions "
+                "FOR EACH ROW EXECUTE FUNCTION home.administer_contract_refuse()"
+            )
+        try:
+            result = await broker.call(goal, token, "home__schedule_create", args)
+            assert result.value is None and len(exchanges) == 1 and invoked == []
+            assert (
+                await admin.fetchval(
+                    "SELECT used_calls FROM switchboard.budgets WHERE goal_id=$1", goal
+                )
+                == 1
+            )
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM scheduled_tasks WHERE name=$1", args["name"]
+                )
+                == 0
+            )
+            row, gate, receipts = await snapshot(observer, result.effect_id)
+            if mode == "rollback":
+                assert (
+                    result.status == "unknown" and row is None and gate is None and receipts == []
+                )
+                return
+            assert result.status == "parked" and result.approval_ref == str(result.effect_id)
+            approved_rule = mode == "rule"
+            assert row["status"] == ("approved" if approved_rule else "pending")
+            assert row["tool_args"] == args and row["goal_args_digest"] == arguments_digest(args)
+            assert row["invocation_id"] == invocation and row["goal_exposed"] == exposed
+            assert (
+                gate["park_authorization"] is not None
+                and gate["pending_action_id"] == result.effect_id
+            )
+            assert {r["outcome"] for r in receipts} == (
+                {"pending", "parked", "approved"} if approved_rule else {"pending", "parked"}
+            )
+            if rule is not None:
+                assert await observer.fetchval(
+                    "SELECT use_count FROM approval_rules WHERE id=$1", rule
+                ) == int(approved_rule)
+            # Exact signed duplicate reuses the immutable owning PARK evidence.
+            duplicate = await op(wire_request(exchanges[0], "home"), peer)
+            assert duplicate["outcome"] == "parked"
+            assert await snapshot(observer, result.effect_id) == (row, gate, receipts)
+            if not approved_rule:
+                if mode == "edited":
+                    await owner.execute(
+                        "UPDATE pending_actions SET tool_args=$2::jsonb WHERE id=$1",
+                        result.effect_id,
+                        {**args, "prompt": "owner edited"},
+                    )
+                await op.owner.transition(
+                    wire_identity(exchanges[0]["identity"]),
+                    target_status=ActionStatus.APPROVED,
+                    decided_by="human:controlled-owner",
+                    event_actor="controlled-owner",
+                    event_reason="controlled approval",
+                )
+            await admin.execute(
+                "UPDATE switchboard.invocations SET status='returned',token_hash=NULL WHERE id=$1",
+                invocation,
+            )
+            if mode == "stop":
+                await GoalStop(runtime).stop_goal(goal, uuid4(), "a" * 64)
+            elif mode == "drift":
+                # Real committed retirement, not a caller-selected catalog DTO.
+                await admin.execute(
+                    "UPDATE public.capability_catalog_current SET active=false WHERE domain='home'"
+                )
+            if mode in {"stop", "drift"}:
+                before = await snapshot(observer, result.effect_id)
+                with pytest.raises(BrokerRefused):
+                    await broker.replay_approved(goal, result.effect_id)
+                assert await snapshot(observer, result.effect_id) == before and invoked == []
+            else:
+                replay = await broker.replay_approved(goal, result.effect_id)
+                assert replay.status == "unknown" and replay.value is None
+                final, consumed, _ = await snapshot(observer, result.effect_id)
+                assert consumed["dispatch_consumed_at"] is not None
+                actual = await observer.fetch(
+                    "SELECT prompt,source FROM scheduled_tasks WHERE name=$1", args["name"]
+                )
+                assert len(actual) == 1 and actual[0]["source"] == "db"
+                assert actual[0]["prompt"] == ("owner edited" if mode == "edited" else "original")
+                assert invoked == [{**args, "prompt": actual[0]["prompt"]}]
+                assert final["tool_args"]["prompt"] == actual[0]["prompt"]
+                with pytest.raises(BrokerRefused):
+                    await broker.replay_approved(goal, result.effect_id)
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM scheduled_tasks WHERE name=$1", args["name"]
+                    )
+                    == 1
+                )
+            assert (
+                await admin.fetchval(
+                    "SELECT used_calls FROM switchboard.budgets WHERE goal_id=$1", goal
+                )
+                == 1
+            )
+        finally:
+            if mode == "rollback":
+                await owner.execute(
+                    "DROP TRIGGER administer_contract_refuse ON home.pending_actions; "
+                    "DROP FUNCTION home.administer_contract_refuse()"
+                )

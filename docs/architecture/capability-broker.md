@@ -549,3 +549,33 @@ Stop, permission and competing/lost-ACK cases are authored for hosted PostgreSQL
 execution, with local collection providing no durability claim. This branch
 does not complete the original nine criteria, enable a profile, or supply generic
 D7, selection, creator or runner authority.
+
+## Native no-party administration
+
+The published authority accepts `administer` only when the actual current
+registration declares no recipient names, owner default, unknown recipient or
+conditional inherited party. It supplies `recipient=none`; it supplies no
+standing-rule, selection, rendering or actuation-risk evidence. Missing owning
+approvals refuse before reserving a call. Child and third-party administration
+remain unavailable.
+
+Every grantable administrative call requires central PARK, even when its actual
+registration has no configured gate and the goal is unexposed. Home's registered
+`schedule_create` exercises the current publisher, broker and signed owning
+handoff: central reservation commits before the owning action, gate and receipt;
+the captured scheduling original is not invoked at PARK. D13 still permits a
+legitimate unexposed owning standing rule to approve that durable action. Exposed
+administration, park-only Grants and always-per-event modes remain pending and
+cannot consume such a rule. PARK is therefore not by itself evidence of a human
+tap. After an owning decision, authenticated stored or edited replay rechecks the
+current catalog, Grant, resources and Stop state, then consumes the exact owning
+dispatch once before invoking the captured original. Unknown execution results do
+not grant a retry.
+
+Software controls exercise the actual Home registration with explicit SQL and
+transport collaborators. Separate migrated central/Home role, immutable history,
+rollback, duplicate, Stop, catalog-drift and stored/edited scheduling readbacks
+are authored for hosted PostgreSQL execution; local collection earns no database
+outcome. This increment supplies no Home risk, current selection or inert
+owner-notification producer, no generic D7/creator/runner authority, and no
+activation or whole-broker completion.

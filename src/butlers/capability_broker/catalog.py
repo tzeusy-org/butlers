@@ -78,7 +78,7 @@ class PublishedAuthorities:
             binding = await resolve_recipient_binding(connection, capability, args)
             return PolicyEvidence("none", recipient_binding=binding)
         if (
-            capability.effect_class not in {"read", "record"}
+            capability.effect_class not in {"read", "record", "administer"}
             or parties.argument_names
             or parties.undeterminable
             or parties.default_owner_condition

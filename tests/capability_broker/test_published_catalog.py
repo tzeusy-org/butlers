@@ -760,3 +760,281 @@ async def test_native_email_reservation_keeps_current_ledger_fences(monkeypatch,
             {"to": "owner@example.invalid", "subject": "never", "body": "sent"},
         )
     assert conn.used == 0 and native.sends == [] and native.domains.calls == []
+
+
+async def registered_home_admin(monkeypatch, *, pool=None, approvals_enabled=True):
+    """Actual core registrar/finalizer and ungated original, with no provider startup."""
+    from types import SimpleNamespace
+
+    from butlers.daemon import ButlerDaemon
+    from tests.contracts import test_tool_authorization_catalog as registration_owner
+
+    captured = []
+    load = registration_owner.load_config
+    apply = ButlerDaemon._apply_approval_gates
+
+    def daemon(*args, **kwargs):
+        if pool is not None:
+            kwargs["db"].pool = pool
+        instance = ButlerDaemon(*args, **kwargs)
+        captured.append(instance)
+        return instance
+
+    def configured(path):
+        config = load(path)
+        if approvals_enabled is None:
+            config.modules.pop("approvals", None)
+        else:
+            config.modules["approvals"]["enabled"] = approvals_enabled
+        return config
+
+    async def originals(instance):
+        value = await apply(instance)
+        instance._gated_tool_originals = value
+        return value
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    with monkeypatch.context() as registration:
+        registration.setattr(registration_owner, "ButlerDaemon", daemon)
+        registration.setattr(registration_owner, "load_config", configured)
+        registration.setattr(ButlerDaemon, "_apply_approval_gates", originals)
+        catalog = await _roster_catalog("home")
+    instance = captured[0]
+    return SimpleNamespace(
+        catalog=catalog, originals=await instance._broker_owning_originals(), daemon=instance
+    )
+
+
+async def registered_home_admin_broker(monkeypatch, *, pool=None, approvals_enabled=True):
+    from types import SimpleNamespace
+
+    native = await registered_home_admin(
+        monkeypatch, pool=pool, approvals_enabled=approvals_enabled
+    )
+    broker, conn, domains, token, fleet, publishers = await current_broker()
+    await publishers["home"].publish(native.catalog)
+    conn.grants = (Grant("home__schedule_create"),)
+    async with conn.transaction():
+        conn.catalog_digest = (await PublishedCatalogProvider().snapshot(conn)).digest
+    return SimpleNamespace(
+        native=native,
+        broker=broker,
+        conn=conn,
+        domains=domains,
+        token=token,
+        fleet=fleet,
+        publishers=publishers,
+    )
+
+
+@pytest.mark.parametrize("restriction", ["plain", "rule", "exposed-rule", "park-only-rule"])
+async def test_registered_administer_commits_then_signed_owning_park(monkeypatch, restriction):
+    """Actual production policy/PARK/owning rules; SQL state here is software only."""
+    import copy
+    import time
+    from types import SimpleNamespace
+
+    from butlers.capability_broker.owning import PrivateApprovals
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+    from butlers.core.capability_json import arguments_digest
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from tests.modules.approvals.test_goal_control import RuleStore
+
+    native = await registered_home_admin_broker(monkeypatch)
+    conn, broker = native.conn, native.broker
+    descriptor = native.native.catalog["schedule_create"]
+    assert descriptor.effect_class == "administer"
+    assert descriptor.recipient_params == RecipientParameters()
+    assert {k: descriptor.approval_policy[k] for k in ("mode", "enabled", "configured_gate")} == {
+        "mode": "default",
+        "enabled": True,
+        "configured_gate": False,
+    }
+    conn.exposed = restriction == "exposed-rule"
+    if restriction == "park-only-rule":
+        conn.grants = (Grant("home__schedule_create", park_only=True),)
+    args = {"name": "controlled-admin", "cron": "0 8 * * *", "prompt": "controlled"}
+    conn.events.clear()
+
+    class Store(RuleStore):
+        async def fetchrow(self, sql, *values):
+            if "current_schema()" in sql and "current_user" in sql:
+                return {
+                    "schema": "home",
+                    "role": "butler_home_rw",
+                    "unsafe": False,
+                    "schemas": ["pg_catalog", "home", "public"],
+                }
+            if "SET park_authorization=$2" in sql:
+                self.gate.update(
+                    park_authorization=copy.deepcopy(values[1]),
+                    park_authorization_digest=values[2],
+                    park_call_id=values[3],
+                    state_version=self.gate["state_version"] + 1,
+                )
+                return copy.deepcopy(self.gate)
+            return await super().fetchrow(sql, *values)
+
+    store = Store()
+    store.goal_id, store.arguments, store.digest = conn.goal, args, arguments_digest(args)
+    store.rule.update(
+        tool_name="schedule_create",
+        active=restriction != "plain",
+        arg_constraints={k: {"type": "exact", "value": v} for k, v in args.items()},
+    )
+    now = int(time.time())
+    broker.clock = lambda: now
+    operation = GoalDispatch(
+        store,
+        "home",
+        native.native.catalog,
+        native.native.originals,
+        {broker.signer.kid: broker.signer.private_key.public_key()},
+        clock=lambda: now,
+    )
+    client = PrivateClient(
+        TransportConfig(
+            "https://localhost:4200/mcp",
+            PeerPolicy("owning-service", "home", frozenset({"DNS:localhost"})),
+        ),
+        None,
+    )
+    observed = []
+
+    async def call(self, value, *, assertion=None):
+        assert not conn.in_transaction and conn.events[-1] == "commit"
+        assert value["operation"] == "PARK" and assertion is None
+        store.action_id = conn.effect
+        result = await operation(value, SimpleNamespace(role="broker-control", domain="home"))
+        observed.append(value)
+        return result
+
+    monkeypatch.setattr(PrivateClient, "call", call)
+    handler = AsyncMock()
+    monkeypatch.setattr("butlers.core_tools._scheduling._schedule_create", handler)
+    broker.approvals = PrivateApprovals({"home": client})
+    try:
+        result = await broker.call(conn.goal, native.token, "home__schedule_create", args)
+    finally:
+        await client.aclose()
+    assert result.status == "parked" and result.approval_ref == str(conn.effect)
+    assert len(observed) == 1 and observed[0]["arguments"] == args
+    assert conn.used == 1 and conn.events == ["effect", "commit", "parked", "commit"]
+    assert native.domains.calls == [] and handler.await_count == 0
+    assert store.row["goal_id"] == conn.goal and store.row["invocation_id"] == conn.invocation
+    assert store.row["goal_exposed"] == conn.exposed and store.row["goal_depth"] == 0
+    allowed = restriction == "rule"
+    assert store.row["status"] == ("approved" if allowed else "pending")
+    assert store.rule["use_count"] == int(allowed)
+    assert {r["outcome"] for r in store.receipts.values()} == (
+        {"parked", "pending", "approved"} if allowed else {"parked", "pending"}
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "disabled",
+        "absent",
+        "party",
+        "unknown-party",
+        "conditional-party",
+        "owner-default",
+        "class",
+        "transact",
+        "owner-domain",
+        "resource",
+        "selection",
+        "catalog",
+        "retired",
+        "grant",
+        "epoch",
+        "revoked",
+        "stopped",
+        "budget",
+    ],
+)
+async def test_registered_administer_refuses_missing_current_authority(monkeypatch, fault):
+    from butlers.core.tool_catalog import ToolCatalog
+
+    native = await registered_home_admin_broker(
+        monkeypatch, approvals_enabled=None if fault == "absent" else fault != "disabled"
+    )
+    conn = native.conn
+    descriptor = native.native.catalog["schedule_create"]
+    changes = {
+        "party": {"recipient_params": RecipientParameters(("prompt",))},
+        "unknown-party": {"recipient_params": RecipientParameters(undeterminable=True)},
+        "conditional-party": {
+            "recipient_params": RecipientParameters(
+                undeterminable_condition="inherited owner-looking text"
+            )
+        },
+        "owner-default": {"recipient_params": RecipientParameters(default_owner_condition="owner")},
+        "class": {"effect_class": "actuate"},
+        "transact": {"effect_class": "transact"},
+        "owner-domain": {"owner_domain": "finance"},
+        "selection": {"resource_params": ("prompt",), "selection_bound": {"prompt": True}},
+    }.get(fault)
+    if changes:
+        changed = ToolCatalog(
+            tuple(
+                replace(d, **changes) if d.canonical_name == "schedule_create" else d
+                for d in native.native.catalog.descriptors
+            ),
+            True,
+            native.native.catalog.generation_digest,
+        )
+        if fault == "owner-domain":
+            with pytest.raises(BrokerRefused, match=Reason.CATALOG.value):
+                broker_catalog.project_catalog(changed, domain="home")
+            assert conn.used == 0 and native.domains.calls == []
+            return
+        # Publish through the actual repository; the goal pins that complete
+        # current snapshot, so the following refusal is not a stale-digest proxy.
+        from dataclasses import fields
+
+        from butlers.core.catalog_publication import generation, plain
+        from butlers.core.tool_catalog import ToolDescriptor
+
+        changed = replace(
+            changed,
+            generation_digest=generation(
+                [
+                    {f.name: plain(getattr(d, f.name)) for f in fields(ToolDescriptor)}
+                    for d in sorted(changed.descriptors, key=lambda d: d.canonical_name)
+                ]
+            ),
+        )
+        await native.publishers["home"].publish(changed)
+        async with conn.transaction():
+            conn.catalog_digest = (await PublishedCatalogProvider().snapshot(conn)).digest
+    if fault == "resource":
+        conn.grants = (Grant("home__schedule_create", resources=(("other", ("owner",)),)),)
+    elif fault == "selection":
+        conn.grants = (Grant("home__schedule_create", resources=(("prompt", ("owner",)),)),)
+    elif fault == "catalog":
+        conn.catalog_digest = "changed"
+    elif fault == "retired":
+        native.fleet.current["home"]["live"] = False
+    elif fault == "grant":
+        conn.grants = ()
+    elif fault == "epoch":
+        conn.epoch = 1
+    elif fault == "revoked":
+        conn.invocation_count = 0
+    elif fault == "stopped":
+        conn.status = "stopped"
+    elif fault == "budget":
+        conn.budget = 0
+    if fault in {"disabled", "absent"}:
+        assert not descriptor.approval_policy["enabled"]
+    with pytest.raises(BrokerRefused):
+        await native.broker.call(
+            conn.goal,
+            native.token,
+            "home__schedule_create",
+            {"name": "refused-admin", "cron": "0 8 * * *", "prompt": "owner"},
+        )
+    assert conn.used == 0 and conn.effect is None and native.domains.calls == []

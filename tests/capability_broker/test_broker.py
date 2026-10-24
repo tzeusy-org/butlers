@@ -1294,3 +1294,44 @@ async def test_signed_forwarder_double_cancel_closes_owned_http_without_retry_or
         finally:
             await listener.close()
     assert listener.cleanup_complete and listener.task.done()
+
+
+@pytest.mark.parametrize("origin", ["owner", "obligation", "staffer", "third_party"])
+@pytest.mark.parametrize("depth", [0, 1])
+async def test_ungated_administer_never_dispatches_for_any_origin_or_depth(origin, depth):
+    capability = Capability(
+        "home",
+        "schedule_create",
+        "administer",
+        "trusted",
+        (),
+        approvals_available=True,
+        approval_required=False,
+        recipient_params=RecipientParameters(),
+    )
+    broker, conn, authorities, domains, token = build(capability, Grant(capability.identity))
+    original = conn.fetchrow
+
+    async def fetchrow(sql, *args):
+        row = await original(sql, *args)
+        if "FROM switchboard.goals" in sql:
+            row["origin"] = origin
+        return row
+
+    conn.fetchrow = fetchrow
+    conn.invocation_changes = {"depth": depth}
+    authorities.evidence = PolicyEvidence("none", standing_rule=True)
+    if depth == 1:
+        assert await broker.list_tools(conn.goal, token) == ()
+    if depth == 1 or origin == "third_party":
+        with pytest.raises(BrokerRefused):
+            await broker.call(conn.goal, token, capability.identity, {})
+        assert conn.used == 0 and domains.calls == []
+    else:
+        result = await broker.call(conn.goal, token, capability.identity, {})
+        assert result.status == "parked" and conn.used == 1
+        assert len(domains.calls) == 1
+        reservation = domains.calls[0][0]
+        assert reservation.decision.disposition.value == "park"
+        assert reservation.decision.allow_standing_rule
+        assert reservation.principal.origin == origin and not reservation.principal.exposed
