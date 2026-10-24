@@ -75,7 +75,11 @@ Only this change's proposal, design, task text and seven capability deltas chang
 requirement names, 69 scenario obligations and 42 existing task checkbox states are retained;
 obsolete mechanisms have explicit goal-runtime dispositions rather than a parallel live target.
 The four completed draft tasks are historical completion, not proof of the pending conversion or
-future implementation. No baseline spec, RFC, ratchet, roster, product or test is edited.
+future implementation. No canonical baseline spec, RFC, roster, product or test is edited.
+The only ratchet change appends the authorized `clause / Interactive response mode /
+e69f93fa9eaa` identity under
+`specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point`
+in `scripts/spec-overwrite-baseline.json`; no global regeneration or matcher/threshold change occurs.
 
 Future executable owners remain the skills/guidance loader, goal runner and prompt adapters,
 `tests/features/test_skills.py`, `tests/core/test_core_spawner.py`,

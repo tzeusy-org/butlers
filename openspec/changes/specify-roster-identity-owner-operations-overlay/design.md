@@ -289,7 +289,11 @@ owned AGENTS read/write candidate semantics or edit the generalist delta.
 - Historical inventories can be mistaken for runtime evidence: retain the explicit 63de6168 anchor;
   do not promote their old no-consumer or role observations to current proof.
 - A stale whole-requirement delta can overwrite a sibling: exact-head semantic review and same-name
-  scans remain mandatory before eventual archive. No ratchet or baseline is changed here.
+  scans remain mandatory before eventual archive. The only ratchet change is the authorized
+  `clause / Interactive response mode / e69f93fa9eaa` append under
+  `specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point`
+  in `scripts/spec-overwrite-baseline.json`. No canonical baseline spec or RFC is changed, and no
+  global regeneration or matcher/threshold change occurs.
 
 ## Migration Plan
 
