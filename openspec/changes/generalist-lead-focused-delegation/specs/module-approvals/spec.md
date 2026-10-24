@@ -244,16 +244,45 @@ Scope: v1-mandatory
 - **AND** nothing executes
 
 ### Requirement: Standing Rules CRUD and Matching
-
 Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule. No rule SHALL be created for a tool whose catalog entry declares the approval mode `always_per_event` (`REQ-capability-authorization-017`), and rule matching SHALL never consider such a tool.
+Standing-rule creation and promotion SHALL require RFC 0038 D13's dashboard
+step-up using the authenticated owner session and an independent passkey factor
+on a different device from the Telegram phone. Ordinary approve/reject/edit/
+dispatch SHALL remain one tap; this requirement SHALL NOT extend step-up to all
+owner-only actions. A nonce SHALL bind owner/session, action kind/identity,
+exact digest including recipients/arguments, current action/policy version and
+expiry. Verification of those bindings, revocation and unconsumed state,
+nonce consumption, the authorized transition and audit receipt SHALL commit
+atomically. Missing/invalid/expired/revoked/wrong-owner/wrong-session/stale or
+changed-digest confirmation SHALL refuse without mutation; rollback SHALL
+consume nothing. Concurrent decisions SHALL have one winner, and retry of the
+same completed action SHALL read back its outcome without a second rule or
+effect. A Telegram request without confirmation SHALL offer the dashboard
+without creating/promoting a rule. No callback token or presentation ACK SHALL
+substitute for step-up or revive stopped/revoked authority.
+Rule matching SHALL enforce RFC 0038 D4's exact slot supplier and sensitive
+category boundaries: owner/device/code, or the rule's own recipient only for
+the exact slot explicitly permitted on its creation card; no arbitrary third
+party or unknown supplier. Non-owner communication after sensitive reads SHALL
+name every applicable invocation category (`health`, `finance`, `location`,
+`routine`, `relationship_notes`, `credentials`); unknown labels retain S1's
+all-category restriction. Missing supplier/category evidence SHALL make the
+rule ineligible and park only an otherwise-permitted call; independently
+refused calls SHALL stay refused. These conditions SHALL NOT bypass exposure,
+template pins, current grants, selections, park-only, always-per-event or
+atomic bounded-use claims. A goal rule match SHALL still follow central PARK
+and owning approval, and SHALL NOT execute the handler before the broker's
+stored-call forwarding fence.
+
 
 ID: REQ-module-approvals-003
-Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses; RFC 0038 D13; bu-p5umi2.4 = A (always-per-event approval mode)
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses; RFC 0038 D4/D13; bu-p5umi2.4 = A (always-per-event approval mode); bu-k3wfma; bu-o3638f; bu-dhloi1.18
 Scope: v1-mandatory
 
 #### Scenario: Create a standing rule
 
 - **WHEN** `create_approval_rule` is called with authenticated human actor, tool name, constraints, and description
+- **AND** the owner confirms that exact current rule through the action-bound dashboard step-up
 - **THEN** a new active rule is persisted
 - **AND** a `rule_created` audit event is recorded
 - **AND** high-risk tools require at least one `exact` or `pattern` constraint and bounded scope
@@ -261,6 +290,7 @@ Scope: v1-mandatory
 #### Scenario: Create rule from pending action
 
 - **WHEN** `create_rule_from_action` is called with an action_id
+- **AND** the owner confirms the resulting exact current rule through the action-bound dashboard step-up
 - **THEN** sensitivity classification generates suggested constraints (sensitive args get `exact`, others get `any`)
 - **AND** optional `constraint_overrides` are merged on top
 - **AND** the rule is persisted with `created_from` linking to the source action
@@ -275,7 +305,7 @@ Scope: v1-mandatory
 - **WHEN** a rule's `arg_constraints` are checked against tool args
 - **THEN** typed constraints (`exact`, `pattern`, `any`) are evaluated
 - **AND** legacy formats (`"*"` wildcard, plain exact values) remain supported
-- **AND** empty constraints `{}` match any invocation of the tool
+- **AND** empty constraints `{}` match any invocation of the tool at argument matching only, without satisfying independent supplier/category, currentness, exposure or approval eligibility checks
 - **AND** `pattern` type uses fnmatch-style glob matching
 
 #### Scenario: Rule eligibility filtering
@@ -304,6 +334,7 @@ Scope: v1-mandatory
 #### Scenario: Dashboard rule creation names its butler and is validated like the MCP tool
 
 - **WHEN** `POST /api/approvals/rules` is called
+- **AND** the authenticated owner supplies valid action-bound dashboard step-up for the exact current rule
 - **THEN** `butler` is required (missing returns 422), an unknown butler returns 404, and a butler whose approvals pool is unavailable returns 503
 - **AND** the rule is written into that butler's schema
 - **AND** the same risk-tier validation as `create_approval_rule` runs first, so a high-risk tool without an `exact` or `pattern` constraint, or without `expires_at` or `max_uses`, returns 400 with the same message
@@ -327,6 +358,31 @@ Scope: v1-mandatory
 - **WHEN** `create_approval_rule`, `create_rule_from_action` or `POST /api/approvals/rules` names a tool that declares `always_per_event`
 - **THEN** the request is refused with a typed reason before any rule is persisted
 - **AND** no `rule_created` audit event is recorded
+
+#### Scenario: Missing or invalid step-up does not create a rule
+- **WHEN** creation/promotion has no valid independent owner session/nonce, or the nonce is expired, revoked, wrong-owner, wrong-session, wrong-action or stale-version
+- **THEN** no rule or mutation commits and Telegram receives only a dashboard handoff
+- **AND** an ordinary current approve/reject/edit/dispatch action still uses its existing one-tap path
+
+#### Scenario: Nonce consumption and rule mutation have one winner
+- **WHEN** two surfaces race the same confirmed rule action or retry it after an ambiguous reply
+- **THEN** one current-version transition, nonce consumption and audit receipt commit together, and completed-action readback cannot create a second rule/effect
+- **AND** rollback leaves no consumed nonce or successful mutation, while a competing approve/reject decision cannot overwrite the winning action version
+
+#### Scenario: Editing a confirmed action invalidates its old rule nonce
+- **WHEN** the action, recipient, arguments or current version changes after a rule nonce is issued
+- **THEN** the old nonce cannot create/promote the changed rule and fresh confirmation binds the exact new digest
+- **AND** the edit itself retains ordinary one-tap semantics and cannot widen a grant or revive a stopped action
+
+#### Scenario: Slot permission is principal and slot specific
+- **WHEN** a recipient fills a typed slot explicitly permitted to that rule's own recipient on its owner creation card
+- **THEN** that slot passes the supplier check only, without changing labels or any other gate
+- **AND** a different third party, unknown supplier or unpermitted slot makes the rule ineligible and parks the call
+
+#### Scenario: Category coverage never replaces the other rule gates
+- **WHEN** a non-owner send follows reads labeled health and finance but the matching rule names health alone
+- **THEN** the action parks and no bounded rule use is consumed
+- **AND** a rule naming both still cannot approve a park-only/always-per-event call or evade template, selection, currentness or Stop checks
 
 ### Requirement: Shared Executor Path
 

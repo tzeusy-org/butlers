@@ -195,6 +195,17 @@ explicit owner confirmation before proceeding.
 - The approval mechanism must work across all notification channels (dashboard,
   Telegram, etc.).
 
+Dashboard step-up is required only for standing-rule creation or promotion,
+Vouch, Contain, and mode loosening. Ordinary approve, reject, edit and dispatch
+remain one-tap owner decisions after their existing authentication, exact-call
+and currentness checks; owner-only status alone does not add step-up. Step-up
+uses an authenticated dashboard owner session and a single-use nonce bound to
+the exact action and current version, consumed atomically with that action
+(RFC 0038 D13). The independent passkey factor is on a different device from
+the Telegram phone. Telegram identity or a presentation ACK cannot supply that
+factor. This contract does not register a factor, change credentials or release
+a held Vouch, Contain or mode action.
+
 ## Credential Management
 
 Runtime and user credentials follow a **three-tier authority model**. Except

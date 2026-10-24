@@ -1,12 +1,22 @@
 ## MODIFIED Requirements
 
 ### Requirement: Notify Tool Registration
-Every butler daemon SHALL register a `notify(channel?, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup as an LLM-presentable `communicate` capability with complete authorization metadata. A goal invocation MUST be able to call this tool through the broker when its grant includes it, and SHALL NOT reach it otherwise. The tool MUST be registered on every butler's canonical MCP endpoint regardless of which modules are enabled.
-
+Every butler daemon SHALL register a `notify(channel?, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?)` MCP tool during startup as an LLM-presentable `communicate` capability with complete authorization metadata. A goal invocation MUST be able to call this tool through the broker when its grant includes it, and SHALL NOT reach it otherwise. The tool MUST be registered on every butler's canonical MCP endpoint regardless of which modules are enabled.
 Note: target resolution is keyed on `entity_id` (a `public.entities` UUID), resolved against `relationship.entity_facts`. An earlier design used a `contact_id` keyed on `public.contacts` / `public.contact_info`; that identity path was retired in favor of the entity graph. The requirements below reflect the entity-graph reality.
-
-The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. Priority determines quiet-hours behavior: high-priority notifications always deliver immediately; medium and low-priority notifications are subject to quiet-hours deferral when delivery preferences are configured.
-
+The LLM-presentable schema SHALL NOT offer `priority` or another urgency escape.
+A model call, including an owner-started goal, SHALL follow routine quiet-hours
+and sleep suppression. Only an allowlisted deterministic safety producer, a
+matching current owner-authored break-through rule, or an obligation explicitly
+flagged for break-through by the owner at creation SHALL receive its authorized
+suppression exception. The delivery boundary SHALL derive that classification
+from verified server-held producer identity or current persisted owner
+provenance, never message text, model labels or caller-provided flags. Missing,
+unknown, stale, revoked or spoofed provenance SHALL be routine; retry and
+fallback SHALL NOT raise urgency. Classification/cause receipts SHALL be
+content-free. An exception SHALL NOT bypass capability/grant, recipient,
+category, approval, Stop, mode or health restrictions. This is the explicit
+successor to model-selected `priority=high`, not an unconditional immediate
+send guarantee or a new deterministic-sender authorization path.
 `channel` is OPTIONAL. When the caller omits it, the notify tool resolves it
 before any channel-dependent validation runs (see the **Preferred-Channel
 Resolution on Omitted Channel** requirement): an `entity_id`-targeted call
@@ -14,17 +24,29 @@ honours the entity's `prefers-channel` fact when deliverable, else falls back
 to telegram → email; a call with no `entity_id` defaults to telegram. A
 caller-forced `channel` is never overridden by preference resolution.
 
-Source: RFC 0038 D2, D4 and D7
+
+ID: REQ-core-notify-038
+Source: RFC 0038 D2, D4 and D7; bu-u33sb7; bu-dhloi1.18
 Scope: v1-mandatory
 
 #### Scenario: Tool available to runtime instance
 - **WHEN** a goal invocation whose grant includes a butler's `notify` lists its available MCP tools
-- **THEN** that butler's `notify` tool MUST appear in the list under its namespaced name with parameters `channel` (optional string; resolved when omitted), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
+- **THEN** that butler's `notify` tool MUST appear in the list under its namespaced name with parameters `channel` (optional string; resolved when omitted), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object)
 - **AND** an invocation whose grant excludes it neither lists nor can call it
 
 #### Scenario: Tool registered at startup
 - **WHEN** a butler daemon starts up
 - **THEN** the `notify` tool MUST be registered as a core MCP tool before the butler accepts any capability call or service-plane call
+
+#### Scenario: A model cannot self-upgrade an interrupt
+- **WHEN** an owner-started or third-party model call requests high priority in text, metadata or an unsupported argument
+- **THEN** no model-selected value grants a quiet-hours or sleep exception, and the supported call remains routine under those holds
+- **AND** missing or stale invocation binding cannot become owner or obligation authority
+
+#### Scenario: A genuine producer retains its narrow suppression exception
+- **WHEN** the delivery boundary verifies an allowlisted deterministic safety producer, a current matching owner break-through rule, or an obligation's persisted owner-at-creation flag
+- **THEN** only its authorized quiet-hours or sleep exception applies, while all other authorization and delivery constraints still hold
+- **AND** absence, revocation, spoofing or a retry cannot manufacture or upgrade that exception
 
 ### Requirement: Request Context Propagation
 

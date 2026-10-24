@@ -351,6 +351,40 @@ Two owner rules apply to every origin, grant and exposure state, lead or child:
   can reach: Home Assistant's service gateway is `actuate`, under the RFC 0028
   risk map in which unknown services are protected.
 
+**Owner tightening, rule inputs and categories.** The owner may impose
+`never` or `always_ask` by capability, region or effect class. These are
+selectors of the existing S1 policy `scope` (capability/resource), not another
+policy record or grant: capability selects the catalog's exact capability
+identity; region selects capabilities by their catalog `owner_domain`; effect
+class selects capabilities by their catalog `effect_class`. Resource scope
+continues to narrow those capabilities. Match these selectors against the
+current catalog on every call, including new capabilities in a selected region
+or class; do not freeze a one-time expansion that silently drops a restriction
+after publication. An unresolved selector or unreadable current catalog cannot
+be treated as an empty permissive match. Existing S1 id, monotonic version,
+constraint, expiry, owner-action identity, CAS and audit fields are unchanged.
+`never` refuses and `always_ask` parks the exact otherwise-permitted effect;
+neither grants a tool, widens a resource/selection scope, clears a label or
+removes another approval constraint.
+
+A standing rule's typed slots accept values supplied by the owner, a device or
+deterministic code. A different principal may supply a slot only when the
+owner's rule-creation card explicitly permits **that rule's own recipient** to
+fill **that exact slot**. This is not permission for arbitrary third parties,
+for other slots or for free text; missing or mismatched supplier provenance
+makes the rule ineligible. A valid slot does not declassify its value or change
+D6's per-invocation exposure and held typed-value/cited-label boundaries.
+
+After an invocation reads sensitive data, a standing rule for communication to
+anyone other than the owner must explicitly name every applicable sensitive
+category the invocation read: `health`, `finance`, `location`, `routine`,
+`relationship_notes`, `credentials` (S1). Missing category coverage makes the
+rule ineligible and parks an otherwise-permitted call for per-event owner
+approval; an independently refused call stays refused. Unknown labels
+retain S1's all-category restriction. Naming categories is necessary, not
+sufficient: recipient/template pins, slot provenance, grant/currentness,
+selection, exposure, park-only and `always_per_event` constraints still apply.
+
 Two kinds of tool are never LLM-presentable and therefore never grantable:
 
 - **Owner-decision tools**: approve, reject and edit actions, create or promote
@@ -484,6 +518,35 @@ Approvals of effects requested by exposed invocations do not count toward the
 RFC 0021 promotion ladder.
 
 ### D7. Wire contract, call verification and keys
+
+**Constraint order and urgency.** Apply the S1 intersections in order:
+current catalog/origin/grant, invocation exposure/category/slot constraints,
+owner law, mode tightening, then health/admission restrictions. The per-call
+transaction and existing goal/effect locks fence the current policy version
+before an effect is committed for forwarding. A committed tightening is seen
+by the next call; a call racing that fence either commits under the prior
+version before the tightening or is held/refused under the new one. A retry
+cannot restore an earlier policy version. Record the holding/refusing stage
+and every constraining term and version in the typed receipt, without content
+or secret-bearing arguments; do not claim that an unreadable stage passed.
+Committed effects remain honestly recorded, not described as undone. Missing
+or stale invocation binding and unknown origin never acquire authority from
+policy or urgency.
+
+Only an allowlisted deterministic safety producer, a matching current
+owner-authored break-through rule, or an obligation explicitly flagged for
+break-through by the owner at creation may bypass quiet-hours or sleep
+suppression. The delivery boundary verifies server-held producer identity or
+persisted owner provenance, not a caller's label or message. Model invocations,
+including owner-started goals, cannot choose high priority; model-presentable
+`notify` has no priority/urgency argument. Missing, unknown, stale, revoked or
+spoofed urgency provenance is routine for suppression, not an exception.
+Retries and fallback cannot raise urgency. Record the classification/cause
+without message content. A verified suppression exception does not bypass
+capability, recipient, category, grant, approval, Stop, mode or health rules;
+it changes only the quiet/sleep hold that the owner authorized. Pre-switch
+notify enforcement belongs to .3, and first-switch `deliver()` enforcement to
+.22; neither changes this authority boundary.
 
 **Session tokens.** Sessions reach the broker over MCP streamable HTTP on the
 session listener's goal endpoint. The runner writes the invocation's MCP config
@@ -766,6 +829,32 @@ the model re-issues; the executed digest is the digest the owner approved.
 Before dispatch the broker re-checks that the goal is not stopped. A stopped
 goal cancels its parked effects; a goal whose lead has finished waits in
 `settling` and still executes approvals that arrive.
+
+**One tap and narrow step-up.** Ordinary approve, reject, edit and dispatch
+remain one tap after the existing owner, exact stored-call, current-version,
+Stop and grant checks. Step-up is required only to create or promote a standing
+rule, Vouch, Contain, or loosen a mode. Being owner-only under D4 does not itself
+require step-up. Rule creation/promotion uses the dashboard's authenticated
+owner session and independent passkey factor on a different device from the
+Telegram phone. A Telegram request without that confirmation gets a
+non-mutating open-dashboard handoff, never an automatic approval. The same
+step-up boundary applies when the existing Vouch, Contain and mode-loosening
+owners implement their actions; it does not activate those held consumers or
+change factor custody.
+
+The step-up nonce binds the authenticated owner/session, action kind and
+identity, exact action digest (including recipients and arguments), current
+action/policy version, and expiry. Verify those bindings, revocation and
+unconsumed state and consume it atomically with the authorized owner transition
+and its audit receipt. A missing, invalid, expired, revoked, wrong-owner,
+wrong-session, wrong-action or stale-version nonce refuses that transition;
+a changed action or digest needs a fresh confirmation. A failed transaction
+commits neither mutation nor consumption. Concurrent decisions on the same
+current action/version have one winner across dashboard and Telegram. Retrying
+the same completed action reads back that outcome, not another rule or effect;
+replay cannot authorize a second or different action. A presentation ACK,
+callback token, delivery fallback or model text is not a step-up nonce. No
+nonce overrides Stop, a revoked grant/selection or current effect constraints.
 
 Standing rules and the promotion ladder of RFC 0021 apply unchanged to
 unexposed invocations; exposed invocations can use only the standing rules D4
