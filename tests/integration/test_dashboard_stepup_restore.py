@@ -17,7 +17,7 @@ from butlers.api.owner_auth.service import _digest
 from butlers.core.dashboard_stepup import dashboard_stepup_proof
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import operations
-from butlers.testing.migration import _bootstrap_migration_prerequisites, migration_bootstrap_db_url
+from butlers.testing.migration import migration_bootstrap_db_url
 from tests.integration.test_dashboard_stepup import authority as authority
 from tests.integration.test_dashboard_stepup import migrated_db_url as migrated_db_url
 from tests.integration.test_dashboard_stepup import proof_for
@@ -139,7 +139,24 @@ async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_ac
             "SELECT nonce_digest FROM dashboard_stepup.bindings WHERE nonce_digest=$1",
             _digest(proof.nonce),
         ) == _digest(proof.nonce)
-        await asyncio.to_thread(_bootstrap_migration_prerequisites, target_url, source.username)
+        # The dump deliberately excludes unrelated DND control-plane tables.
+        # Replaying all of init-db here would correctly refuse that partial DND
+        # catalog before reaching D13. Replay the exact owned bootstrap tail,
+        # including its fixed installer/finalizer and hostile-owner checks.
+        bootstrap = (ROOT / "scripts/init-db.sql").read_text()
+        marker = "-- D13 fixed step-up interface."
+        assert bootstrap.count(marker) == 1
+        stepup_bootstrap = bootstrap[bootstrap.index(marker) :]
+        await connection.execute(
+            "SELECT set_config('butlers.connecting_user', $1, false)", source.username
+        )
+        await connection.execute(stepup_bootstrap)
+        assert [row["value"] for row in before] == [
+            row["value"]
+            for row in await connection.fetch(
+                "SELECT to_jsonb(b) AS value FROM dashboard_stepup.bindings b ORDER BY id"
+            )
+        ]
         # Read the ACTUAL fixed private-schema predicate executed by the restore
         # script. A catalog mutation must invalidate it, not merely a source grep.
         script = (ROOT / "scripts/pg_restore.sh").read_text()

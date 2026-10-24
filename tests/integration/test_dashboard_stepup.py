@@ -522,7 +522,7 @@ async def test_authoritative_error_rolls_back_nonce_rule_and_audit(authority, bo
         trigger = "BEFORE INSERT" if boundary == "rule_audit" else "BEFORE UPDATE"
         condition = "true" if boundary == "rule_audit" else "NEW.result IS NOT NULL"
         await admin.execute(
-            "CREATE FUNCTION public.synthetic_stepup_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P4501',MESSAGE='synthetic authoritative refusal'; END $$"
+            "CREATE FUNCTION public.synthetic_stepup_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P0001',MESSAGE='synthetic authoritative refusal'; END $$"
         )
         await admin.execute(
             f"CREATE TRIGGER synthetic_stepup_fault {trigger} ON {table} FOR EACH ROW WHEN ({condition}) EXECUTE FUNCTION public.synthetic_stepup_fault()"
@@ -719,7 +719,7 @@ async def test_core_only_replay_and_downgrade_retain_history_and_refuse_hostile_
     authority,
 ):
     """Real core-only migration, replay, rollback and provenance, not fixture DDL."""
-    from sqlalchemy.exc import DBAPIError
+    from psycopg2.errors import RaiseException
 
     from alembic import command
     from butlers.migrations import _build_alembic_config
@@ -796,7 +796,7 @@ async def test_core_only_replay_and_downgrade_retain_history_and_refuse_hostile_
         await admin.execute(
             f'ALTER FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) OWNER TO "{migration_role}"'
         )
-        with pytest.raises(DBAPIError, match="untrusted|intact trusted"):
+        with pytest.raises(RaiseException, match="untrusted|intact trusted"):
             await asyncio.to_thread(
                 _bootstrap_migration_prerequisites,
                 migration_bootstrap_db_url(postgres_container, name),
