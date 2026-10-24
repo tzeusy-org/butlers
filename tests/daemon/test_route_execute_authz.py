@@ -25,12 +25,276 @@ from butlers.modules.telegram import TelegramProviderResponseError
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture
+def verified_owner_transport(monkeypatch):
+    """Transport tests explicitly model the unique owner identity they address."""
+    from types import SimpleNamespace
+
+    async def resolve(_pool, channel, target):
+        if (channel, target) in {("telegram", "12345"), ("email", "recipient@example.com")}:
+            return SimpleNamespace(roles=["owner"])
+        return None
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolve
+    )
+
+
 class _NoopLeaseHeartbeat:
     async def __aenter__(self) -> asyncio.Event:
         return asyncio.Event()
 
     async def __aexit__(self, *_args: object) -> bool:
         return False
+
+
+class _EnvelopeApprovalStore:
+    """JSON-roundtrip protocol double, not PostgreSQL persistence evidence."""
+
+    def __init__(self):
+        self.row = None
+        self.parks = 0
+
+    async def park(self, _pool, **kwargs):
+        import json
+
+        self.parks += 1
+        self.row = {
+            "id": kwargs["action_id"],
+            "status": "pending",
+            "decided_by": None,
+            "tool_name": kwargs["tool_name"],
+            "tool_args": json.loads(json.dumps(kwargs["tool_args"])),
+            "requested_at": kwargs["requested_at"],
+            "expires_at": kwargs["expires_at"],
+            "session_id": kwargs.get("session_id"),
+            "why": kwargs.get("why"),
+            "execution_result": None,
+        }
+
+    async def fetchrow(self, query, *args):
+        if "pending_actions" not in query:
+            return None
+        if query.startswith("UPDATE pending_actions"):
+            assert self.row["status"] == "pending"
+            self.row.update(status=args[0], decided_by=args[1], decided_at=args[2])
+        return dict(self.row) if self.row else None
+
+    async def fetchval(self, query, *args):
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC) if "clock_timestamp" in query else None
+
+    async def execute(self, query, *args):
+        if query.startswith("UPDATE pending_actions") and "execution_result" in query:
+            self.row.update(status=args[0], execution_result=args[1], decided_at=args[2])
+        return "UPDATE 1"
+
+
+@pytest.mark.parametrize("channel", ["telegram", "email"])
+async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_replay(
+    tmp_path, monkeypatch, channel
+):
+    import copy
+    import importlib
+
+    from fastmcp import FastMCP
+
+    from butlers.core.delivery_rendering import inert_delivery_content
+    from butlers.core.tool_call_capture import get_current_runtime_session_id
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    patches = _patch_infra()
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+        patches,
+    )
+    store = _EnvelopeApprovalStore()
+    daemon.db.pool = store
+    modules = {module.name: module for module in daemon._modules}
+    send = AsyncMock(return_value={"ok": True, "result": {"message_id": 991}, "message_id": "991"})
+    if channel == "telegram":
+        modules[channel]._send_message = send
+    else:
+        modules[channel]._send_email = send
+    monkeypatch.setattr("butlers.modules.approvals.park.park_pending_action", store.park)
+    monkeypatch.setattr("butlers.modules.approvals.email_guard.park_pending_action", store.park)
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr("butlers.modules.approvals.rules.match_rules", AsyncMock(return_value=None))
+    for name in ("_record_approval", "_check_promotion_threshold", "_update_velocity"):
+        monkeypatch.setattr(f"butlers.modules.approvals.module.{name}", AsyncMock())
+    approvals = ApprovalsModule()
+    await approvals.on_startup({}, store)
+    mcp = FastMCP("messenger-approved-envelope")
+    mcp.tool(name="route.execute")(route_execute)
+    registered = await mcp.get_tool("route.execute")
+    replayed = []
+
+    async def execute(name, args):
+        assert name == "route.execute"
+        replayed.append(copy.deepcopy(args))
+        return await registered.fn(**args)
+
+    approvals.set_tool_executor(execute)
+    delivery = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    routed = []
+
+    async def dispatch(_pool, **kwargs):
+        routed.append(copy.deepcopy(kwargs["args"]))
+        result = await registered.fn(**kwargs["args"])
+        return {
+            "result": result,
+            "error": result.get("error"),
+            "transport": result.get("transport", {}),
+        }
+
+    monkeypatch.setattr(delivery, "route", dispatch)
+    monkeypatch.setattr(delivery, "log_notification", AsyncMock(return_value=uuid.uuid4()))
+    monkeypatch.setattr(
+        delivery, "_log_notification_best_effort", AsyncMock(return_value=uuid.uuid4())
+    )
+    request = _valid_notify_request()
+    request["delivery"].update(
+        channel=channel,
+        recipient="non-owner@example.test" if channel == "email" else "9001",
+        message="Read https://example.test",
+    )
+    assert get_current_runtime_session_id() is None
+    try:
+        with inert_delivery_content():
+            delivered = await delivery.deliver(
+                store, source_butler="health", notify_request=request
+            )
+        send.assert_not_awaited()
+        assert store.row is not None, (delivered, routed)
+        assert store.row["status"] == "pending"
+        assert store.row["tool_name"] == "route.execute"
+        assert store.row["tool_args"] == routed[0]
+        assert (
+            store.row["tool_args"]["input"]["context"]["notify_request"]["render_links_inert"]
+            is True
+        )
+        assert store.row["why"].startswith("Messenger received a deterministic delivery proposal")
+        approved = copy.deepcopy(store.row["tool_args"])
+        request["delivery"]["message"] = "Caller changed content after parking"
+        result = await approvals._approve_action(
+            str(store.row["id"]), actor={"type": "human", "id": "owner", "authenticated": True}
+        )
+        assert "error" not in result
+        assert store.row["status"] == "executed"
+        assert replayed == [approved]
+        assert store.parks == 1
+        if channel == "telegram":
+            send.assert_awaited_once_with(
+                "9001", "[health] Read https://example.test", render_links_inert=True
+            )
+        else:
+            send.assert_awaited_once_with(
+                "non-owner@example.test",
+                "[health] Notification",
+                "Read https://example.test",
+                render_links_inert=True,
+            )
+        await approvals._dispatch_approved_action_by_id(str(store.row["id"]))
+        assert send.await_count == 1
+        assert replayed == [approved]
+    finally:
+        await approvals.on_shutdown()
+
+
+async def test_messenger_without_approval_runtime_refuses_non_owner_and_preserves_owner(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
+        _patch_infra(),
+    )
+    telegram = next(module for module in daemon._modules if module.name == "telegram")
+    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr("butlers.identity.resolve_channel_contact_with_owner_corroboration", lookup)
+    args = dict(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={"prompt": "Deliver", "context": {"notify_request": _valid_notify_request()}},
+    )
+    refusal = await route_execute(**args)
+    assert refusal["status"] == "error"
+    telegram._send_message.assert_not_awaited()
+    lookup.return_value = SimpleNamespace(roles=["owner"])
+    assert (await route_execute(**args))["status"] == "ok"
+    telegram._send_message.assert_awaited_once()
+
+
+async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_task(
+    tmp_path, monkeypatch
+):
+    import copy
+
+    from fastmcp import FastMCP
+
+    from butlers.core.approvals_hooks import EmailGuardDecision
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
+        _patch_infra(),
+    )
+    approval = ApprovalsModule()
+    await approval.on_startup({}, daemon.db.pool)
+    mcp = FastMCP("messenger-negative-envelope")
+    mcp.tool(name="route.execute")(route_execute)
+    registered = await mcp.get_tool("route.execute")
+    telegram = next(module for module in daemon._modules if module.name == "telegram")
+    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False, reason="parked", action_id=uuid.uuid4(), contact_desc="unknown"
+        )
+    )
+    monkeypatch.setattr("butlers.core.approvals_hooks.check_recipient", guard)
+    args = dict(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={"prompt": "Deliver", "context": {"notify_request": _valid_notify_request()}},
+    )
+    try:
+        for case in ("tampered", "wrong_tool", "child_task"):
+            token = set_approval_execution_context(
+                ApprovalExecutionContext(
+                    action_id=uuid.uuid4(),
+                    session_id=None,
+                    actor="human:owner",
+                    tool_name="email_send_message" if case == "wrong_tool" else "route.execute",
+                    tool_args_digest=approval_tool_args_digest(args),
+                    authorized_task=asyncio.current_task(),
+                )
+            )
+            altered = copy.deepcopy(args)
+            if case == "tampered":
+                altered["input"]["context"]["notify_request"]["delivery"]["message"] = "Changed"
+            try:
+                call = registered.fn(**altered)
+                result = await asyncio.create_task(call) if case == "child_task" else await call
+            finally:
+                reset_approval_execution_context(token)
+            assert result["status"] == "error", case
+            assert guard.await_args.kwargs["park_tool_args"] == altered
+            telegram._send_message.assert_not_awaited()
+        assert guard.await_count == 3
+    finally:
+        await approval.on_shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +311,166 @@ def _toml_value(v: Any) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     return str(v)
+
+
+@pytest.mark.parametrize(
+    ("channel", "inert", "supported"),
+    [
+        ("telegram", True, True),
+        ("email", True, True),
+        ("whatsapp", True, False),
+        ("whatsapp", False, False),
+        ("telegram", False, True),
+        ("telegram", True, False),
+    ],
+)
+async def test_registered_recovery_enforces_inert_provider_contract(
+    tmp_path, monkeypatch, channel, inert, supported
+):
+    from types import SimpleNamespace
+
+    from fastmcp import FastMCP
+
+    from butlers.core import approval_delivery_authority as authority
+    from butlers.core.approval_delivery_transport import MessengerApprovalHandoffRepository
+    from butlers.core.approval_delivery_worker import HandoffResult
+    from butlers.modules.whatsapp import WhatsAppModule
+
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+        _patch_infra(),
+    )
+    modules = {module.name: module for module in daemon._modules}
+    whatsapp = WhatsAppModule()
+    whatsapp._send_message = AsyncMock(return_value={"status": "sent", "message_id": "991"})
+    daemon._modules.append(whatsapp)
+    modules["whatsapp"] = whatsapp
+    if channel == "telegram":
+        modules[channel].supports_inert_link_delivery = supported
+
+    principal = authority._PeerPrincipal(
+        "switchboard", "messenger:approval-recovery", "synthetic-epoch", lambda: True
+    )
+    monkeypatch.setattr(
+        authority,
+        "get_http_request",
+        lambda: SimpleNamespace(scope={"butlers.approval_peer": principal}),
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+        AsyncMock(return_value="owner-synthetic"),
+    )
+    for module_name in ("telegram", "email"):
+        monkeypatch.setattr(f"butlers.modules.{module_name}.require_permission", AsyncMock())
+        monkeypatch.setattr(f"butlers.modules.{module_name}.write_audit_entry", AsyncMock())
+
+    response = httpx.Response(
+        200,
+        json={"ok": True, "result": {"message_id": 991}},
+        request=httpx.Request("POST", "https://telegram.example.test/sendMessage"),
+    )
+    post = AsyncMock(return_value=response)
+    monkeypatch.setattr(modules["telegram"], "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(modules["telegram"], "_base_url", lambda: "https://telegram.example.test")
+    smtp = MagicMock(return_value={"status": "sent", "message_id": "991"})
+    monkeypatch.setattr(modules["email"], "_smtp_send", smtp)
+
+    # Stub only the ledger's DB boundary. The actual process method owns
+    # preflight, provider invocation/result classification and repeat handling.
+    # This is software evidence, not proof of PostgreSQL once-only persistence.
+    recorded = None
+    availability = []
+
+    async def admit(_self, _context, *, provider_available, preflight_reason):
+        availability.append(provider_available)
+        if recorded is not None:
+            return recorded
+        if not provider_available:
+            return HandoffResult("safe_retry", preflight_reason)
+        return "provider"
+
+    async def store(_self, _context, result):
+        nonlocal recorded
+        recorded = result
+        return result
+
+    monkeypatch.setattr(MessengerApprovalHandoffRepository, "_admit_or_classify", admit)
+    monkeypatch.setattr(MessengerApprovalHandoffRepository, "_store_result", store)
+    request = _recovery_notify_request()
+    request["render_links_inert"] = inert
+    request["delivery"].update(
+        channel=channel,
+        message="Read <b>https://example.test</b> @reader 😀",
+    )
+    if channel == "email":
+        request["delivery"]["subject"] = "Review https://example.test"
+    args = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_sender_identity="relationship"),
+        "input": {
+            "prompt": "Deliver approval",
+            "context": {
+                "notify_request": request,
+                "_trusted_approval_recovery": _trusted_recovery_context(),
+            },
+        },
+    }
+    registered_mcp = FastMCP("registered-recovery-provider")
+    registered_mcp.tool(name="route.execute")(route_execute)
+    registered = await registered_mcp.get_tool("route.execute")
+    result = await registered.fn(**args)
+    handoff = result["result"]["notify_response"]["handoff"]
+    if inert and not supported:
+        assert handoff == {"classification": "safe_retry", "reason_code": "transport_unavailable"}
+        assert availability == [False]
+        post.assert_not_awaited()
+        smtp.assert_not_called()
+        whatsapp._send_message.assert_not_awaited()
+        assert recorded is None
+        return
+
+    assert handoff["classification"] == "confirmed"
+    assert availability == [True]
+    if channel == "telegram":
+        payload = post.await_args.kwargs["json"]
+        assert payload["reply_markup"] == {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Open dashboard",
+                        "url": "https://dashboard.example.test",
+                    }
+                ]
+            ]
+        }
+        if inert:
+            assert "parse_mode" not in payload
+            assert payload["text"] == "[relationship] " + request["delivery"]["message"]
+            assert payload["entities"] == [
+                {
+                    "type": "pre",
+                    "offset": 0,
+                    "length": len(payload["text"].encode("utf-16-le")) // 2,
+                }
+            ]
+            assert payload["link_preview_options"] == {"is_disabled": True}
+        else:
+            assert payload["parse_mode"] == "HTML"
+    elif channel == "email":
+        smtp.assert_called_once_with(
+            "owner-synthetic",
+            "[relationship] Review https[:]//example[.]test",
+            "Read <b>https[:]//example[.]test</b> [@]reader 😀",
+        )
+    else:
+        whatsapp._send_message.assert_awaited_once_with(
+            recipient="owner-synthetic",
+            text="[relationship] " + request["delivery"]["message"],
+        )
+    # A confirmed handoff goes through the same real process without resending.
+    repeated = await registered.fn(**args)
+    assert repeated["result"]["notify_response"]["handoff"] == handoff
+    assert post.await_count + smtp.call_count + whatsapp._send_message.await_count == 1
 
 
 def _make_butler_toml(
@@ -271,6 +695,7 @@ def _mock_route_inbox(monkeypatch):
 class TestRouteExecuteAuthz:
     """Verify route.execute authz: untrusted callers rejected; trusted callers allowed."""
 
+    @pytest.mark.usefixtures("verified_owner_transport")
     async def test_authz_reject_and_allow(self, tmp_path: Path) -> None:
         """Untrusted callers rejected with validation_error; trusted switchboard allowed."""
         # Messenger rejects rogue-caller
@@ -451,6 +876,7 @@ class TestRouteExecuteAuthz:
         assert patches["mock_pool"].method_calls == []
         telegram._send_message.assert_not_awaited()
 
+    @pytest.mark.usefixtures("verified_owner_transport")
     async def test_null_recovery_is_ordinary_notify_not_privileged_recovery(
         self, tmp_path: Path
     ) -> None:
@@ -483,6 +909,7 @@ class TestRouteExecuteAuthz:
             "delivery_id": "4321",
         }
 
+    @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_transport_failure_is_content_blind_and_uncertain(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -528,6 +955,7 @@ class TestRouteExecuteAuthz:
         assert result["transport"]["outcome"] == "uncertain"
         assert result["transport"]["error_detail"] == "transport_timeout"
 
+    @pytest.mark.usefixtures("verified_owner_transport")
     async def test_permission_unavailable_is_transient_before_native_delivery(
         self, tmp_path, caplog
     ):
@@ -621,6 +1049,7 @@ class TestRouteExecuteAuthz:
             (True, "Telegram delivery was rejected.", "rejected", "provider_rejected"),
         ],
     )
+    @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_response_failure_preserves_transport_truth(
         self,
         tmp_path: Path,

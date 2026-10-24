@@ -678,6 +678,7 @@ async def deliver(
     call_fn: Any | None = None,
     trusted_source: str | None = None,
     verified_context: TrustedRecoveryContext | None = None,
+    content_requires_inert_links: bool = False,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -725,6 +726,17 @@ async def deliver(
         if authenticated is None:
             return _recovery_authority_refusal()
         parsed_notify, request_context, trusted = authenticated
+        from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+        # Authenticate the original source-admitted envelope first. Rendering
+        # authority is a separate private sender fact, never its public flag.
+        parsed_notify = parsed_notify.model_copy(
+            update={
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                )
+            }
+        )
         tracer = trace.get_tracer("butlers")
         with tracer.start_as_current_span("switchboard.deliver") as span:
             span.set_attribute("source_butler", trusted.issuer)
@@ -754,6 +766,16 @@ async def deliver(
             return {"error": error_msg, "status": "failed"}
 
         if envelope_payload is not None:
+            from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+            # The input envelope is a tool argument. Only deterministic, internal
+            # sender facts can supply this field at the Switchboard boundary.
+            envelope_payload = {
+                **envelope_payload,
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                ),
+            }
             try:
                 parsed_notify = parse_notify_request(envelope_payload)
             except ValidationError as exc:
