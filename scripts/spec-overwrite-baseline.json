@@ -5005,6 +5005,12 @@
       "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
       "kind": "clause",
       "scenario": "AGENTS.md composes shared instructions"
+    },
+    {
+      "digest": "e69f93fa9eaa",
+      "excerpt": "- **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md",
+      "kind": "clause",
+      "scenario": "Interactive response mode"
     }
   ],
   "specify-roster-identity-owner-operations-overlay/core-spawner/System Prompt Composition": [
