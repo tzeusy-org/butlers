@@ -73,6 +73,8 @@ def test_cursor_round_trips_values_with_their_types(values):
         _GOOD.replace(".", "=.", 1),
         _GOOD + ".",
         _resign({"v": CURSOR_VERSION, "s": "other-receiver", "k": []}),
+        _resign({"v": CURSOR_VERSION, "s": "test-receiver", "k": [2**63]}),
+        _resign({"v": CURSOR_VERSION, "s": "test-receiver", "k": [-(2**63) - 1]}),
     ],
     ids=[
         "garbage",
@@ -89,6 +91,8 @@ def test_cursor_round_trips_values_with_their_types(values):
         "padded-spelling",
         "extra-separator",
         "foreign-receiver",
+        "int64-overflow",
+        "int64-underflow",
     ],
 )
 def test_cursor_rejects_tampering_with_a_400(bad):
