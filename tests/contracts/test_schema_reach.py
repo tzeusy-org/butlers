@@ -631,6 +631,18 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.invocations",
     ): "sanctioned:RFC-0038-D1-D7-D14: Switchboard broker authenticates hashed invocation tokens, leases and lead epochs and records monotonic exposure in its own ledger",
     (
+        "src/butlers/capability_broker/runtime.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038-D1-D12-D13: central broker replay discovery reads its own Switchboard effect status and ordering; no owning-domain effect receipt or execution authorization inferred",
+    (
+        "src/butlers/capability_broker/runtime.py",
+        "switchboard.goal_park_associations",
+    ): "sanctioned:RFC-0038-D1-D13-D14: central broker replay discovery reads its own immutable PARK association and absent dispatch intent using the verified Switchboard pool; owning approval authentication remains in the private replay protocol",
+    (
+        "src/butlers/capability_broker/runtime.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038-D1-D13-D14: central broker replay discovery filters its own running or settling Switchboard goals; the later authenticated goal-first replay transaction still rechecks Stop and authority",
+    (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",

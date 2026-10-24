@@ -609,6 +609,7 @@ async def test_actual_negative_and_defer_consumers_keep_goal_gate_atomic(entry):
             return await super().execute(sql, *args)
 
     expired = entry in {"module_expire", "touch_expire", "defer_expire"}
+    # live-clock: Module expiry and DB-clock fallback are uninjected; keep relative expiry coherent.
     now = datetime.now(UTC)
     store = Store(action_row(expires_at=now + timedelta(hours=-1 if expired else 1)))
     action = PendingAction.from_row(store.row)
