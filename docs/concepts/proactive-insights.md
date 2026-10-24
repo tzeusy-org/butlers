@@ -46,3 +46,10 @@ The origin of a candidate is never chosen by a session. Producers outside Switch
 `origin_butler`. The Switchboard MCP tool has no `origin_butler` parameter: sessions get
 the registering daemon's origin, `switchboard`, and a butler-scoped (four-segment) dedup key
 must name it.
+
+## Context-read contract amendment
+
+The [proposed context-security contract](context-security.md) distinguishes
+successful invalid/absent policy from transient storage-read failure and records
+finite hold expiry/recovery without new signal types or duration settings. It is
+not implemented by this documentation change; exact RFC adoption remains pending.
