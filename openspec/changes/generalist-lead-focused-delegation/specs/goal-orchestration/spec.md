@@ -176,6 +176,11 @@ Scope: v1-mandatory
 - **WHEN** a connector submits an owner message
 - **THEN** admission creates a goal directly from the envelope without a model classification or route-dispatch step
 
+#### Scenario: A dashboard fast answer declines before its first read
+- **WHEN** the owner's dashboard question is ineligible, or its plan fails the schema, or its provider fails before the first read
+- **THEN** the unchanged message is admitted as an owner goal
+- **AND** nothing the fast answer produced enters that goal's admission, origin, ceiling or exposure
+
 ## Source References
 
 - Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)

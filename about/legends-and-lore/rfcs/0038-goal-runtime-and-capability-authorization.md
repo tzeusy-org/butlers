@@ -994,15 +994,20 @@ through its model calls:
     whether the turn is an eligible question and which reads, at most three,
     answer it. The model holds no tools, MCP config, invocation token or
     capability, and deterministic code validates the plan before acting on
-    it. The plan chooses only between this fast answer and an ordinary owner
-    goal; it never selects a route, origin, ceiling or goal, so D1's removed
-    message classification gains no successor here. The call may be retried
+    it. This binary eligibility choice, between this fast answer and an
+    ordinary owner goal, is the only model classification before admission; it
+    selects no route, butler, origin, ceiling or goal, so D1's removed route
+    classification gains no successor here. The call may be retried
     once on the same model, before any read, only when its output fails the
     schema.
   - *Reads.* Deterministic code, not the model, makes each planned read. Each
     names a capability on a fixed, checked-in allowlist whose current catalog
-    entry (D4) is `read`, grantable and free of any approval requirement; a
-    plan naming anything else is rejected whole before its first read. The
+    entry (D4) is `read`, grantable, has no `approval_policy` gate, approval
+    mode `default` and no selection-bound `resource_params`; current owner
+    `never` tightening still applies. A plan naming anything else is rejected
+    whole before its first read. Each read's capability and arguments are fixed
+    by the validated plan; no read result selects or parameterizes another
+    read. The
     broker forwards each read exactly as it forwards a dashboard
     service-plane call (D7): origin `owner`, principal `dashboard`, `goal_id`
     null, under a signed assertion the owning domain verifies. The allowlist
@@ -1016,8 +1021,13 @@ through its model calls:
   - *Output and attribution.* One idempotent reply in the thread that asked,
     attributed as a fast answer with its model calls and reads, not as a goal
     or goal outcome. Reads and model calls are audited by identifier and
-    digest (D17). Like any model-function output, the answer is third-party
-    content when a later goal reads it.
+    digest (D17); its spans and audit records carry its runtime identity in
+    place of `goal_id` and `invocation_id`, outside the goal ledger. When any
+    read's output is `untrusted`, or `stamped` with an item that is not
+    untainted owner authority (D6), the reply renders URLs inert with link
+    previews disabled, as D4 requires of owner `notify` under exposure. The
+    stored reply is stamped as non-owner model output, so any goal that reads
+    it, including as thread context at admission, is exposed (D6).
   - *Stop and replay.* One durable runtime identity, owned by the control
     plane and registered against the asking message before the first model
     call, spans every call and the reply. Owner Stop on that message fences
