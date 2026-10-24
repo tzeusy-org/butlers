@@ -2274,6 +2274,15 @@ else:
     assert (
         browser_budget["installed_timeout_minutes"] == jobs["frontend-e2e"]["timeout-minutes"] == 20
     )
+    # Retain twice the historical before-only whole-job envelope for npm ci,
+    # build and e2e after the complete native installer budget; this is not a
+    # measurement of the current job's healthy duration or p95.
+    browser_job_budget_ms = jobs["frontend-e2e"]["timeout-minutes"] * 60_000
+    non_installer_reserve_ms = 2 * browser_budget["p95_s"] * 1000
+    assert browser_job_budget_ms >= installer_budget_ms + non_installer_reserve_ms, (
+        "frontend-e2e watchdog must retain the full native installer budget "
+        "and accepted non-installer reserve"
+    )
     assert "provisional" in browser_budget["state"] and "source-derived" in browser_budget["state"]
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
@@ -2296,6 +2305,18 @@ else:
             "${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}"
         )
         installer = _workflow_step(job=browser_job, name="Install Playwright browsers")
+        step_minutes = installer.get("timeout-minutes")
+        assert type(step_minutes) is int and step_minutes > 0, (
+            "Playwright install step needs a finite whole-minute emergency deadline"
+        )
+        # Leave native cleanup/diagnostics in control, with at most one whole
+        # minute of emergency margin. This does not enlarge TOTAL_MS or count
+        # the wrapper margin as available installer workload.
+        step_budget_ms = step_minutes * 60_000
+        assert installer_budget_ms < step_budget_ms <= installer_budget_ms + 60_000, (
+            "Playwright step deadline must follow native cleanup, with at most one minute margin"
+        )
+        assert step_budget_ms < browser_job_budget_ms
         assert installer["run"] == "npm run test:e2e:install"
         assert "if" not in installer and not installer.get("continue-on-error")
     _exercise_browser_installer(tmp_path / "browser-install")
