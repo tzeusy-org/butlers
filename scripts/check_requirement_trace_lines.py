@@ -42,7 +42,8 @@ Today's unidentified blocks are frozen in ``requirement-trace-baseline.json``, k
 ``change/capability/requirement`` and pinned to a sha256 of the normalized block.  The ratchet is
 content-addressed, like ``check_spec_overwrites.py``: editing a frozen block changes its digest,
 so it leaves the baseline and must carry the lines.  Entries whose block is gone (for example
-because its change was archived) are reported as info and dropped by ``--write-baseline``.
+because its change was archived) or now carries valid trace lines must be removed; stale entries
+fail the gate. ``--write-baseline`` explicitly drops them when freezing current debt.
 
 Usage:
   python3 scripts/check_requirement_trace_lines.py                  # gate (ratchet)
@@ -52,7 +53,7 @@ Usage:
 
 Exit codes:
   0  Every ADDED/MODIFIED block is identified or frozen.
-  1  At least one block lacks the trace lines (or its ID is wrong or duplicated).
+  1  A block lacks valid trace lines, or the baseline contains stale entries.
   2  The scan matched no active change spec files (a silent pass would hide a broken path).
 """
 
@@ -349,9 +350,11 @@ def main() -> int:
     stale = sorted(key for key in baseline if key not in current)
     if stale:
         print(
-            f"\nnote: {len(stale)} baseline entr{'y' if len(stale) == 1 else 'ies'} no longer "
-            "match an unidentified block; run --write-baseline to drop them."
+            f"\nerror: {len(stale)} stale baseline entr{'y' if len(stale) == 1 else 'ies'} "
+            "no longer match an unidentified block; remove these keys from the baseline."
         )
+        for key in stale:
+            print(f"  {key}")
 
     if failures:
         print(
@@ -359,6 +362,8 @@ def main() -> int:
             "Add the three lines (ID: REQ-<capability>-<NNN>, Source: ..., Scope: "
             "v1-mandatory|v1-reserved|post-v1) to each block above."
         )
+        return 1
+    if stale:
         return 1
     print(
         f"All {len(blocks)} ADDED/MODIFIED requirement block(s) carry trace lines or are frozen "
