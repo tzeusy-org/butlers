@@ -27,6 +27,7 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from starlette.applications import Starlette
@@ -1185,7 +1186,9 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
             app = client._transport.app
             path = f"/api/test-temporal-rule/{kind}"
             app.post(path)(temporal_rule_endpoint(temporal_constraints))
-            registered = next(route for route in app.routes if route.path == path)
+            registered = next(
+                route for route in app.routes if isinstance(route, APIRoute) and route.path == path
+            )
             assert not inspect.signature(registered.endpoint).parameters
             assert not registered.dependant.query_params
             assert not registered.dependant.body_params
