@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import tomllib
 import uuid
 from pathlib import Path
@@ -32,13 +32,9 @@ class _Module:
 
 
 def _load_register_tools() -> Any:
-    repo_root = Path(__file__).resolve().parents[1]
-    module_path = repo_root / "roster/education/modules/tools.py"
-    spec = importlib.util.spec_from_file_location("_education_module_tools", module_path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
+    module = importlib.import_module("butlers.modules._roster_education.tools")
+    assert module.__spec__ is not None
+    assert module.__spec__.loader is not None
     return module.register_tools
 
 

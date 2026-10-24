@@ -10,6 +10,8 @@ On first import of this package, all known butler tools are registered in
 transparently throughout the codebase.
 """
 
+from butlers.roster_imports import install_roster_imports
 from butlers.tools._loader import register_all_butler_tools
 
+install_roster_imports()
 register_all_butler_tools()

@@ -22,7 +22,6 @@ Tested behaviors:
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -323,7 +322,6 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
 
     os.environ.pop("PROMETHEUS_URL", None)
 
-    sys.modules.pop("switchboard_api_models", None)
     import importlib
 
     router_path = _THIS_FILE.parents[1] / "api" / "router.py"
@@ -368,7 +366,6 @@ async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             import importlib
 
             router_path = _THIS_FILE.parents[1] / "api" / "router.py"
@@ -404,7 +401,6 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
         new=AsyncMock(return_value=fake_error_result),
     ):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             import importlib
 
             router_path = _THIS_FILE.parents[1] / "api" / "router.py"
@@ -440,7 +436,6 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_empty", router_path)
             mod = importlib.util.module_from_spec(spec)
@@ -488,7 +483,6 @@ async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "0"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_absent", router_path)
             mod = importlib.util.module_from_spec(spec)

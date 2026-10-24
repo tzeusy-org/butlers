@@ -15,7 +15,7 @@ Coverage:
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,15 +64,12 @@ def _mock_pool(*, fetch_rows=None):
 
 def _build_app(pool):
     """Create a FastAPI test app with the health router wired to *pool*."""
-    router_path = Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
+    Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
     module_name = "health_api_router"
     if module_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(module_name, router_path)
-        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        importlib.import_module("butlers.api._roster.health.router")
     else:
-        module = sys.modules[module_name]
+        sys.modules[module_name]
 
     _get_db_manager = get_db
 
@@ -86,15 +83,12 @@ def _build_app(pool):
 
 def _build_app_unavailable():
     """Create a test app where the health pool lookup raises KeyError (503)."""
-    router_path = Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
+    Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
     module_name = "health_api_router"
     if module_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(module_name, router_path)
-        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        importlib.import_module("butlers.api._roster.health.router")
     else:
-        module = sys.modules[module_name]
+        sys.modules[module_name]
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.side_effect = KeyError("health")

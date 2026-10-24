@@ -32,7 +32,7 @@ pytestmark = [
 
 
 def _load_travel_router():
-    module_name = "travel_api_router_booking_integration"
+    module_name = "_travel_api_router_booking_integration"
     if module_name in sys.modules:
         return sys.modules[module_name]
     router_path = Path(__file__).parents[1] / "api" / "router.py"

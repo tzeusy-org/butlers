@@ -18,7 +18,7 @@ Guardrails that were previously duplicated here are now authoritative in:
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import sys
 import zoneinfo
@@ -1056,10 +1056,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 

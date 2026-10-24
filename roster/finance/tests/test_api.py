@@ -34,7 +34,7 @@ def _load_finance_router():
     import importlib.util
     import sys
 
-    module_name = "finance_api_router_test"
+    module_name = "_finance_api_router_test"
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -1442,7 +1442,7 @@ async def test_list_distinct_merchants_empty():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1479,7 +1479,7 @@ async def test_list_distinct_merchants_with_results():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1507,7 +1507,7 @@ async def test_list_distinct_merchants_passes_filters():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1550,7 +1550,7 @@ async def test_bulk_update_transactions_success():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1584,7 +1584,7 @@ async def test_bulk_update_transactions_empty_ops():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1614,7 +1614,7 @@ async def test_bulk_update_transactions_too_many_ops():
     ]
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1637,7 +1637,7 @@ async def test_bulk_update_transactions_value_error_422():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1735,7 +1735,7 @@ _BULK_TXN = {
 
 
 def _make_bulk_facts_mock(result: dict) -> MagicMock:
-    """Return a mock finance_facts_tools module with bulk_record_transactions."""
+    """Return a mock canonical finance facts module with bulk_record_transactions."""
     mock_facts = MagicMock()
     mock_facts.bulk_record_transactions = AsyncMock(return_value=result)
     return mock_facts
@@ -1755,7 +1755,7 @@ async def test_bulk_ingest_transactions_success():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1796,7 +1796,7 @@ async def test_bulk_ingest_transactions_second_batch_all_skipped():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1830,7 +1830,7 @@ async def test_bulk_ingest_transactions_per_row_errors():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1880,7 +1880,7 @@ async def test_bulk_ingest_transactions_account_id_inheritance():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1905,7 +1905,7 @@ async def test_bulk_ingest_transactions_source_metadata():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1969,7 +1969,7 @@ async def test_bulk_ingest_transactions_value_error_propagates_422():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

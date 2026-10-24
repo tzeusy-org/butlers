@@ -8,12 +8,9 @@ butler's PostgreSQL schema via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -31,38 +28,34 @@ from butlers.connectors.home_assistant_statistics import (
 )
 from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
+from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("home_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["home_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("home", "api/models", api_source=__file__)
 
-    AreaResponse = _models.AreaResponse
-    CommandLogEntry = _models.CommandLogEntry
-    EntityStateResponse = _models.EntityStateResponse
-    EntitySummaryResponse = _models.EntitySummaryResponse
-    StatisticsResponse = _models.StatisticsResponse
-    DeviceInventoryEntry = _models.DeviceInventoryEntry
-    DeviceInventoryResponse = _models.DeviceInventoryResponse
-    DevicePaginationMeta = _models.DevicePaginationMeta
-    EnergyDataPoint = _models.EnergyDataPoint
-    TopConsumerEntry = _models.TopConsumerEntry
-    MaintenanceItemResponse = _models.MaintenanceItemResponse
-    MaintenanceItemCreateRequest = _models.MaintenanceItemCreateRequest
-    ThresholdConfig = _models.ThresholdConfig
-    ThresholdUpdateRequest = _models.ThresholdUpdateRequest
-    BatteryThresholds = _models.BatteryThresholds
-    OfflineHoursThresholds = _models.OfflineHoursThresholds
-    ComfortDefaults = _models.ComfortDefaults
-    ComfortDeviation = _models.ComfortDeviation
-    EnergyThresholds = _models.EnergyThresholds
-    AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
-    AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
-    SafetyWatchEntry = _models.SafetyWatchEntry
-    SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
+AreaResponse = _models.AreaResponse
+CommandLogEntry = _models.CommandLogEntry
+EntityStateResponse = _models.EntityStateResponse
+EntitySummaryResponse = _models.EntitySummaryResponse
+StatisticsResponse = _models.StatisticsResponse
+DeviceInventoryEntry = _models.DeviceInventoryEntry
+DeviceInventoryResponse = _models.DeviceInventoryResponse
+DevicePaginationMeta = _models.DevicePaginationMeta
+EnergyDataPoint = _models.EnergyDataPoint
+TopConsumerEntry = _models.TopConsumerEntry
+MaintenanceItemResponse = _models.MaintenanceItemResponse
+MaintenanceItemCreateRequest = _models.MaintenanceItemCreateRequest
+ThresholdConfig = _models.ThresholdConfig
+ThresholdUpdateRequest = _models.ThresholdUpdateRequest
+BatteryThresholds = _models.BatteryThresholds
+OfflineHoursThresholds = _models.OfflineHoursThresholds
+ComfortDefaults = _models.ComfortDefaults
+ComfortDeviation = _models.ComfortDeviation
+EnergyThresholds = _models.EnergyThresholds
+AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
+AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
+SafetyWatchEntry = _models.SafetyWatchEntry
+SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
 
 logger = logging.getLogger(__name__)
 

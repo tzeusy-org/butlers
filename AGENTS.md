@@ -162,6 +162,15 @@ check you write or read:
   neutralise the fix, confirm the suite goes red, restore, and give every absence test a positive
   companion.
 
+### Roster import identity
+
+- Use the canonical roster namespace or `butlers.roster_imports.roster_module()`;
+  never add a roster by-path loader. `tests/contracts/test_roster_module_identity.py`
+  guards production loading and canonical test names. Deliberately isolated test
+  copies use private `_`-prefixed names and never evict canonical models/routers.
+  Test-only `roster.<butler>.*` dotted imports still fork identity; their separate
+  migration is not a fallback or alias supported by the production loader.
+
 ### PRs, merge route and CI guards
 
 - The session-link guard fails CI on any `claude.ai/code/session_...` URL in a PR title, body or
