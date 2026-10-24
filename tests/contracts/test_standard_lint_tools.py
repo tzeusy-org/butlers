@@ -8,6 +8,7 @@ detectors on every run through ``make lint``'s ``lint-tools-self-test``.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -246,7 +247,9 @@ def test_missing_mismatched_or_changed_install_fails_closed(
         lint_tools.installed_binary("actionlint", pins)
 
 
-def test_install_refuses_unverified_or_unsafe_archives(lint_tools: ModuleType) -> None:
+def test_install_refuses_unverified_or_unsafe_archives(
+    lint_tools: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
     good = _tar_gz(_file("actionlint", b"tool"), _file("LICENSE.txt", b"license"))
     assert lint_tools.extract_binary(good, "actionlint") == b"tool"
     with pytest.raises(lint_tools.ToolError, match="sha256 mismatch"):
@@ -266,6 +269,56 @@ def test_install_refuses_unverified_or_unsafe_archives(lint_tools: ModuleType) -
         with pytest.raises(lint_tools.ToolError):
             lint_tools.extract_binary(archive, "actionlint")
             pytest.fail(f"accepted a {label} archive")
+
+    # Exercise the actual installer and download digest check with disposable
+    # release bytes; a restored cache is advisory, never installation authority.
+    pins = lint_tools.load_pins()
+    key = lint_tools.platform_key()
+    asset = pins["actionlint"]["assets"][key]
+    asset["sha256"] = hashlib.sha256(good).hexdigest()
+    monkeypatch.setattr(lint_tools, "load_pins", lambda: pins)
+    downloads = []
+    archive = good
+
+    def serve(url: str, *, timeout: float) -> io.BytesIO:
+        downloads.append((url, timeout))
+        return io.BytesIO(archive)
+
+    monkeypatch.setattr(lint_tools.urllib.request, "urlopen", serve)
+    lint_tools.install(["actionlint"])
+    binary = lint_tools.installed_binary("actionlint")
+    assert binary.read_bytes() == b"tool"
+    assert downloads == [(asset["url"], lint_tools.DOWNLOAD_TIMEOUT_S)]
+    lint_tools.install(["actionlint"])
+    assert len(downloads) == 1  # Verified hit: no release request.
+
+    marker_path = binary.parent / "INSTALLED.json"
+    for corruption, error in (
+        ("binary", "changed since its verified install"),
+        ("marker", "does not match its pin"),
+    ):
+        if corruption == "binary":
+            binary.write_bytes(b"tampered")
+        else:
+            marker = json.loads(marker_path.read_text())
+            marker["sha256"] = "0" * 64
+            marker_path.write_text(json.dumps(marker))
+        with pytest.raises(lint_tools.ToolError, match=error):
+            lint_tools.installed_binary("actionlint")
+        before = len(downloads)
+        lint_tools.install(["actionlint"])
+        assert len(downloads) == before + 1
+        assert lint_tools.installed_binary("actionlint").read_bytes() == b"tool"
+
+    binary.write_bytes(b"tampered")
+    rejected = {path.name: path.read_bytes() for path in binary.parent.iterdir()}
+    archive = b"unverified release bytes"
+    with pytest.raises(lint_tools.ToolError, match="sha256 mismatch"):
+        lint_tools.install(["actionlint"])
+    assert len(downloads) == 4
+    assert {path.name: path.read_bytes() for path in binary.parent.iterdir()} == rejected
+    with pytest.raises(lint_tools.ToolError, match="changed since its verified install"):
+        lint_tools.installed_binary("actionlint")
 
 
 def test_secret_report_keeps_only_path_line_and_rule(
