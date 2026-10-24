@@ -42,6 +42,7 @@ graph TB
 | `components/layout/nav-config.ts` | Declarative sections and items. Items carry `butler` (hide when absent), `badgeKey`, and `chord` (`g`-then-key navigation). |
 | `lib/route-registry.ts` | Single source for the sidebar, the command menu's Pages group, `g` chords, and the `?` help sheet. |
 | `components/layout/PageHeader.tsx` | URL-segment breadcrumb auto-builder (with acronym casing), `hideBreadcrumbs`, live indicator, finder button, dark-mode toggle. |
+| `components/layout/SiblingButlerNav.tsx` | Sibling-butler navigation rendered by `PageHeader` on butler-detail routes, sourced from `useButlerStatusBoard`; preserves roster order, link/query behavior, loading/error presentation and keyboard/ARIA affordances. |
 | `components/layout/EntityFinder.tsx` | The one command menu, opened by Cmd/Ctrl+K, `/`, and the header button. |
 | `layouts/RootLayout.tsx` | Mounts the shell, `ErrorBoundary` around `<Outlet />`, scroll memory (reset on PUSH, restore on POP; calendar and chat opt out), and the overlays. |
 
