@@ -2113,9 +2113,25 @@ async def delivery_cycle(
 
     if urgent_only or _suppression_reason is not None:
         retained = []
+        held_ids = []
         for candidate_id in pending_ids:
             if await authorized(candidate_id):
                 retained.append(candidate_id)
+            elif _suppression_reason is not None:
+                held_ids.append(candidate_id)
+        # Only candidates actually denied by a current hold acquire this
+        # diagnostic cause. Authorized candidates and awake hourly filtering
+        # retain their metadata; this label grants no interruption authority.
+        if held_ids:
+            await pool.execute(
+                """
+                UPDATE insight_candidates
+                SET metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object('blocked_by', 'held_by')
+                WHERE id = ANY($1::uuid[]) AND status = 'pending'
+                """,
+                held_ids,
+            )
         pending_ids = retained
         if not pending_ids:
             await record_attention_event(
@@ -2124,7 +2140,11 @@ async def delivery_cycle(
                 source="insight",
                 outcome="suppressed",
                 intent="insight",
-                reason=_suppression_reason or "unverified_urgency",
+                reason=(
+                    "travel_day_defer"
+                    if daily_hold_mode and not urgent_only and _suppression_signal == "traveling"
+                    else _suppression_reason or "unverified_urgency"
+                ),
                 metadata={
                     **({"held_by": _suppression_signal} if _suppression_signal is not None else {}),
                     "attention_cause": "routine",

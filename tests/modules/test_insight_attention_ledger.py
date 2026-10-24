@@ -211,6 +211,10 @@ class TestUrgentBypassesQuietHours:
         await _insert_candidate(insight_pool, dedup_key="health:routine:1:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:1:2026", priority=95)
         await _owner_authorize_candidate(insight_pool, authority, "health:urgent:1:2026")
+        await insight_pool.execute(
+            "UPDATE insight_candidates SET metadata = jsonb_build_object('existing', 'retained') "
+            "WHERE dedup_key = 'health:routine:1:2026'"
+        )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         result = await delivery_cycle(
@@ -231,6 +235,39 @@ class TestUrgentBypassesQuietHours:
         )
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
+
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        held = await insight_pool.fetchrow(
+            "SELECT id, metadata, expires_at FROM insight_candidates "
+            "WHERE dedup_key = 'health:routine:1:2026'"
+        )
+        authorized_metadata = await insight_pool.fetchval(
+            "SELECT metadata FROM insight_candidates WHERE dedup_key = 'health:urgent:1:2026'"
+        )
+        assert held["metadata"]["blocked_by"] == "held_by"
+        assert held["metadata"]["existing"] == "retained"
+        assert authorized_metadata is None or "blocked_by" not in authorized_metadata
+        expiry_now = held["expires_at"] + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 1
+            expiry_ledger.assert_awaited_once()
+            expiry_kwargs = expiry_ledger.call_args.kwargs
+            assert expiry_kwargs["outcome"] == "expired"
+            assert expiry_kwargs["reason"] == "blocked_by:held_by"
+            assert expiry_kwargs["notification_ref"] == str(held["id"])
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            expiry_ledger.assert_awaited_once()
+        assert (
+            await insight_pool.fetchval(
+                "SELECT status FROM insight_candidates WHERE dedup_key = 'health:urgent:1:2026'"
+            )
+            == "delivered"
+        )
+        notify_mock.assert_awaited_once()
 
     async def test_fully_suppressed_when_no_urgent_candidate_pending(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -1044,6 +1081,53 @@ class TestDailyHoldMode:
             "attention_cause": "routine",
             "downgrade": "unverified_urgency",
         }
+        notify_mock.assert_not_awaited()
+
+        # The daily receipt is specific to the non-hourly daily path. Both
+        # generic context and hourly suppression retain the shared cause.
+        for daily, hourly in ((False, False), (True, True)):
+            with (
+                patch(
+                    "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                    new=AsyncMock(return_value="traveling"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.insight.broker.record_attention_event",
+                    new=AsyncMock(return_value="suppressed-id"),
+                ) as generic_ledger,
+            ):
+                generic_result = await delivery_cycle(
+                    insight_pool,
+                    notify_fn=notify_mock,
+                    daily_hold_mode=daily,
+                    urgent_only=hourly,
+                    now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
+                )
+            assert generic_result["skipped"] is True
+            generic_ledger.assert_awaited_once()
+            assert generic_ledger.call_args.kwargs["reason"] == "context_bus:traveling"
+        notify_mock.assert_not_awaited()
+
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        held = await insight_pool.fetchrow(
+            "SELECT id, metadata, expires_at FROM insight_candidates "
+            "WHERE dedup_key = 'health:routine:dh5:2026'"
+        )
+        assert held["metadata"]["blocked_by"] == "held_by"
+        expiry_now = held["expires_at"] + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 1
+            expiry_ledger.assert_awaited_once()
+            assert expiry_ledger.call_args.kwargs["outcome"] == "expired"
+            assert expiry_ledger.call_args.kwargs["reason"] == "blocked_by:held_by"
+            assert expiry_ledger.call_args.kwargs["notification_ref"] == str(held["id"])
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            expiry_ledger.assert_awaited_once()
+        notify_mock.assert_not_awaited()
 
     async def test_urgent_candidate_still_bypasses_on_travel_day(self, insight_pool, authority):
         """An urgent (priority>=90) candidate is delivered on a travel day

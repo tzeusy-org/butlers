@@ -1724,6 +1724,36 @@ class TestBudgetEnforcement:
         )
         assert pending == 2
 
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        budget_rows = await insight_pool.fetch(
+            "SELECT id, metadata, expires_at FROM insight_candidates WHERE status = 'pending'"
+        )
+        assert len(budget_rows) == 2
+        assert all(row["metadata"]["blocked_by"] == "budget" for row in budget_rows)
+        expiry_now = max(row["expires_at"] for row in budget_rows) + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 2
+            assert expiry_ledger.await_count == 2
+            receipts = [call.kwargs for call in expiry_ledger.call_args_list]
+            assert {receipt["notification_ref"] for receipt in receipts} == {
+                str(row["id"]) for row in budget_rows
+            }
+            assert all(receipt["outcome"] == "expired" for receipt in receipts)
+            assert all(receipt["reason"] == "blocked_by:budget" for receipt in receipts)
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            assert expiry_ledger.await_count == 2
+        assert (
+            await insight_pool.fetchval(
+                "SELECT COUNT(*) FROM insight_candidates WHERE status = 'delivered'"
+            )
+            == 1
+        )
+        notify_mock.assert_awaited_once()
+
     @pytest.mark.pg_clock
     async def test_highest_priority_candidate_wins_under_budget(self, insight_pool):
         """When budget=1, the highest-priority candidate is selected."""
