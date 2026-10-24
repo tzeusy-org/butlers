@@ -1099,6 +1099,7 @@ def shutdown_database(worker_released, pool_events):
         # network-free holder whose release is the actual admission task's exit.
         def __init__(self):
             self._loop = asyncio.get_running_loop()
+            self._queue = asyncio.Queue()
             self._initialized, self._initializing = True, False
             self._closed, self._closing = False, False
             self._holders = [

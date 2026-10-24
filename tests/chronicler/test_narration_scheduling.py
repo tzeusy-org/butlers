@@ -804,3 +804,159 @@ async def test_chronicler_native_pool_constructor_lifecycle_and_registry_lifetim
     queue_ref, owner_ref = await exercise()
     gc.collect()
     assert queue_ref() is None and owner_ref() is None
+
+
+@pytest.mark.parametrize("outcome", ["healthy", "cancel", "shutdown"])
+async def test_chronicler_same_native_pool_retains_concurrent_work_and_release(
+    monkeypatch, tmp_path, outcome
+):
+    """Real helper/repository flow on one native owner; SQL protocol, not PG proof."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import asyncpg
+
+    import butlers.core.obligation_chronicler_sources as source
+    from butlers.core.obligation_admission import SourceUnavailable
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
+
+    recording = _chronicler_source_pool()
+    inputs = await _source_inputs(recording)
+    source._registration()  # Resolve cold registration before the operation watchdog.
+    connect = AsyncMock(side_effect=AssertionError("native pool must not connect"))
+    pool = await asyncpg.create_pool(min_size=0, max_size=2, connect=connect)
+    prepare = source.ChroniclerPreparation(pool, None)
+    owner = prepare.owner
+    work_entered, work_finish = asyncio.Event(), asyncio.Event()
+    release_entered = [asyncio.Event(), asyncio.Event()]
+    release_finish = [asyncio.Event(), asyncio.Event()]
+    acquired, committed, released, closed = [], [], [], []
+    transaction_slot = asyncio.Lock()
+    fetch = recording.connection.fetch
+
+    async def gated_work(sql, *args):
+        if "chronicler.scheduled_tasks" in sql and not work_finish.is_set():
+            work_entered.set()
+            await work_finish.wait()
+        return await fetch(sql, *args)
+
+    recording.connection.fetch = gated_work
+
+    @asynccontextmanager
+    async def acquire(self):
+        assert self is pool
+        # Serialize the recording connection's transactions, but hold each
+        # physical acquisition's release independently AFTER its own commit.
+        async with transaction_slot:
+            index = len(acquired)
+            acquired.append(index)
+            async with recording.acquire() as connection:
+                yield connection
+            assert connection.depth == 0
+            committed.append(index)
+        if index < 2:
+            release_entered[index].set()
+            await release_finish[index].wait()
+        released.append(index)
+
+    native_close = asyncpg.Pool.close
+
+    async def observed_close(self):
+        assert self is pool and not owner._pending
+        closed.append("close")
+        await native_close(self)
+
+    monkeypatch.setattr(asyncpg.Pool, "acquire", acquire)
+    monkeypatch.setattr(asyncpg.Pool, "close", observed_close)
+    monkeypatch.setattr(source, "PREPARATION_SECONDS", 0.3)
+    before_tasks = asyncio.all_tasks()
+    operations = [asyncio.create_task(prepare.prepare_committed(**inputs))]
+    shutdown = None
+    daemon = None
+    try:
+        await asyncio.wait_for(work_entered.wait(), 1)
+        operations.append(asyncio.create_task(prepare.prepare_committed(**inputs)))
+        await asyncio.sleep(0)
+        assert not operations[1].done(), "healthy same-pool preparation was refused"
+        assert len(owner._pending) == 2
+        work_finish.set()
+        for event in release_entered:
+            await asyncio.wait_for(event.wait(), 1)
+        assert committed == [0, 1] and released == []
+        assert not any(task.done() for task in operations) and len(owner._pending) == 2
+        assert len(recording.connection.definitions) == len(recording.connection.occurrences) == 1
+        if outcome == "healthy":
+            release_finish[1].set()
+            second = await asyncio.wait_for(operations[1], 1)
+            assert released == [1] and not operations[0].done()
+            release_finish[0].set()
+            assert await asyncio.wait_for(operations[0], 1) == second
+        elif outcome == "cancel":
+            operations[0].cancel()
+            await asyncio.sleep(0)
+            operations[0].cancel()
+            await asyncio.sleep(0)
+            retained = set(owner._pending)
+            with pytest.raises(SourceUnavailable, match="preparation_unavailable"):
+                await prepare.prepare_committed(**inputs)
+            assert set(owner._pending) == retained and acquired == [0, 1]
+            assert not any(task.done() for task in retained) and released == []
+            release_finish[0].set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(operations[0], 1)
+            # Safe recovery is permitted once THAT cancelled release settles;
+            # the other healthy worker remains owned, not quarantined.
+            recovered = await prepare.prepare_committed(**inputs)
+            assert acquired == [0, 1, 2] and released == [0, 2]
+            assert not operations[1].done()
+            release_finish[1].set()
+            assert await asyncio.wait_for(operations[1], 1) == recovered
+        else:
+            daemon = ButlerDaemon(tmp_path)
+            daemon.config = SimpleNamespace(name="chronicler", shutdown_timeout_s=0.03)
+            daemon.db = Database("concurrent_chronicler_shutdown")
+            daemon.db.pool = pool
+            independent = AsyncMock()
+            daemon.blob_store = SimpleNamespace(close=independent)
+            shutdown = asyncio.create_task(daemon.shutdown())
+            done, pending = await asyncio.wait({shutdown}, timeout=1)
+            assert done == {shutdown} and not pending
+            with pytest.raises(RuntimeError, match="cleanup_incomplete"):
+                shutdown.result()
+            independent.assert_awaited_once()
+            assert len(owner._pending) == 2 and daemon.db.pool is pool and closed == []
+            assert daemon._admission_cleanup_tasks and released == []
+            for operation in operations:
+                with pytest.raises(SourceUnavailable):
+                    operation.result()
+            release_finish[1].set()
+            _, pending = await asyncio.wait(set(owner._pending), timeout=0.02)
+            assert len(pending) == 1 and closed == [] and daemon.db.pool is pool
+            release_finish[0].set()
+            retained = set(owner._pending) | set(daemon._admission_cleanup_tasks)
+            _, pending = await asyncio.wait(retained, timeout=1)
+            assert not pending and closed == ["close"] and pool._closed
+            # The original downstream deadline is already expired: real
+            # asyncpg close may be cancelled and terminate AFTER workers settle.
+            # Do not require Database's post-await assignment on that path or
+            # grant pool close a new grace period. Shutdown already refused.
+            assert daemon.db.pool is None or daemon.db.pool is pool
+        assert not owner._pending and sorted(released) == acquired
+        assert recording.connection.depth == 0
+        connect.assert_not_awaited()
+    finally:
+        work_finish.set()
+        for event in release_finish:
+            event.set()
+        await asyncio.gather(*operations, return_exceptions=True)
+        if shutdown is not None:
+            await asyncio.gather(shutdown, return_exceptions=True)
+        children = asyncio.all_tasks() - before_tasks
+        if children:
+            _, pending = await asyncio.wait(children, timeout=1)
+            assert not pending
+        await owner.aclose()
+        if not pool.is_closing():
+            await pool.close()

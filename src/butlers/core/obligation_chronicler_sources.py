@@ -47,7 +47,10 @@ class _ChroniclerPreparationOwner:
     """Retain incomplete work/release; never renew its original caller deadline."""
 
     def __init__(self):
+        # Healthy operations may overlap; only incomplete cancelled/expired
+        # workers quarantine this pool until their own release settles.
         self._pending = {}
+        self._quarantined = set()
         self._closed = False
 
     async def _settle(self, task, deadline):
@@ -60,6 +63,8 @@ class _ChroniclerPreparationOwner:
                 await asyncio.wait({task}, timeout=remaining)
             except asyncio.CancelledError:
                 cancelled = True
+                if not task.done():
+                    self._quarantined.add(task)
                 # The first cancellation already initiated transaction unwind.
                 # Repeated caller cancellation must not interrupt pool release.
                 if not task.cancelling():
@@ -67,7 +72,7 @@ class _ChroniclerPreparationOwner:
         return cancelled
 
     async def run(self, operation):
-        if self._closed or self._pending:
+        if self._closed or self._quarantined:
             raise SourceUnavailable("chronicler_preparation_unavailable")
         deadline = asyncio.get_running_loop().time() + PREPARATION_SECONDS
         task = asyncio.create_task(operation(), name="chronicler-source-preparation")
@@ -75,12 +80,15 @@ class _ChroniclerPreparationOwner:
 
         def finished(done):
             self._pending.pop(done, None)
+            self._quarantined.discard(done)
             if not done.cancelled():
                 done.exception()
 
         task.add_done_callback(finished)
         cancelled = await self._settle(task, deadline)
         if cancelled or not task.done():
+            if not task.done():
+                self._quarantined.add(task)
             if not task.done() and not task.cancelling():
                 task.cancel()
             cancelled |= await self._settle(task, deadline)
@@ -101,6 +109,7 @@ class _ChroniclerPreparationOwner:
         for task in tuple(self._pending):
             if task.done():
                 self._pending.pop(task, None)
+                self._quarantined.discard(task)
                 if not task.cancelled():
                     task.exception()
         if self._pending:
@@ -347,7 +356,7 @@ class ChroniclerPreparation:
         return "staged_unverified"
 
     async def prepare_committed(self, **material):
-        if self.owner._closed or self.owner._pending:
+        if self.owner._closed or self.owner._quarantined:
             raise SourceUnavailable("chronicler_preparation_unavailable")
         # Freeze day/material BEFORE any suspension. Reconciliation uses this
         # captured input, never a new wall clock or fresh identity on retry.
