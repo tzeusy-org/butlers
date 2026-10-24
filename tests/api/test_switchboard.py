@@ -8,7 +8,7 @@ validation boundary, backfill lifecycle (create/pause/conflict), connectors.
 from __future__ import annotations
 
 import datetime
-import importlib.util
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -29,12 +29,7 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
+        importlib.import_module("butlers.api._roster.switchboard.router")
     return get_db
 
 

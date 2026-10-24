@@ -7,15 +7,12 @@ health butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import re
-import sys
 from datetime import UTC, datetime, timedelta
 from math import isfinite
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -31,51 +28,47 @@ from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("health_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["health_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("health", "api/models", api_source=__file__)
 
-    Briefing = _models.Briefing
-    Condition = _models.Condition
-    ConditionCreateRequest = _models.ConditionCreateRequest
-    ConditionUpdateRequest = _models.ConditionUpdateRequest
-    Dose = _models.Dose
-    DoseLogRequest = _models.DoseLogRequest
-    ExpectedSignalResponse = _models.ExpectedSignalResponse
-    ExpectedSignalsResponse = _models.ExpectedSignalsResponse
-    LatestMeasurementEntry = _models.LatestMeasurementEntry
-    LatestMeasurementsResponse = _models.LatestMeasurementsResponse
-    Meal = _models.Meal
-    MealCreateRequest = _models.MealCreateRequest
-    MealUpdateRequest = _models.MealUpdateRequest
-    Measurement = _models.Measurement
-    MeasurementCreateRequest = _models.MeasurementCreateRequest
-    MeasurementTypeInfo = _models.MeasurementTypeInfo
-    MeasurementTypesResponse = _models.MeasurementTypesResponse
-    MeasurementUpdateRequest = _models.MeasurementUpdateRequest
-    MeasurementSource = _models.MeasurementSource
-    MeasurementSourcesResponse = _models.MeasurementSourcesResponse
-    Medication = _models.Medication
-    MedicationAdherenceResponse = _models.MedicationAdherenceResponse
-    MedicationCreateRequest = _models.MedicationCreateRequest
-    MedicationUpdateRequest = _models.MedicationUpdateRequest
-    NutritionDailyAverage = _models.NutritionDailyAverage
-    NutritionSummaryResponse = _models.NutritionSummaryResponse
-    Research = _models.Research
-    ResearchCreateRequest = _models.ResearchCreateRequest
-    ResearchUpdateRequest = _models.ResearchUpdateRequest
-    SleepSessionResponse = _models.SleepSessionResponse
-    SleepStage = _models.SleepStage
-    Symptom = _models.Symptom
-    SymptomCreateRequest = _models.SymptomCreateRequest
-    SymptomUpdateRequest = _models.SymptomUpdateRequest
-    TrendBucket = _models.TrendBucket
-    TrendResponse = _models.TrendResponse
+Briefing = _models.Briefing
+Condition = _models.Condition
+ConditionCreateRequest = _models.ConditionCreateRequest
+ConditionUpdateRequest = _models.ConditionUpdateRequest
+Dose = _models.Dose
+DoseLogRequest = _models.DoseLogRequest
+ExpectedSignalResponse = _models.ExpectedSignalResponse
+ExpectedSignalsResponse = _models.ExpectedSignalsResponse
+LatestMeasurementEntry = _models.LatestMeasurementEntry
+LatestMeasurementsResponse = _models.LatestMeasurementsResponse
+Meal = _models.Meal
+MealCreateRequest = _models.MealCreateRequest
+MealUpdateRequest = _models.MealUpdateRequest
+Measurement = _models.Measurement
+MeasurementCreateRequest = _models.MeasurementCreateRequest
+MeasurementTypeInfo = _models.MeasurementTypeInfo
+MeasurementTypesResponse = _models.MeasurementTypesResponse
+MeasurementUpdateRequest = _models.MeasurementUpdateRequest
+MeasurementSource = _models.MeasurementSource
+MeasurementSourcesResponse = _models.MeasurementSourcesResponse
+Medication = _models.Medication
+MedicationAdherenceResponse = _models.MedicationAdherenceResponse
+MedicationCreateRequest = _models.MedicationCreateRequest
+MedicationUpdateRequest = _models.MedicationUpdateRequest
+NutritionDailyAverage = _models.NutritionDailyAverage
+NutritionSummaryResponse = _models.NutritionSummaryResponse
+Research = _models.Research
+ResearchCreateRequest = _models.ResearchCreateRequest
+ResearchUpdateRequest = _models.ResearchUpdateRequest
+SleepSessionResponse = _models.SleepSessionResponse
+SleepStage = _models.SleepStage
+Symptom = _models.Symptom
+SymptomCreateRequest = _models.SymptomCreateRequest
+SymptomUpdateRequest = _models.SymptomUpdateRequest
+TrendBucket = _models.TrendBucket
+TrendResponse = _models.TrendResponse
 
 logger = logging.getLogger(__name__)
 

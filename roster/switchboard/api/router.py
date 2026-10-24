@@ -16,13 +16,11 @@ cross-connector matrix.
 from __future__ import annotations
 
 import datetime
-import importlib.util
 import json
 import logging
 import math
 import os
 import re
-import sys
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -44,6 +42,7 @@ from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.prometheus import async_query
+from butlers.roster_imports import roster_module
 from butlers.tools.switchboard.registry import registry as _registry
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state as _derive_butler_eligibility_state,
@@ -53,54 +52,47 @@ from butlers.tools.switchboard.registry.registry import (
 )
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("switchboard_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["switchboard_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("switchboard", "api/models", api_source=__file__)
 
-    RegistryEntry = _models.RegistryEntry
-    RoutingEntry = _models.RoutingEntry
-    HeartbeatRequest = _models.HeartbeatRequest
-    HeartbeatResponse = _models.HeartbeatResponse
-    SetEligibilityRequest = _models.SetEligibilityRequest
-    SetEligibilityResponse = _models.SetEligibilityResponse
-    FanoutRow = _models.FanoutRow
-    BackfillJobEntry = _models.BackfillJobEntry
-    BackfillJobSummary = _models.BackfillJobSummary
-    CreateBackfillJobRequest = _models.CreateBackfillJobRequest
-    BackfillLifecycleResponse = _models.BackfillLifecycleResponse
-    ThreadAffinitySettings = _models.ThreadAffinitySettings
-    ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
-    ThreadOverrideUpsert = _models.ThreadOverrideUpsert
-    ThreadOverrideEntry = _models.ThreadOverrideEntry
-    RoutingInstruction = _models.RoutingInstruction
-    RoutingInstructionCreate = _models.RoutingInstructionCreate
-    RoutingInstructionUpdate = _models.RoutingInstructionUpdate
-    validate_condition = _models.validate_condition
-    IngestionRule = _models.IngestionRule
-    IngestionRuleCreate = _models.IngestionRuleCreate
-    IngestionRuleUpdate = _models.IngestionRuleUpdate
-    IngestionRuleTestRequest = _models.IngestionRuleTestRequest
-    IngestionRuleTestResult = _models.IngestionRuleTestResult
-    IngestionRuleTestResponse = _models.IngestionRuleTestResponse
-    validate_ingestion_action = _models.validate_ingestion_action
-    validate_rule_type_for_scope = _models.validate_rule_type_for_scope
-    InsightCandidate = _models.InsightCandidate
-    InsightFeedbackResponse = _models.InsightFeedbackResponse
-    FleetCaseSummary = _models.FleetCaseSummary
-    FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
-    FleetCaseLinkEntry = _models.FleetCaseLinkEntry
-    FleetCaseDetail = _models.FleetCaseDetail
-    RulePromotionSuggestion = _models.RulePromotionSuggestion
-    RulePromotionAutoApplied = _models.RulePromotionAutoApplied
-    RulePromotionSurface = _models.RulePromotionSurface
-    RulePromotionDismissRequest = _models.RulePromotionDismissRequest
-    RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
-    RulePromotionStats = _models.RulePromotionStats
-else:
-    raise RuntimeError("Failed to load switchboard API models")
+RegistryEntry = _models.RegistryEntry
+RoutingEntry = _models.RoutingEntry
+HeartbeatRequest = _models.HeartbeatRequest
+HeartbeatResponse = _models.HeartbeatResponse
+SetEligibilityRequest = _models.SetEligibilityRequest
+SetEligibilityResponse = _models.SetEligibilityResponse
+FanoutRow = _models.FanoutRow
+BackfillJobEntry = _models.BackfillJobEntry
+BackfillJobSummary = _models.BackfillJobSummary
+CreateBackfillJobRequest = _models.CreateBackfillJobRequest
+BackfillLifecycleResponse = _models.BackfillLifecycleResponse
+ThreadAffinitySettings = _models.ThreadAffinitySettings
+ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
+ThreadOverrideUpsert = _models.ThreadOverrideUpsert
+ThreadOverrideEntry = _models.ThreadOverrideEntry
+RoutingInstruction = _models.RoutingInstruction
+RoutingInstructionCreate = _models.RoutingInstructionCreate
+RoutingInstructionUpdate = _models.RoutingInstructionUpdate
+validate_condition = _models.validate_condition
+IngestionRule = _models.IngestionRule
+IngestionRuleCreate = _models.IngestionRuleCreate
+IngestionRuleUpdate = _models.IngestionRuleUpdate
+IngestionRuleTestRequest = _models.IngestionRuleTestRequest
+IngestionRuleTestResult = _models.IngestionRuleTestResult
+IngestionRuleTestResponse = _models.IngestionRuleTestResponse
+validate_ingestion_action = _models.validate_ingestion_action
+validate_rule_type_for_scope = _models.validate_rule_type_for_scope
+InsightCandidate = _models.InsightCandidate
+InsightFeedbackResponse = _models.InsightFeedbackResponse
+FleetCaseSummary = _models.FleetCaseSummary
+FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
+FleetCaseLinkEntry = _models.FleetCaseLinkEntry
+FleetCaseDetail = _models.FleetCaseDetail
+RulePromotionSuggestion = _models.RulePromotionSuggestion
+RulePromotionAutoApplied = _models.RulePromotionAutoApplied
+RulePromotionSurface = _models.RulePromotionSurface
+RulePromotionDismissRequest = _models.RulePromotionDismissRequest
+RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
+RulePromotionStats = _models.RulePromotionStats
 
 logger = logging.getLogger(__name__)
 

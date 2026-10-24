@@ -81,7 +81,7 @@ async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool)
     # Exercise the real route and SQL against migrated PostgreSQL. Owner auth
     # belongs to the mounted-app API suite; this case pins the row taxonomy.
     router_path = _THIS_FILE.parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("relationship_cadence_db_router", router_path)
+    spec = importlib.util.spec_from_file_location("_relationship_cadence_db_router", router_path)
     assert spec is not None and spec.loader is not None
     router_module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = router_module

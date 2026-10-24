@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
@@ -45,111 +42,104 @@ from butlers.entity_facts_channels import (
 from butlers.entity_facts_channels import (
     entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
 )
+from butlers.roster_imports import roster_module
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 _GUIDED_ENTITY_INFO_ONLY_TYPES = frozenset({"telegram_api_hash"})
 _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 # Load local models module
-_api_dir = Path(__file__).parent
-_models_path = _api_dir / "models.py"
-if _models_path.exists():
-    spec = importlib.util.spec_from_file_location("relationship_api_models_internal", _models_path)
-    if spec is not None and spec.loader is not None:
-        _models_module = importlib.util.module_from_spec(spec)
-        sys.modules["relationship_api_models_internal"] = _models_module
-        spec.loader.exec_module(_models_module)
+_models_module = roster_module("relationship", "api/models", api_source=__file__)
 
-        # Import models from the loaded module
-        Group = _models_module.Group
-        GroupListResponse = _models_module.GroupListResponse
-        Label = _models_module.Label
-        UpcomingDate = _models_module.UpcomingDate
-        ContactInfoEntry = _models_module.ContactInfoEntry
-        OwnerSetupStatus = _models_module.OwnerSetupStatus
-        OwnerEntityInfoResponse = _models_module.OwnerEntityInfoResponse
-        EntityInfoEntry = _models_module.EntityInfoEntry
-        EntityDetail = _models_module.EntityDetail
-        CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
-        CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
-        UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
-        DunbarEntry = _models_module.DunbarEntry
-        DunbarRankingResponse = _models_module.DunbarRankingResponse
-        OverdueContact = _models_module.OverdueContact
-        OverdueContactsResponse = _models_module.OverdueContactsResponse
-        PendingDebrief = _models_module.PendingDebrief
-        PendingDebriefsResponse = _models_module.PendingDebriefsResponse
-        EntityNote = _models_module.EntityNote
-        EntityInteraction = _models_module.EntityInteraction
-        EntityGift = _models_module.EntityGift
-        EntityLoan = _models_module.EntityLoan
-        EntityTimelineItem = _models_module.EntityTimelineItem
-        EntityCadenceResponse = _models_module.EntityCadenceResponse
-        CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
-        CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
-        CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
-        LinkedContactSummary = _models_module.LinkedContactSummary
-        EntityImportantDate = _models_module.EntityImportantDate
-        DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
-        DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
-        MessageThreadSummary = _models_module.MessageThreadSummary
-        EntitySummary = _models_module.EntitySummary
-        EntityListResponse = _models_module.EntityListResponse
-        NeighbourEntry = _models_module.NeighbourEntry
-        NeighboursResponse = _models_module.NeighboursResponse
-        HaloEdge = _models_module.HaloEdge
-        HaloSatellite = _models_module.HaloSatellite
-        HaloResponse = _models_module.HaloResponse
-        SearchResultEntry = _models_module.SearchResultEntry
-        SearchResponse = _models_module.SearchResponse
-        QueueEntry = _models_module.QueueEntry
-        QueueResponse = _models_module.QueueResponse
-        PredicateTab = _models_module.PredicateTab
-        ConcentrationTarget = _models_module.ConcentrationTarget
-        ConcentrationEntry = _models_module.ConcentrationEntry
-        ConcentrationRollup = _models_module.ConcentrationRollup
-        ConcentrationResponse = _models_module.ConcentrationResponse
-        PromoteEntityRequest = _models_module.PromoteEntityRequest
-        ContactFact = _models_module.ContactFact
-        ContactsResponse = _models_module.ContactsResponse
-        AddContactRequest = _models_module.AddContactRequest
-        AddContactResponse = _models_module.AddContactResponse
-        DeleteContactResponse = _models_module.DeleteContactResponse
-        MarkContactVerifiedResponse = _models_module.MarkContactVerifiedResponse
-        SetPreferredChannelRequest = _models_module.SetPreferredChannelRequest
-        SetPreferredChannelResponse = _models_module.SetPreferredChannelResponse
-        ClearPreferredChannelResponse = _models_module.ClearPreferredChannelResponse
-        UpdateContactRequest = _models_module.UpdateContactRequest
-        UpdateContactResponse = _models_module.UpdateContactResponse
-        MergeEntitiesRequest = _models_module.MergeEntitiesRequest
-        MergeEntitiesResponse = _models_module.MergeEntitiesResponse
-        DismissQueueRequest = _models_module.DismissQueueRequest
-        DismissQueueItemResult = _models_module.DismissQueueItemResult
-        DismissQueueResponse = _models_module.DismissQueueResponse
-        ActivityEntry = _models_module.ActivityEntry
-        ActivityResponse = _models_module.ActivityResponse
-        EntityFactEntry = _models_module.EntityFactEntry
-        ActivityBin = _models_module.ActivityBin
-        ActivityBinsResponse = _models_module.ActivityBinsResponse
-        ViewMarkResponse = _models_module.ViewMarkResponse
-        DeltaFactEntry = _models_module.DeltaFactEntry
-        DeltaFactsResponse = _models_module.DeltaFactsResponse
-        CoreDateEntry = _models_module.CoreDateEntry
-        CoreDatesResponse = _models_module.CoreDatesResponse
-        CompareRequest = _models_module.CompareRequest
-        CompareFact = _models_module.CompareFact
-        CompareEntitySummary = _models_module.CompareEntitySummary
-        CompareEntityBlock = _models_module.CompareEntityBlock
-        CompareResponse = _models_module.CompareResponse
-        DismissPairRequest = _models_module.DismissPairRequest
-        DismissPairResponse = _models_module.DismissPairResponse
-        CreateLabelRequest = _models_module.CreateLabelRequest
-        CreateLabelResponse = _models_module.CreateLabelResponse
-        AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
-        RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
-        GroupLabelsResponse = _models_module.GroupLabelsResponse
-        GroupMember = _models_module.GroupMember
-        GroupMembersResponse = _models_module.GroupMembersResponse
+Group = _models_module.Group
+GroupListResponse = _models_module.GroupListResponse
+Label = _models_module.Label
+UpcomingDate = _models_module.UpcomingDate
+ContactInfoEntry = _models_module.ContactInfoEntry
+OwnerSetupStatus = _models_module.OwnerSetupStatus
+OwnerEntityInfoResponse = _models_module.OwnerEntityInfoResponse
+EntityInfoEntry = _models_module.EntityInfoEntry
+EntityDetail = _models_module.EntityDetail
+CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
+CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
+UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
+DunbarEntry = _models_module.DunbarEntry
+DunbarRankingResponse = _models_module.DunbarRankingResponse
+OverdueContact = _models_module.OverdueContact
+OverdueContactsResponse = _models_module.OverdueContactsResponse
+PendingDebrief = _models_module.PendingDebrief
+PendingDebriefsResponse = _models_module.PendingDebriefsResponse
+EntityNote = _models_module.EntityNote
+EntityInteraction = _models_module.EntityInteraction
+EntityGift = _models_module.EntityGift
+EntityLoan = _models_module.EntityLoan
+EntityTimelineItem = _models_module.EntityTimelineItem
+EntityCadenceResponse = _models_module.EntityCadenceResponse
+CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
+CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
+CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
+LinkedContactSummary = _models_module.LinkedContactSummary
+EntityImportantDate = _models_module.EntityImportantDate
+DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
+DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
+MessageThreadSummary = _models_module.MessageThreadSummary
+EntitySummary = _models_module.EntitySummary
+EntityListResponse = _models_module.EntityListResponse
+NeighbourEntry = _models_module.NeighbourEntry
+NeighboursResponse = _models_module.NeighboursResponse
+HaloEdge = _models_module.HaloEdge
+HaloSatellite = _models_module.HaloSatellite
+HaloResponse = _models_module.HaloResponse
+SearchResultEntry = _models_module.SearchResultEntry
+SearchResponse = _models_module.SearchResponse
+QueueEntry = _models_module.QueueEntry
+QueueResponse = _models_module.QueueResponse
+PredicateTab = _models_module.PredicateTab
+ConcentrationTarget = _models_module.ConcentrationTarget
+ConcentrationEntry = _models_module.ConcentrationEntry
+ConcentrationRollup = _models_module.ConcentrationRollup
+ConcentrationResponse = _models_module.ConcentrationResponse
+PromoteEntityRequest = _models_module.PromoteEntityRequest
+ContactFact = _models_module.ContactFact
+ContactsResponse = _models_module.ContactsResponse
+AddContactRequest = _models_module.AddContactRequest
+AddContactResponse = _models_module.AddContactResponse
+DeleteContactResponse = _models_module.DeleteContactResponse
+MarkContactVerifiedResponse = _models_module.MarkContactVerifiedResponse
+SetPreferredChannelRequest = _models_module.SetPreferredChannelRequest
+SetPreferredChannelResponse = _models_module.SetPreferredChannelResponse
+ClearPreferredChannelResponse = _models_module.ClearPreferredChannelResponse
+UpdateContactRequest = _models_module.UpdateContactRequest
+UpdateContactResponse = _models_module.UpdateContactResponse
+MergeEntitiesRequest = _models_module.MergeEntitiesRequest
+MergeEntitiesResponse = _models_module.MergeEntitiesResponse
+DismissQueueRequest = _models_module.DismissQueueRequest
+DismissQueueItemResult = _models_module.DismissQueueItemResult
+DismissQueueResponse = _models_module.DismissQueueResponse
+ActivityEntry = _models_module.ActivityEntry
+ActivityResponse = _models_module.ActivityResponse
+EntityFactEntry = _models_module.EntityFactEntry
+ActivityBin = _models_module.ActivityBin
+ActivityBinsResponse = _models_module.ActivityBinsResponse
+ViewMarkResponse = _models_module.ViewMarkResponse
+DeltaFactEntry = _models_module.DeltaFactEntry
+DeltaFactsResponse = _models_module.DeltaFactsResponse
+CoreDateEntry = _models_module.CoreDateEntry
+CoreDatesResponse = _models_module.CoreDatesResponse
+CompareRequest = _models_module.CompareRequest
+CompareFact = _models_module.CompareFact
+CompareEntitySummary = _models_module.CompareEntitySummary
+CompareEntityBlock = _models_module.CompareEntityBlock
+CompareResponse = _models_module.CompareResponse
+DismissPairRequest = _models_module.DismissPairRequest
+DismissPairResponse = _models_module.DismissPairResponse
+CreateLabelRequest = _models_module.CreateLabelRequest
+CreateLabelResponse = _models_module.CreateLabelResponse
+AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
+RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
+GroupLabelsResponse = _models_module.GroupLabelsResponse
+GroupMember = _models_module.GroupMember
+GroupMembersResponse = _models_module.GroupMembersResponse
 
 logger = logging.getLogger(__name__)
 

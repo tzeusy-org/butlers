@@ -7,13 +7,10 @@ from the finance butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 
@@ -21,36 +18,32 @@ from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 from butlers.tools.finance.expected_signals import sanitized_metadata
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("finance_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["finance_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("finance", "api/models", api_source=__file__)
 
-    AccountModel = _models.AccountModel
-    CostClaimModel = _models.CostClaimModel
-    BillModel = _models.BillModel
-    BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
-    BulkTransactionItem = _models.BulkTransactionItem
-    BulkTransactionRequest = _models.BulkTransactionRequest
-    BulkTransactionResponse = _models.BulkTransactionResponse
-    BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
-    BulkUpdateRequestModel = _models.BulkUpdateRequestModel
-    BulkUpdateResponseModel = _models.BulkUpdateResponseModel
-    DistinctMerchantModel = _models.DistinctMerchantModel
-    FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
-    FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
-    ObligationModel = _models.ObligationModel
-    ObligationsResponse = _models.ObligationsResponse
-    SpendingGroupModel = _models.SpendingGroupModel
-    SpendingSummaryModel = _models.SpendingSummaryModel
-    SubscriptionModel = _models.SubscriptionModel
-    TransactionModel = _models.TransactionModel
-    UpcomingBillItemModel = _models.UpcomingBillItemModel
+AccountModel = _models.AccountModel
+CostClaimModel = _models.CostClaimModel
+BillModel = _models.BillModel
+BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
+BulkTransactionItem = _models.BulkTransactionItem
+BulkTransactionRequest = _models.BulkTransactionRequest
+BulkTransactionResponse = _models.BulkTransactionResponse
+BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
+BulkUpdateRequestModel = _models.BulkUpdateRequestModel
+BulkUpdateResponseModel = _models.BulkUpdateResponseModel
+DistinctMerchantModel = _models.DistinctMerchantModel
+FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
+FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
+ObligationModel = _models.ObligationModel
+ObligationsResponse = _models.ObligationsResponse
+SpendingGroupModel = _models.SpendingGroupModel
+SpendingSummaryModel = _models.SpendingSummaryModel
+SubscriptionModel = _models.SubscriptionModel
+TransactionModel = _models.TransactionModel
+UpcomingBillItemModel = _models.UpcomingBillItemModel
 
 logger = logging.getLogger(__name__)
 
@@ -1015,24 +1008,12 @@ async def bulk_ingest_transactions(
 # GET /merchants/distinct — distinct merchants with aggregate stats
 # ---------------------------------------------------------------------------
 
-_FACTS_TOOLS_PATH = Path(__file__).parents[1] / "tools" / "facts.py"
-
 
 def _load_facts_tools():
-    """Dynamically load the finance facts tools module."""
-    import importlib.util
-    import sys
+    """Return the canonical finance facts module, retaining the call-time patch seam."""
+    import importlib
 
-    module_name = "finance_facts_tools"
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-
-    spec = importlib.util.spec_from_file_location(module_name, _FACTS_TOOLS_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("butlers.tools.finance.facts")
 
 
 @router.get("/merchants/distinct", response_model=PaginatedResponse[DistinctMerchantModel])

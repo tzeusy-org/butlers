@@ -28,7 +28,7 @@ A personal AI agent system with multiple specialist butlers, connectors, schedul
 Butler-specific API routes are auto-discovered by `src/butlers/api/router_discovery.py`:
 
 1. Scan `roster/*/api/router.py` for Python files.
-2. Load each module via `importlib.util.spec_from_file_location`.
+2. Load each module through `butlers.roster_imports`, preserving its existing execution name, one module object per file, source-path checks and failed-load cleanup. The `butlers.api._roster` namespace aliases those actual router and model objects.
 3. Validate that the module exports a `router` variable of type `APIRouter`.
 4. Register discovered routers with the FastAPI application, prefixed with `/api/<butler_name>`.
 

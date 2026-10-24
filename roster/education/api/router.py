@@ -8,12 +8,9 @@ queried directly from the education butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -25,6 +22,7 @@ from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.core.attention_ledger import find_notify_dispatch_for_session
 from butlers.core.state import state_get
+from butlers.roster_imports import roster_module
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
@@ -43,33 +41,28 @@ from butlers.tools.education.spaced_repetition import spaced_repetition_pending_
 from butlers.tools.education.teaching_flows import teaching_flow_list
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("education_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["education_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("education", "api/models", api_source=__file__)
 
-    AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
-    AnalyticsTrendEntry = _models.AnalyticsTrendEntry
-    AnalyticsTrendResponse = _models.AnalyticsTrendResponse
-    CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
-    CrossTopicTopicEntry = _models.CrossTopicTopicEntry
-    CurriculumRequestBody = _models.CurriculumRequestBody
-    CurriculumRequestReceipt = _models.CurriculumRequestReceipt
-    CurriculumRequestResponse = _models.CurriculumRequestResponse
-    CurriculumRequestStatusResponse = _models.CurriculumRequestStatusResponse
-    MasterySummaryResponse = _models.MasterySummaryResponse
-    MindMapEdgeResponse = _models.MindMapEdgeResponse
-    MindMapNodeResponse = _models.MindMapNodeResponse
-    MindMapResponse = _models.MindMapResponse
-    PendingReviewNodeResponse = _models.PendingReviewNodeResponse
-    QuizResponseModel = _models.QuizResponseModel
-    SourceMaterialResponse = _models.SourceMaterialResponse
-    StatusUpdateRequest = _models.StatusUpdateRequest
-    StrugglingNodeEntry = _models.StrugglingNodeEntry
-    StrugglingNodesResponse = _models.StrugglingNodesResponse
-    TeachingFlowResponse = _models.TeachingFlowResponse
+AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
+AnalyticsTrendEntry = _models.AnalyticsTrendEntry
+AnalyticsTrendResponse = _models.AnalyticsTrendResponse
+CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
+CrossTopicTopicEntry = _models.CrossTopicTopicEntry
+CurriculumRequestBody = _models.CurriculumRequestBody
+CurriculumRequestReceipt = _models.CurriculumRequestReceipt
+CurriculumRequestResponse = _models.CurriculumRequestResponse
+CurriculumRequestStatusResponse = _models.CurriculumRequestStatusResponse
+MasterySummaryResponse = _models.MasterySummaryResponse
+MindMapEdgeResponse = _models.MindMapEdgeResponse
+MindMapNodeResponse = _models.MindMapNodeResponse
+MindMapResponse = _models.MindMapResponse
+PendingReviewNodeResponse = _models.PendingReviewNodeResponse
+QuizResponseModel = _models.QuizResponseModel
+SourceMaterialResponse = _models.SourceMaterialResponse
+StatusUpdateRequest = _models.StatusUpdateRequest
+StrugglingNodeEntry = _models.StrugglingNodeEntry
+StrugglingNodesResponse = _models.StrugglingNodesResponse
+TeachingFlowResponse = _models.TeachingFlowResponse
 
 logger = logging.getLogger(__name__)
 

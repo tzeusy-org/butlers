@@ -20,18 +20,11 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
 
-# Import models (use importlib pattern from health butler for co-located models)
-import importlib.util
-import sys
-from pathlib import Path
+# Share the actual local models module; never execute a second by-path copy.
+from butlers.roster_imports import roster_module
 
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("<butler>_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["<butler>_api_models"] = _models
-    _spec.loader.exec_module(_models)
-    MyModel = _models.MyModel
+_models = roster_module("<butler>", "api/models", api_source=__file__)
+MyModel = _models.MyModel
 
 logger = logging.getLogger(__name__)
 

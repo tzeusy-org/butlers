@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -39,7 +38,6 @@ pytestmark = pytest.mark.unit
 
 
 def _load_router(module_name: str = "_sw_router_db_fallback"):
-    sys.modules.pop("switchboard_api_models", None)
     router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location(module_name, router_path)
     mod = importlib.util.module_from_spec(spec)
