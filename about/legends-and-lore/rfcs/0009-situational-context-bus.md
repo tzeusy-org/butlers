@@ -660,3 +660,9 @@ This text does not implement any reducer, switch an existing consumer, alter
 .18 mode policy, authorize deployment, or widen a grant. Perception detail and
 recall remain source-labelled; exposed/third-party views are availability-only
 and raw coordinates never enter model context.
+
+The dark representation implementation is documented in
+[perception storage and feeder interfaces](../../../docs/data_and_storage/perception.md).
+Its presence does not activate this successor: existing context readers remain
+until the separately owned `.21` parity/switch. Source profiles start unconfigured;
+Dots `.17` consumes the stable role-authenticated event/CAS and retraction API.

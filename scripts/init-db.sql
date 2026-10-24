@@ -68,6 +68,9 @@ BEGIN
             'Migration/runtime user "%" does not exist. Create it first or set PGOPTIONS="-c butlers.connecting_user=<existing role>".',
             _migration_user;
     END IF;
+    IF _migration_user::text LIKE 'perception\_%' ESCAPE '\' THEN
+        RAISE EXCEPTION 'a perception service cannot be the ordinary migration identity';
+    END IF;
     IF current_user::name = _migration_user THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap cannot run as the shared migration role';
     END IF;
@@ -3871,6 +3874,820 @@ END;
 $$;
 
 RESET ROLE;
+
+-- ── Dark perception representation: privileged, fixed, no live grants ─────
+-- Dedicated service identities are deliberately NOT members of domain/LLM
+-- roles or the migration login. Host provisioning and .21 activation are separate.
+DO $perception_stage$
+DECLARE r text; owner_oid oid; bootstrap_oid oid;
+BEGIN
+    SELECT oid INTO bootstrap_oid FROM pg_catalog.pg_roles WHERE rolname=current_user;
+    IF NOT (SELECT rolsuper FROM pg_catalog.pg_roles WHERE oid=bootstrap_oid) THEN
+        RAISE EXCEPTION 'perception bootstrap requires privileged installer';
+    END IF;
+    FOREACH r IN ARRAY ARRAY['perception_owner','perception_owner_reader',
+        'perception_availability_reader','perception_dots_writer','perception_context_writer',
+        'perception_health_writer','perception_expect_writer','perception_sensing_writer',
+        'perception_attention_writer'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r) THEN
+            EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION',r);
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r AND
+            ((r='perception_owner' AND rolcanlogin) OR rolinherit OR rolsuper OR rolbypassrls OR rolcreatedb
+             OR rolcreaterole OR rolreplication)) THEN
+            RAISE EXCEPTION 'unsafe perception service role';
+        END IF;
+        -- No ambient member may SET ROLE into a trusted writer/reader/owner.
+        -- Authentication provisioning is a separate named deployment action.
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles p
+            ON p.oid=m.roleid OR p.oid=m.member WHERE p.rolname=r) THEN
+            RAISE EXCEPTION 'perception role membership is not permitted';
+        END IF;
+        EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I',r);
+        EXECUTE format('GRANT USAGE ON SCHEMA public TO %I',r);
+    END LOOP;
+    IF to_regnamespace('perception_admin') IS NULL THEN
+        EXECUTE format('CREATE SCHEMA perception_admin AUTHORIZATION %I',current_user);
+    END IF;
+    IF (SELECT nspowner FROM pg_catalog.pg_namespace WHERE nspname='perception_admin')
+        <>bootstrap_oid THEN RAISE EXCEPTION 'untrusted perception installer schema'; END IF;
+END $perception_stage$;
+REVOKE ALL ON SCHEMA perception_admin FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS perception_admin.bootstrap_configuration (
+    singleton boolean PRIMARY KEY CHECK(singleton), migration_role name NOT NULL,
+    bootstrap_role name NOT NULL
+);
+REVOKE ALL ON perception_admin.bootstrap_configuration FROM PUBLIC;
+INSERT INTO perception_admin.bootstrap_configuration
+VALUES(true,COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers'),current_user)
+ON CONFLICT(singleton) DO UPDATE SET migration_role=excluded.migration_role,
+    bootstrap_role=excluded.bootstrap_role;
+
+CREATE OR REPLACE FUNCTION perception_admin.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $perception_install$
+DECLARE t text; table_oid oid; f regprocedure; r text;
+BEGIN
+    IF to_regnamespace('perception_private') IS NULL THEN
+        CREATE SCHEMA perception_private AUTHORIZATION perception_owner;
+    ELSIF (SELECT nspowner FROM pg_namespace WHERE nspname='perception_private')
+        <> 'perception_owner'::regrole THEN
+        RAISE EXCEPTION 'untrusted perception private schema';
+    END IF;
+    REVOKE ALL ON SCHEMA perception_private FROM PUBLIC;
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        table_oid:=to_regclass(t);
+        IF table_oid IS NOT NULL AND (SELECT relowner FROM pg_class WHERE oid=table_oid)
+            <> 'perception_owner'::regrole THEN
+            RAISE EXCEPTION 'untrusted preexisting perception table';
+        END IF;
+    END LOOP;
+    CREATE TABLE IF NOT EXISTS perception_private.kinds (
+        kind text PRIMARY KEY, schema_version integer NOT NULL CHECK(schema_version=1),
+        owning_domain text NOT NULL, writer_role name NOT NULL,
+        primitive text NOT NULL CHECK(primitive IN ('product','set','enum')),
+        field_schema jsonb NOT NULL, categories text[] NOT NULL,
+        read_visibility text NOT NULL,
+        freshness_policy jsonb NOT NULL DEFAULT
+            '{"profile":"required","until":"min(original_evidence_expiry,observed_at+source_max_age,effective_end)"}'
+    );
+    INSERT INTO perception_private.kinds(kind,schema_version,owning_domain,writer_role,
+        primitive,field_schema,categories,read_visibility) VALUES
+        ('owner.place',1,'home','perception_dots_writer','product',
+         '{"presence":["inside","outside"],"place_ref":"uuid|null","locality_ref":"uuid|null"}',
+         ARRAY['location'],'owner_only'),
+        ('owner.activity',1,'general','perception_context_writer','set',
+         '{"max":8,"enum":["traveling","sleeping","meeting","focused","exercising","sick","socializing","commuting"]}',
+         ARRAY['routine','health'],'private_domain'),
+        ('owner.clock',1,'general','perception_context_writer','product',
+         '{"zone":"IANA","basis":["phone","owner","home","utc_fallback","owner_confirmed_booking"],"evidence_ref":"uuid"}',
+         ARRAY['location','routine'],'private_domain'),
+        ('system.dep',1,'general','perception_health_writer','enum',
+         '["available","degraded","blind","down","held","unconfigured"]',
+         ARRAY[]::text[],'filtered_health'),
+        ('expect.window',1,'chronicler','perception_expect_writer','product',
+         '{"start":"UTC","end":"UTC","deviation":["pending","within","missed"],"expectation_kind":"registered_enum"}',
+         ARRAY['routine'],'private_domain'),
+        ('home.sensing',1,'home','perception_sensing_writer','enum',
+         '["available","degraded","unavailable"]',ARRAY[]::text[],'private_domain'),
+        ('owner.mode',1,'general','perception_context_writer','set',
+         '{"max":8,"enum":["asleep","travel","house_unattended","sick","focus","hosting","holiday","emergency"]}',
+         ARRAY['routine','health','location'],'owner_only'),
+        ('owner.suppression',1,'general','perception_attention_writer','product',
+         '{"active":"boolean","record_ref":"versioned_DND_receipt|null"}',
+         ARRAY['routine'],'availability_only')
+    ON CONFLICT(kind) DO UPDATE SET schema_version=excluded.schema_version,
+        owning_domain=excluded.owning_domain,writer_role=excluded.writer_role,
+        primitive=excluded.primitive,field_schema=excluded.field_schema,
+        categories=excluded.categories,read_visibility=excluded.read_visibility;
+
+    -- Configuration is privileged source custody, never a tool/role registration API.
+    CREATE TABLE IF NOT EXISTS perception_private.sources (
+        source text PRIMARY KEY CHECK(octet_length(source) BETWEEN 1 AND 128),
+        writer name NOT NULL,
+        kind text NOT NULL REFERENCES perception_private.kinds(kind) CHECK(kind IN ('owner.place','owner.activity','owner.clock',
+            'system.dep','expect.window','home.sensing','owner.mode','owner.suppression')),
+        subjects uuid[] NOT NULL DEFAULT '{}', null_subject boolean NOT NULL DEFAULT false,
+        max_age_seconds integer CHECK(max_age_seconds>0 AND max_age_seconds<=34560000),
+        expectation_kinds text[] NOT NULL DEFAULT '{}',
+        evidence_sources text[] NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.source_refs (
+        id uuid NOT NULL, source text NOT NULL REFERENCES perception_private.sources(source),
+        ref_type text NOT NULL CHECK(ref_type IN ('place','locality','suppression',
+            'expectation_kind','routine','dependency','sensing_group','principal','evidence')),
+        PRIMARY KEY(id,source,ref_type)
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.suppression_refs (
+        id uuid PRIMARY KEY REFERENCES public.dnd_generation_mutations(mutation_id),
+        source text NOT NULL REFERENCES perception_private.sources(source)
+    );
+    INSERT INTO perception_private.sources(source,writer,kind) VALUES
+        ('home.dots','perception_dots_writer','owner.place'),
+        ('context.activity','perception_context_writer','owner.activity'),
+        ('context.clock','perception_context_writer','owner.clock'),
+        ('context.mode','perception_context_writer','owner.mode'),
+        ('health.dependencies','perception_health_writer','system.dep'),
+        ('chronicler.expectations','perception_expect_writer','expect.window'),
+        ('home.sensing','perception_sensing_writer','home.sensing'),
+        ('attention.suppression','perception_attention_writer','owner.suppression')
+    ON CONFLICT(source) DO NOTHING;
+    -- Freshness profiles and subject/source references stay unconfigured/dark
+    -- until their named producer owner has a verified finite profile.
+    CREATE TABLE IF NOT EXISTS public.situation_slots (
+        id uuid PRIMARY KEY, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid,
+        state text NOT NULL CHECK(state IN ('known','unknown','unmeasurable','unconfigured')),
+        typed_value jsonb, source text NOT NULL, observed_at timestamptz NOT NULL,
+        fresh_until timestamptz NOT NULL, evidence_refs jsonb NOT NULL, labels jsonb NOT NULL,
+        generation bigint NOT NULL CHECK(generation>0), writer name NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        UNIQUE NULLS NOT DISTINCT(kind,subject_entity),
+        CHECK((state='known')=(typed_value IS NOT NULL)), CHECK(isfinite(observed_at)),
+        CHECK(isfinite(fresh_until)), CHECK(kind<>'owner.mode')
+    );
+    -- Modes have one versioned projection, never a second situation-slot copy.
+    CREATE TABLE IF NOT EXISTS public.owner_modes (
+        LIKE public.situation_slots INCLUDING DEFAULTS INCLUDING CONSTRAINTS,
+        effective_span jsonb NOT NULL, cause uuid NOT NULL
+    );
+    -- LIKE copies the exclusion CHECK above; replace only this new table's check.
+    ALTER TABLE public.owner_modes DROP CONSTRAINT IF EXISTS situation_slots_kind_check;
+    ALTER TABLE public.owner_modes DROP CONSTRAINT IF EXISTS owner_modes_kind_check;
+    ALTER TABLE public.owner_modes ADD CONSTRAINT owner_modes_kind_check CHECK(kind='owner.mode');
+    CREATE UNIQUE INDEX IF NOT EXISTS owner_modes_identity ON public.owner_modes
+        (kind,subject_entity) NULLS NOT DISTINCT;
+    CREATE UNIQUE INDEX IF NOT EXISTS owner_modes_id ON public.owner_modes(id);
+    CREATE TABLE IF NOT EXISTS public.timeline (
+        id uuid PRIMARY KEY, source text NOT NULL, event_key text NOT NULL,
+        digest text NOT NULL, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid,
+        class text NOT NULL CHECK(class IN ('transition','record','occurrence','point')),
+        operation text NOT NULL CHECK(operation IN ('assert','retract')),
+        retracts_event_id uuid REFERENCES public.timeline(id),
+        at timestamptz NOT NULL CHECK(isfinite(at)),
+        confirmed_at timestamptz NOT NULL CHECK(isfinite(confirmed_at) AND confirmed_at>=at),
+        late boolean NOT NULL, effective_span jsonb NOT NULL, observed_at timestamptz NOT NULL,
+        zone text, lived_date date, measures jsonb NOT NULL DEFAULT '{}',
+        typed_value jsonb, from_state text, to_state text, from_value jsonb, to_value jsonb,
+        evidence_refs jsonb NOT NULL, labels jsonb NOT NULL, generation bigint NOT NULL,
+        writer name NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        UNIQUE(source,event_key), UNIQUE(id,kind,subject_entity), UNIQUE(retracts_event_id),
+        FOREIGN KEY(retracts_event_id,kind,subject_entity) REFERENCES public.timeline(id,kind,subject_entity),
+        CHECK(late=(confirmed_at-at>interval '15 minutes')),
+        CHECK((operation='assert' AND retracts_event_id IS NULL) OR
+              (operation='retract' AND retracts_event_id IS NOT NULL AND class='record')),
+        CHECK((class='transition' AND from_state IN ('known','unknown','unmeasurable','unconfigured')
+              AND to_state IN ('known','unknown','unmeasurable','unconfigured')
+              AND (from_state='known')=(from_value IS NOT NULL)
+              AND (to_state='known')=(to_value IS NOT NULL)) OR
+              (class<>'transition' AND from_state IS NULL AND to_state IS NULL
+               AND from_value IS NULL AND to_value IS NULL)),
+        CHECK(operation<>'retract' OR typed_value IS NULL)
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.receipts (
+        event_id uuid PRIMARY KEY REFERENCES public.timeline(id), digest text NOT NULL,
+        receipt jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    );
+    CREATE TABLE IF NOT EXISTS public.perception_conditions (
+        id uuid PRIMARY KEY, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid, goal_ref uuid,
+        predicate jsonb NOT NULL, source_boundary jsonb NOT NULL, source text NOT NULL, digest text NOT NULL,
+        starts_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
+        generation bigint NOT NULL CHECK(generation>0), evidence_refs jsonb NOT NULL,
+        labels jsonb NOT NULL, state text NOT NULL CHECK(state IN ('open','fired','expired','cancelled')),
+        CHECK(isfinite(starts_at) AND isfinite(expires_at) AND starts_at<expires_at),
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    );
+    CREATE TABLE IF NOT EXISTS public.perception_suppressions (
+        LIKE public.perception_conditions INCLUDING ALL,
+        authority_ref uuid NOT NULL
+    );
+
+    -- Guard source tables and the complete append-only audit even from an
+    -- accidental future broad GRANT. Definer-only FORCE RLS is the boundary.
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        EXECUTE format('ALTER TABLE %s OWNER TO perception_owner',t);
+        EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY',t);
+        EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY',t);
+        EXECUTE format('DROP POLICY IF EXISTS perception_owner_only ON %s',t);
+        EXECUTE format('CREATE POLICY perception_owner_only ON %s USING '
+            '(current_user=''perception_owner'') WITH CHECK(current_user=''perception_owner'')',t);
+        EXECUTE format('REVOKE ALL ON %s FROM PUBLIC',t);
+        FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
+            SELECT grantee FROM aclexplode(COALESCE((SELECT relacl FROM pg_class
+                WHERE oid=t::regclass),acldefault('r','perception_owner'::regrole))))
+            AND rolname<>current_user AND rolname<>'perception_owner' LOOP
+            EXECUTE format('REVOKE ALL ON %s FROM %I',t,r);
+        END LOOP;
+    END LOOP;
+    CREATE OR REPLACE FUNCTION perception_private.canonical_json(v jsonb) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $canon$
+    DECLARE result text;
+    BEGIN
+        IF jsonb_typeof(v)='object' THEN
+            SELECT '{'||COALESCE(string_agg(to_jsonb(key)::text||':'||
+                perception_private.canonical_json(value),',' ORDER BY key COLLATE "C"),'')||'}'
+                INTO result FROM jsonb_each(v);
+        ELSIF jsonb_typeof(v)='array' THEN
+            SELECT '['||COALESCE(string_agg(perception_private.canonical_json(value),','
+                ORDER BY ord),'')||']' INTO result FROM jsonb_array_elements(v) WITH ORDINALITY a(value,ord);
+        ELSE result:=v::text; END IF;
+        RETURN result;
+    END $canon$;
+
+    CREATE OR REPLACE FUNCTION perception_private.instant(v jsonb) RETURNS timestamptz
+    LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $instant$
+    DECLARE result timestamptz;
+    BEGIN
+        IF v IS NULL OR jsonb_typeof(v)<>'string' OR (v#>>'{}')!~'(Z|[+]00:00)$' THEN
+            RAISE EXCEPTION 'finite UTC instant required' USING ERRCODE='22023';
+        END IF;
+        result:=(v#>>'{}')::timestamptz;
+        IF NOT isfinite(result) THEN RAISE EXCEPTION 'finite UTC instant required' USING ERRCODE='22023'; END IF;
+        RETURN result;
+    END $instant$;
+
+    CREATE OR REPLACE FUNCTION perception_private.valid_value(k text,v jsonb,s text) RETURNS boolean
+    LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $typed$
+    DECLARE names text[]; x jsonb; ref_key text;
+    BEGIN
+        IF k='owner.place' THEN
+            names:=ARRAY['presence','place_ref','locality_ref'];
+            IF NOT COALESCE(v->>'presence' IN ('inside','outside'),false) THEN RETURN false; END IF;
+            FOREACH ref_key IN ARRAY ARRAY['place_ref','locality_ref'] LOOP
+                IF v->ref_key<>'null'::jsonb AND NOT EXISTS (
+                    SELECT 1 FROM perception_private.source_refs WHERE id=(v->>ref_key)::uuid
+                    AND source=s AND ref_type=CASE ref_key WHEN 'place_ref' THEN 'place' ELSE 'locality' END
+                ) THEN RETURN false; END IF;
+            END LOOP;
+        ELSIF k IN ('owner.activity','owner.mode') THEN
+            IF jsonb_typeof(v)<>'array' OR jsonb_array_length(v)>8 THEN RETURN false; END IF;
+            IF (SELECT count(*)<>count(DISTINCT value) FROM jsonb_array_elements(v)) THEN RETURN false; END IF;
+            FOR x IN SELECT value FROM jsonb_array_elements(v) LOOP
+                IF jsonb_typeof(x)<>'string' OR (k='owner.activity' AND x#>>'{}' NOT IN
+                    ('traveling','sleeping','meeting','focused','exercising','sick','socializing','commuting'))
+                    OR (k='owner.mode' AND x#>>'{}' NOT IN
+                    ('asleep','travel','house_unattended','sick','focus','hosting','holiday','emergency')) THEN
+                    RETURN false;
+                END IF;
+            END LOOP;
+            RETURN true;
+        ELSIF k='owner.clock' THEN
+            names:=ARRAY['zone','basis','evidence_ref'];
+            IF NOT COALESCE(v->>'basis' IN ('phone','owner','home','utc_fallback','owner_confirmed_booking'),false)
+                OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name=v->>'zone')
+                OR NOT EXISTS (SELECT 1 FROM perception_private.source_refs WHERE id=(v->>'evidence_ref')::uuid
+                    AND source=s AND ref_type='evidence') THEN RETURN false; END IF;
+        ELSIF k='expect.window' THEN
+            names:=ARRAY['start','end','deviation','expectation_kind'];
+            IF NOT COALESCE(v->>'deviation' IN ('pending','within','missed'),false)
+                OR perception_private.instant(v->'start')>=perception_private.instant(v->'end')
+                OR jsonb_typeof(v->'expectation_kind')<>'string'
+                OR NOT EXISTS (SELECT 1 FROM perception_private.sources
+                    WHERE source=s AND v->>'expectation_kind'=ANY(expectation_kinds)) THEN
+                RETURN false;
+            END IF;
+        ELSIF k='owner.suppression' THEN
+            names:=ARRAY['active','record_ref'];
+            IF jsonb_typeof(v->'active')<>'boolean' OR (v->>'active')::boolean AND v->'record_ref'='null'::jsonb THEN
+                RETURN false;
+            END IF;
+            IF v->'record_ref'<>'null'::jsonb AND NOT EXISTS (SELECT 1 FROM perception_private.suppression_refs
+                WHERE id=(v->>'record_ref')::uuid AND source=s) THEN RETURN false; END IF;
+        ELSIF k='system.dep' THEN
+            RETURN jsonb_typeof(v)='string' AND v#>>'{}' IN
+                ('available','degraded','blind','down','held','unconfigured');
+        ELSIF k='home.sensing' THEN
+            RETURN jsonb_typeof(v)='string' AND v#>>'{}' IN ('available','degraded','unavailable');
+        ELSE RETURN false;
+        END IF;
+        RETURN jsonb_typeof(v)='object' AND v-names='{}'::jsonb
+            AND (SELECT count(*) FROM jsonb_object_keys(v))=cardinality(names);
+    END $typed$;
+
+    CREATE OR REPLACE FUNCTION perception_private.immutable_event() RETURNS trigger
+    LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $immutable$
+    BEGIN RAISE EXCEPTION 'perception history is immutable' USING ERRCODE='23514'; END $immutable$;
+    DROP TRIGGER IF EXISTS perception_history_immutable ON public.timeline;
+    CREATE TRIGGER perception_history_immutable BEFORE UPDATE OR DELETE ON public.timeline
+        FOR EACH ROW EXECUTE FUNCTION perception_private.immutable_event();
+    DROP TRIGGER IF EXISTS perception_receipt_immutable ON perception_private.receipts;
+    CREATE TRIGGER perception_receipt_immutable BEFORE UPDATE OR DELETE ON perception_private.receipts
+        FOR EACH ROW EXECUTE FUNCTION perception_private.immutable_event();
+
+    CREATE OR REPLACE FUNCTION public.perception_write(b jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $write$
+    DECLARE
+        actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        profile perception_private.sources%ROWTYPE; old record; target public.timeline%ROWTYPE;
+        prior perception_private.receipts%ROWTYPE; eid uuid; rid uuid; tid uuid;
+        s text; k text; subj uuid; gen bigint; stamp timestamptz; observed timestamptz;
+        confirmed timestamptz; fresh timestamptz; start_at timestamptz; end_at timestamptz;
+        e jsonb; labels jsonb; result jsonb; body_digest text; historical boolean;
+        fields text[]:=ARRAY['version','kind','subject','source','event_key','expected_generation',
+            'state','observed_at','effective_span','typed_value_or_ref','evidence_refs','labels',
+            'at','confirmed_at','retracts_event_id'];
+    BEGIN
+        IF jsonb_typeof(b)<>'object' OR b-fields<>'{}'::jsonb
+            OR (SELECT count(*) FROM jsonb_object_keys(b))<>cardinality(fields)
+            OR b->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(b->'version')<>'number' THEN
+            RAISE EXCEPTION 'closed perception request required' USING ERRCODE='22023';
+        END IF;
+        s:=b->>'source'; k:=b->>'kind'; subj:=(b->>'subject')::uuid;
+        SELECT * INTO profile FROM perception_private.sources WHERE source=s AND kind=k;
+        IF NOT FOUND OR actor<>profile.writer OR profile.max_age_seconds IS NULL
+            OR actor<>(SELECT writer_role FROM perception_private.kinds WHERE kind=k) THEN
+            RAISE EXCEPTION 'perception source authority/profile required' USING ERRCODE='42501';
+        END IF;
+        IF subj IS NULL AND NOT profile.null_subject OR subj IS NOT NULL AND NOT subj=ANY(profile.subjects) THEN
+            RAISE EXCEPTION 'perception subject not registered' USING ERRCODE='42501';
+        END IF;
+        IF k LIKE 'owner.%' AND NOT EXISTS (SELECT 1 FROM public.entities
+            WHERE id=subj AND 'owner'=ANY(roles)) THEN
+            RAISE EXCEPTION 'actual owner subject required' USING ERRCODE='42501';
+        END IF;
+        IF octet_length(b->>'event_key') NOT BETWEEN 1 AND 256
+            OR jsonb_typeof(b->'event_key')<>'string'
+            OR jsonb_typeof(b->'expected_generation')<>'number'
+            OR b->>'expected_generation'!~'^[0-9]+$' THEN
+            RAISE EXCEPTION 'invalid event identity/generation' USING ERRCODE='22023';
+        END IF;
+        gen:=(b->>'expected_generation')::bigint;
+        IF gen<0 OR gen=9223372036854775807 THEN RAISE EXCEPTION 'generation overflow' USING ERRCODE='22023'; END IF;
+        IF b->>'state' NOT IN ('known','unknown','unmeasurable','unconfigured')
+            OR ((b->>'state'='known') AND NOT COALESCE(perception_private.valid_value(k,b->'typed_value_or_ref',s),false))
+            OR (b->>'state'<>'known' AND b->'typed_value_or_ref'<>'null'::jsonb) THEN
+            RAISE EXCEPTION 'invalid typed perception value/state' USING ERRCODE='22023';
+        END IF;
+        stamp:=perception_private.instant(b->'at'); observed:=perception_private.instant(b->'observed_at');
+        confirmed:=perception_private.instant(b->'confirmed_at');
+        start_at:=perception_private.instant(b->'effective_span'->'start');
+        end_at:=perception_private.instant(b->'effective_span'->'end');
+        IF confirmed<stamp OR observed>confirmed OR start_at>stamp OR end_at<=stamp
+            OR b->'effective_span'-ARRAY['start','end']<>'{}'::jsonb THEN
+            RAISE EXCEPTION 'invalid perception interval' USING ERRCODE='22023';
+        END IF;
+        fresh:=least(end_at,observed+make_interval(secs=>profile.max_age_seconds));
+        IF jsonb_typeof(b->'evidence_refs')<>'array' OR jsonb_array_length(b->'evidence_refs') NOT BETWEEN 1 AND 32
+            OR (SELECT count(*)<>count(DISTINCT value->>'ref') FROM jsonb_array_elements(b->'evidence_refs')) THEN
+            RAISE EXCEPTION 'bounded unique evidence required' USING ERRCODE='22023';
+        END IF;
+        FOR e IN SELECT value FROM jsonb_array_elements(b->'evidence_refs') LOOP
+            IF jsonb_typeof(e)<>'object' OR e-ARRAY['ref','source','expires_at']<>'{}'::jsonb
+                OR NOT COALESCE(e->>'source'=ANY(profile.evidence_sources),false)
+                OR NOT EXISTS (SELECT 1 FROM perception_private.source_refs
+                    WHERE id=(e->>'ref')::uuid AND source=s AND ref_type='evidence') THEN
+                RAISE EXCEPTION 'unregistered evidence' USING ERRCODE='22023';
+            END IF;
+            fresh:=least(fresh,perception_private.instant(e->'expires_at'));
+        END LOOP;
+        labels:=b->'labels';
+        IF jsonb_typeof(labels)<>'object' OR NOT labels ?& ARRAY['version','label_instr','label_data','label_sens'] OR labels->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(labels->'version')<>'number'
+            OR labels-ARRAY['version','label_instr','label_data','label_sens']<>'{}'::jsonb THEN
+            RAISE EXCEPTION 'closed labels required' USING ERRCODE='22023';
+        END IF;
+        FOREACH s IN ARRAY ARRAY['label_instr','label_data','label_sens'] LOOP
+            IF jsonb_typeof(labels->s) IS DISTINCT FROM 'array' OR jsonb_array_length(labels->s)>32
+                OR (SELECT count(*)<>count(DISTINCT value) FROM jsonb_array_elements(labels->s)) THEN
+                RAISE EXCEPTION 'invalid labels' USING ERRCODE='22023';
+            END IF;
+            FOR e IN SELECT value FROM jsonb_array_elements(labels->s) LOOP
+                IF jsonb_typeof(e)<>'string' OR
+                    (s='label_sens' AND e#>>'{}' NOT IN
+                    ('health','finance','location','routine','relationship_notes','credentials')) OR
+                    (s<>'label_sens' AND e<>'"world"'::jsonb AND NOT EXISTS (
+                        SELECT 1 FROM perception_private.source_refs WHERE id=(e#>>'{}')::uuid
+                        AND source=profile.source AND ref_type='principal')) THEN
+                    RAISE EXCEPTION 'unresolved label principal/category' USING ERRCODE='22023';
+                END IF;
+            END LOOP;
+        END LOOP;
+        -- Until .6 activation there is no caller-authoritative label downgrade:
+        -- preserve resolved refs while joining unknown world and all six categories.
+        labels:=jsonb_build_object('version',1,
+            'label_instr',(SELECT jsonb_agg(x ORDER BY x) FROM
+                (SELECT DISTINCT value AS x FROM jsonb_array_elements(labels->'label_instr'||'["world"]'::jsonb)) q),
+            'label_data',(SELECT jsonb_agg(x ORDER BY x) FROM
+                (SELECT DISTINCT value AS x FROM jsonb_array_elements(labels->'label_data'||'["world"]'::jsonb)) q),
+            'label_sens','["credentials","finance","health","location","relationship_notes","routine"]'::jsonb);
+        s:=profile.source;
+        eid:=public.uuid_generate_v5('e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32',
+            perception_private.canonical_json(jsonb_build_array('perception-event-v1',s,b->>'event_key')));
+        body_digest:=encode(sha256(convert_to(perception_private.canonical_json(b),'UTF8')),'hex');
+        -- One ordered transaction serializer covers absent-slot creation, replay
+        -- and CAS. There is no second producer/retraction lock protocol.
+        PERFORM pg_advisory_xact_lock(hashtextextended('perception:'||k||':'||COALESCE(subj::text,'null'),0));
+        SELECT * INTO prior FROM perception_private.receipts WHERE event_id=eid;
+        IF FOUND THEN
+            IF prior.digest<>body_digest THEN RAISE EXCEPTION 'changed perception replay' USING ERRCODE='23514'; END IF;
+            RETURN prior.receipt;
+        END IF;
+        tid:=(b->>'retracts_event_id')::uuid;
+        IF tid IS NOT NULL THEN
+            SELECT * INTO target FROM public.timeline WHERE id=tid;
+            IF NOT FOUND OR k<>'owner.place' OR target.kind<>k
+                OR target.subject_entity IS DISTINCT FROM subj OR target.source<>s OR target.writer<>actor
+                OR target.class<>'transition' OR target.operation<>'assert'
+                OR target.from_state IS DISTINCT FROM 'known' OR target.to_state IS DISTINCT FROM 'known'
+                OR target.from_value->>'presence' IS DISTINCT FROM 'inside'
+                OR target.to_value->>'presence' IS DISTINCT FROM 'outside'
+                OR b->>'state' IS DISTINCT FROM 'known'
+                OR b->'typed_value_or_ref'->>'presence' IS DISTINCT FROM 'inside'
+                OR stamp<=target.at OR stamp-target.at>interval '10 minutes'
+                OR EXISTS (SELECT 1 FROM public.timeline WHERE retracts_event_id=tid) THEN
+                RAISE EXCEPTION 'unearned perception retraction' USING ERRCODE='23514';
+            END IF;
+        END IF;
+        IF k='owner.mode' THEN
+            SELECT state,typed_value,observed_at,generation INTO old FROM public.owner_modes
+                WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj FOR UPDATE;
+        ELSE
+            SELECT state,typed_value,observed_at,generation INTO old FROM public.situation_slots
+                WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj FOR UPDATE;
+        END IF;
+        IF gen<>COALESCE(old.generation,0) THEN
+            RETURN jsonb_build_object('status','conflict','generation',COALESCE(old.generation,0));
+        END IF;
+        historical:=(old.observed_at IS NOT NULL AND observed<old.observed_at) OR
+            stamp<COALESCE((SELECT max(at) FROM public.timeline WHERE kind=k
+                AND subject_entity IS NOT DISTINCT FROM subj AND class='transition'),stamp);
+        IF NOT historical THEN
+            IF k='owner.mode' THEN
+                INSERT INTO public.owner_modes(id,kind,subject_entity,state,typed_value,source,observed_at,
+                    fresh_until,evidence_refs,labels,generation,writer,effective_span,cause)
+                VALUES(public.uuid_generate_v5(eid,'slot'),k,subj,b->>'state',NULLIF(b->'typed_value_or_ref','null'),s,
+                    observed,fresh,b->'evidence_refs',labels,gen+1,actor,b->'effective_span',eid)
+                ON CONFLICT(kind,subject_entity) DO UPDATE SET state=excluded.state,typed_value=excluded.typed_value,
+                    source=excluded.source,observed_at=excluded.observed_at,fresh_until=excluded.fresh_until,
+                    evidence_refs=excluded.evidence_refs,labels=excluded.labels,generation=excluded.generation,
+                    writer=excluded.writer,effective_span=excluded.effective_span,cause=excluded.cause;
+            ELSE
+                INSERT INTO public.situation_slots(id,kind,subject_entity,state,typed_value,source,observed_at,
+                    fresh_until,evidence_refs,labels,generation,writer)
+                VALUES(public.uuid_generate_v5(eid,'slot'),k,subj,b->>'state',NULLIF(b->'typed_value_or_ref','null'),s,
+                    observed,fresh,b->'evidence_refs',labels,gen+1,actor)
+                ON CONFLICT(kind,subject_entity) DO UPDATE SET state=excluded.state,typed_value=excluded.typed_value,
+                    source=excluded.source,observed_at=excluded.observed_at,fresh_until=excluded.fresh_until,
+                    evidence_refs=excluded.evidence_refs,labels=excluded.labels,generation=excluded.generation,writer=excluded.writer;
+            END IF;
+        END IF;
+        INSERT INTO public.timeline(id,source,event_key,digest,kind,subject_entity,class,operation,at,confirmed_at,
+            late,effective_span,observed_at,typed_value,from_state,to_state,from_value,to_value,evidence_refs,labels,generation,writer,
+            zone,lived_date)
+        VALUES(eid,s,b->>'event_key',body_digest,k,subj,CASE WHEN historical THEN 'record' ELSE 'transition' END,
+            'assert',stamp,confirmed,confirmed-stamp>interval '15 minutes',b->'effective_span',observed,
+            NULLIF(b->'typed_value_or_ref','null'),CASE WHEN NOT historical THEN COALESCE(old.state,'unknown') END,
+            CASE WHEN NOT historical THEN b->>'state' END,CASE WHEN NOT historical THEN old.typed_value END,
+            CASE WHEN NOT historical THEN NULLIF(b->'typed_value_or_ref','null') END,b->'evidence_refs',labels,
+            CASE WHEN historical THEN gen ELSE gen+1 END,actor,
+            CASE WHEN k='owner.clock' THEN b->'typed_value_or_ref'->>'zone' END,
+            CASE WHEN k='owner.clock' THEN (stamp AT TIME ZONE (b->'typed_value_or_ref'->>'zone'))::date END);
+        IF tid IS NOT NULL THEN
+            rid:=public.uuid_generate_v5('e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32',
+                perception_private.canonical_json(jsonb_build_array('perception-event-v1',s,
+                    'retract:'||eid::text||':'||tid::text)));
+            labels:=labels||jsonb_build_object(
+                'label_instr',(SELECT jsonb_agg(x ORDER BY x) FROM (SELECT DISTINCT value x
+                    FROM jsonb_array_elements((labels->'label_instr')||(target.labels->'label_instr'))) q),
+                'label_data',(SELECT jsonb_agg(x ORDER BY x) FROM (SELECT DISTINCT value x
+                    FROM jsonb_array_elements((labels->'label_data')||(target.labels->'label_data'))) q));
+            INSERT INTO public.timeline(id,source,event_key,digest,kind,subject_entity,class,operation,retracts_event_id,
+                at,confirmed_at,late,effective_span,observed_at,evidence_refs,labels,generation,writer)
+            VALUES(rid,s,'retract:'||eid::text||':'||tid::text,body_digest,k,subj,'record','retract',tid,
+                stamp,confirmed,confirmed-stamp>interval '15 minutes',b->'effective_span',observed,
+                b->'evidence_refs',labels,CASE WHEN historical THEN gen ELSE gen+1 END,actor);
+        END IF;
+        result:=jsonb_build_object('status',CASE WHEN historical THEN 'historical' ELSE 'committed' END,
+            'event_id',eid,'retraction_event_id',rid,'generation',CASE WHEN historical THEN gen ELSE gen+1 END);
+        INSERT INTO perception_private.receipts(event_id,digest,receipt) VALUES(eid,body_digest,result);
+        IF rid IS NOT NULL THEN
+            INSERT INTO perception_private.receipts(event_id,digest,receipt) VALUES(rid,body_digest,result);
+        END IF;
+        RETURN result;
+    END $write$;
+    CREATE OR REPLACE FUNCTION public.perception_read(k text,subj uuid,as_of timestamptz) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path=pg_catalog,pg_temp AS $read$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        slot record; configured boolean;
+    BEGIN
+        IF actor NOT IN ('perception_owner_reader','perception_availability_reader') THEN
+            RAISE EXCEPTION 'perception reader authority required' USING ERRCODE='42501';
+        END IF;
+        IF as_of IS NULL OR NOT isfinite(as_of) OR k NOT IN ('owner.place','owner.activity','owner.clock','system.dep',
+            'expect.window','home.sensing','owner.mode','owner.suppression') THEN
+            RAISE EXCEPTION 'bounded perception read required' USING ERRCODE='22023';
+        END IF;
+        IF actor='perception_availability_reader' THEN
+            -- No detail, source membership or history oracle for exposed readers.
+            SELECT fresh_until,observed_at,state,typed_value INTO slot FROM public.situation_slots
+                WHERE kind='owner.suppression' AND subject_entity IS NOT DISTINCT FROM subj;
+            RETURN jsonb_build_object('state','unknown','availability_reason','detail_restricted',
+                'busy_until',CASE WHEN slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of
+                    AND slot.typed_value->'active'='true'::jsonb THEN slot.fresh_until END);
+        END IF;
+        SELECT EXISTS(SELECT 1 FROM perception_private.sources WHERE kind=k
+            AND max_age_seconds IS NOT NULL AND
+            (subj=ANY(subjects) OR subj IS NULL AND null_subject)) INTO configured;
+        IF k='owner.mode' THEN
+            SELECT * INTO slot FROM public.owner_modes WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
+        ELSE
+            SELECT * INTO slot FROM public.situation_slots WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
+        END IF;
+        IF slot.id IS NULL THEN
+            RETURN jsonb_build_object('state',CASE WHEN configured THEN 'unknown' ELSE 'unconfigured' END,
+                'value',NULL,'source',NULL,'age_seconds',NULL,'labels',jsonb_build_object('version',1,
+                    'label_instr',jsonb_build_array('world'),'label_data',jsonb_build_array('world'),
+                    'label_sens',jsonb_build_array('credentials','finance','health','location','relationship_notes','routine')),
+                'availability_reason',CASE WHEN configured THEN 'configured_empty' ELSE 'unconfigured' END);
+        END IF;
+        RETURN jsonb_build_object('id',slot.id,'kind',k,'subject',subj,
+            'state',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'unknown' ELSE slot.state END,
+            'value',CASE WHEN configured AND slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of THEN slot.typed_value END,
+            'stale_last_value',CASE WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN slot.typed_value END,
+            'source',slot.source,'observed_at',slot.observed_at,'fresh_until',slot.fresh_until,
+            'age_seconds',greatest(0,extract(epoch FROM as_of-slot.observed_at)),
+            'labels',slot.labels,'evidence_refs',slot.evidence_refs,'generation',slot.generation,
+            'availability_reason',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'stale'
+                WHEN slot.state='unmeasurable' THEN 'all_inputs_unmeasurable'
+                WHEN slot.state='unknown' THEN 'unknown_evidence'
+                WHEN slot.state='unconfigured' THEN 'unconfigured' ELSE 'confirmed' END);
+    END $read$;
+
+    CREATE OR REPLACE FUNCTION public.perception_timeline(
+        since timestamptz,until_at timestamptz,k text,subj uuid,before_id uuid,page_size integer,live boolean
+    ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER STABLE
+    SET search_path=pg_catalog,pg_temp AS $query$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name; result jsonb;
+    BEGIN
+        IF actor<>'perception_owner_reader' THEN
+            RAISE EXCEPTION 'private perception history required' USING ERRCODE='42501';
+        END IF;
+        IF since IS NULL OR until_at IS NULL OR page_size IS NULL OR NOT isfinite(since) OR NOT isfinite(until_at) OR since>=until_at OR page_size NOT BETWEEN 1 AND 100
+            OR live IS NULL OR until_at-since>interval '400 days' THEN
+            RAISE EXCEPTION 'bounded perception query required' USING ERRCODE='22023';
+        END IF;
+        -- The target join is in the SAME statement/snapshot as the page. It is
+        -- deliberately independent of the caller's time window and pagination.
+        SELECT COALESCE(jsonb_agg(item ORDER BY at DESC,id DESC),'[]'::jsonb) INTO result FROM (
+            SELECT e.id,e.at,to_jsonb(e)||jsonb_build_object('retracted',r.id IS NOT NULL,
+                'retraction_event_id',r.id) AS item
+            FROM public.timeline e LEFT JOIN public.timeline r ON r.retracts_event_id=e.id
+            WHERE e.at>=since AND e.at<until_at AND (k IS NULL OR e.kind=k)
+                AND (subj IS NULL OR e.subject_entity=subj)
+                AND (before_id IS NULL OR (e.at,e.id)<(
+                    SELECT c.at,c.id FROM public.timeline c WHERE c.id=before_id))
+                AND (NOT live OR (e.class='transition' AND e.operation='assert' AND NOT e.late
+                    AND r.id IS NULL AND e.at>=until_at-interval '10 minutes'))
+            ORDER BY e.at DESC,e.id DESC LIMIT page_size
+        ) q;
+        RETURN result;
+    END $query$;
+
+    CREATE OR REPLACE FUNCTION perception_private.valid_predicate(p jsonb,depth integer DEFAULT 0)
+    RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
+    DECLARE fields text[]; child jsonb;
+    BEGIN
+        IF depth>2 OR jsonb_typeof(p) IS DISTINCT FROM 'object'
+            OR jsonb_typeof(p->'tag') IS DISTINCT FROM 'string'
+            OR octet_length(p::text)>8192 THEN RETURN false; END IF;
+        CASE p->>'tag'
+        WHEN 'all','any' THEN
+            IF p-ARRAY['tag','children']<>'{}'::jsonb
+                OR jsonb_typeof(p->'children') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            IF jsonb_array_length(p->'children') NOT BETWEEN 1 AND 16 THEN RETURN false; END IF;
+            FOR child IN SELECT value FROM jsonb_array_elements(p->'children') LOOP
+                IF NOT COALESCE(perception_private.valid_predicate(child,depth+1),false) THEN RETURN false; END IF;
+            END LOOP;
+            RETURN true;
+        WHEN 'at' THEN
+            fields:=ARRAY['tag','instant','zone'];
+            PERFORM perception_private.instant(p->'instant');
+            IF jsonb_typeof(p->'zone') IS DISTINCT FROM 'string'
+                OR NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p->>'zone') THEN RETURN false; END IF;
+        WHEN 'transition' THEN
+            fields:=ARRAY['tag','kind','subject','from','to'];
+            IF jsonb_typeof(p->'kind') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'from') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'to') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'kind' IN ('owner.place','owner.activity','owner.clock','system.dep','expect.window',
+                'home.sensing','owner.mode','owner.suppression'),false) OR
+                NOT COALESCE(p->>'from' IN ('known','unknown','unmeasurable','unconfigured'),false) OR
+                NOT COALESCE(p->>'to' IN ('known','unknown','unmeasurable','unconfigured'),false) THEN RETURN false; END IF;
+            IF p->'subject' IS DISTINCT FROM 'null'::jsonb THEN
+                IF jsonb_typeof(p->'subject') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+                PERFORM (p->>'subject')::uuid;
+            END IF;
+        WHEN 'decision' THEN
+            fields:=ARRAY['tag','subject_id','outcome'];
+            IF jsonb_typeof(p->'subject_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'outcome') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'outcome' IN ('approved','rejected','expired','cancelled'),false) THEN RETURN false; END IF;
+            PERFORM (p->>'subject_id')::uuid;
+        WHEN 'owner_input' THEN
+            fields:=ARRAY['tag','goal_id','binding_ref'];
+            IF jsonb_typeof(p->'goal_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'binding_ref') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+            PERFORM (p->>'goal_id')::uuid;
+            PERFORM (p->>'binding_ref')::uuid;
+        WHEN 'effect_settled' THEN
+            fields:=ARRAY['tag','effect_id','status_set'];
+            IF jsonb_typeof(p->'effect_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'status_set') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            PERFORM (p->>'effect_id')::uuid;
+            IF jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
+                OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
+                    WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                        OR NOT COALESCE((value#>>'{}') IN ('succeeded','failed','cancelled','unknown'),false)) THEN RETURN false; END IF;
+        ELSE RETURN false;
+        END CASE;
+        RETURN p-fields='{}'::jsonb AND (SELECT count(*) FROM jsonb_object_keys(p))=cardinality(fields);
+    END $predicate$;
+
+    CREATE OR REPLACE FUNCTION public.perception_bind(b jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $binding$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        profile perception_private.sources%ROWTYPE; existing record; table_name text;
+        labels jsonb; boundary jsonb; e jsonb; id uuid; digest text; starts timestamptz; expires timestamptz;
+        fields text[]:=ARRAY['version','id','kind','subject','goal_ref','predicate','source_boundary',
+            'source','starts_at','expires_at','evidence_refs','authority_ref'];
+    BEGIN
+        IF jsonb_typeof(b)<>'object' OR b-fields<>'{}'::jsonb
+            OR (SELECT count(*) FROM jsonb_object_keys(b))<>cardinality(fields) OR b->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(b->'version')<>'number'
+            OR NOT COALESCE(perception_private.valid_predicate(b->'predicate'),false)
+            OR (SELECT count(*) FROM jsonb_path_query(b->'predicate','strict $.** ? (@.tag != "all" && @.tag != "any")'))>16 THEN
+            RAISE EXCEPTION 'closed bounded perception binding required' USING ERRCODE='22023';
+        END IF;
+        SELECT * INTO profile FROM perception_private.sources WHERE source=b->>'source' AND kind=b->>'kind';
+        IF NOT FOUND OR actor<>profile.writer OR actor NOT IN ('perception_context_writer','perception_attention_writer')
+            OR profile.max_age_seconds IS NULL OR NOT COALESCE((b->>'subject')::uuid=ANY(profile.subjects),false) THEN
+            RAISE EXCEPTION 'perception binding authority required' USING ERRCODE='42501';
+        END IF;
+        boundary:=b->'source_boundary';
+        IF jsonb_typeof(boundary) IS DISTINCT FROM 'array' OR jsonb_array_length(boundary) NOT BETWEEN 1 AND 16
+            OR EXISTS(SELECT 1 FROM jsonb_array_elements(boundary) entries(value)
+                WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                    OR NOT COALESCE((value#>>'{}')=ANY(profile.evidence_sources),false)) OR
+            jsonb_typeof(b->'evidence_refs')<>'array' OR jsonb_array_length(b->'evidence_refs') NOT BETWEEN 1 AND 32 THEN
+            RAISE EXCEPTION 'perception source boundary required' USING ERRCODE='22023';
+        END IF;
+        FOR e IN SELECT value FROM jsonb_array_elements(b->'evidence_refs') LOOP
+            IF NOT EXISTS(SELECT 1 FROM perception_private.source_refs
+                WHERE id=(e#>>'{}')::uuid AND source=profile.source AND ref_type='evidence') THEN
+                RAISE EXCEPTION 'perception binding evidence required' USING ERRCODE='22023';
+            END IF;
+        END LOOP;
+        starts:=perception_private.instant(b->'starts_at'); expires:=perception_private.instant(b->'expires_at');
+        IF starts>=expires OR expires-starts>make_interval(secs=>profile.max_age_seconds) THEN
+            RAISE EXCEPTION 'finite perception binding interval required' USING ERRCODE='22023';
+        END IF;
+        IF b->'authority_ref'<>'null'::jsonb AND (actor<>'perception_attention_writer'
+            OR NOT EXISTS(SELECT 1 FROM perception_private.suppression_refs WHERE id=(b->>'authority_ref')::uuid
+                AND source=profile.source)) THEN
+            RAISE EXCEPTION 'existing suppression authority required' USING ERRCODE='42501';
+        END IF;
+        id:=(b->>'id')::uuid; PERFORM (b->>'goal_ref')::uuid;
+        digest:=encode(sha256(convert_to(perception_private.canonical_json(b),'UTF8')),'hex');
+        table_name:=CASE WHEN b->'authority_ref'='null'::jsonb THEN 'public.perception_conditions'
+            ELSE 'public.perception_suppressions' END;
+        PERFORM pg_advisory_xact_lock(hashtextextended('perception-binding:'||id::text,0));
+        EXECUTE format('SELECT digest FROM %s WHERE id=$1',table_name) INTO existing USING id;
+        IF existing.digest IS NOT NULL THEN
+            IF existing.digest<>digest THEN RAISE EXCEPTION 'immutable perception binding changed' USING ERRCODE='23514'; END IF;
+            RETURN jsonb_build_object('id',id,'generation',1,'state','open');
+        END IF;
+        labels:=jsonb_build_object('version',1,'label_instr',jsonb_build_array('world'),
+            'label_data',jsonb_build_array('world'),'label_sens',jsonb_build_array('credentials','finance',
+                'health','location','relationship_notes','routine'));
+        IF table_name='public.perception_conditions' THEN
+            INSERT INTO public.perception_conditions(id,kind,subject_entity,goal_ref,predicate,source_boundary,source,
+                starts_at,expires_at,generation,evidence_refs,labels,state,digest)
+            VALUES(id,profile.kind,(b->>'subject')::uuid,(b->>'goal_ref')::uuid,b->'predicate',boundary,profile.source,
+                starts,expires,1,b->'evidence_refs',labels,'open',digest);
+        ELSE
+            INSERT INTO public.perception_suppressions(id,kind,subject_entity,goal_ref,predicate,source_boundary,source,
+                starts_at,expires_at,generation,evidence_refs,labels,state,authority_ref,digest)
+            VALUES(id,profile.kind,(b->>'subject')::uuid,(b->>'goal_ref')::uuid,b->'predicate',boundary,profile.source,
+                starts,expires,1,b->'evidence_refs',labels,'open',(b->>'authority_ref')::uuid,digest);
+        END IF;
+        RETURN jsonb_build_object('id',id,'generation',1,'state','open');
+    END $binding$;
+
+    CREATE OR REPLACE FUNCTION public.perception_registry() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path=pg_catalog,pg_temp AS $registry$
+    BEGIN
+        IF COALESCE(NULLIF(current_setting('role',true),'none'),session_user)<>'perception_owner_reader' THEN
+            RAISE EXCEPTION 'private perception registry reader required' USING ERRCODE='42501';
+        END IF;
+        RETURN (SELECT jsonb_agg(to_jsonb(k) ORDER BY kind) FROM perception_private.kinds k);
+    END $registry$;
+
+    -- Fixed function allowlist: no grants to domain, connector, model or
+    -- migration identities, even when bootstrap re-widens public-table ACLs.
+    FOR f IN SELECT p.oid::regprocedure FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='perception_private' OR n.nspname='public'
+        AND p.proname IN ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry') LOOP
+        EXECUTE format('ALTER FUNCTION %s OWNER TO perception_owner',f);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f);
+        FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
+            SELECT grantee FROM aclexplode(COALESCE((SELECT proacl FROM pg_proc
+                WHERE oid=f::oid),acldefault('f','perception_owner'::regrole))))
+            AND rolname<>current_user AND rolname<>'perception_owner' LOOP
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',f,r);
+        END LOOP;
+    END LOOP;
+    GRANT EXECUTE ON FUNCTION public.perception_registry() TO perception_owner_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_bind(jsonb) TO perception_context_writer,perception_attention_writer;
+    GRANT EXECUTE ON FUNCTION public.perception_write(jsonb) TO perception_dots_writer,
+        perception_context_writer,perception_health_writer,perception_expect_writer,
+        perception_sensing_writer,perception_attention_writer;
+    GRANT EXECUTE ON FUNCTION public.perception_read(text,uuid,timestamptz)
+        TO perception_owner_reader,perception_availability_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_timeline(timestamptz,timestamptz,text,uuid,uuid,integer,boolean)
+        TO perception_owner_reader;
+
+    IF to_regclass('public.entities') IS NOT NULL THEN
+        GRANT SELECT ON public.entities TO perception_owner;
+    END IF;
+END $perception_install$;
+REVOKE ALL ON FUNCTION perception_admin.install_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION perception_admin.finalize_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $perception_finalize$
+DECLARE t text; r record;
+BEGIN
+    -- Re-run the fixed definitions and post-baseline revocations, never re-grant
+    -- a table directly to a service or ordinary migration/domain identity.
+    PERFORM perception_admin.install_interface();
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid=t::regclass
+            AND relowner='perception_owner'::regrole AND relrowsecurity AND relforcerowsecurity) THEN
+            RAISE EXCEPTION 'perception finalization refused';
+        END IF;
+    END LOOP;
+    IF to_regclass('public.entities') IS NOT NULL THEN
+        GRANT SELECT ON public.entities TO perception_owner;
+    END IF;
+    FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'perception_%' LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r.rolname AND
+            (rolsuper OR rolbypassrls OR (r.rolname='perception_owner' AND rolcanlogin)
+             OR rolinherit OR rolcreatedb OR rolcreaterole OR rolreplication))
+            OR EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid=r.rolname::regrole OR member=r.rolname::regrole) THEN
+            RAISE EXCEPTION 'perception role isolation refused';
+        END IF;
+    END LOOP;
+END $perception_finalize$;
+REVOKE ALL ON FUNCTION perception_admin.finalize_interface() FROM PUBLIC;
+CREATE OR REPLACE FUNCTION perception_admin.rollback_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $perception_rollback$
+BEGIN
+    LOCK TABLE public.timeline,public.situation_slots,public.owner_modes,
+        public.perception_conditions,public.perception_suppressions IN ACCESS EXCLUSIVE MODE;
+    IF EXISTS(SELECT 1 FROM public.timeline) OR EXISTS(SELECT 1 FROM public.situation_slots)
+        OR EXISTS(SELECT 1 FROM public.owner_modes) OR EXISTS(SELECT 1 FROM public.perception_conditions)
+        OR EXISTS(SELECT 1 FROM public.perception_suppressions) THEN
+        RAISE EXCEPTION 'perception downgrade retains durable history; forward remediation required';
+    END IF;
+    -- Empty additive shared objects intentionally remain for another core schema.
+    -- This retires no producer, reader, role or authority and deletes no history.
+END $perception_rollback$;
+REVOKE ALL ON FUNCTION perception_admin.rollback_interface() FROM PUBLIC;
+DO $perception_grant_installer$
+DECLARE migration name;
+BEGIN
+    SELECT migration_role INTO migration FROM perception_admin.bootstrap_configuration WHERE singleton;
+    EXECUTE format('GRANT USAGE ON SCHEMA perception_admin TO %I',migration);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION perception_admin.install_interface() TO %I',migration);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION perception_admin.rollback_interface() TO %I',migration);
+    -- finalize is NOT a migration API. Only the fixed bootstrap owner may call.
+    EXECUTE format('REVOKE ALL ON FUNCTION perception_admin.finalize_interface() FROM %I',migration);
+    IF to_regclass('public.situation_slots') IS NOT NULL THEN
+        PERFORM perception_admin.finalize_interface();
+    END IF;
+END $perception_grant_installer$;
 
 -- ── Runtime-attention outbox bootstrap boundary ────────────────────────────
 --

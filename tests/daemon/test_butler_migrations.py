@@ -558,11 +558,20 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
 
     accepted = Connection()
     prerequisite.check_bootstrap_connection(accepted)
-    assert len(accepted.calls) == 12
+    assert len(prerequisite._ADMINS) == 4
+    assert len(accepted.calls) == 15
     assert all(query.lstrip().startswith(("SELECT", "WITH")) for query, _ in accepted.calls)
     assert not any("bootstrap_configuration WHERE" in query for query, _ in accepted.calls)
     # NULL/nonboolean 'true' cannot stand in for positively inspected catalog state.
-    for index in (2, 3, 4, 5, 6, 8, 10, 12):
+    # Preserve every old provenance/profile/staged refusal and include the
+    # fourth interface; installed=False is a legitimate branch selector.
+    gate_indices = [
+        i
+        for i, (query, _) in enumerate(accepted.calls, 1)
+        if i != 1 and query not in prerequisite._INSTALLED.values()
+    ]
+    assert len(gate_indices) == 10
+    for index in gate_indices:
         for value in (False, None, "true", 1):
             with pytest.raises(
                 prerequisite.BootstrapPrerequisiteError, match="missing or untrusted|unreadable"
@@ -572,8 +581,8 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
         prerequisite.check_bootstrap_connection(Connection(installed=None))
     finalized = Connection(installed=True)
     prerequisite.check_bootstrap_connection(finalized)
-    assert all("pg_catalog.pg_roles" in finalized.calls[index][0] for index in (7, 9, 11))
-    assert all(":migration_role" in finalized.calls[index][0] for index in (7, 9, 11))
+    assert all("pg_catalog.pg_roles" in finalized.calls[index][0] for index in (8, 10, 12, 14))
+    assert all(":migration_role" in finalized.calls[index][0] for index in (8, 10, 12, 14))
     assert prerequisite._qualified_predicate(
         "SELECT current_user, pg_roles.oid, 'pg_roles current_user' -- pg_roles\nFROM pg_roles"
     ) == (
