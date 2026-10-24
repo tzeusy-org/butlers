@@ -1,7 +1,7 @@
 ## Context
 
 OAuth-bound connectors in Butlers — Spotify, Gmail, Google Calendar, Google
-Drive, Google Health, Discord (planned) — share a recurring failure mode that
+Drive and Google Health — share a recurring failure mode that
 none of the existing specs address coherently: the provider rotates a scope
 name (Spotify, May 2026), revokes a grant (token expiry past refresh window),
 or the connector author bumps the required scope set (e.g. Gmail moves from
@@ -369,7 +369,7 @@ cause produced `needs_reauth`.
 
 **What:** Connectors whose credential type is not OAuth (Telegram bot token,
 Telegram user-client TDLib session, OwnTracks bearer token, Home Assistant
-long-lived access token, WhatsApp Meta business app, etc.) return:
+long-lived access token, WhatsApp QR/session pairing, etc.) return:
 
 ```json
 {
@@ -414,13 +414,20 @@ because the underlying credential model has no reauth semantics).
 | Google Calendar | Google OAuth (`connector-google-calendar/spec.md:8-37`) | same | Yes |
 | Google Drive | Google OAuth (referenced in `module-google-drive`) | same | Yes |
 | Google Health | Google OAuth (`connector-google-health/spec.md:9-41`) | same | Yes |
-| Discord | OAuth 2.0 (planned) | same | Yes |
+| ActivityWatch | Local/self-hosted environment configuration, no OAuth | `unsupported` | No — connector configuration |
+| Discord | Retired; no registered connector or accepted channel | Not an active auth surface | No — ingest remains refused |
 | Telegram bot | Bot token (static, `connector-telegram-bot/spec.md`) | `unsupported` | No — rotate token via Settings |
 | Telegram user client | TDLib session string (`connector-telegram-user-client/spec.md:111-137`) | `unsupported` | No — re-pair via mobile flow |
 | OwnTracks | Bearer token (`connector-owntracks/spec.md:47-105`) | `unsupported` | No — regenerate token via Settings |
 | Home Assistant | Long-lived access token | `unsupported` | No — rotate via HA UI |
-| WhatsApp | Meta business app credentials | `unsupported` | No — rotate via Meta Business |
-| Steam | API key (planned per `connector-steam`) | `unsupported` | No — regenerate via Steam Web API |
+| WhatsApp user client | whatsmeow QR/session pairing (`whatsapp_user_client`, provider `whatsapp`) | `unsupported` | No — Passport pairing journey |
+| Steam | API key (`connector-steam`) | `unsupported` | No — regenerate via Steam Web API |
+
+Internal `live-listener` and `filtered_events` also have no remote auth and
+resolve to `unsupported` with empty scopes. Source channels/providers and
+connector types are distinct namespaces: see the explicit mapping and retained
+provider-completeness obligation in the spec. Discord retirement is not
+permission to register it or initiate OAuth.
 
 The classification matrix above is normative and lives in the spec under
 `§Per-Connector Applicability Matrix`. New connector authors MUST update it
@@ -651,9 +658,11 @@ dashboard crashes.
 for every connector type. The implementation MUST default to `unsupported`
 when a connector type is unrecognized (fail-safe to the alt-auth surface,
 which is "no OAuth surface available — see connector documentation"). A
-follow-up bead in this change's tasks.md adds the matrix-completeness test:
-"every value of `SourceProvider` (per `connector-base-spec/spec.md:107`) has
-a defined `auth.status` resolver."
+requirement-to-owner handoff in task 5.4 retains the matrix-completeness test:
+every declared `SourceProvider` Literal value and every current connector
+type must have an explicit mapping and defined `auth.status` resolver. A
+provider alias is not a new OAuth connector; mapped non-connector values keep
+the documented unsupported fallback.
 
 ### Trade-off 1 — No third-party scope catalog plugin API
 
@@ -678,7 +687,8 @@ write volume for a low query benefit.
 ## Migration Plan
 
 This change is spec-only. No code, no migration ships with this change. The
-follow-up implementation bead (see "Bead-creation handoff" in tasks.md) will:
+existing implementation programme (see the idempotent handoff in task 5.4)
+retains the following duties, crediting only actual delivered scope:
 
 1. Add the four additive columns to `public.connector_registry` via Alembic
    migration. Nullable defaults mean no data backfill needed.
@@ -690,7 +700,8 @@ follow-up implementation bead (see "Bead-creation handoff" in tasks.md) will:
 4. Replace the HTTP 503 stub in `/api/ingestion/connectors/.../reauth` with
    the contract defined here.
 5. Add the per-connector applicability matrix as a Python registry and a
-   pytest that asserts every `SourceProvider` value has an entry.
+   pytest that covers every `SourceProvider` Literal value and connector
+   type through the explicit namespace mapping, not literal string equality.
 
 Spotify's authority reconciliation is a separate serialized implementation
 lane, not permission to fold Spotify into the generic endpoint above:
@@ -710,8 +721,44 @@ lane, not permission to fold Spotify into the generic endpoint above:
    fixture and leaves no compatibility alias, shim, or production registry
    entry.
 
-There is no live data to migrate. Existing connectors will simply gain a
-populated `auth.status` on first introspection after the deploy.
+The additive-column contract requires no backfill and preserves existing
+rows. core 114 already supplies the source migration; that is not proof of an
+applied database. Remaining observation/status duties must populate current
+rows through the specified lifecycle, without inventing successful probes.
+
+## Delivery evidence and remaining implementation handoff
+
+This is a spec-only conformance amendment. Historical checked tasks record
+prior work, not fresh validation or implementation of every requirement.
+The coordinator acknowledged programme/discovery custody on 2026-10-24 at
+15:22:43Z: the remaining runtime duties are `OUTSTANDING_UNALLOCATED`, with
+no implementation assignee. This carrier does not create a duplicate bead,
+reopen a closed implementation owner, or authorize runtime changes. Task 5.4
+maps each requirement to its existing accepted receipt and retains unfulfilled
+duties explicitly. Exact source review and adoption on 2026-10-24 authorize handoff
+credit; runtime completion is not a prerequisite to this spec-only archive.
+
+The accepted receipts are immutable merged PR identities:
+
+| Existing owner | Accepted receipt | Actual delivered scope |
+|----------------|------------------|------------------------|
+| `bu-1f91v.11` | [PR 1799](https://github.com/tzeusy-org/butlers/pull/1799), merge `b1498d066c9a153ce77cd3a7ed6a3deb9c085345` | Deliberate HTTP 503 reauth stub, without `Retry-After`, approval or DB work; not the future generic reauth lifecycle. |
+| `bu-wn3n3` | [PR 2065](https://github.com/tzeusy-org/butlers/pull/2065), merge `aab4ed0caeb3b4933aa1e272562b2d3e5b49a819` | Central manifest/read surface, additive core 114 columns and dashboard scope blocks; not generic observation cadence or reauth completion. |
+| `bu-fj7lx` | [PR 3743](https://github.com/tzeusy-org/butlers/pull/3743), merge `d8e9549dd8f753d573c62f3f8ebd348b727f4cdb` | Connector-owned Spotify lifecycle, Tier 2 custody, content-blind Passport and server-side fences. |
+| `bu-3ifcj` | [PR 4146](https://github.com/tzeusy-org/butlers/pull/4146), merge `7b3b56004279ad2b94d2d2be6c91c38a0824c039` | Subsequent Google-only generic registry/route cleanup, indistinguishable Spotify refusal and synthetic provider fixtures. |
+
+These receipts record accepted historical scope, not ancestry or fresh runtime
+proof for the current checkout. The current source still has the generic 503
+stub in `src/butlers/api/routers/ingestion_connectors.py`. Its detail projection
+computes auth on read and normalizes the actionable stored causes explicitly
+for Spotify; that does not discharge this contract's computed-on-write or
+generic convergence obligations. Generic refresh/fallback-cadence observation,
+connector-bound state/callback replay and audit duties remain unfulfilled
+implementation obligations. Existing columns and Spotify metadata writes do
+not establish generic lifecycle completion. No task is credited by a closed
+bead name or by this source inspection.
+
+
 
 ## Open Questions
 
@@ -777,4 +824,5 @@ populated `auth.status` on first introspection after the deploy.
   `openspec/specs/connector-telegram-bot/spec.md`,
   `openspec/specs/connector-telegram-user-client/spec.md:111-137`,
   `openspec/specs/connector-owntracks/spec.md:47-105`
-- Reauth bead (implementation handoff target) — `bu-1f91v.11`
+- Historical accepted reauth stub owner — `bu-1f91v.11`; unresolved
+  implementation custody is retained in task 5.4
