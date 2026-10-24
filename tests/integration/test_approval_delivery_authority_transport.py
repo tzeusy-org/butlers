@@ -103,13 +103,17 @@ async def authority_pools(authority_db_url):
     # admission, routing and ledger operations below retain owning SET ROLE.
     cleanup = await asyncpg.connect(authority_db_url)
     try:
+        # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+        await cleanup.execute(
+            "DELETE FROM relationship.pending_actions WHERE goal_origin = 'legacy'"
+        )
         await cleanup.execute(
             "TRUNCATE relationship.approval_delivery_attempts, "
             "relationship.approval_delivery_cohort_members, "
             "relationship.approval_delivery_presentations, "
             "relationship.approval_delivery_cohorts, "
             "relationship.approval_delivery_intents, relationship.approval_events, "
-            "relationship.pending_actions, switchboard.notifications, "
+            "switchboard.notifications, "
             "switchboard.message_inbox, messenger.approval_delivery_handoffs CASCADE"
         )
     finally:

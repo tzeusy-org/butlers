@@ -113,9 +113,9 @@ async def _startup_config(daemon: Any, state: StartupState) -> None:
     # Only an explicitly installed startup selection activates this boundary.
     state.profile = vars(daemon).get("_control_profile")
     if state.profile is not None:
-        from butlers.control import check_private_key_absent
+        from butlers.control import check_control_profile
 
-        check_private_key_absent(state.profile)
+        check_control_profile(state.profile)
 
     # 1. Load config (skip if pre-set, e.g. by e2e fixtures)
     if daemon.config is None:
@@ -570,6 +570,12 @@ async def _startup_module_tools(daemon: Any, state: StartupState) -> None:
     # 14e. Initialize module runtime states (enabled/disabled) from state store
     await daemon._init_module_runtime_states(state.pool)
 
+    # The dedicated private plane is dark by default and refuses missing
+    # producer/profile authority before ordinary MCP acceptance.
+    from butlers.capability_broker.production import start_private_transport
+
+    await start_private_transport(daemon)
+
     # 14f. The fenced approval-delivery worker is daemon-owned but remains
     # dormant until the trusted recovery-only Messenger runtime is installed.
     from butlers.core.approval_delivery_worker import start_approval_delivery_worker
@@ -779,6 +785,9 @@ async def _run_shutdown(daemon: Any) -> None:
 
     daemon._shutting_down = True
     daemon._accepting_connections = False
+    from butlers.capability_broker.production import close_private_transport
+
+    await close_private_transport(daemon)
     if daemon._boot_registration_task is not None:
         daemon._boot_registration_task.cancel()
         try:

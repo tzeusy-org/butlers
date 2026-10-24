@@ -10378,3 +10378,16 @@ export interface FactAttribution {
 export interface CandidateIdentityFact extends ContactFact {
   validity: "candidate";
 }
+
+export interface CalendarReprepareRequest {
+  displayed_call: DisplayedApprovalCall;
+  entry_id?: string;
+  response_status?: "accepted" | "declined" | "tentative";
+  send_updates?: "none" | "all" | "externalOnly";
+}
+
+export interface CalendarReprepareResult {
+  id: string;
+  review_required: true;
+  call_preview: ApprovalCallPreview;
+}

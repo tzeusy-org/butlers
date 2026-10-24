@@ -140,6 +140,8 @@ import {
   createApprovalRuleFromAction,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+vi.mock("@/api/client", () => ({ reprepareCalendarApproval: vi.fn() }));
+import { reprepareCalendarApproval } from "@/api/client";
 import { applyFleetEvent } from "@/hooks/event-cache-registry";
 import { toast } from "sonner";
 
@@ -4193,5 +4195,55 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
 
     expect(denyApproval).toHaveBeenCalledTimes(1);
     expect(denyApproval).toHaveBeenCalledWith("a1", undefined);
+  });
+});
+
+
+describe("Calendar response preparation requires a new displayed approval", () => {
+  it("prepares without deciding, renders the returned stored call, then separately approves its digest", async () => {
+    resetPageMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("calendar-1", "calendar_respond")]) as AnyMock);
+    const before = { tool_name: "calendar_respond", args_digest: "a".repeat(64) };
+    const after = { ...before, args_digest: "b".repeat(64) };
+    const base = (await makePendingDetail("calendar-1")).data;
+    const preview = { title: "Respond to invitation", facts: [
+      { label: "Workspace entry", value: "11111111-1111-4111-8111-111111111111" },
+      { label: "Response", value: "accepted" }, { label: "Send updates", value: "none" },
+    ], displayed_call: before };
+    vi.mocked(getApprovalDetail).mockReturnValue(makeApiResponse({ ...base,
+      proposed_action: { ...base.proposed_action, tool_name: "calendar_respond" }, call_preview: preview,
+    }) as AnyMock);
+    vi.mocked(reprepareCalendarApproval).mockReturnValue(makeApiResponse({ id: "calendar-1", review_required: true as const,
+      call_preview: { ...preview, facts: [{ label: "Response", value: "declined (new stored call)" }], displayed_call: after },
+    }));
+    vi.mocked(approveApproval).mockReturnValue(makeApiResponse({ id: "calendar-1", status: "approved", dispatched: false }) as AnyMock);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+    try {
+      act(() => root.render(<MemoryRouter><QueryClientProvider client={qc}><ApprovalsPage /></QueryClientProvider></MemoryRouter>));
+      await flushUntil(() => !!findButton(container, "Change response"));
+      await act(async () => { findButton(container, "Change response")?.click(); await flush(); });
+      expect(findButton(container, "Approve")?.disabled).toBe(true);
+      await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); await flush(); });
+      expect(approveApproval).not.toHaveBeenCalled();
+      const select = container.querySelector<HTMLSelectElement>('[aria-label="Calendar response"]');
+      await act(async () => { if (select) { select.value = "declined"; select.dispatchEvent(new Event("change", { bubbles: true })); } await flush(); });
+      await act(async () => { container.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+      await flushUntil(() => vi.mocked(reprepareCalendarApproval).mock.calls.length === 1);
+      expect(reprepareCalendarApproval).toHaveBeenCalledWith("calendar-1", { displayed_call: before,
+        entry_id: "11111111-1111-4111-8111-111111111111", response_status: "declined", send_updates: "none" });
+      expect(approveApproval).not.toHaveBeenCalled();
+      await flushUntil(() => container.textContent?.includes("declined (new stored call)") === true);
+      expect(findButton(container, "Approve")?.disabled).toBe(false);
+      await act(async () => { findButton(container, "Approve")?.click(); await flush(); });
+      expect(approveApproval).toHaveBeenCalledWith("calendar-1", { displayed_call: after });
+    } finally {
+      act(() => root.unmount()); qc.clear(); container.remove(); vi.restoreAllMocks();
+    }
   });
 });

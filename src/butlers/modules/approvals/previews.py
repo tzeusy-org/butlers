@@ -264,3 +264,52 @@ __all__ = [
     "resolve_call_preview",
     "unregister_preview",
 ]
+
+
+async def stored_calendar_preview(conn, root_id, tool_args):
+    """Show verified account, occurrence and version from the immutable command."""
+    from butlers.modules.calendar_response import read_response_binding
+
+    try:
+        payload = await read_response_binding(conn, root_id, tool_args)
+        command = payload["command"]
+        facts = [
+            {"label": "Account", "value": command["account"]["email"]},
+            {"label": "Calendar", "value": command["calendar_id"]},
+            {"label": "Event", "value": command["before"]["event_id"]},
+            {"label": "Self participant", "value": command["before"]["self_email"]},
+            {
+                "label": "Occurrence",
+                "value": json.dumps(
+                    {
+                        "recurring_event_id": command["before"]["recurring_event_id"],
+                        "original_start": command["before"]["original_start"],
+                    },
+                    sort_keys=True,
+                ),
+            },
+            {"label": "Provider version", "value": command["before"]["etag"]},
+            {"label": "Response", "value": command["arguments"]["response_status"]},
+            {"label": "Send updates", "value": command["arguments"]["send_updates"]},
+            {"label": "Workspace entry", "value": command["arguments"]["entry_id"]},
+            {"label": "Request", "value": command["arguments"]["request_id"]},
+            {"label": "Command", "value": tool_args["_command_id"]},
+            {"label": "Command digest", "value": payload["digest"]},
+        ]
+        result = {
+            "title": "Respond to calendar invitation",
+            "facts": facts,
+            "displayed_call": {
+                "tool_name": "calendar_respond",
+                "args_digest": args_digest(tool_args),
+            },
+        }
+        if (
+            any(type(fact["value"]) is not str for fact in facts)
+            or len(json.dumps(result).encode()) > 16384
+        ):
+            return None
+        return result
+    except Exception:
+        # A missing/unreadable/unshowable command is Open only; never a blind approval.
+        return None

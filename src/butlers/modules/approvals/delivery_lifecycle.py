@@ -1,12 +1,14 @@
 """Atomic domain-action to approval-delivery lifecycle transitions.
 
 This is the sole bridge from canonical approval decisions/expiry/defer into
-the notification-only recovery state.  It locks the action first, then its
-intent and presentations/cohort membership, and never performs provider work.
+the notification-only recovery state. Goal-linked negative/defer decisions lock
+the goal/gate first; ordinary rows lock the action first. Both then lock delivery
+intent and presentations/cohort membership, and never perform provider work.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -32,17 +34,20 @@ DeliveryTerminalReason = Literal[
     "action_rejected",
     "action_expired",
     "action_abandoned",
+    "action_cancelled",
 ]
 
 _EVENT_FOR_STATUS = {
     ActionStatus.APPROVED: ApprovalEventType.ACTION_APPROVED,
     ActionStatus.REJECTED: ApprovalEventType.ACTION_REJECTED,
     ActionStatus.EXPIRED: ApprovalEventType.ACTION_EXPIRED,
+    ActionStatus.CANCELLED: ApprovalEventType.ACTION_CANCELLED,
 }
 _REASON_FOR_STATUS: dict[ActionStatus, DeliveryTerminalReason] = {
     ActionStatus.APPROVED: "action_approved",
     ActionStatus.REJECTED: "action_rejected",
     ActionStatus.EXPIRED: "action_expired",
+    ActionStatus.CANCELLED: "action_cancelled",
 }
 _PRESTART_STATES = ("ready", "claimed", "retry_wait")
 
@@ -126,12 +131,38 @@ async def _write_scope(
     *,
     already_in_transaction: bool,
     success_observations: list[LifecycleSuccessObservation],
+    goal_action_id: uuid.UUID | None = None,
 ):
     if already_in_transaction:
         yield source
         return
-    async with _approval_write_transaction(source) as connection:
-        yield connection
+    # Goal-linked negative/defer writers enter goal serialization before the
+    # existing action->delivery locks. Legacy rows keep their ordinary scope.
+    # Borrowed owning scopes above already hold the gate and finish it once.
+    async with asyncio.timeout(None) as bounded:
+        async with _approval_write_transaction(source) as connection:
+            binding = None
+            if goal_action_id is not None:
+                row = await connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", goal_action_id
+                )
+                if (
+                    row is not None
+                    and row.get("goal_id") is not None
+                    and row["status"] == "pending"
+                ):
+                    from butlers.modules.approvals.goal_control import lock_goal_decision
+
+                    domain = row["goal_capability"].split("__")[0]
+                    binding = await lock_goal_decision(connection, domain, goal_action_id)
+                    if binding is None:
+                        raise ValueError("goal_decision_classification_changed")
+                    bounded.reschedule(binding[0].decision_deadline)
+            yield connection
+            if binding is not None:
+                from butlers.modules.approvals.goal_control import finish_goal_decision
+
+                await finish_goal_decision(connection, binding)
     for observation in success_observations:
         emit_lifecycle_success(observation)
 
@@ -272,20 +303,33 @@ async def transition_pending_action(
     source: Any,
     *,
     action_id: uuid.UUID,
-    target_status: Literal[ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED],
+    target_status: Literal[
+        ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED, ActionStatus.CANCELLED
+    ],
     decided_by: str,
     event_actor: str,
     event_reason: str,
     event_metadata: dict[str, Any] | None = None,
     now: Any | None = None,
     _already_in_transaction: bool = False,
+    expected_goal_id: uuid.UUID | None = None,
+    expected_effect_id: uuid.UUID | None = None,
 ) -> PendingTransition:
     """Atomically leave pending state and fence that action's delivery work."""
+    if not isinstance(target_status, ActionStatus) or target_status not in _EVENT_FOR_STATUS:
+        raise ValueError("unsupported_pending_transition")
+    if target_status is ActionStatus.CANCELLED and not (
+        isinstance(expected_goal_id, uuid.UUID) and isinstance(expected_effect_id, uuid.UUID)
+    ):
+        raise ValueError("goal_cancellation_identity_required")
     success_observations: list[LifecycleSuccessObservation] = []
     async with _write_scope(
         source,
         already_in_transaction=_already_in_transaction,
         success_observations=success_observations,
+        goal_action_id=action_id
+        if target_status in {ActionStatus.REJECTED, ActionStatus.EXPIRED}
+        else None,
     ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",
@@ -294,6 +338,10 @@ async def transition_pending_action(
         if row is None:
             return PendingTransition(None, False)
         action = PendingAction.from_row(row)
+        if target_status is ActionStatus.CANCELLED and (
+            action.goal_id != expected_goal_id or action.goal_effect_id != expected_effect_id
+        ):
+            return PendingTransition(action, False)
         if action.status != ActionStatus.PENDING:
             return PendingTransition(action, False)
 
@@ -306,7 +354,7 @@ async def transition_pending_action(
         effective_status = target_status
         expired_instead = False
         if (
-            target_status != ActionStatus.EXPIRED
+            target_status not in {ActionStatus.EXPIRED, ActionStatus.CANCELLED}
             and action.expires_at is not None
             and action.expires_at < database_now
         ):
@@ -317,14 +365,35 @@ async def transition_pending_action(
             event_metadata = {"tool_name": action.tool_name}
             expired_instead = True
 
-        updated = await connection.fetchrow(
-            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = 'pending' RETURNING *",
-            effective_status.value,
-            decided_by,
-            database_now,
-            action_id,
-        )
+        lineage = action.goal_lineage()
+        if effective_status is ActionStatus.APPROVED and lineage is not None:
+            from butlers.core.capability_json import arguments_digest
+
+            if lineage.goal_approved_args_digest is not None:
+                raise ValueError("pending_goal_approval_digest_present")
+            # Bind the decision to the owning row under its existing lock,
+            # including an owner's persisted edit. Never rewrite the request
+            # digest or accept replacement arguments from a replaying caller.
+            approved_digest = arguments_digest(action.tool_args)
+            updated = await connection.fetchrow(
+                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3, "
+                "goal_approved_args_digest = $4 "
+                "WHERE id = $5 AND status = 'pending' RETURNING *",
+                effective_status.value,
+                decided_by,
+                database_now,
+                approved_digest,
+                action_id,
+            )
+        else:
+            updated = await connection.fetchrow(
+                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
+                "WHERE id = $4 AND status = 'pending' RETURNING *",
+                effective_status.value,
+                decided_by,
+                database_now,
+                action_id,
+            )
         if updated is None:
             latest = await connection.fetchrow(
                 "SELECT * FROM pending_actions WHERE id = $1",
@@ -424,6 +493,7 @@ async def defer_pending_action(
         source,
         already_in_transaction=_already_in_transaction,
         success_observations=success_observations,
+        goal_action_id=action_id,
     ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",

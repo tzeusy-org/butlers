@@ -502,3 +502,24 @@ class AutonomySuggestionDismissRequest(BaseModel):
 
     reason: str | None = Field(default=None, description="Optional reason for dismissal")
     cooldown_days: int = Field(default=30, ge=0, description="Days before suggestion can reappear")
+
+
+class CalendarReprepareRequest(BaseModel):
+    """Semantic changes plus the call actually displayed; never private authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    displayed_call: DisplayedApprovalCall
+    entry_id: str | None = None
+    response_status: Literal["accepted", "declined", "tentative"] | None = None
+    send_updates: Literal["none", "all", "externalOnly"] | None = None
+
+    @model_validator(mode="after")
+    def _semantic_edits(self):
+        if not self.model_dump(exclude_none=True, exclude={"displayed_call"}):
+            raise ValueError("calendar_edit_required")
+        if self.entry_id is not None:
+            from uuid import UUID
+
+            if str(UUID(self.entry_id)) != self.entry_id:
+                raise ValueError("calendar_entry_invalid")
+        return self

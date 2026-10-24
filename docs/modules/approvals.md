@@ -245,3 +245,74 @@ with exact persisted arguments, no edits and `create_rule=False`. An already
 approved command may recover through that same owning dispatch; its independent
 committed attempt fence prevents a repeated provider write. RFC 0023 recovery
 remains notification-only and retains its default-off authority boundary.
+
+
+### Goal approval storage and Stop fences (dark foundation)
+
+`approvals_019` adds schema-local `approval_goal_effects` and immutable
+`approval_goal_receipts`. Internal `OwningGoalApprovals` transactions first
+validate the exact runtime role, search path, RLS policies and installed trigger
+bodies/timing, then take the existing delivery-rollout lock and domain advisory
+serializer before the effect gate and pending-action row. Each operation has a
+five-second acquire-through-commit bound. The normal legacy admission SQL stays
+separate; incomplete goal lineage refuses rather than becoming a legacy call.
+
+PARK commits the actual pending action and both stable `parked`/`pending` receipt
+aliases together. It respects the real default-OFF delivery rollout and does not
+start a notifier. LOOKUP is read-only: a missing row is unknown, never proof of
+cancellation. CANCEL can commit a durable absent fence before PARK; late PARK
+then refuses. For an existing action it preserves negative decision history,
+fences future dispatch, and records cancellation in the same owning transaction.
+An existing dispatch witness is never converted into an undo claim. Owner
+decisions bind the approved digest to the actual locked stored arguments while
+retaining original-call identity and historical receipt versions.
+
+The internal lineage DTO and receipt digest grant no authority. This storage
+foundation does not enable a listener/profile, authenticate an owner, replace
+exact displayed-call checks, prove an external effect committed, or implement
+approved replay. Real owner-route integration waits for the separate refused-edit
+and legacy-approval fixes; private authenticated transport, stored snapshot and
+fresh revalidation, central authorization, local dispatch-witness production and
+positive Unit B execution remain required. PostgreSQL tests in
+`tests/integration/test_goal_approval_control.py` are authored for hosted
+execution; local software checks do not prove SQL, RLS, race or durability claims.
+
+### Authenticated goal approval operations
+
+The fixed private GoalDispatch owner accepts separately signed PARK, SNAPSHOT,
+CLAIM, WITNESS and EXECUTE purposes. mTLS identifies the configured control peer;
+it does not grant model-supplied lineage, selected resources or approval policy.
+PARK verifies the central ledger-selected Grant and final registration before
+committing action, delivery, gate and immutable receipt aliases on one connection.
+Only actual same-transaction rule matching may approve automatically; park-only,
+always-per-event, exposure, recipient and exact-template restrictions remain.
+
+Dashboard and module goal decisions enter the same goal/gate ordering before the
+action lock, keep their existing human attribution, displayed/edit and rule
+semantics, and leave forwarding to central stored-call replay. Explicit exposed
+human rule creation remains distinct from autonomy promotion. The signed mode
+prevents action-backed rules for always-per-event registrations.
+
+Replay consumes an approved stored snapshot, never caller replacement arguments.
+The owner commits a unique intent/snapshot witness and later an irrevocable
+single-use consumption before invoking the actual registered original. Witness
+readback reports committed state only; it cannot create another execution permit.
+Both consumed-without-result and ambiguous responses stay UNKNOWN. Ordinary
+approval execution still refuses goal rows, and no generic successful tool return
+is promoted to a committed domain effect. Local software controls and collected
+PostgreSQL bodies have separate proof scopes; default-OFF is unchanged.
+
+Goal-linked rejection, expiry and defer-expiry also enter the goal/gate before
+the action and delivery locks. Canonical standalone lifecycle writers finish the
+matching negative gate in the same bounded transaction; API deny/defer retain
+their outer audit transaction and its absolute deadline. Normal defer keeps the
+pending gate and immutable parked history. Caller-owned rule, Stop and approved
+decision scopes finish their gate exactly once. A refusal rolls back action,
+gate, delivery evidence and event together; it never weakens the 019 final guard.
+
+An approved goal action can also be abandoned through the existing dashboard
+operation while it has no execution result or dispatch intent. That path takes
+the same goal-first lock and finishes the negative gate inside the outer audit
+transaction. Its approved-call digest and historical receipts remain unchanged;
+event or audit failure rolls the action and gate back together. A committed
+execution claim fences abandonment instead of reopening a consumed call.

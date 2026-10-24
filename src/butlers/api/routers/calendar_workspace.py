@@ -2242,8 +2242,6 @@ async def _calendar_response_review_pool(
     This read selector is not decision or execution authority. Messenger's
     separate notification-review discriminator keeps its existing admission.
     """
-    from butlers.modules.calendar_response import _digest
-
     names = db.configured_butlers_with_module("approvals")
     if (
         not isinstance(names, list)
@@ -2269,29 +2267,28 @@ async def _calendar_response_review_pool(
         raise HTTPException(status_code=409, detail="response_review_owner_unverified")
     pool = db.pool(owner)
     try:
-        command_row = await pool.fetchrow(
-            "SELECT action_type,action_payload FROM calendar_action_log WHERE id=$1", action_id
-        )
         pending = await pool.fetchrow(
             "SELECT tool_name,tool_args FROM pending_actions WHERE id=$1", action_id
         )
     except Exception:
         raise HTTPException(status_code=503, detail="response_review_unavailable") from None
-    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
-    command = _normalize_json_object(payload.get("command"))
     args = _normalize_json_object(pending["tool_args"]) if pending else {}
+    try:
+        from butlers.modules.calendar_response import CalendarResponseError, read_response_binding
+
+        payload = await read_response_binding(pool, action_id, args)
+    except (CalendarResponseError, ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=409, detail="response_review_binding_unverified") from None
+    command = _normalize_json_object(payload.get("command"))
     expected = {
         **_normalize_json_object(command.get("arguments")),
-        "_command_id": str(action_id),
+        "_command_id": args.get("_command_id"),
         "_command_digest": payload.get("digest"),
     }
     if (
-        not command_row
-        or command_row["action_type"] != "workspace_user_respond"
-        or command.get("owner") != owner
-        or _digest(command) != payload.get("digest")
-        or not pending
+        not pending
         or pending["tool_name"] != "calendar_respond"
+        or command.get("owner") != owner
         or args != expected
     ):
         raise HTTPException(status_code=409, detail="response_review_binding_unverified")
@@ -2310,7 +2307,7 @@ async def _read_response_command(
     try:
         row = await pool.fetchrow(
             "SELECT action_type,action_payload,action_result FROM calendar_action_log WHERE id=$1",
-            command_id,
+            UUID(expected["_command_id"]),
         )
         pending = await pool.fetchrow(
             "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
@@ -2327,7 +2324,7 @@ async def _read_response_command(
         or _digest(command) != payload.get("digest")
         or {
             **_normalize_json_object(command.get("arguments")),
-            "_command_id": str(command_id),
+            "_command_id": expected["_command_id"],
             "_command_digest": payload.get("digest"),
         }
         != expected

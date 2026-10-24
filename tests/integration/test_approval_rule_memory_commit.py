@@ -101,9 +101,12 @@ async def database(migrated_db_url: str):
         )
         cleanup.push_async_callback(_close_pool, observer)
         try:
+            # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+            await owner.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+            await owner.execute("DELETE FROM approval_rules")
             await owner.execute(
                 "TRUNCATE public.audit_log, home_mem.memory_links, home_mem.facts, "
-                "approval_events, pending_actions, approval_rules, "
+                "approval_events, "
                 "autonomy_approval_history, autonomy_suggestions CASCADE"
             )
             # Simultaneously checked out connections prove an independent backend,

@@ -106,11 +106,13 @@ async def approval_push_pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
+    # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+    await pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
     await pool.execute(
         "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
         "approval_delivery_presentations, approval_delivery_cohorts, "
         "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
+        "deferred_notifications CASCADE"
     )
     await pool.execute(
         "UPDATE public.approvals_policy "
@@ -134,11 +136,13 @@ async def disabled_rollout_pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
+    # Legacy row cleanup must not CASCADE TRUNCATE immutable goal evidence.
+    await pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
     await pool.execute(
         "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
         "approval_delivery_presentations, approval_delivery_cohorts, "
         "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
+        "deferred_notifications CASCADE"
     )
     await pool.execute(
         "INSERT INTO approval_delivery_rollout (singleton) VALUES (true) "

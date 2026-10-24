@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,9 +25,83 @@ class ActionStatus(enum.StrEnum):
     EXPIRED = "expired"
     EXECUTED = "executed"
     ABANDONED = "abandoned"
+    CANCELLED = "cancelled"
 
 
 EvidenceReference = dict[str, str]
+
+GOAL_LINEAGE_COLUMNS = (
+    "goal_id",
+    "invocation_id",
+    "goal_depth",
+    "goal_exposed",
+    "goal_origin",
+    "goal_effect_id",
+    "goal_capability",
+    "goal_args_digest",
+    "goal_approved_args_digest",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GoalCallLineage:
+    """Infrastructure lineage, not proof of an authenticated caller.
+
+    Only the future verified domain ingress may supply this value for a live
+    call. It carries no token/signature and grants no approval or replay right.
+    """
+
+    goal_id: uuid.UUID
+    invocation_id: uuid.UUID
+    goal_depth: int
+    goal_exposed: bool
+    goal_origin: str
+    goal_effect_id: uuid.UUID
+    goal_capability: str
+    goal_args_digest: str
+    goal_approved_args_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        parts = self.goal_capability.split("__") if type(self.goal_capability) is str else []
+        if (
+            not all(
+                isinstance(v, uuid.UUID)
+                for v in (self.goal_id, self.invocation_id, self.goal_effect_id)
+            )
+            or type(self.goal_depth) is not int
+            or self.goal_depth not in (0, 1)
+            or type(self.goal_exposed) is not bool
+            or type(self.goal_origin) is not str
+            or self.goal_origin not in {"owner", "obligation", "third_party", "staffer"}
+            or len(parts) != 2
+            or any(not re.fullmatch(r"[a-zA-Z0-9_.-]+", part) for part in parts)
+            or type(self.goal_args_digest) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", self.goal_args_digest) is None
+            or (
+                self.goal_approved_args_digest is not None
+                and (
+                    type(self.goal_approved_args_digest) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", self.goal_approved_args_digest) is None
+                )
+            )
+        ):
+            raise ValueError("invalid_goal_lineage")
+
+    def columns(self) -> dict[str, Any]:
+        """Typed database values in the explicit persisted column order."""
+        return {name: getattr(self, name) for name in GOAL_LINEAGE_COLUMNS}
+
+
+def _goal_fields(row: Any) -> dict[str, Any]:
+    values = {}
+    for name in GOAL_LINEAGE_COLUMNS:
+        try:
+            values[name] = row[name]
+        except (KeyError, IndexError):
+            values[name] = None
+    for name in ("goal_id", "invocation_id", "goal_effect_id"):
+        values[name] = _parse_optional_uuid(values[name])
+    return values
 
 
 def _parse_uuid(value: Any) -> uuid.UUID:
@@ -125,6 +200,29 @@ class PendingAction:
     # actually notified (bu-mda0r); callers must not read that combination as
     # a normal row.
     push_outcome: str | None = None
+    goal_id: uuid.UUID | None = None
+    invocation_id: uuid.UUID | None = None
+    goal_depth: int | None = None
+    goal_exposed: bool | None = None
+    goal_origin: str | None = None
+    goal_effect_id: uuid.UUID | None = None
+    goal_capability: str | None = None
+    goal_args_digest: str | None = None
+    goal_approved_args_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        self.goal_lineage()
+
+    def goal_lineage(self) -> GoalCallLineage | None:
+        """Refuse partial live lineage; preserve ordinary and explicit legacy rows."""
+        values = {name: getattr(self, name) for name in GOAL_LINEAGE_COLUMNS}
+        if all(value is None for value in values.values()):
+            return None
+        if values["goal_origin"] == "legacy" and all(
+            value is None for name, value in values.items() if name != "goal_origin"
+        ):
+            return None
+        return GoalCallLineage(**values)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -148,6 +246,9 @@ class PendingAction:
             "origin": self.origin,
             "push_outcome": self.push_outcome,
         }
+        for name in GOAL_LINEAGE_COLUMNS:
+            value = getattr(self, name)
+            d[name] = str(value) if isinstance(value, uuid.UUID) else value
         return d
 
     @classmethod
@@ -172,6 +273,7 @@ class PendingAction:
             reversibility=data.get("reversibility"),
             origin=data.get("origin"),
             push_outcome=data.get("push_outcome"),
+            **_goal_fields(data),
         )
 
     @classmethod
@@ -199,6 +301,7 @@ class PendingAction:
             reversibility=_get("reversibility"),
             origin=_get("origin"),
             push_outcome=_get("push_outcome"),
+            **_goal_fields(row),
         )
 
 

@@ -184,9 +184,17 @@ async def approval_pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
+    # Only these legacy fixture tables are reset; CASCADE from approval_rules
+    # would reach immutable goal evidence through pending_actions' FK.
     await pool.execute(
         "TRUNCATE TABLE public.audit_log, autonomy_suggestions, autonomy_approval_history, "
-        "approval_events, pending_actions, approval_rules CASCADE"
+        "approval_events"
+    )
+    await pool.execute("DELETE FROM pending_actions WHERE goal_origin = 'legacy'")
+    await pool.execute(
+        "DELETE FROM approval_rules r WHERE NOT EXISTS ("
+        "SELECT 1 FROM pending_actions p "
+        "WHERE p.approval_rule_id = r.id OR p.id = r.created_from)"
     )
     await pool.execute(
         "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"

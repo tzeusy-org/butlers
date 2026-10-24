@@ -40,6 +40,20 @@ async def test_changed_viewed_call_refuses_before_any_effect(app, monkeypatch, l
                 events.append("commit")
 
         async def fetchrow(self, sql, *args):
+            if sql == (
+                "SELECT to_jsonb(p)->>'goal_id' AS goal_id, "
+                "to_jsonb(p)->>'goal_effect_id' AS goal_effect_id, "
+                "to_jsonb(p)->>'goal_capability' AS goal_capability, "
+                "to_jsonb(p)->>'goal_args_digest' AS goal_args_digest "
+                "FROM pending_actions p WHERE id=$1"
+            ):
+                assert args == (action_id,)
+                return {
+                    "goal_id": None,
+                    "goal_effect_id": None,
+                    "goal_capability": None,
+                    "goal_args_digest": None,
+                }
             events.append("locked" if "FOR UPDATE" in sql else "read")
             return {"tool_name": "telegram_send_message", "tool_args": current}
 
@@ -124,6 +138,20 @@ async def binding_http(app, monkeypatch):
                 state["events"].append("commit")
 
         async def fetchrow(self, sql, *args):
+            if sql == (
+                "SELECT to_jsonb(p)->>'goal_id' AS goal_id, "
+                "to_jsonb(p)->>'goal_effect_id' AS goal_effect_id, "
+                "to_jsonb(p)->>'goal_capability' AS goal_capability, "
+                "to_jsonb(p)->>'goal_args_digest' AS goal_args_digest "
+                "FROM pending_actions p WHERE id=$1"
+            ):
+                assert args == (state["row"]["id"],)
+                return {
+                    "goal_id": None,
+                    "goal_effect_id": None,
+                    "goal_capability": None,
+                    "goal_args_digest": None,
+                }
             assert "FOR UPDATE" in sql
             state["events"].append("lock")
             return deepcopy(state["row"])

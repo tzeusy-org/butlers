@@ -117,10 +117,27 @@ async def record_approval(pool: Any, action: Any, *, tool_meta: ToolMeta | None 
     pool:
         asyncpg connection pool.
     action:
-        PendingAction that was just manually approved. Must have
-        ``id``, ``tool_name``, ``tool_args``, ``requested_at``,
-        and ``decided_at``.
+        Locator for the persisted action that was just manually approved.
+        Only ``id`` is read from this caller object. The stored approved or
+        executed row supplies arguments, timing and goal exposure authority;
+        a missing row refuses rather than trusting the caller's projection.
     """
+    from butlers.core.capability_json import arguments_digest
+    from butlers.modules.approvals.models import ActionStatus, PendingAction
+
+    # The caller's DTO is a locator, not exposure or argument authority.
+    row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action.id)
+    if row is None:
+        raise ValueError("approval_history_action_missing")
+    action = PendingAction.from_row(row)
+    if action.status not in {ActionStatus.APPROVED, ActionStatus.EXECUTED}:
+        return
+    lineage = action.goal_lineage()
+    if lineage is not None:
+        if lineage.goal_exposed:
+            return
+        if lineage.goal_approved_args_digest != arguments_digest(action.tool_args):
+            raise ValueError("approval_history_digest_mismatch")
     fingerprint = compute_fingerprint(action.tool_name, action.tool_args, tool_meta=tool_meta)
     now = datetime.now(UTC)
     approved_at = action.decided_at if action.decided_at is not None else now
@@ -212,6 +229,30 @@ async def check_promotion_threshold(
     config:
         ApprovalsConfig-like object with threshold/cooldown attributes.
     """
+    from butlers.core.capability_json import arguments_digest
+    from butlers.modules.approvals.models import ActionStatus, PendingAction
+
+    # A fingerprint alone cannot prove this was an unexposed approval. Both
+    # production decision paths supply the owning action locator.
+    if action_id is None:
+        return
+    row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action_id)
+    if row is None:
+        return
+    action = PendingAction.from_row(row)
+    if action.status not in {ActionStatus.APPROVED, ActionStatus.EXECUTED}:
+        return
+    lineage = action.goal_lineage()
+    if lineage is not None:
+        if lineage.goal_exposed:
+            return
+        if lineage.goal_approved_args_digest != arguments_digest(action.tool_args):
+            raise ValueError("approval_promotion_digest_mismatch")
+    if action.tool_name != tool_name or pattern_fingerprint != compute_fingerprint(
+        action.tool_name, action.tool_args, tool_meta=tool_meta
+    ):
+        return
+    tool_args = action.tool_args
     threshold = getattr(config, "promotion_threshold", 5)
 
     pattern_args = fingerprinted_args(tool_args, tool_meta)

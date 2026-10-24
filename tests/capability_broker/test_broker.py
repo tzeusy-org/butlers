@@ -1,0 +1,1366 @@
+"""Phase-A software controls, including the real FastMCP HTTP stack.
+
+The connection/domain doubles below prove orchestration, not SQL concurrency,
+RLS, a published catalog, an owning approvals write or live runtime wiring.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from starlette.testclient import TestClient
+
+from butlers.capability_broker.assertions import AssertionSigner
+from butlers.capability_broker.contracts import (
+    BrokerRefused,
+    BrokerResult,
+    Capability,
+    Disposition,
+    PolicyEvidence,
+    Principal,
+    Reason,
+    RecipientBinding,
+    mint_token,
+)
+from butlers.capability_broker.domains import Catalog, DomainReceipt, ParkReceipt
+from butlers.capability_broker.policy import decide
+from butlers.capability_broker.server import create_app
+from butlers.capability_broker.service import Broker
+from butlers.core.capability_json import arguments_digest
+from butlers.core.goal_admission import Grant, digest, encode_grants
+from butlers.core.tool_catalog import RecipientParameters
+
+pytestmark = pytest.mark.unit
+
+
+class Connection:
+    """Controlled rows, not a substitute PostgreSQL implementation."""
+
+    def __init__(self, *, grant=None):
+        self.goal, self.invocation = uuid4(), uuid4()
+        self.grants = (grant or Grant("health__read"),)
+        self.events = []
+        self.in_transaction = False
+        self.budget = 2
+        self.used = 0
+        self.status = "running"
+        self.exposed = False
+        self.effect = None
+        self.epoch = 0
+        self.fail_commit = False
+        self.fail_exposure = False
+        self.invocation_changes = {}
+        self.invocation_count = 1
+
+    @asynccontextmanager
+    async def transaction(self):
+        assert not self.in_transaction
+        self.in_transaction = True
+        try:
+            yield
+            if self.fail_commit:
+                raise RuntimeError("controlled_commit_unknown")
+            self.events.append("commit")
+        finally:
+            self.in_transaction = False
+
+    async def fetch(self, sql, *args):
+        return [
+            dict(
+                id=self.invocation,
+                status="running",
+                lease_valid=True,
+                depth=0,
+                lead_epoch=0,
+                exposed=False,
+                grant_snapshot=encode_grants(self.grants),
+                grant_digest=digest(encode_grants(self.grants)),
+            )
+            | self.invocation_changes
+            for _ in range(self.invocation_count)
+        ]
+
+    async def fetchval(self, sql, *args):
+        return False if "pg_has_role" in sql else self.epoch
+
+    async def fetchrow(self, sql, *args):
+        if "pg_roles" in sql:
+            return dict(name="butler_switchboard_rw", rolsuper=False, rolbypassrls=False)
+        if "FROM switchboard.goals" in sql:
+            return dict(
+                status=self.status, origin="owner", exposed=self.exposed, catalog_digest="v1"
+            )
+        if "FROM switchboard.budgets" in sql:
+            return dict(
+                deadline_valid=True, max_calls=self.budget, used_calls=self.used, reserved_calls=0
+            )
+        if "SELECT id FROM switchboard.effects" in sql:
+            return {"id": self.effect} if self.effect else None
+        if "UPDATE switchboard.effects" in sql:
+            self.events.append(args[2] if len(args) > 2 else "dispatched")
+            return {"id": args[0]}
+        raise AssertionError("unexpected_query")
+
+    async def execute(self, sql, *args):
+        if "SET used_calls" in sql:
+            self.used += 1
+        if "status='budget_exhausted'" in sql:
+            self.status = "budget_exhausted"
+        if "INSERT INTO switchboard.effects" in sql:
+            self.effect = args[0]
+            self.events.append("effect")
+        if "SET exposed=true" in sql:
+            if self.fail_exposure:
+                raise RuntimeError("controlled_write_failure")
+            self.exposed = True
+        return "OK"
+
+
+class Pool:
+    def __init__(self, connection):
+        self.connection = connection
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.connection
+
+
+class Authorities:
+    def __init__(self, capability):
+        self.capability = capability
+        self.active_selection = True
+        self.evidence = PolicyEvidence("none")
+
+    async def catalog(self, connection, principal):
+        assert connection.in_transaction
+        return Catalog("v1", (self.capability,))
+
+    async def selection(self, connection, principal, capability, grant):
+        assert connection.in_transaction
+        return self.active_selection
+
+    async def policy(self, connection, principal, capability, args):
+        assert connection.in_transaction
+        return self.evidence
+
+
+class Domains:
+    def __init__(self, connection):
+        self.connection = connection
+        self.receipt = DomainReceipt("committed", value={"ok": True})
+        self.error = None
+        self.calls = []
+
+    async def dispatch(self, reservation, args, assertion, *, idempotency_key):
+        assert not self.connection.in_transaction
+        assert self.connection.events[-1] == "commit"
+        self.calls.append((reservation, args, assertion, idempotency_key))
+        if self.error:
+            raise self.error
+        return self.receipt
+
+    async def park(self, reservation, args, assertion):
+        assert not self.connection.in_transaction
+        self.calls.append((reservation, args, assertion, None))
+        return ParkReceipt("owner-row")
+
+
+def build(capability=None, grant=None):
+    connection = Connection(grant=grant)
+    authorities = Authorities(
+        capability
+        or Capability(
+            "health", "read", "read", "trusted", (), recipient_params=RecipientParameters()
+        )
+    )
+    domains = Domains(connection)
+    broker = Broker(
+        Pool(connection),
+        authorities,
+        domains,
+        AssertionSigner("test", Ed25519PrivateKey.generate()),
+        clock=lambda: 100,
+    )
+    token, _ = mint_token()
+    return broker, connection, authorities, domains, token
+
+
+def test_behavior_matrix_owner_rules_exposure_and_unremovable_modes():
+    p = Principal(uuid4(), uuid4(), 0, "owner", True, "v1", ())
+    base = Capability(
+        "health",
+        "write",
+        "record",
+        "stamped",
+        (),
+        approvals_available=True,
+        recipient_params=RecipientParameters(("recipient",)),
+    )
+    cases = [
+        (base, Grant(base.identity), PolicyEvidence("none"), Disposition.DISPATCH, False),
+        (
+            replace(base, owner_authority=True),
+            Grant(base.identity),
+            PolicyEvidence("none"),
+            Disposition.REFUSE,
+            False,
+        ),
+        (
+            replace(base, effect_class="transact"),
+            Grant(base.identity),
+            PolicyEvidence("owner", True, True),
+            Disposition.REFUSE,
+            False,
+        ),
+        (
+            replace(base, effect_class="communicate"),
+            Grant(base.identity),
+            PolicyEvidence("non_owner", True),
+            Disposition.PARK,
+            False,
+        ),
+        (
+            replace(base, effect_class="communicate"),
+            Grant(base.identity),
+            PolicyEvidence("non_owner", True, True),
+            Disposition.PARK,
+            True,
+        ),
+        (
+            replace(base, name="notify", effect_class="communicate"),
+            Grant(base.identity),
+            PolicyEvidence("owner", inert_owner_notify=True),
+            Disposition.DISPATCH,
+            False,
+        ),
+        (
+            replace(base, name="send", effect_class="communicate"),
+            Grant(base.identity),
+            PolicyEvidence("owner", inert_owner_notify=True),
+            Disposition.PARK,
+            False,
+        ),
+        (
+            replace(base, effect_class="actuate"),
+            Grant(base.identity),
+            PolicyEvidence("none"),
+            Disposition.PARK,
+            False,
+        ),
+        (
+            base,
+            Grant(base.identity, park_only=True),
+            PolicyEvidence("owner", True, True),
+            Disposition.PARK,
+            False,
+        ),
+        (
+            replace(base, always_per_event=True),
+            Grant(base.identity),
+            PolicyEvidence("owner", True, True),
+            Disposition.PARK,
+            False,
+        ),
+    ]
+    for capability, grant, evidence, disposition, rules in cases:
+        decision = decide(p, capability, grant, evidence)
+        assert (decision.disposition, decision.allow_standing_rule) == (disposition, rules)
+    assert (
+        decide(
+            replace(p, depth=1),
+            replace(base, effect_class="administer"),
+            Grant(base.identity),
+            PolicyEvidence("none"),
+        ).disposition
+        is Disposition.REFUSE
+    )
+    # Exposure cannot make a non-owner send bypass approval; unexposed still parks.
+    assert (
+        decide(
+            replace(p, exposed=False),
+            replace(base, effect_class="communicate"),
+            Grant(base.identity),
+            PolicyEvidence("non_owner"),
+        ).disposition
+        is Disposition.PARK
+    )
+
+
+@pytest.mark.asyncio
+async def test_actual_service_commits_before_forward_and_deduplicates_effect():
+    capability = Capability(
+        "health",
+        "write",
+        "record",
+        "stamped",
+        (),
+        idempotency="key_required",
+        recipient_params=RecipientParameters(),
+    )
+    broker, connection, _, domains, token = build(capability, Grant(capability.identity))
+    result = await broker.call(connection.goal, token, capability.mcp_name, {"weight": 1})
+    assert result.status == "committed" and connection.exposed
+    assert domains.calls[0][3] == str(result.effect_id)
+    assert connection.events.index("commit") < connection.events.index("committed")
+    with pytest.raises(BrokerRefused) as duplicate:
+        await broker.call(connection.goal, token, capability.mcp_name, {"weight": 1.0})
+    assert duplicate.value.reason is Reason.DUPLICATE
+    assert duplicate.value.effect_id == result.effect_id and len(domains.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_unknown_and_exposure_write_failure_never_release_content():
+    broker, connection, _, domains, token = build()
+    connection.fail_commit = True
+    with pytest.raises(RuntimeError):
+        await broker.call(connection.goal, token, "health__read", {})
+    assert domains.calls == []
+    connection.fail_commit = False
+    connection.fail_exposure = True
+    domains.receipt = DomainReceipt("committed", value="must_not_escape")
+    broker.authorities.capability = replace(broker.authorities.capability, output_trust="untrusted")
+    with pytest.raises(RuntimeError):
+        await broker.call(connection.goal, token, "health__read", {})
+    assert len(domains.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_terminal_transition_and_selection_are_real_service_refusals():
+    capability = Capability(
+        "health",
+        "read",
+        "read",
+        "trusted",
+        (("entity", True),),
+        ("entity",),
+        recipient_params=RecipientParameters(),
+    )
+    grant = Grant(capability.identity, (("entity", ("owner",)),))
+    broker, connection, authorities, domains, token = build(capability, grant)
+    authorities.active_selection = False
+    assert await broker.list_tools(connection.goal, token) == ()
+    with pytest.raises(BrokerRefused) as revoked:
+        await broker.call(connection.goal, token, capability.mcp_name, {"entity": "owner"})
+    assert revoked.value.reason is Reason.SELECTION
+    authorities.active_selection = True
+    with pytest.raises(BrokerRefused) as outside:
+        await broker.call(connection.goal, token, capability.mcp_name, {"entity": "other"})
+    assert outside.value.reason is Reason.RESOURCE
+    connection.budget = 0
+    with pytest.raises(BrokerRefused) as budget:
+        await broker.call(connection.goal, token, capability.mcp_name, {"entity": "owner"})
+    assert budget.value.reason is Reason.BUDGET
+    assert connection.status == "budget_exhausted" and connection.events[-1] == "commit"
+    assert domains.calls == []
+
+
+@pytest.mark.asyncio
+async def test_transport_unknown_is_not_retry_and_external_cancellation_propagates():
+    capability = Capability(
+        "health", "write", "record", "trusted", (), recipient_params=RecipientParameters()
+    )
+    broker, connection, _, domains, token = build(capability, Grant(capability.identity))
+    domains.error = TimeoutError()
+    assert (await broker.call(connection.goal, token, capability.mcp_name, {})).status == "unknown"
+    assert len(domains.calls) == 1 and connection.events[-2] == "unknown"
+    broker, connection, _, domains, token = build()
+    domains.error = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await broker.call(connection.goal, token, "health__read", {})
+    assert len(domains.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_park_only_carries_restriction_and_exact_args_without_direct_dispatch():
+    capability = Capability(
+        "health",
+        "write",
+        "record",
+        "stamped",
+        (),
+        approvals_available=True,
+        recipient_params=RecipientParameters(),
+    )
+    broker, connection, _, domains, token = build(
+        capability, Grant(capability.identity, park_only=True)
+    )
+    result = await broker.call(connection.goal, token, capability.mcp_name, {"exact": "original"})
+    assert result.status == "parked" and result.approval_ref == "owner-row"
+    assert not domains.calls[0][0].decision.allow_standing_rule
+    assert domains.calls[0][1] == {"exact": "original"}
+
+
+@pytest.mark.asyncio
+async def test_untyped_domain_receipt_never_releases_content():
+    broker, connection, _, domains, token = build()
+    domains.receipt = SimpleNamespace(
+        status="committed", receipt_ref=None, value="unvalidated", stamped_owner_untainted=True
+    )
+    result = await broker.call(connection.goal, token, "health__read", {})
+    assert result.status == "unknown" and result.value is None
+    assert len(domains.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_park_settlement_uncertainty_is_not_a_second_settlement_attempt():
+    capability = Capability(
+        "health",
+        "write",
+        "record",
+        "trusted",
+        (),
+        approvals_available=True,
+        recipient_params=RecipientParameters(),
+    )
+    broker, connection, _, domains, token = build(
+        capability, Grant(capability.identity, park_only=True)
+    )
+    original_park = domains.park
+
+    async def park_then_commit_unknown(*args):
+        result = await original_park(*args)
+        connection.fail_commit = True
+        return result
+
+    domains.park = park_then_commit_unknown
+    with pytest.raises(RuntimeError, match="controlled_commit_unknown"):
+        await broker.call(connection.goal, token, capability.mcp_name, {})
+    assert len(domains.calls) == 1
+    assert [event for event in connection.events if event in {"parked", "unknown"}] == ["parked"]
+
+
+@pytest.mark.asyncio
+async def test_recipient_binding_cannot_reuse_an_owner_enum_or_another_call_proof():
+    cap = Capability(
+        "mail",
+        "send",
+        "communicate",
+        "trusted",
+        (),
+        recipient_params=RecipientParameters(("to",)),
+        approvals_available=True,
+    )
+    args, owner = {"to": "resolved-by-native-adapter"}, uuid4()
+    bound = RecipientBinding(cap.identity, arguments_digest(args), owner, ("to",), (owner,))
+    # These values are trusted-adapter controls, not production identity lookup proof.
+    invalid = [
+        None,
+        replace(bound, capability="mail__other"),
+        replace(bound, args_digest=arguments_digest({"to": "different"})),
+        replace(bound, argument_names=()),
+        replace(bound, targets=()),
+    ]
+    for proof in invalid:
+        broker, connection, authority, domains, token = build(cap, Grant(cap.identity))
+        authority.evidence = PolicyEvidence("owner", recipient_binding=proof)
+        with pytest.raises(BrokerRefused) as refused:
+            await broker.call(connection.goal, token, cap.mcp_name, args)
+        assert refused.value.reason is Reason.POLICY
+        assert domains.calls == [] and connection.used == 0
+    for proof, expected in [
+        (bound, "committed"),
+        (replace(bound, targets=(None,)), "parked"),
+        (replace(bound, targets=(owner, uuid4())), "parked"),
+        (replace(bound, owner_id=None), "parked"),
+        (replace(bound, undeterminable=True), "parked"),
+    ]:
+        broker, connection, authority, domains, token = build(cap, Grant(cap.identity))
+        authority.evidence = PolicyEvidence("owner", recipient_binding=proof)
+        assert (await broker.call(connection.goal, token, cap.mcp_name, args)).status == expected
+        assert len(domains.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_default_owner_never_overrides_an_explicit_or_undeterminable_party():
+    owner = uuid4()
+    cap = Capability(
+        "core",
+        "notify",
+        "communicate",
+        "trusted",
+        (),
+        approvals_available=True,
+        recipient_params=RecipientParameters(("recipient",), default_owner_condition="omitted"),
+    )
+    for args, default, inherited, expected in [
+        ({}, True, False, "committed"),
+        ({}, False, False, "parked"),
+        ({}, True, True, "parked"),
+    ]:
+        broker, connection, authority, _, token = build(cap, Grant(cap.identity))
+        authority.evidence = PolicyEvidence(
+            "owner",
+            recipient_binding=RecipientBinding(
+                cap.identity, arguments_digest(args), owner, (), (), default, inherited
+            ),
+        )
+        assert (await broker.call(connection.goal, token, cap.mcp_name, args)).status == expected
+    broker, connection, authority, domains, token = build(cap, Grant(cap.identity))
+    args = {"recipient": "explicit"}
+    authority.evidence = PolicyEvidence(
+        "owner",
+        recipient_binding=RecipientBinding(
+            cap.identity, arguments_digest(args), owner, ("recipient",), (owner,), True
+        ),
+    )
+    with pytest.raises(BrokerRefused):
+        await broker.call(connection.goal, token, cap.mcp_name, args)
+    assert domains.calls == []
+
+
+@pytest.mark.asyncio
+async def test_authentication_refuses_ambiguous_revoked_stale_and_corrupt_rows():
+    for changes, count, epoch, reason in [
+        ({}, 0, 0, Reason.AUTHENTICATION),
+        ({}, 2, 0, Reason.AUTHENTICATION),
+        ({"status": "returned"}, 1, 0, Reason.AUTHENTICATION),
+        ({"lease_valid": False}, 1, 0, Reason.AUTHENTICATION),
+        ({}, 1, 1, Reason.EPOCH),
+        ({"grant_digest": "different"}, 1, 0, Reason.AUTHENTICATION),
+        ({"depth": True}, 1, 0, Reason.AUTHENTICATION),
+        ({"exposed": "false"}, 1, 0, Reason.AUTHENTICATION),
+    ]:
+        broker, connection, _, domains, token = build()
+        connection.invocation_changes = changes
+        connection.invocation_count, connection.epoch = count, epoch
+        with pytest.raises(BrokerRefused) as refused:
+            await broker.list_tools(connection.goal, token)
+        assert refused.value.reason is reason and not domains.calls and connection.used == 0
+    # A real child is not fenced by the replacement lead's epoch.
+    broker, connection, _, _, token = build()
+    connection.invocation_changes = {"depth": 1}
+    connection.epoch = 1
+    assert [c.identity for c in await broker.list_tools(connection.goal, token)] == ["health__read"]
+
+
+@pytest.mark.asyncio
+async def test_selection_bound_resource_is_never_implicitly_unscoped():
+    cap = Capability(
+        "health",
+        "read",
+        "read",
+        "trusted",
+        (("entity", True),),
+        ("entity",),
+        recipient_params=RecipientParameters(),
+    )
+    broker, connection, authority, domains, token = build(cap, Grant(cap.identity))
+    assert authority.active_selection is True
+    assert await broker.list_tools(connection.goal, token) == ()
+    with pytest.raises(BrokerRefused) as refused:
+        await broker.call(connection.goal, token, cap.mcp_name, {"entity": "unscoped"})
+    assert refused.value.reason is Reason.SELECTION and domains.calls == []
+
+
+def test_real_http_mcp_auth_discovery_call_and_duplicate_json_boundary():
+    class ControlledBroker:
+        def __init__(self):
+            self.calls = []
+
+        async def authenticate(self, goal, token):
+            if token != "accepted":
+                raise BrokerRefused(Reason.AUTHENTICATION)
+
+        async def list_tools(self, goal, token):
+            return (
+                Capability(
+                    "health", "read", "read", "trusted", (), recipient_params=RecipientParameters()
+                ),
+            )
+
+        async def call(self, goal, token, name, arguments):
+            self.calls.append((goal, name, arguments))
+            return BrokerResult("returned", value={"ok": True})
+
+    broker, goal = ControlledBroker(), uuid4()
+    with TestClient(create_app(broker)) as client:
+        url = f"/goals/{goal}/mcp/"
+        headers = {
+            "Authorization": "Bearer accepted",
+            "Accept": "application/json,text/event-stream",
+        }
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        assert client.post(url, json=request).status_code == 401
+        listed = client.post(url, json=request, headers=headers)
+        assert listed.status_code == 200
+        assert [t["name"] for t in listed.json()["result"]["tools"]] == ["health__read"]
+        call = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "health__read", "arguments": {"x": 1}},
+        }
+        assert client.post(url, json=call, headers=headers).json()["result"]["isError"] is False
+        assert broker.calls == [(goal, "health__read", {"x": 1})]
+        raw = b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"health__read","arguments":{"x":1,"x":2}}}'
+        assert client.post(url, content=raw, headers=headers).status_code == 400
+        assert len(broker.calls) == 1
+
+
+# D4/D13: owner/template standing-rule exceptions are specific to communication.
+# They never substitute for the per-event owner decision on exposed administer
+# or consequential/protected (including unknown-risk) actuation.
+def exposure_rule_specimen(effect, risk, proof):
+    args = {"recipient": "controlled-recipient"} if proof == "owner" else {"value": "controlled"}
+    capability = Capability(
+        "health",
+        "change",
+        effect,
+        "trusted",
+        (),
+        approvals_available=True,
+        recipient_params=RecipientParameters(("recipient",) if proof == "owner" else ()),
+    )
+    owner = uuid4()
+    binding = (
+        RecipientBinding(
+            capability.identity, arguments_digest(args), owner, ("recipient",), (owner,)
+        )
+        if proof == "owner"
+        else None
+    )
+    evidence = PolicyEvidence(
+        "owner" if proof == "owner" else "none",
+        standing_rule=True,
+        template_pinned=proof == "template",
+        actuation_risk=risk,
+        recipient_binding=binding,
+    )
+    return capability, args, evidence
+
+
+@pytest.mark.parametrize(
+    "effect,risk",
+    [
+        ("administer", "unknown"),
+        ("actuate", "consequential"),
+        ("actuate", "protected"),
+        ("actuate", "unknown"),
+    ],
+)
+@pytest.mark.parametrize("proof", ["owner", "template"])
+def test_exposed_effect_requires_per_event_despite_matching_rule(effect, risk, proof):
+    capability, _, evidence = exposure_rule_specimen(effect, risk, proof)
+    principal = Principal(uuid4(), uuid4(), 0, "owner", True, "v1", ())
+    decision = decide(principal, capability, Grant(capability.identity), evidence)
+    assert decision.disposition is Disposition.PARK
+    assert decision.allow_standing_rule is False
+
+
+@pytest.mark.parametrize(
+    "effect,risk",
+    [
+        ("administer", "unknown"),
+        ("actuate", "consequential"),
+        ("actuate", "protected"),
+        ("actuate", "unknown"),
+    ],
+)
+@pytest.mark.parametrize("proof", ["owner", "template"])
+async def test_broker_park_receives_per_event_requirement(effect, risk, proof):
+    capability, args, evidence = exposure_rule_specimen(effect, risk, proof)
+    broker, connection, authorities, domains, token = build(capability, Grant(capability.identity))
+    connection.exposed = True
+    authorities.evidence = evidence
+    at_park = []
+    original_park = domains.park
+
+    async def observe_park(reservation, arguments, assertion):
+        at_park.append((connection.in_transaction, tuple(connection.events)))
+        return await original_park(reservation, arguments, assertion)
+
+    domains.park = observe_park
+    result = await broker.call(connection.goal, token, capability.identity, args)
+    assert result == BrokerResult("parked", connection.effect, "owner-row")
+    assert connection.used == 1
+    assert connection.events == ["effect", "commit", "parked", "commit"]
+    assert at_park == [(False, ("effect", "commit"))]
+    assert len(domains.calls) == 1
+    reservation, received_args, assertion, idempotency_key = domains.calls[0]
+    assert received_args == args
+    assert assertion and idempotency_key is None
+    assert reservation.effect_id == connection.effect
+    assert reservation.principal.exposed is True
+    assert reservation.principal.grants == (Grant(capability.identity),)
+    assert reservation.args_digest == arguments_digest(args)
+    assert reservation.decision.disposition is Disposition.PARK
+    assert reservation.decision.allow_standing_rule is False
+
+
+@pytest.mark.parametrize(
+    "scenario,expected,rules",
+    [
+        ("owner_communication", Disposition.PARK, True),
+        ("template_communication", Disposition.PARK, True),
+        ("unpinned_nonowner_communication", Disposition.PARK, False),
+        ("inert_owner_notify", Disposition.DISPATCH, False),
+        ("safe_actuation", Disposition.DISPATCH, False),
+        ("independent_safe_approval", Disposition.PARK, False),
+        ("unexposed_admin_rule", Disposition.PARK, True),
+        ("park_only", Disposition.PARK, False),
+        ("always_per_event", Disposition.PARK, False),
+    ],
+)
+async def test_broker_preserves_specific_exceptions_and_independent_modes(
+    scenario, expected, rules
+):
+    capability, args, evidence = exposure_rule_specimen("communicate", "unknown", "owner")
+    grant = Grant(capability.identity)
+    if scenario in {"template_communication", "unpinned_nonowner_communication"}:
+        binding = replace(evidence.recipient_binding, targets=(uuid4(),))
+        evidence = replace(
+            evidence,
+            recipient="non_owner",
+            recipient_binding=binding,
+            template_pinned=scenario == "template_communication",
+        )
+    elif scenario == "inert_owner_notify":
+        capability = replace(capability, name="notify")
+        grant = Grant(capability.identity)
+        evidence = replace(
+            evidence,
+            standing_rule=False,
+            inert_owner_notify=True,
+            recipient_binding=replace(evidence.recipient_binding, capability=capability.identity),
+        )
+    elif scenario in {"safe_actuation", "independent_safe_approval", "unexposed_admin_rule"}:
+        capability, args, evidence = exposure_rule_specimen(
+            "administer" if scenario == "unexposed_admin_rule" else "actuate", "safe", "template"
+        )
+        capability = replace(capability, approval_required=scenario != "safe_actuation")
+        grant = Grant(capability.identity)
+    elif scenario == "park_only":
+        grant = replace(grant, park_only=True)
+    elif scenario == "always_per_event":
+        capability = replace(capability, always_per_event=True)
+    broker, connection, authorities, domains, token = build(capability, grant)
+    connection.exposed = scenario != "unexposed_admin_rule"
+    authorities.evidence = evidence
+    result = await broker.call(connection.goal, token, capability.identity, args)
+    assert len(domains.calls) == 1
+    reservation, received_args, _, _ = domains.calls[0]
+    assert reservation.decision.disposition is expected
+    assert reservation.decision.allow_standing_rule is rules
+    assert received_args == args and connection.used == 1
+    if expected is Disposition.PARK:
+        assert result == BrokerResult("parked", connection.effect, "owner-row")
+        assert connection.events == ["effect", "commit", "parked", "commit"]
+    else:
+        assert result.status == "committed"
+        assert connection.events == ["effect", "dispatched", "commit", "committed", "commit"]
+
+
+@pytest.mark.parametrize(
+    "effect,origin,depth,owner_authority",
+    [
+        ("administer", "third_party", 0, False),
+        ("actuate", "third_party", 0, False),
+    ],
+)
+def test_exposure_rule_cannot_remove_independent_refusals(effect, origin, depth, owner_authority):
+    capability, _, evidence = exposure_rule_specimen(effect, "safe", "owner")
+    capability = replace(capability, owner_authority=owner_authority)
+    principal = Principal(uuid4(), uuid4(), depth, origin, True, "v1", ())
+    decision = decide(principal, capability, Grant(capability.identity), evidence)
+    assert decision.disposition is Disposition.REFUSE
+    assert decision.allow_standing_rule is False
+
+
+class TokenConnection(Connection):
+    """Mutable software row boundary, including actual token-hash selection.
+
+    This records SQL state transitions; PostgreSQL locks/RLS/rollback remain
+    separate hosted obligations.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.token_digest = None
+        self.invocation_status = "launching"
+        self.ceiling = encode_grants(self.grants)
+
+    def invocation_row(self):
+        return (
+            dict(
+                id=self.invocation,
+                goal_id=self.goal,
+                status=self.invocation_status,
+                token_hash=self.token_digest,
+                lease_valid=True,
+                depth=0,
+                lead_epoch=0,
+                exposed=False,
+                grant_snapshot=encode_grants(self.grants),
+                grant_digest=digest(encode_grants(self.grants)),
+            )
+            | self.invocation_changes
+        )
+
+    async def fetch(self, sql, *args):
+        assert "token_hash=$2" in sql
+        if args != (self.goal, self.token_digest) or self.token_digest is None:
+            return []
+        return [self.invocation_row()]
+
+    async def fetchrow(self, sql, *args):
+        if "FROM switchboard.invocations" in sql:
+            assert args == (self.goal, self.invocation)
+            return self.invocation_row()
+        if "UPDATE switchboard.invocations SET token_hash" in sql:
+            assert args[:2] == (self.goal, self.invocation)
+            if len(args) == 3:
+                if self.token_digest is not None:
+                    return None
+                self.token_digest = args[2]
+            else:
+                assert (
+                    "AND status IN ('returned','failed','timed_out','stopped','escalated')" in sql
+                )
+                if self.invocation_status not in {
+                    "returned",
+                    "failed",
+                    "timed_out",
+                    "stopped",
+                    "escalated",
+                }:
+                    return None
+                self.token_digest = None
+            self.events.append("token_write")
+            return {"id": self.invocation}
+        row = await super().fetchrow(sql, *args)
+        if "FROM switchboard.goals" in sql:
+            row["ceiling"] = self.ceiling
+        return row
+
+
+def token_broker():
+    broker, _, authority, _, _ = build()
+    connection = TokenConnection()
+    domains = Domains(connection)
+    broker.pool, broker.domains = Pool(connection), domains
+    return broker, connection, authority, domains
+
+
+async def test_real_session_listener_uses_issued_hash_grants_and_live_revocation():
+    import httpx
+
+    from butlers.capability_broker.contracts import token_hash
+    from butlers.capability_broker.session import BrokerSessionListener
+
+    broker, connection, _, domains = token_broker()
+    token = await broker.issue_invocation_token(connection.goal, connection.invocation)
+    assert connection.token_digest == token_hash(token) and connection.token_digest != token
+    assert connection.events[-1] == "commit"
+    connection.invocation_status = "running"
+    listener = BrokerSessionListener(broker, host="127.0.0.1", port=0)
+    await listener.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{listener.port}", timeout=3, follow_redirects=False
+        ) as client:
+            path = f"/goals/{connection.goal}/mcp/"
+            headers = {
+                "Authorization": "Bearer " + token,
+                "Accept": "application/json,text/event-stream",
+            }
+            listing = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+            assert (await client.post(path, json=listing)).status_code == 401
+            listed = await client.post(path, json=listing, headers=headers)
+            assert listed.status_code == 200
+            assert [t["name"] for t in listed.json()["result"]["tools"]] == ["health__read"]
+            call = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "health__read", "arguments": {"x": 1}},
+            }
+            returned = await client.post(path, json=call, headers=headers)
+            assert returned.status_code == 200 and returned.json()["result"]["isError"] is False
+            assert connection.used == 1 and len(domains.calls) == 1
+            assert (await client.post("/mcp", json=listing, headers=headers)).status_code == 401
+            connection.epoch = 1
+            assert (await client.post(path, json=listing, headers=headers)).status_code == 401
+            # A child retains its token when the lead epoch changes.
+            connection.invocation_changes = {"depth": 1}
+            assert (await client.post(path, json=listing, headers=headers)).status_code == 200
+            # The runner owns terminal status and process/budget settlement.
+            # A live row cannot be cleared and then silently issued a new token.
+            with pytest.raises(BrokerRefused):
+                await broker.revoke_invocation_token(connection.goal, connection.invocation)
+            connection.invocation_status = "returned"
+            assert (await client.post(path, json=call, headers=headers)).status_code == 401
+            await broker.revoke_invocation_token(connection.goal, connection.invocation)
+            assert connection.token_digest is None
+            with pytest.raises(BrokerRefused):
+                await broker.issue_invocation_token(connection.goal, connection.invocation)
+            assert (await client.post(path, json=call, headers=headers)).status_code == 401
+            assert connection.used == 1 and len(domains.calls) == 1
+    finally:
+        await listener.close()
+    assert listener.task.done()
+    with pytest.raises(httpx.ConnectError):
+        async with httpx.AsyncClient(timeout=1) as client:
+            await client.get(f"http://127.0.0.1:{listener.port}/health")
+
+
+async def test_token_issuer_refuses_invalid_lineage_reissue_and_uncertain_commit():
+    from butlers.core.goal_admission import encode_grants
+
+    for mutation in (
+        lambda c: setattr(c, "status", "stopped"),
+        lambda c: setattr(c, "epoch", 1),
+        lambda c: setattr(c, "ceiling", encode_grants((Grant("other__tool"),))),
+        lambda c: setattr(c, "invocation_status", "returned"),
+        lambda c: setattr(c, "invocation_changes", {"grant_digest": "corrupt"}),
+        lambda c: setattr(c, "invocation_changes", {"lease_valid": False}),
+    ):
+        broker, connection, _, domains = token_broker()
+        mutation(connection)
+        with pytest.raises(BrokerRefused):
+            await broker.issue_invocation_token(connection.goal, connection.invocation)
+        assert connection.token_digest is None and not domains.calls
+    broker, connection, _, _ = token_broker()
+    first = await broker.issue_invocation_token(connection.goal, connection.invocation)
+    with pytest.raises(BrokerRefused):
+        await broker.issue_invocation_token(connection.goal, connection.invocation)
+    from butlers.capability_broker.contracts import token_hash
+
+    assert connection.token_digest == token_hash(first)
+    broker, connection, _, domains = token_broker()
+    connection.fail_commit = True
+    with pytest.raises(BrokerRefused, match="broker_unavailable"):
+        await broker.issue_invocation_token(connection.goal, connection.invocation)
+    assert not domains.calls
+
+
+@pytest.mark.parametrize("effect", [False, True], ids=["read", "unproven-effect"])
+async def test_real_session_forwards_signed_mcp_once_without_inventing_effect_commit(effect):
+    """Real two-listener consumer; controlled central rows are not SQL proof."""
+    import httpx
+    from fastmcp import FastMCP
+    from fastmcp.server.dependencies import get_http_request
+
+    from butlers.capability_broker.assertions import verify_assertion
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.capability_broker.session import BrokerSessionListener
+    from butlers.control import SessionRefusalListener
+
+    observed = []
+    args = {"x": {"text": "raw café", "n": 1.5}}
+    capability = Capability(
+        "health",
+        "read",
+        "record" if effect else "read",
+        "untrusted",
+        (),
+        recipient_params=RecipientParameters(),
+        idempotency="key_required" if effect else "none",
+        input_schema={"type": "object", "properties": {"x": {"type": "object"}}, "required": ["x"]},
+    )
+    broker, connection, _, _ = token_broker()
+    broker.authorities.capability = capability
+    remote = FastMCP("signed domain test")
+
+    @remote.tool
+    async def read(x: dict) -> dict:
+        request = get_http_request()
+        wire = {"x": x}
+        verified = verify_assertion(
+            request.headers["X-Butlers-Assertion"],
+            keys={"test": broker.signer.private_key.public_key()},
+            audience="health",
+            capability="read",
+            arguments=wire,
+            now=100,
+            claim_call_id=lambda *_: True,
+        )
+        assert not connection.in_transaction and connection.events[-1] == "commit"
+        assert verified["goal_id"] == str(connection.goal)
+        assert verified["invocation_id"] == str(connection.invocation)
+        if effect:
+            assert request.headers["Idempotency-Key"] == verified["effect_id"]
+        else:
+            assert "Idempotency-Key" not in request.headers and verified["effect_id"] is None
+        observed.append(wire)
+        # Even a successful result claiming commitment is not durable evidence.
+        return {"status": "committed", "echo": x}
+
+    app = remote.http_app(path="/mcp", stateless_http=False, json_response=False)
+
+    class DomainListener(SessionRefusalListener):
+        def _application(self):
+            return app
+
+        def _application_lifespan(self):
+            return app.router.lifespan_context(app)
+
+    domain = DomainListener(host="127.0.0.1", port=0)
+    await domain.start()
+    listener = None
+    try:
+        broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{domain.port}/mcp"})
+        token = await broker.issue_invocation_token(connection.goal, connection.invocation)
+        connection.invocation_status = "running"
+        listener = BrokerSessionListener(broker, host="127.0.0.1", port=0)
+        await listener.start()
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "health__read",
+                    "arguments": args,
+                },
+            }
+            response = await client.post(
+                f"http://127.0.0.1:{listener.port}/goals/{connection.goal}/mcp/",
+                json=request,
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Accept": "application/json,text/event-stream",
+                },
+            )
+            assert response.status_code == 200
+            result = response.json()["result"]["structuredContent"]
+            assert result["status"] == ("unknown" if effect else "returned")
+            assert observed == [args] and connection.used == 1
+            assert connection.exposed is True
+            if effect:
+                assert result["value"] is None and result["effect_id"] == str(connection.effect)
+                # UNKNOWN is durable central state, not permission to retry.
+                again = await client.post(
+                    f"http://127.0.0.1:{listener.port}/goals/{connection.goal}/mcp/",
+                    json={**request, "id": 2},
+                    headers={
+                        "Authorization": "Bearer " + token,
+                        "Accept": "application/json,text/event-stream",
+                    },
+                )
+                assert (
+                    again.json()["result"]["structuredContent"]["reason"]
+                    == "effect_already_recorded"
+                )
+                assert observed == [args] and connection.used == 1
+            else:
+                assert result["value"]["structuredContent"]["echo"] == args["x"]
+    finally:
+        try:
+            if listener is not None:
+                await listener.close()
+        finally:
+            await domain.close()
+    assert domain.cleanup_complete and listener.cleanup_complete
+    assert domain.task.done() and listener.task.done()
+
+
+async def test_signed_forwarder_refuses_peer_faults_without_redirect_resume_or_retry():
+    """Real TCP peer fault responses, not a simulated transport/retry counter."""
+    import json
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.control import SessionRefusalListener
+
+    mode = "redirect"
+    calls = []
+    requests = []
+
+    async def peer(scope, receive, send):
+        request = Request(scope, receive)
+        value = await request.json()
+        method = value["method"]
+        requests.append(method)
+        if mode == "redirect":
+            response = Response(status_code=307, headers={"Location": "/untrusted"})
+        elif method == "initialize":
+            response = Response(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "serverInfo": {"name": "fault-peer", "version": "1"},
+                        },
+                    }
+                ),
+                media_type="application/json",
+            )
+        elif method == "notifications/initialized":
+            response = Response(status_code=202)
+        else:
+            assert method == "tools/call"
+            calls.append(value)
+            if mode == "duplicate":
+                body = (
+                    '{"jsonrpc":"2.0","id":' + json.dumps(value["id"]) + ',"result":{},"result":{}}'
+                )
+            elif mode == "wrong_id":
+                body = json.dumps({"jsonrpc": "2.0", "id": "other-call", "result": {}})
+            elif mode == "error":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "error": {
+                            "code": -32603,
+                            "message": "synthetic closed control",
+                        },
+                    }
+                )
+            elif mode == "coerced_error":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "content": [],
+                            "isError": "false",
+                        },
+                    }
+                )
+            elif mode == "incomplete_sse":
+                body = "id: resume-me\nevent: ping\n\n"
+            else:
+                assert mode == "oversize"
+                body = " " * (1048576 + 1)
+            response = Response(
+                body,
+                media_type=(
+                    "text/event-stream" if mode == "incomplete_sse" else "application/json"
+                ),
+            )
+        await response(scope, receive, send)
+
+    class FaultListener(SessionRefusalListener):
+        def _application(self):
+            return peer
+
+    listener = FaultListener(host="127.0.0.1", port=0)
+    await listener.start()
+    try:
+        for mode in [
+            "redirect",
+            "duplicate",
+            "wrong_id",
+            "error",
+            "coerced_error",
+            "incomplete_sse",
+            "oversize",
+        ]:
+            broker, connection, _, _, token = build()
+            broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{listener.port}/mcp"})
+            requests.clear()
+            calls.clear()
+            result = await broker.call(connection.goal, token, "health__read", {"x": 1})
+            assert result.status == "unknown" and result.value is None
+            assert requests == (
+                ["initialize"]
+                if mode == "redirect"
+                else [
+                    "initialize",
+                    "notifications/initialized",
+                    "tools/call",
+                ]
+            )
+            assert len(calls) == (0 if mode == "redirect" else 1)
+            assert connection.used == 1
+    finally:
+        await listener.close()
+    assert listener.cleanup_complete and listener.task.done()
+
+
+async def test_signed_forwarder_local_binding_refuses_before_network_and_park_never_falls_back():
+    from butlers.capability_broker.contracts import Decision, Reservation
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+
+    broker, connection, authorities, _, _ = build()
+    principal = Principal(connection.goal, connection.invocation, 0, "owner", False, "v1", ())
+    args = {"x": "exact"}
+    reservation = Reservation(
+        principal,
+        authorities.capability,
+        Decision(Disposition.DISPATCH),
+        uuid4(),
+        None,
+        arguments_digest(args),
+    )
+    # The unused literal endpoint refuses connections; every failure below must
+    # be a local closed binding refusal, not a caught HTTP error.
+    domains = SignedMCPDomains({"health": "http://127.0.0.1:1/mcp"})
+    for bad_args, assertion, key in [
+        ({"x": "changed"}, "signed", None),
+        (args, "header\r\ninjection", None),
+        (args, "signed", str(uuid4())),
+    ]:
+        with pytest.raises(BrokerRefused) as caught:
+            await domains.dispatch(reservation, bad_args, assertion, idempotency_key=key)
+        assert caught.value.reason is Reason.AUTHENTICATION
+    with pytest.raises(BrokerRefused) as caught:
+        await domains.park(reservation, args, "signed")
+    assert caught.value.reason is Reason.UNAVAILABLE
+    for url in [
+        "http://remote.example:80/mcp",
+        "https://owner.example/mcp",
+        "https://owner.example:443/other",
+        "https://user:pass@owner.example:443/mcp",
+        "https://owner.example:443/mcp?redirect=elsewhere",
+    ]:
+        with pytest.raises(ValueError):
+            SignedMCPDomains({"health": url})
+
+
+async def test_signed_forwarder_double_cancel_closes_owned_http_without_retry_or_settlement():
+    import json
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from butlers.capability_broker.forwarding import SignedMCPDomains
+    from butlers.control import SessionRefusalListener
+
+    entered, disconnected = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def peer(scope, receive, send):
+        request = Request(scope, receive)
+        value = await request.json()
+        if value["method"] == "initialize":
+            response = Response(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": value["id"],
+                        "result": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "serverInfo": {"name": "stall-peer", "version": "1"},
+                        },
+                    }
+                ),
+                media_type="application/json",
+            )
+        elif value["method"] == "notifications/initialized":
+            response = Response(status_code=202)
+        else:
+            calls.append(value)
+            entered.set()
+            async with asyncio.timeout(3):
+                while (await receive())["type"] != "http.disconnect":
+                    pass
+            disconnected.set()
+            return
+        await response(scope, receive, send)
+
+    class StallListener(SessionRefusalListener):
+        def _application(self):
+            return peer
+
+    listener = StallListener(host="127.0.0.1", port=0)
+    await listener.start()
+    task = None
+    try:
+        broker, connection, _, _, token = build()
+        broker.domains = SignedMCPDomains({"health": f"http://127.0.0.1:{listener.port}/mcp"})
+        task = asyncio.create_task(broker.call(connection.goal, token, "health__read", {}))
+        await asyncio.wait_for(entered.wait(), 3)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(task), 6)
+        await asyncio.wait_for(disconnected.wait(), 3)
+        assert len(calls) == 1 and connection.used == 1
+        assert connection.events == ["commit"]
+        assert not [
+            t
+            for t in asyncio.all_tasks()
+            if not t.done()
+            and getattr(t.get_coro(), "__qualname__", "").startswith("SignedMCPDomains.")
+        ]
+    finally:
+        try:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=6)
+        finally:
+            await listener.close()
+    assert listener.cleanup_complete and listener.task.done()
+
+
+@pytest.mark.parametrize("origin", ["owner", "obligation", "staffer", "third_party"])
+@pytest.mark.parametrize("depth", [0, 1])
+async def test_ungated_administer_never_dispatches_for_any_origin_or_depth(origin, depth):
+    capability = Capability(
+        "home",
+        "schedule_create",
+        "administer",
+        "trusted",
+        (),
+        approvals_available=True,
+        approval_required=False,
+        recipient_params=RecipientParameters(),
+    )
+    broker, conn, authorities, domains, token = build(capability, Grant(capability.identity))
+    original = conn.fetchrow
+
+    async def fetchrow(sql, *args):
+        row = await original(sql, *args)
+        if "FROM switchboard.goals" in sql:
+            row["origin"] = origin
+        return row
+
+    conn.fetchrow = fetchrow
+    conn.invocation_changes = {"depth": depth}
+    authorities.evidence = PolicyEvidence("none", standing_rule=True)
+    if depth == 1:
+        assert await broker.list_tools(conn.goal, token) == ()
+    if depth == 1 or origin == "third_party":
+        with pytest.raises(BrokerRefused):
+            await broker.call(conn.goal, token, capability.identity, {})
+        assert conn.used == 0 and domains.calls == []
+    else:
+        result = await broker.call(conn.goal, token, capability.identity, {})
+        assert result.status == "parked" and conn.used == 1
+        assert len(domains.calls) == 1
+        reservation = domains.calls[0][0]
+        assert reservation.decision.disposition.value == "park"
+        assert reservation.decision.allow_standing_rule
+        assert reservation.principal.origin == origin and not reservation.principal.exposed
+
+
+def test_consequential_actuation_has_no_standing_rule_shortcut():
+    """Actual risk decision cannot be removed by owner origin or an unexposed rule."""
+    cap = Capability(
+        "home",
+        "ha_activate_scene",
+        "actuate",
+        "untrusted",
+        (("entity_id", False),),
+        recipient_params=RecipientParameters(),
+        resource_params=("entity_id",),
+        approvals_available=True,
+        native_actuation="home_scene",
+    )
+    for risk in ("consequential", "protected", "unknown"):
+        for exposed in (False, True):
+            for origin in ("owner", "obligation", "staffer", "third_party"):
+                principal = Principal(uuid4(), uuid4(), 0, origin, exposed, "current", ())
+                decision = decide(
+                    principal,
+                    cap,
+                    Grant(cap.identity),
+                    PolicyEvidence("none", standing_rule=True, actuation_risk=risk),
+                )
+                assert decision.disposition is (
+                    Disposition.REFUSE if origin == "third_party" else Disposition.PARK
+                )
+                assert not decision.allow_standing_rule

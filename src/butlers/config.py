@@ -431,6 +431,134 @@ class StorageConfig(_StrictModel):
         return _drop_keys(data, _IGNORED_LEGACY_BLOB_KEYS)
 
 
+class CapabilityTransportPeerConfig(_StrictModel):
+    """Closed certificate identity policy, never a source of peer authority."""
+
+    role: Literal["broker-control", "owning-service", "dashboard-owner"]
+    domain: str = Field(strict=True, pattern=r"^[a-zA-Z0-9_.-]+$")
+    sans: list[str] = Field(min_length=1)
+    client_certificate: StrictBool = False
+
+    @model_validator(mode="after")
+    def _identity(self) -> Self:
+        if "__" in self.domain or any(
+            type(s) is not str
+            or not s.startswith(("DNS:", "URI:", "IP:"))
+            or "*" in s
+            or len(s) > 512
+            for s in self.sans
+        ):
+            raise ValueError("invalid_private_peer_identity")
+        return self
+
+
+class CapabilityTransportMaterialConfig(_StrictModel):
+    """Dedicated path names only; validation never accesses these paths."""
+
+    ca_path: str = Field(strict=True, min_length=1)
+    certificate_path: str = Field(strict=True, min_length=1)
+    private_key_path: str = Field(strict=True, min_length=1)
+
+
+class CapabilityBrokerTransportConfig(_StrictModel):
+    """Default-OFF settings. Enabling is not production admission."""
+
+    enabled: StrictBool = False
+    role: Literal["broker-control", "owning-service"] | None = None
+    domain: str | None = Field(default=None, strict=True, pattern=r"^[a-zA-Z0-9_.-]+$")
+    endpoint: str | None = Field(default=None, strict=True)
+    listen_host: str | None = Field(default=None, strict=True, min_length=1)
+    listen_port: StrictInt | None = Field(default=None, ge=1, le=65535)
+    peer: CapabilityTransportPeerConfig | None = None
+    material: CapabilityTransportMaterialConfig | None = None
+    verification_keys: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _enabled_shape(self) -> Self:
+        if self.domain is not None and "__" in self.domain:
+            raise ValueError("invalid_private_domain")
+        if not self.enabled:
+            return self
+        if self.role is None or self.domain is None or self.peer is None or self.material is None:
+            raise ValueError("incomplete_private_transport")
+        if self.role == "broker-control":
+            if self.peer.role != "owning-service" or self.peer.client_certificate:
+                raise ValueError("invalid_private_service_peer")
+            u = urlparse(self.endpoint or "")
+            if (
+                u.scheme != "https"
+                or not u.hostname
+                or not u.port
+                or u.path != "/mcp"
+                or u.query
+                or u.fragment
+                or u.username
+                or u.password
+                or self.listen_host is not None
+                or self.listen_port is not None
+            ):
+                raise ValueError("invalid_private_endpoint")
+        elif (
+            self.peer.role != "broker-control"
+            or not self.peer.client_certificate
+            or self.listen_host is None
+            or self.listen_port is None
+            or self.endpoint is not None
+        ):
+            raise ValueError("invalid_private_listener")
+        return self
+
+
+class CalendarOwnerPrepareConfig(_StrictModel):
+    """Separate dark owner service. Paths are resolved only by the enabled owner."""
+
+    enabled: StrictBool = False
+    domain: str | None = Field(default=None, strict=True, pattern=r"^[a-zA-Z0-9_.-]+$")
+    listen_host: str | None = Field(default=None, strict=True, min_length=1)
+    listen_port: StrictInt | None = Field(default=None, ge=1, le=65535)
+    dashboard_peer: CapabilityTransportPeerConfig | None = None
+    service_peer: CapabilityTransportPeerConfig | None = None
+    service_material: CapabilityTransportMaterialConfig | None = None
+    dashboard_material: CapabilityTransportMaterialConfig | None = None
+    endpoint: str | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def _enabled_shape(self) -> Self:
+        if not self.enabled:
+            return self
+        from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+
+        if (
+            self.domain is None
+            or "__" in self.domain
+            or self.listen_host is None
+            or self.listen_port is None
+            or self.dashboard_peer is None
+            or self.service_peer is None
+            or self.service_material is None
+            or self.dashboard_material is None
+            or self.endpoint is None
+        ):
+            raise ValueError("incomplete_calendar_prepare_configuration")
+        if (
+            self.dashboard_peer.role != "dashboard-owner"
+            or not self.dashboard_peer.client_certificate
+            or self.dashboard_peer.domain != self.domain
+            or self.service_peer.domain != self.domain
+        ):
+            raise ValueError("invalid_calendar_prepare_peer")
+        TransportConfig(
+            self.endpoint,
+            PeerPolicy(
+                self.service_peer.role,
+                self.domain,
+                frozenset(self.service_peer.sans),
+                self.service_peer.client_certificate,
+            ),
+        )
+        return self
+
+
 @dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
@@ -444,6 +572,12 @@ class ButlerConfig:
     db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
+    capability_broker_transport: CapabilityBrokerTransportConfig = field(
+        default_factory=CapabilityBrokerTransportConfig
+    )
+    calendar_owner_prepare: CalendarOwnerPrepareConfig = field(
+        default_factory=CalendarOwnerPrepareConfig
+    )
     schedules: list[ScheduleSpec] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
     env_required: list[str] = field(default_factory=list)
@@ -801,6 +935,12 @@ class _ButlerSection(_StrictModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     runtime_seed: RuntimeSeedConfig = Field(default_factory=RuntimeSeedConfig)
+    capability_broker_transport: CapabilityBrokerTransportConfig = Field(
+        default_factory=CapabilityBrokerTransportConfig
+    )
+    calendar_owner_prepare: CalendarOwnerPrepareConfig = Field(
+        default_factory=CalendarOwnerPrepareConfig
+    )
     schedule: list[ScheduleSpec] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -910,8 +1050,30 @@ def load_config(config_dir: Path) -> ButlerConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid TOML in {toml_path}: {exc}") from exc
 
-    # --- Resolve env var references before any validation ---
+    # Literal OFF detaches only this named subtree. Do not resolve unused
+    # private material/endpoint placeholders, or suppress unrelated ENV errors.
+    section_data = data.get("butler")
+    private_raw = None
+    private_detached = False
+    if isinstance(section_data, dict):
+        private_raw = section_data.get("capability_broker_transport")
+        if type(private_raw) is dict and private_raw.get("enabled", False) is False:
+            section_data = dict(section_data)
+            section_data.pop("capability_broker_transport")
+            data = {**data, "butler": section_data}
+            private_detached = True
+    calendar_raw = data.get("butler", {}).get("calendar_owner_prepare")
+    calendar_detached = type(calendar_raw) is dict and calendar_raw.get("enabled", False) is False
+    if calendar_detached:
+        data = {**data, "butler": dict(data["butler"])}
+        data["butler"].pop("calendar_owner_prepare")
     data = resolve_env_vars(data)
+    if calendar_detached:
+        data["butler"]["calendar_owner_prepare"] = calendar_raw
+    if private_detached:
+        # Restore the unchanged raw shape for strict validation; unknown keys
+        # and wrong types must still refuse even when the feature is OFF.
+        data["butler"]["capability_broker_transport"] = private_raw
 
     try:
         parsed = ButlerToml.model_validate(data)
@@ -967,6 +1129,8 @@ def load_config(config_dir: Path) -> ButlerConfig:
         db_schema=db_schema,
         logging=section.logging,
         runtime_seed=section.runtime_seed,
+        capability_broker_transport=section.capability_broker_transport,
+        calendar_owner_prepare=section.calendar_owner_prepare,
         schedules=section.schedule,
         modules=parsed.modules,
         env_required=section.env.required,

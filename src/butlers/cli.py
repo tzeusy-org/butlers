@@ -136,7 +136,7 @@ def run(config_path: Path) -> None:
 
 
 @cli.command()
-@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE"]), required=True)
+@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE", "TRUSTED_BROKER"]), required=True)
 @click.option(
     "--config", "config_path", type=click.Path(exists=True, path_type=Path), required=True
 )
@@ -144,13 +144,25 @@ def run(config_path: Path) -> None:
     "--session-host",
     default="127.0.0.1",
     show_default=True,
-    help="Bind session refusal port to this operator/deployment-selected interface",
+    help="Bind session port to this operator/deployment-selected interface",
 )
-def control(profile: str, config_path: Path, session_host: str) -> None:
-    """Run Switchboard separately, without any goal signing key or broker."""
+@click.option(
+    "--broker-config",
+    "runtime_config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Literal trusted broker runtime configuration; omitted means OFF",
+)
+def control(
+    profile: str, config_path: Path, session_host: str, runtime_config: Path | None
+) -> None:
+    """Run an explicit isolated Switchboard profile; broker activation defaults OFF."""
     from butlers.control import run_control
 
-    asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
+    asyncio.run(
+        run_control(
+            config_path, profile=profile, session_host=session_host, runtime_config=runtime_config
+        )
+    )
 
 
 @cli.command("list")

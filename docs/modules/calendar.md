@@ -334,3 +334,57 @@ an inbox row disappears or the undo HTTP reply is lost. A pending inverse remain
 pending until the existing approval executor completes it; its owner-qualified
 approval dossier is the execution recovery door. An unavailable read retains the
 last known receipt and does not replay the original response.
+
+### Canonical Calendar approval and semantic edits
+
+The broker's native `calendar_respond` projection always requires a fresh
+per-event owner decision. Its selected `entry_id` remains constrained by the
+actual current Grant; unresolved invitation participants never count as an
+owner-only recipient. Canonical PARK prepares provider/account/self/occurrence
+and ETag facts before opening the owning transaction, then stores the command
+and goal-linked pending action together. Public arguments P and the effect's
+original digest remain fixed; the pending action contains the server-prepared
+private command binding A.
+
+The dashboard's **Change response** flow prepares changes, displays the resulting
+stored call, and requires a separate **Approve** action. It cannot approve while
+editing or preparing. `POST /api/approvals/{id}/calendar-reprepare` accepts only
+`displayed_call` and semantic `entry_id`, `response_status`, `send_updates` fields.
+It never accepts a replacement public request ID, actor, private command, or
+approval decision. The service appends a linked immutable C′ under an internal
+revision key; C and the original request/root/effect remain intact. The API
+independently reads C′ from the owning database and validates its exact parent,
+edit digest, owner, command, current Grant/catalog/resources, pending state,
+expiry, Stop and dispatch fences before CAS-attaching A′ and auditing in one
+owning transaction. It returns `review_required`, never an executed result.
+A stale displayed call refuses. An uncertain commit requires explicit readback,
+not automatic re-preparation or approval.
+
+Receipt and inverse reads follow the pending action's verified current command.
+Only an attributable applied receipt earns the existing single-use inverse;
+an unresolved old attempt remains a fence even if a later candidate changes
+workspace entry. Stored replay still consumes its original single-winner intent
+before the captured registered handler. A provider or generic MCP success alone
+does not manufacture a durable external-effect receipt.
+
+### Separate owner-preparation channel (default OFF)
+
+`[butler.calendar_owner_prepare]` is disabled unless explicitly configured.
+Enabled owners require `domain` equal to their actual butler, `listen_host`,
+`listen_port`, `endpoint`, `dashboard_peer`, `service_peer`, `service_material`
+and `dashboard_material`. Each peer has `role`, `domain`, exact certificate
+`sans` and `client_certificate`; the dashboard peer is `dashboard-owner` with a
+client certificate, while the service peer is `owning-service`. Each material
+object names `ca_path`, `certificate_path` and `private_key_path`. These are
+operator-supplied dedicated TLS file paths; no checked-in roster enables them.
+OFF does not load TLS material or construct clients/listeners.
+
+The separate mTLS endpoint exposes only `calendar_owner_prepare` using
+`calendar-owner-prepare-v1`, not an edit operation on ordinary/model MCP or the
+broker protocol. Its closed request binds domain, root, parent command/digest,
+expected pending-args digest and semantic edits. Its reply binds only root and
+candidate ID/digest; it is never authorization. Preparation performs provider
+reads and candidate persistence, never an approval or provider write. It retains
+the private transport's finite concurrency/header/body/reply/TLS limits and
+separate bounded lifecycle ownership. Dashboard authentication supplies the
+owner actor; neither a DTO nor a peer certificate supplies a current Grant.

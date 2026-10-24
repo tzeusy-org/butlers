@@ -55,10 +55,10 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "1bb7b12d3ac27b181c90448300d68a5b4cd0274094693ea8cac119a5430bfaa2"
+        "8e4a8cd559cbe796aaeddc5b9b8dee3c19e4fb61b318010e28ffa6e2257f2102"
     )
-    assert len(snapshot["routes"]) == 617
-    assert len(snapshot["openapi"]["paths"]) == 526
+    assert len(snapshot["routes"]) == 618
+    assert len(snapshot["openapi"]["paths"]) == 527
     assert snapshot["routes"][-1] == {"path": "", "name": "frontend", "type": "Mount"}
     assert any(row.get("include_in_schema") is False for row in snapshot["routes"])
 

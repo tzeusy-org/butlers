@@ -48,6 +48,8 @@ import type {
   CalendarInvitationsParams,
   CalendarInvitationsResponse,
   CalendarResponseRequest,
+  CalendarReprepareRequest,
+  CalendarReprepareResult,
   CalendarResponseReceipt,
   CalendarPrepResponse,
   CalendarSourceToggleRequest,
@@ -7098,4 +7100,15 @@ export function getIdentityDecision(entityId: string, factId: string): Promise<{
   fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
 }> {
   return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
+}
+
+export function reprepareCalendarApproval(
+  actionId: string,
+  request: CalendarReprepareRequest,
+): Promise<ApiResponse<CalendarReprepareResult>> {
+  return apiFetch(`/approvals/${encodeURIComponent(actionId)}/calendar-reprepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }

@@ -311,6 +311,143 @@ class CalendarResponseCoordinator:
             raise CalendarResponseError("response_approval_state_unavailable")
         return self._pending(command_id)
 
+    async def prepare_public(self, arguments: dict[str, Any], root_id: uuid.UUID) -> dict:
+        """Provider reads only, before any owning gate/row lock is acquired."""
+        if not self.module._response_ready:
+            raise CalendarResponseError("response_capability_unavailable")
+        request = self.public_args(arguments)
+        target, account = await self._target(request["entry_id"])
+        before = await self._snapshot(target, account)
+        command = {
+            "version": 1,
+            "owner": self.module._butler_name,
+            "arguments": request,
+            "source_id": str(target["source_id"]),
+            "event_id": str(target["event_id"]),
+            "source_key": target["source_key"],
+            "calendar_id": target["calendar_id"],
+            "account": account,
+            "before": before.to_dict(),
+            "inverse_of": None,
+        }
+        return {
+            "id": root_id,
+            "key": "respond:" + request["request_id"],
+            "payload": {
+                "command": command,
+                "digest": _digest(command),
+                "request_digest": _digest(request),
+                "phase": "prepared",
+                "root_id": str(root_id),
+                "target_key": _digest(
+                    {
+                        "provider": "google",
+                        "calendar_id": target["calendar_id"],
+                        "event_id": before.event_id,
+                        "self": before.self_email.casefold(),
+                    }
+                ),
+            },
+        }
+
+    async def persist_prepared(self, conn: Any, prepared: dict) -> dict:
+        """Append an immutable command on the caller's existing transaction."""
+        payload = prepared["payload"]
+        command = payload["command"]
+        if command["owner"] != self.module._butler_name or _digest(command) != payload["digest"]:
+            raise CalendarResponseError("response_command_mismatch")
+        await conn.execute(
+            "INSERT INTO calendar_action_log "
+            "(id,idempotency_key,request_id,action_type,source_id,event_id,"
+            "instance_id,origin_ref,action_payload) "
+            "VALUES ($1,$2,$3,'workspace_user_respond',$4,$5,$6,$7,$8) "
+            "ON CONFLICT (idempotency_key) DO NOTHING",
+            prepared["id"],
+            prepared["key"],
+            command["arguments"]["request_id"],
+            uuid.UUID(command["source_id"]),
+            uuid.UUID(command["event_id"]),
+            uuid.UUID(command["arguments"]["entry_id"]),
+            command["before"]["event_id"],
+            payload,
+        )
+        row = await conn.fetchrow(
+            "SELECT * FROM calendar_action_log WHERE idempotency_key=$1 FOR UPDATE", prepared["key"]
+        )
+        stored = _object(row["action_payload"]) if row else {}
+        # Same revision key never silently replaces changed provider material.
+        if (
+            row is None
+            or row["id"] != prepared["id"]
+            or any(
+                stored.get(k) != payload.get(k)
+                for k in (
+                    "command",
+                    "digest",
+                    "request_digest",
+                    "root_id",
+                    "parent_id",
+                    "parent_digest",
+                    "edit_digest",
+                    "original_request_digest",
+                )
+            )
+        ):
+            raise CalendarResponseError("response_request_conflict")
+        return self._args(row["id"], stored)
+
+    async def prepare_owner_candidate(self, request: dict) -> dict:
+        """Fixed authenticated service entry: append only; never attach or approve."""
+        from butlers.core.capability_json import arguments_digest
+
+        root_id = uuid.UUID(request["root_id"])
+        pending = await self.pool.fetchrow("SELECT * FROM pending_actions WHERE id=$1", root_id)
+        if (
+            pending is None
+            or pending["status"] != "pending"
+            or pending["tool_name"] != "calendar_respond"
+        ):
+            raise CalendarResponseError("response_edit_no_longer_pending")
+        original = _object(pending["tool_args"])
+        if arguments_digest(original) != request["expected_args_digest"]:
+            raise CalendarResponseError("response_edit_stale")
+        parent_id = uuid.UUID(request["parent_id"])
+        parent = await read_response_binding(self.pool, root_id, original)
+        if (
+            original["_command_id"] != str(parent_id)
+            or parent["digest"] != request["parent_digest"]
+        ):
+            raise CalendarResponseError("response_edit_stale")
+        edits = request["edits"]
+        if (
+            type(edits) is not dict
+            or not edits
+            or set(edits) - {"entry_id", "response_status", "send_updates"}
+        ):
+            raise CalendarResponseError("response_edit_invalid")
+        arguments = {**parent["command"]["arguments"], **edits}
+        prepared = await self.prepare_public(arguments, root_id)
+        edit_digest = arguments_digest(edits)
+        key = (
+            "respond-revision:" + str(root_id) + ":" + request["parent_digest"] + ":" + edit_digest
+        )
+        prepared["id"] = uuid.uuid5(root_id, key)
+        prepared["key"] = key
+        prepared["payload"].update(
+            parent_id=str(parent_id),
+            parent_digest=parent["digest"],
+            edit_digest=edit_digest,
+            original_request_digest=parent.get("original_request_digest", parent["request_digest"]),
+        )
+        # Persisting an unattached candidate confers no decision or execution authority.
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self.persist_prepared(conn, prepared)
+        return {
+            "root_id": str(root_id),
+            "candidate_id": str(prepared["id"]),
+            "candidate_digest": prepared["payload"]["digest"],
+        }
+
     async def _existing(self, request: dict[str, str]) -> dict[str, Any] | None:
         row = await self.pool.fetchrow(
             "SELECT * FROM calendar_action_log WHERE idempotency_key = $1",
@@ -329,10 +466,20 @@ class CalendarResponseCoordinator:
         if payload.get("phase") in {"egress_started", "uncertain"}:
             return {"status": "uncertain", "command_id": str(row["id"])}
         pending = await self.pool.fetchrow(
-            "SELECT status FROM pending_actions WHERE id = $1", row["id"]
+            "SELECT status,tool_args FROM pending_actions WHERE id = $1", row["id"]
         )
         if pending is None:
             raise CalendarResponseError("response_approval_unavailable")
+        current_id = _object(pending.get("tool_args")).get("_command_id")
+        if current_id and current_id != str(row["id"]):
+            current = await self.pool.fetchrow(_COMMAND_SQL, uuid.UUID(current_id))
+            if current is None or _object(current["action_payload"]).get("root_id") != str(
+                row["id"]
+            ):
+                raise CalendarResponseError("response_command_mismatch")
+            receipt = _object(current["action_result"])
+            if receipt:
+                return receipt
         return self._approval_replay(row["id"], pending["status"])
 
     async def prepare_and_park(
@@ -546,10 +693,8 @@ class CalendarResponseCoordinator:
         admitted_command_id = None
         try:
             command_id = uuid.UUID(arguments["_command_id"])
-            if command_id != context.action_id:
-                raise CalendarResponseError("response_approval_mismatch")
+            payload = await read_response_binding(self.pool, context.action_id, arguments)
             row = await self.pool.fetchrow(_COMMAND_SQL, command_id)
-            payload = _object(row["action_payload"]) if row else {}
             if (
                 payload.get("digest") != arguments.get("_command_digest")
                 or self._args(command_id, payload) != arguments
@@ -557,7 +702,7 @@ class CalendarResponseCoordinator:
                 raise CalendarResponseError("response_command_mismatch")
             pending = await self.pool.fetchrow(
                 "SELECT tool_name,tool_args,status,decided_by FROM pending_actions WHERE id=$1",
-                command_id,
+                context.action_id,
             )
             if (
                 pending is None
@@ -707,6 +852,31 @@ class CalendarResponseCoordinator:
             return {"error": "response_command_unavailable"}
 
 
+async def read_response_binding(conn: Any, root_id: uuid.UUID, arguments: dict) -> dict:
+    """Verify the selected actual stored revision; a transport DTO is not evidence."""
+    try:
+        command_id = uuid.UUID(arguments["_command_id"])
+        row = await conn.fetchrow(_COMMAND_SQL, command_id)
+        payload = _object(row["action_payload"]) if row else {}
+        command = _object(payload.get("command"))
+        if (
+            row is None
+            or row["action_type"] != "workspace_user_respond"
+            or payload.get("root_id", str(command_id)) != str(root_id)
+            or _digest(command) != payload.get("digest")
+            or {
+                **command["arguments"],
+                "_command_id": str(command_id),
+                "_command_digest": payload["digest"],
+            }
+            != arguments
+        ):
+            raise CalendarResponseError("response_command_mismatch")
+        return payload
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise CalendarResponseError("response_command_mismatch") from None
+
+
 async def reserve_response_inverse(pool: Any, action_id: uuid.UUID) -> dict[str, str]:
     """Reserve one server-owned inverse; no caller status/version/reference.
 
@@ -717,16 +887,31 @@ async def reserve_response_inverse(pool: Any, action_id: uuid.UUID) -> dict[str,
     """
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow(_COMMAND_SQL + " FOR UPDATE", action_id)
+        selected = await connection.fetchrow(
+            "SELECT tool_args FROM pending_actions WHERE id=$1", action_id
+        )
+        current_id = _object(selected["tool_args"]).get("_command_id") if selected else None
+        if current_id and current_id != str(action_id):
+            await read_response_binding(connection, action_id, selected["tool_args"])
+            row = await connection.fetchrow(_COMMAND_SQL + " FOR UPDATE", uuid.UUID(current_id))
         if (
             row is None
             or row["action_type"] != "workspace_user_respond"
             or row["action_status"] != "applied"
         ):
             raise CalendarResponseError("response_inverse_unearned")
+        applied_id = row["id"]
         receipt = _object(row["action_result"])
         payload = _object(row["action_payload"])
+        root_row = await connection.fetchrow(_COMMAND_SQL, action_id)
+        root_payload = _object(root_row["action_payload"])
         command = _object(payload.get("command"))
-        if receipt.get("undo") or payload.get("inverse_claim") or command.get("inverse_of"):
+        if (
+            root_payload.get("inverse_claim")
+            or receipt.get("undo")
+            or payload.get("inverse_claim")
+            or command.get("inverse_of")
+        ):
             raise CalendarResponseError("response_inverse_used")
         before, after = _object(receipt.get("before")), _object(receipt.get("after"))
         if (
@@ -749,7 +934,7 @@ async def reserve_response_inverse(pool: Any, action_id: uuid.UUID) -> dict[str,
         )
         reservation = {
             "phase": "reserved",
-            "inverse_of": str(action_id),
+            "inverse_of": str(applied_id),
             "request_digest": _digest(arguments),
         }
         await connection.execute(

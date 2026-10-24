@@ -427,7 +427,12 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
 
 
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:
-    policy = {"enabled": True, "constraints": {"recipient": ["owner"]}}
+    policy = {
+        "mode": "default",
+        "enabled": True,
+        "configured_gate": False,
+        "constraints": {"recipient": ["owner"]},
+    }
     parties = ["query"]
 
     from butlers.core.tool_catalog import RecipientParameters

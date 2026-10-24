@@ -81,3 +81,10 @@ paths = [
   '''^openspec/changes/specify-host-authorized-dashboard-enrollment/design\.md$''',
 ]
 regexes = ['''^cancellation/expiry$''', '''^histories/prep/correction/approval$''', '''^missing/forged/revoked$''']
+
+[[allowlists]]
+description = "Ed25519PrivateKey is a Python type annotation in the assertion signer, never credential material"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^src/butlers/capability_broker/assertions\.py$''']
+regexes = ['''^Ed25519PrivateKey$''']

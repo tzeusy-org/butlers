@@ -1433,3 +1433,111 @@ async def test_promoted_approval_context_is_exact(mock_mcp, monkeypatch):
         finally:
             reset_approval_execution_context(token)
         _assert_parked(case, args, result, case_id)
+
+
+async def test_registered_scene_exact_shape_and_task_context(mock_mcp, monkeypatch):
+    """Public omission/null stay distinct before the fixed internal command mapping."""
+    from butlers.modules.approvals.execution_context import get_approval_execution_context
+    from butlers.modules.approvals.executor import _invoke_approved_handler
+    from butlers.modules.home_actuation_risk import ActuationRisk as SharedRisk
+    from butlers.modules.home_actuation_risk import classify_actuation as shared_classifier
+
+    assert ActuationRisk is SharedRisk and classify_actuation is shared_classifier
+    for args in (
+        {"entity_id": "scene.controlled"},
+        {"entity_id": "scene.controlled", "transition": None},
+        {"entity_id": "scene.controlled", "transition": 2.5},
+    ):
+        command = {
+            "domain": "scene",
+            "service": "turn_on",
+            "target": {"entity_id": args["entity_id"]},
+            "data": {"transition": args["transition"]}
+            if args.get("transition") is not None
+            else None,
+        }
+        case = await _registered_actuation(mock_mcp, monkeypatch, command)
+        scene = mock_mcp._registered_tools["ha_activate_scene"]
+        action = uuid.uuid4()
+        assert get_approval_execution_context(tool_name="ha_activate_scene", tool_args=args) is None
+        result = await _invoke_approved_handler({}, action, "ha_activate_scene", args, scene)
+        # Scene response cannot establish its physical postcondition.
+        assert result["status"] == "unverified" and result["approval_id"] == str(action)
+        assert case.pool.execute.await_args_list[0].args[9] == action
+        case.client.post.assert_awaited_once()
+        case.park.assert_not_awaited()
+        assert (
+            get_approval_execution_context(tool_name="ha_call_service", tool_args=command) is None
+        )
+
+        # Each changed shape/value, a wrong tool and inherited child task must
+        # re-enter the physical approval gate rather than reuse this authority.
+        changed = dict(args)
+        if "transition" in args:
+            changed.pop("transition")
+        else:
+            changed["transition"] = None
+        for authorized_name, supplied, child in [
+            ("ha_activate_scene", changed, False),
+            ("wrong_scene", args, False),
+            ("ha_activate_scene", {**args, "entity_id": "scene.other"}, False),
+            ("ha_activate_scene", args, True),
+        ]:
+            case.client.post.reset_mock()
+            case.park.reset_mock()
+            context = ApprovalExecutionContext(
+                action,
+                None,
+                "human:owner",
+                authorized_name,
+                approval_tool_args_digest(args),
+                asyncio.current_task(),
+            )
+            token = set_approval_execution_context(context)
+            try:
+                result = (
+                    await asyncio.create_task(scene(**supplied))
+                    if child
+                    else await scene(**supplied)
+                )
+                assert result["status"] == "pending_approval"
+            finally:
+                reset_approval_execution_context(token)
+            case.client.post.assert_not_awaited()
+            case.park.assert_awaited_once()
+
+        # Derived context must restore its exact public parent even on failures
+        # and cancellation, without making an inherited child authoritative.
+        for error in (RuntimeError("controlled"), asyncio.CancelledError()):
+
+            async def fail(_command=command, _error=error, **kwargs):
+                assert (
+                    get_approval_execution_context(tool_name="ha_call_service", tool_args=_command)
+                    is not None
+                )
+                raise _error
+
+            parent = ApprovalExecutionContext(
+                action,
+                None,
+                "human:owner",
+                "ha_activate_scene",
+                approval_tool_args_digest(args),
+                asyncio.current_task(),
+            )
+            token = set_approval_execution_context(parent)
+            try:
+                with monkeypatch.context() as m:
+                    m.setattr(case.module, "_call_service", fail)
+                    with pytest.raises(type(error)):
+                        await scene(**args)
+                assert (
+                    get_approval_execution_context(tool_name="ha_activate_scene", tool_args=args)
+                    is parent
+                )
+                assert (
+                    get_approval_execution_context(tool_name="ha_call_service", tool_args=command)
+                    is None
+                )
+            finally:
+                reset_approval_execution_context(token)

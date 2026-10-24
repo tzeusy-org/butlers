@@ -71,8 +71,8 @@ transaction. S/B followed by S/A therefore binds both attempts to the same
 decision; T/A refuses even on a fresh connection. Historical canonical attempts
 are backfilled from their actual decisions. Earlier unrecorded losing retries
 cannot be reconstructed and receive no invented historical binding. Migration
-050 descends from delivered 047; separately held 048/049 require reparenting
-after its delivery. Downgrade refuses to discard any attempt binding.
+050 descends from delivered 047. Broker Stop 048 now descends from delivered
+050; the separately held obligations 049 must descend from delivered 048. Downgrade refuses to discard any attempt binding.
 
 Lock order is dedupe attempt/source keys, all referenced goals in sorted order,
 then effect rows, then sorted aggregate origin/window and source/window quota

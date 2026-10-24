@@ -273,6 +273,7 @@ class CalendarModule(
         metadata: dict[str, ToolMeta] = {}
         if self._butler_name in RESPONSE_FENCE_OWNERS:
             metadata["calendar_response_fence_status"] = ToolMeta(
+                approval_policy={"mode": "default"},
                 arg_sensitivities={"request": True},
                 canonical_name="calendar_response_fence_status",
                 module_name="calendar",
@@ -293,6 +294,7 @@ class CalendarModule(
         if not self.canonical_approval_preparers():
             return metadata
         metadata["calendar_respond"] = ToolMeta(
+            approval_policy={"mode": "always_per_event"},
             arg_sensitivities={
                 "_write": True,
                 "entry_id": True,

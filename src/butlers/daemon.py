@@ -290,6 +290,8 @@ class ButlerDaemon:
         # Attached after the DB pool is ready (lifecycle step 6b) and detached
         # in shutdown before the pool is closed.
         self._db_log_handler: logging.Handler | None = None
+        self._capability_transport_owner: Any | None = None
+        self._capability_transport_cleanup: asyncio.Task | None = None
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -460,7 +462,16 @@ class ButlerDaemon:
         """
         from butlers.lifecycle import run_startup
 
-        await run_startup(self)
+        try:
+            await run_startup(self)
+        except BaseException as original:
+            from butlers.capability_broker.production import close_private_transport
+
+            try:
+                await close_private_transport(self)
+            except BaseException as cleanup:
+                original.add_note("private_cleanup_failed:" + type(cleanup).__name__)
+            raise
 
     def _wire_pipelines(self, pool: Any) -> None:
         """Attach a MessagePipeline to modules that support set_pipeline().
@@ -1431,6 +1442,7 @@ class ButlerDaemon:
 
     def _collect_tool_metadata(self) -> dict[str, ToolMeta]:
         """Merge module sensitivities with the central presentation inventory."""
+        from butlers.core.tool_catalog import declared_approval_mode
         from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
 
         sensitivities: dict[str, ToolMeta] = {}
@@ -1487,6 +1499,14 @@ class ButlerDaemon:
                         f"tool presentation metadata conflicts with central inventory for "
                         f"{tool_name!r}: {', '.join(mismatches)}"
                     )
+            declaration = presentation.approval_policy
+            if declaration is not None:
+                if set(declaration) != {"mode"}:
+                    raise ToolCatalogError(
+                        f"tool authorization metadata conflicts with central inventory for "
+                        f"{tool_name!r}: approval_policy"
+                    )
+                declared_approval_mode(declaration)
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
@@ -1501,7 +1521,11 @@ class ButlerDaemon:
                     if field_name not in {"owner_domain", "approval_policy"}
                 },
                 owner_domain=self.config.name,
-                approval_policy={},
+                approval_policy={
+                    **(dict(declaration) if declaration is not None else {}),
+                    "enabled": False,
+                    "configured_gate": False,
+                },
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,
@@ -1510,6 +1534,7 @@ class ButlerDaemon:
             if policy is not None:
                 gate = policy.gated_tools.get(tool_name)
                 resolved[tool_name].approval_policy = {
+                    **resolved[tool_name].approval_policy,
                     "enabled": policy.enabled,
                     "configured_gate": gate is not None,
                     "expiry_hours": policy.get_effective_expiry(tool_name),
@@ -1519,7 +1544,13 @@ class ButlerDaemon:
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
-                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                # Modules declare mode, not configuration-derived authority.
+                expected = (
+                    declaration
+                    if field_name == "approval_policy"
+                    else getattr(resolved[tool_name], field_name)
+                )
+                if supplied is not None and supplied != expected:
                     raise ToolCatalogError(
                         f"tool authorization metadata conflicts with central inventory for "
                         f"{tool_name!r}: {field_name}"
@@ -1549,6 +1580,20 @@ class ButlerDaemon:
                 await publication.retire()
                 raise
         return candidate
+
+    async def _broker_owning_originals(self):
+        """Capture only actual final registered originals, never request callables."""
+        originals = {}
+        for descriptor in self.tool_catalog.descriptors:
+            name = descriptor.canonical_name
+            fn = self._gated_tool_originals.get(name)
+            if fn is None:
+                tool = await _resolve_mcp_tool(self.mcp, name)
+                fn = getattr(tool, "fn", None)
+            if not callable(fn):
+                raise RuntimeError("owning registered original unavailable")
+            originals[name] = fn
+        return originals
 
     @property
     def tool_catalog(self) -> ToolCatalog:
